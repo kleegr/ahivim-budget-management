@@ -182,12 +182,22 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
       });
     } else if (individual.outcome === "unmatched") {
       unmatchedIndividualNames.add(p.individual);
+      // A name with NO similar existing record is simply someone new, and is
+      // created on commit. A name that looks like an existing person might be
+      // a misspelling of them, and merging or not merging changes the money —
+      // so that, and only that, goes to a human.
+      const looksLikeSomeoneElse = individual.suggestions.length > 0;
       rowWarnings.push({
         category: "unmatched_individual",
-        severity: "warning",
+        severity: looksLikeSomeoneElse ? "warning" : "info",
         sourceRowNumber: row.sourceRowNumber,
-        message: `Individual could not be matched. ${individual.reason}`,
-        details: { suggestionCount: individual.suggestions.length },
+        message: looksLikeSomeoneElse
+          ? `Individual resembles an existing record and was not matched automatically. ${individual.reason}`
+          : `New individual; will be created on commit. ${individual.reason}`,
+        details: {
+          suggestionCount: individual.suggestions.length,
+          suggestions: individual.suggestions.map((s) => s.displayName),
+        },
       });
     }
 
@@ -204,11 +214,18 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
       });
     } else if (employee && employee.outcome === "unmatched") {
       unmatchedEmployeeNames.add(p.employee);
+      const looksLikeSomeoneElse = employee.suggestions.length > 0;
       rowWarnings.push({
         category: "unmatched_employee",
-        severity: "warning",
+        severity: looksLikeSomeoneElse ? "warning" : "info",
         sourceRowNumber: row.sourceRowNumber,
-        message: `Employee could not be matched. ${employee.reason}`,
+        message: looksLikeSomeoneElse
+          ? `Employee resembles an existing record and was not matched automatically. ${employee.reason}`
+          : `New employee; will be created on commit. ${employee.reason}`,
+        details: {
+          suggestionCount: employee.suggestions.length,
+          suggestions: employee.suggestions.map((s) => s.displayName),
+        },
       });
     }
 
@@ -338,10 +355,26 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
     }
 
     // --- status ------------------------------------------------------------
+    //
+    // An unresolved NAME is not the same thing as an unknown name. On a first
+    // import nobody is canonical yet, so requiring an exact match here would
+    // send every single row to review and the database could never accept its
+    // first workbook. What genuinely needs a person's decision is a name that
+    // is ambiguous, blank, or close enough to an existing record to be a
+    // misspelling of it — because merging or not merging changes the figures.
+    const individualNeedsDecision =
+      individual.outcome === "ambiguous" ||
+      individual.normalizedName === "" ||
+      (individual.outcome === "unmatched" && individual.suggestions.length > 0);
+    const employeeNeedsDecision =
+      employee !== null &&
+      (employee.outcome === "ambiguous" ||
+        (employee.outcome === "unmatched" && employee.suggestions.length > 0));
+
     let status: StagedRowStatus;
     if (duplicate.status === "confirmed") status = "duplicate";
     else if (rowWarnings.some((w) => w.severity === "error")) status = "needs_review";
-    else if (!program.matched || (individual.outcome !== "exact" && individual.outcome !== "alias"))
+    else if (!program.matched || individualNeedsDecision || employeeNeedsDecision)
       status = "needs_review";
     else status = "valid";
 

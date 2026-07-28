@@ -1,6 +1,15 @@
 import { getPool } from "./index";
 import { MIGRATIONS } from "./migrations.generated";
 import { createHash } from "node:crypto";
+import type { PgLikePool } from "@/lib/import/commit";
+
+/**
+ * Every entry point accepts an explicit pool so the migration runner can be
+ * exercised against a real throwaway PostgreSQL in the integration tests
+ * rather than only against the deployed Neon database.
+ */
+type MaybePool = PgLikePool | undefined;
+const resolve = (pool: MaybePool): PgLikePool => pool ?? (getPool() as unknown as PgLikePool);
 
 /**
  * A small, explicit migration runner.
@@ -27,8 +36,8 @@ export interface MigrationRunResult {
   skipped: number;
 }
 
-export async function ledgerExists(): Promise<boolean> {
-  const pool = getPool();
+export async function ledgerExists(explicitPool?: MaybePool): Promise<boolean> {
+  const pool = resolve(explicitPool);
   const { rows } = await pool.query<{ exists: boolean }>(
     `SELECT EXISTS (
        SELECT 1 FROM information_schema.tables
@@ -46,9 +55,9 @@ function splitStatements(sql: string): string[] {
     .filter((s) => s.length > 0 && !/^(--[^\n]*\n?)+$/.test(s));
 }
 
-export async function runMigrations(): Promise<MigrationRunResult> {
-  const pool = getPool();
-  const existedBefore = await ledgerExists();
+export async function runMigrations(explicitPool?: MaybePool): Promise<MigrationRunResult> {
+  const pool = resolve(explicitPool);
+  const existedBefore = await ledgerExists(pool);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${LEDGER_TABLE} (
@@ -117,8 +126,8 @@ export async function runMigrations(): Promise<MigrationRunResult> {
 }
 
 /** Table names present in the current schema, for the health report. */
-export async function listTables(): Promise<string[]> {
-  const { rows } = await getPool().query<{ table_name: string }>(
+export async function listTables(explicitPool?: MaybePool): Promise<string[]> {
+  const { rows } = await resolve(explicitPool).query<{ table_name: string }>(
     `SELECT table_name FROM information_schema.tables
      WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
      ORDER BY table_name`,
@@ -127,12 +136,16 @@ export async function listTables(): Promise<string[]> {
 }
 
 /** Row counts for the major tables, for the handoff report. */
-export async function tableCounts(tables: string[]): Promise<Record<string, number>> {
+export async function tableCounts(
+  tables: string[],
+  explicitPool?: MaybePool,
+): Promise<Record<string, number>> {
+  const pool = resolve(explicitPool);
   const counts: Record<string, number> = {};
   for (const table of tables) {
     // Table names come from information_schema, not from user input.
     if (!/^[a-z_][a-z0-9_]*$/.test(table)) continue;
-    const { rows } = await getPool().query<{ count: string }>(
+    const { rows } = await pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM "${table}"`,
     );
     counts[table] = Number(rows[0]?.count ?? 0);
