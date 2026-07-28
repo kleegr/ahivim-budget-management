@@ -11,6 +11,14 @@ import { dec, toMoney, tryDec, type MoneyInput, Decimal } from "@/lib/money";
  *      Day Hab / Suppl. Group Day Hab      -> convert agency rate to internal
  *   5. anything else                       -> keep the imported amount
  *
+ * VERIFIED against Excellent_Staffing_2025-2026.xlsx. Across all 33 distinct
+ * program/rate combinations the ratio of column P to column G is exactly one
+ * of three values:
+ *
+ *   0.84      == 21/25   Com Hab priced on the $25 agency rate
+ *   0.894737  == 17/19   Respite / Day Hab / Suppl. Group Day Hab on $19
+ *   1.0                  everything else, retained untouched
+ *
  * Rates are passed in from `program_rate_schedules`, resolved for the
  * transaction's service date. Nothing here hardcodes 21, 17, 25 or 19.
  */
@@ -41,8 +49,13 @@ export interface InternalAmountInput {
   agencyRate: MoneyInput;
   /** Internal rate for this program on this date, from the rate schedule. */
   internalRate: MoneyInput;
-  /** Hours, used when the amount must be rebuilt from the rate. */
+  /** Hours, retained for auditing. */
   hours?: MoneyInput;
+  /**
+   * The rate on the row itself. For a group row this is the COMBINED rate,
+   * e.g. 57 == 3 x the $19 Day Hab agency rate.
+   */
+  rowRate?: MoneyInput;
 }
 
 export interface InternalAmountResult {
@@ -90,26 +103,32 @@ export function calculateInternalAmount(input: InternalAmountInput): InternalAmo
   const agencyRate = tryDec(input.agencyRate);
   const internalRate = tryDec(input.internalRate);
 
-  // 3/4. Agency payee with a configured conversion pair -> convert.
+  // 3/4. Agency payee with a configured conversion pair -> convert, but ONLY
+  // when the row is actually priced off the agency rate.
+  //
+  // The conversion is a RATIO applied to the amount, not a rebuild from
+  // hours x internal rate. That distinction matters for group rows: a
+  // three-person Day Hab row carries a combined rate of 3 x $19 = $57, and its
+  // internal amount is 3 x $17 = $51 per hour. Scaling by 17/19 produces that
+  // automatically; rebuilding from the $17 base rate would silently drop the
+  // other two group members' share.
   if (agencyRate && internalRate && !agencyRate.isZero() && !internalRate.isZero()) {
-    const hours = tryDec(input.hours);
-    // Prefer rebuilding from hours x internal rate when hours are trustworthy;
-    // fall back to scaling the imported amount by the rate ratio.
-    const converted =
-      hours && !hours.isZero()
-        ? hours.times(internalRate)
-        : imported.times(internalRate).dividedBy(agencyRate);
+    const rowRate = tryDec(input.rowRate);
+    const multiple = rowRate && !rowRate.isZero() ? isIntegerMultiple(rowRate, agencyRate) : true;
 
-    return {
-      internalAmount: toMoney(converted),
-      rule: "agency_rate_converted",
-      appliedInternalRate: toMoney(internalRate),
-      appliedAgencyRate: toMoney(agencyRate),
-      conversionFactor: internalRate.dividedBy(agencyRate).toFixed(8),
-    };
+    if (multiple) {
+      const converted = imported.times(internalRate).dividedBy(agencyRate);
+      return {
+        internalAmount: toMoney(converted),
+        rule: "agency_rate_converted",
+        appliedInternalRate: toMoney(internalRate),
+        appliedAgencyRate: toMoney(agencyRate),
+        conversionFactor: internalRate.dividedBy(agencyRate).toFixed(8),
+      };
+    }
   }
 
-  // 5. Agency payee but no conversion configured -> keep what was imported.
+  // 5. Agency payee but no conversion applies -> keep what was imported.
   return {
     internalAmount: toMoney(imported),
     rule: "retain_imported",
@@ -158,6 +177,25 @@ export function compareInternalAmounts(
     spreadsheetValue: toMoney(sheet),
     applicationValue: toMoney(app),
   };
+}
+
+/**
+ * True when `value` is a whole-number multiple of `base` (1x, 2x, 3x ...).
+ *
+ * A row priced at 57 against a $19 agency rate is a three-person group and
+ * converts. A row priced at 51 is already 3 x the $17 internal rate and must be
+ * retained untouched.
+ */
+export function isIntegerMultiple(
+  value: MoneyInput,
+  base: MoneyInput,
+  tolerance: MoneyInput = "0.0001",
+): boolean {
+  const b = dec(base);
+  if (b.isZero()) return false;
+  const quotient = dec(value).dividedBy(b);
+  if (quotient.lt(1)) return false;
+  return quotient.minus(quotient.toDecimalPlaces(0, Decimal.ROUND_HALF_UP)).abs().lte(dec(tolerance));
 }
 
 export { Decimal };

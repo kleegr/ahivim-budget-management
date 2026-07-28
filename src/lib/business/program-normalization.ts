@@ -5,6 +5,11 @@
  * Imported program descriptions are mapped to canonical programs through an
  * EXPLICIT alias table. Unknown descriptions are never merged into a canonical
  * program by similarity — they are reported as unknown so a human can decide.
+ *
+ * VERIFIED: the 2025-2026 workbook contains exactly six distinct labels, all of
+ * which resolve through the seed aliases below:
+ *   Com Hab (887), Day Hab (829), Supplemental Group Day Hab (449),
+ *   SD - Self Hired Com Hab (360), Respite (322), SD - Self Hired Respite (222)
  */
 
 export const PROGRAM_CODES = {
@@ -48,10 +53,10 @@ export const SEED_PROGRAM_ALIASES: Record<string, ProgramCode> = {
   "selfhire com hab": "SH_COM_HAB",
   shch: "SH_COM_HAB",
   "sd self hired com hab": "SH_COM_HAB",
-  "sd  self hired com hab": "SH_COM_HAB",
 
   "self hire respite": "SH_RESPITE",
   "self hired respite": "SH_RESPITE",
+  "sd self hired respite": "SH_RESPITE",
   shr: "SH_RESPITE",
 
   "day hab": "DAY_HAB",
