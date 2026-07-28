@@ -1,64 +1,85 @@
 # Ahivim Budget Management
 
-Internal budget and authorization management system for individual service
-programs. Replaces a Google Sheets workbook that tracks authorized hours, hours
-used, payroll transactions, agency billing, group services and budget
-utilization.
-
-The repository is private and contains no participant data. The source workbook
-is never committed.
-
-## Status
-
-Project 2 foundation. The financial rules, the workbook parser and the import
-staging pipeline are complete and verified against the real 2025-2026 workbook.
-The database schema and migrations are in place. Screens for sign-in, upload
-review and the individual utilization report are written but not yet in this
-branch — see `docs/handoff-project-2.md`.
+Authorization, utilization and payroll-import tracking for individual service
+programs. Replaces a spreadsheet that people have read for years, and adds the
+one thing the spreadsheet could not show: whether an individual's authorized
+hours are being consumed at the right pace.
 
 ## Stack
 
-Next.js 15 (App Router) · TypeScript · React 19 · Tailwind CSS 4 ·
-PostgreSQL on Neon · Drizzle ORM · Zod · ExcelJS · decimal.js · Vitest · Vercel
+Next.js 15 (App Router) · React 19 · TypeScript · Tailwind CSS 4 ·
+Neon PostgreSQL · Drizzle ORM · ExcelJS · decimal.js · Vitest
 
 ## Getting started
 
 ```bash
-npm install
+npm ci
 cp .env.example .env.local     # fill in DATABASE_URL and AUTH_SECRET
-npm run db:migrate             # creates the schema and seeds programs/rates
+npm run db:migrate
 npm run dev
 ```
 
-## Commands
+## Scripts
 
-| Command | What it does |
+| Command | Does |
 | --- | --- |
-| `npm run dev` | Local development server |
-| `npm run build` | Production build (regenerates embedded migrations first) |
+| `npm run dev` | Development server |
+| `npm run build` | Production build (embeds migrations first) |
 | `npm run lint` | ESLint, zero warnings tolerated |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm test` | Vitest suite |
-| `npm run db:generate` | Regenerate SQL from `src/lib/db/schema.ts` |
-| `npm run db:migrate` | Apply migrations from a machine that can reach Neon |
+| `npm test` | Vitest. Integration suites run only when `TEST_DATABASE_URL` is set, and are visibly skipped otherwise. |
+| `npm run db:migrate` | Apply migrations directly |
+| `npm run db:generate` | Generate a migration from the Drizzle schema |
 
-## Money and hours
+### Running the integration tests
 
-No authoritative financial value is ever a JavaScript number. Money is stored as
-`numeric(14,4)` and hours as `numeric(10,4)`; both arrive from Drizzle as
-strings and are handled with `decimal.js` in between. `Number()` appears only
-where a value is being turned into a progress-bar width.
+They exercise the real SQL against a real PostgreSQL — no mocks.
 
-Authorizations are measured in HOURS. Dollar figures are derived from hours and
-the applicable internal rate, never the other way round.
+```bash
+createdb ahivim_test
+TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/ahivim_test npm test
+```
+
+## The rules that matter
+
+**Money is never a JavaScript float.** Every authoritative amount and hour is a
+`Decimal` (`src/lib/money.ts`). PostgreSQL `numeric` values arrive as strings
+and stay strings at the boundary. `Number` is used only for presentation.
+
+**Internal conversion is a ratio applied to the amount**, not a rebuilt
+`hours × internal rate`. On the agency-rate ladder: Com Hab × 21/25; Respite,
+Day Hab and Supplemental Group Day Hab × 17/19. Self-hire rows never convert.
+Rebuilding from the base rate instead of scaling understated the internal total
+by $261,818.77 before this was corrected.
+
+**Group services divide the money, not the hours.** For a 13-hour session with
+three individuals at a $51 combined rate: each individual is credited the full
+13 hours and a $17 rate portion, each allocation is $221, and the combined
+amount stays $663. Check number alone never defines a group — detection uses a
+composite signature of employee, program, check number, both period dates,
+hours and combined rate, and a bucket becomes a group only after six
+validations pass.
+
+**Cuts are sequential.** The second cut is taken from the balance after the
+first, not from gross. Employee cash is the balance after the second cut minus
+the third.
+
+**Imported values are never silently replaced.** A Self-Hire Respite row at $23
+where the schedule says $18 is preserved exactly, recorded as a rate exception
+with its variance and direction, and still imported.
+
+**Duplicate identity is business identity.** Fingerprints are built from
+normalized names, program, check number and date, period dates, hours, rate and
+amount — never from a database UUID, which does not exist on a first import and
+does exist afterwards. `tests/integration/import-commit.test.ts` commits a
+workbook, re-imports the same data, and proves no duplicate transaction is
+created.
 
 ## Documentation
 
-- `docs/handoff-project-2.md` — verified workbook structure, reconciliation
-  result, open questions and next steps
+- `docs/deployment.md` — environment variables, migrations, first administrator
+- `docs/authentication.md` — where authority lives, passwords, sessions, roles
+- `docs/handoff-project-2.md` — verified findings from the source workbook
 
-## Privacy
-
-Participant and employee names, check numbers and payroll figures never appear
-in this repository, in test fixtures, or in application logs. `.gitignore`
-blocks `*.xlsx`, `*.xls`, `*.xlsm` and `*.csv` outright.
+Real payroll workbooks are never committed; `.gitignore` excludes every
+spreadsheet format.
