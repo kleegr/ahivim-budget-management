@@ -1,44 +1,67 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runMigrations, ledgerExists, listTables } from "@/lib/db/migrate";
 import { timingSafeEqual } from "node:crypto";
+import { runMigrations, listTables } from "@/lib/db/migrate";
+import { apiUser } from "@/lib/auth/session";
+import { getPool } from "@/lib/db";
+import { writeAudit } from "@/lib/auth/users";
+import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 /**
- * Runs outstanding migrations against the configured database.
+ * Apply outstanding migrations.
  *
- * Authorisation, in order:
- *   1. the MIGRATION_TOKEN header, or
- *   2. a ONE-TIME first-run bootstrap, permitted only while the migration
- *      ledger table does not yet exist AND no MIGRATION_TOKEN is configured.
+ * Authorisation is now one of exactly two things:
+ *   1. a signed-in administrator, or
+ *   2. the MIGRATION_TOKEN header, for a database that has no administrator
+ *      yet (a brand-new deployment) or for automated deploys.
  *
- * The bootstrap path closes permanently the moment the ledger is created, so it
- * cannot be replayed. It exists because the very first migration has to run
- * before any administrator account can exist. Set MIGRATION_TOKEN in the
- * deployment environment to disable it entirely.
+ * The previous revision also allowed an UNAUTHENTICATED "first run" call while
+ * the migration ledger did not exist. On a publicly reachable deployment that
+ * is a race anyone can win, so it has been removed. A brand-new database is
+ * initialised either by setting MIGRATION_TOKEN or by running
+ * `npm run db:migrate` against it directly.
+ *
+ * The migration runner itself is idempotent: each file is applied once, inside
+ * its own transaction, recorded in _ahivim_migrations with a checksum, and
+ * skipped on every later run.
  */
 export async function POST(request: NextRequest) {
+  const origin = sameOriginOrFail(request);
+  if (origin) return origin;
+
   const configuredToken = process.env.MIGRATION_TOKEN?.trim();
   const providedToken = request.headers.get("x-migration-token")?.trim();
 
   let authorisedBy: string;
+  let actorId: string | null = null;
 
   if (configuredToken && providedToken && safeEqual(configuredToken, providedToken)) {
     authorisedBy = "migration_token";
-  } else if (!configuredToken && !(await ledgerExists())) {
-    authorisedBy = "first_run_bootstrap";
   } else {
-    return NextResponse.json(
-      { ok: false, reason: "Not authorised. Send a valid x-migration-token header." },
-      { status: 401 },
-    );
+    const user = await apiUser("admin").catch(() => null);
+    if (!user) {
+      return jsonError(
+        "Not authorised. Sign in as an administrator, or send a valid x-migration-token header.",
+        401,
+      );
+    }
+    authorisedBy = "admin_session";
+    actorId = user.id;
   }
 
   try {
     const result = await runMigrations();
     const tables = await listTables();
+    await writeAudit(getPool(), {
+      userId: actorId,
+      action: "migrations_run",
+      entityType: "database",
+      metadata: { authorisedBy, applied: result.applied, skipped: result.skipped },
+    }).catch(() => undefined);
+
     return NextResponse.json({
       ok: true,
       authorisedBy,
@@ -49,15 +72,9 @@ export async function POST(request: NextRequest) {
       tables,
     });
   } catch (error) {
-    return NextResponse.json(
-      {
-        ok: false,
-        reason: (error instanceof Error ? error.message : "Migration failed")
-          .replace(/postgres(?:ql)?:\/\/[^\s"']+/gi, "[connection string redacted]")
-          .slice(0, 500),
-      },
-      { status: 500 },
-    );
+    return NextResponse.json({ ok: false, reason: redactError(error, "Migration failed") }, {
+      status: 500,
+    });
   }
 }
 
