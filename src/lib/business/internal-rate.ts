@@ -1,0 +1,163 @@
+import { dec, toMoney, tryDec, type MoneyInput, Decimal } from "@/lib/money";
+
+/**
+ * Column P — internal amount.
+ *
+ * The workbook's logic, restated:
+ *   1. Pay to blank                        -> no internal amount at all
+ *   2. Pay to is NOT the staffing agency   -> keep the imported gross amount
+ *   3. Pay to IS the agency, Com Hab       -> convert agency rate to internal
+ *   4. Pay to IS the agency, Respite /
+ *      Day Hab / Suppl. Group Day Hab      -> convert agency rate to internal
+ *   5. anything else                       -> keep the imported amount
+ *
+ * Rates are passed in from `program_rate_schedules`, resolved for the
+ * transaction's service date. Nothing here hardcodes 21, 17, 25 or 19.
+ */
+
+export const AGENCY_PAYEE_CANONICAL = "excellent staffing";
+
+/** Normalise a payee string for comparison. Preserves the original elsewhere. */
+export function normalizePayee(payTo: string | null | undefined): string {
+  return (payTo ?? "")
+    .toLowerCase()
+    .replace(/[.,]/g, "")
+    .replace(/\b(llc|inc|corp|co)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function isAgencyPayee(payTo: string | null | undefined): boolean {
+  const n = normalizePayee(payTo);
+  if (!n) return false;
+  return n === AGENCY_PAYEE_CANONICAL || n.startsWith(`${AGENCY_PAYEE_CANONICAL} `);
+}
+
+export interface InternalAmountInput {
+  payTo: string | null | undefined;
+  /** Imported gross amount (column G). */
+  importedAmount: MoneyInput;
+  /** Agency rate for this program on this date, from the rate schedule. */
+  agencyRate: MoneyInput;
+  /** Internal rate for this program on this date, from the rate schedule. */
+  internalRate: MoneyInput;
+  /** Hours, used when the amount must be rebuilt from the rate. */
+  hours?: MoneyInput;
+}
+
+export interface InternalAmountResult {
+  /** null means "no internal amount", matching a blank Pay to. */
+  internalAmount: string | null;
+  /** Which branch of the rule fired — surfaced in the transaction detail view. */
+  rule:
+    | "blank_pay_to"
+    | "non_agency_payee_retain_gross"
+    | "agency_rate_converted"
+    | "retain_imported";
+  appliedInternalRate: string | null;
+  appliedAgencyRate: string | null;
+  /** Ratio used for the conversion, kept for auditability. */
+  conversionFactor: string | null;
+}
+
+export function calculateInternalAmount(input: InternalAmountInput): InternalAmountResult {
+  const payTo = (input.payTo ?? "").trim();
+
+  // 1. Blank Pay to -> no internal amount.
+  if (payTo === "") {
+    return {
+      internalAmount: null,
+      rule: "blank_pay_to",
+      appliedInternalRate: null,
+      appliedAgencyRate: null,
+      conversionFactor: null,
+    };
+  }
+
+  const imported = dec(input.importedAmount);
+
+  // 2. Not the staffing agency -> the gross stands as the internal amount.
+  if (!isAgencyPayee(payTo)) {
+    return {
+      internalAmount: toMoney(imported),
+      rule: "non_agency_payee_retain_gross",
+      appliedInternalRate: null,
+      appliedAgencyRate: null,
+      conversionFactor: null,
+    };
+  }
+
+  const agencyRate = tryDec(input.agencyRate);
+  const internalRate = tryDec(input.internalRate);
+
+  // 3/4. Agency payee with a configured conversion pair -> convert.
+  if (agencyRate && internalRate && !agencyRate.isZero() && !internalRate.isZero()) {
+    const hours = tryDec(input.hours);
+    // Prefer rebuilding from hours x internal rate when hours are trustworthy;
+    // fall back to scaling the imported amount by the rate ratio.
+    const converted =
+      hours && !hours.isZero()
+        ? hours.times(internalRate)
+        : imported.times(internalRate).dividedBy(agencyRate);
+
+    return {
+      internalAmount: toMoney(converted),
+      rule: "agency_rate_converted",
+      appliedInternalRate: toMoney(internalRate),
+      appliedAgencyRate: toMoney(agencyRate),
+      conversionFactor: internalRate.dividedBy(agencyRate).toFixed(8),
+    };
+  }
+
+  // 5. Agency payee but no conversion configured -> keep what was imported.
+  return {
+    internalAmount: toMoney(imported),
+    rule: "retain_imported",
+    appliedInternalRate: internalRate ? toMoney(internalRate) : null,
+    appliedAgencyRate: agencyRate ? toMoney(agencyRate) : null,
+    conversionFactor: null,
+  };
+}
+
+/**
+ * Compare the spreadsheet's own column P value against ours.
+ *
+ * A difference is a WARNING. Neither value is overwritten: both are stored, and
+ * a human decides. Silently trusting either side is how a reconciliation error
+ * becomes permanent.
+ */
+export interface InternalAmountComparison {
+  matches: boolean;
+  difference: string;
+  spreadsheetValue: string | null;
+  applicationValue: string | null;
+}
+
+export function compareInternalAmounts(
+  spreadsheetValue: MoneyInput,
+  applicationValue: string | null,
+  tolerance: MoneyInput = "0.01",
+): InternalAmountComparison {
+  const sheet = tryDec(spreadsheetValue);
+  const app = applicationValue === null ? null : dec(applicationValue);
+
+  if (sheet === null || app === null) {
+    return {
+      // Nothing to disagree about if one side has no value.
+      matches: sheet === null && app === null,
+      difference: "0.0000",
+      spreadsheetValue: sheet ? toMoney(sheet) : null,
+      applicationValue: app ? toMoney(app) : null,
+    };
+  }
+
+  const difference = app.minus(sheet);
+  return {
+    matches: difference.abs().lte(dec(tolerance)),
+    difference: toMoney(difference),
+    spreadsheetValue: toMoney(sheet),
+    applicationValue: toMoney(app),
+  };
+}
+
+export { Decimal };
