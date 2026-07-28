@@ -1,0 +1,123 @@
+@import "tailwindcss";
+
+/*
+  Ahivim Budget Management — visual system.
+
+  This tool replaces a spreadsheet that people have been reading for years, so
+  it borrows the spreadsheet's virtues (density, tabular figures, hairline
+  rules) and adds the one thing a spreadsheet cannot show at a glance: whether
+  an individual's authorized hours are being consumed at the right pace.
+
+  Type pairing: a document serif for headings — this is a ledger, not a
+  dashboard — against a precise sans for every figure, with tabular numerals
+  so columns of money line up on the decimal.
+
+  Colour carries meaning and nothing else. Pace states are the only saturated
+  colours on the page.
+*/
+
+@theme {
+  --color-ink: #101a24;
+  --color-ink-soft: #3d4c5c;
+  --color-ink-faint: #6b7a8c;
+  --color-paper: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-rule: #dde3ea;
+  --color-rule-strong: #c2cbd6;
+
+  --color-primary: #0b3b3c;
+  --color-primary-soft: #e6efee;
+
+  --color-pace-behind: #1d4ed8;
+  --color-pace-on: #0f766e;
+  --color-pace-ahead: #b45309;
+  --color-pace-near: #c2410c;
+  --color-pace-over: #9f1239;
+  --color-pace-idle: #6b7a8c;
+
+  --font-display: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+html {
+  background: var(--color-paper);
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Every figure in this application is a number someone will reconcile. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.display {
+  font-family: var(--font-display);
+  letter-spacing: -0.011em;
+}
+
+/* Small caps eyebrow used to label a data region. */
+.eyebrow {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+
+/*
+  The signature element: a single track carrying two facts at once.
+  The fill is hours used. The notch is where the calendar has reached.
+  If the fill has not caught the notch, the individual is behind pace.
+*/
+.pace-track {
+  position: relative;
+  height: 0.625rem;
+  border-radius: 9999px;
+  background: var(--color-rule);
+  overflow: visible;
+}
+
+.pace-fill {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  border-radius: 9999px;
+  transition: width 400ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pace-notch {
+  position: absolute;
+  top: -0.25rem;
+  bottom: -0.25rem;
+  width: 2px;
+  background: var(--color-ink);
+  border-radius: 1px;
+}
+
+.pace-notch::after {
+  content: "";
+  position: absolute;
+  top: -0.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 4px solid var(--color-ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pace-fill {
+    transition: none;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
