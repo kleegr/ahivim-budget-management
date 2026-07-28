@@ -1,45 +1,44 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 /**
- * Edge middleware: a fast redirect layer only.
+ * Edge middleware: a fast redirect layer, and nothing else.
  *
- * The middleware checks for the *presence* of the session cookie and bounces
- * anonymous visitors to /signin. It deliberately does not try to verify the
- * signature here (the edge runtime lacks the synchronous node:crypto APIs the
- * session module uses). Every server component and API route performs full
- * cryptographic verification and role checks via requireSession/apiSession,
- * so a forged cookie gets past this redirect only to be rejected there.
+ * It checks only for the PRESENCE of the session cookie. It deliberately does
+ * not verify the signature, look anything up, or run any initialisation: the
+ * Edge runtime has no node:crypto and no database, and doing security work in
+ * two places invites the two places to disagree.
+ *
+ * Authority lives server-side. Every page calls requireUser() and every
+ * protected API route calls apiUser(); both verify the cookie signature AND
+ * re-read the account from the database. A forged or stale cookie gets past
+ * this redirect only to be rejected there.
  */
 
 const PUBLIC_PATHS = new Set(["/signin"]);
-const PUBLIC_API_PREFIXES = [
-  "/api/auth/login",
-  "/api/health/",
-  "/api/admin/migrate",
-];
+
+const PUBLIC_API_PREFIXES = ["/api/auth/login", "/api/auth/logout", "/api/health/"];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (PUBLIC_PATHS.has(pathname)) {
-    return NextResponse.next();
-  }
+  if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
   if (PUBLIC_API_PREFIXES.some((p) => pathname === p || pathname.startsWith(p))) {
     return NextResponse.next();
   }
 
-  const hasCookie = request.cookies.has("ahivim_session");
-  if (hasCookie) {
-    return NextResponse.next();
-  }
+  if (request.cookies.has("ahivim_session")) return NextResponse.next();
 
   if (pathname.startsWith("/api/")) {
-    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+    return NextResponse.json({ ok: false, error: "Authentication required" }, { status: 401 });
   }
 
   const signin = request.nextUrl.clone();
   signin.pathname = "/signin";
   signin.search = "";
+  // Bring the visitor back where they were aiming once they have signed in.
+  if (pathname !== "/" && !pathname.startsWith("/_next")) {
+    signin.searchParams.set("next", pathname);
+  }
   return NextResponse.redirect(signin);
 }
 

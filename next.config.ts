@@ -1,36 +1,22 @@
 import type { NextConfig } from "next";
-import path from "node:path";
 
-/** Empty stand-in used only by the Edge bundle; never executed. */
-const NOOP_MODULE = path.resolve("./src/lib/edge-noop.ts");
-
+/**
+ * No webpack overrides.
+ *
+ * An earlier revision replaced every `node:*` import in the Edge bundle with a
+ * stub, because instrumentation.ts was compiled for the Edge runtime and
+ * transitively pulled in node:crypto. That produced a build full of
+ * "'timingSafeEqual' is not exported from 'node:crypto'" warnings which looked
+ * like a broken crypto import but were an artefact of the stub.
+ *
+ * The bootstrap hook has been removed instead, so nothing Node-only is reachable
+ * from the Edge graph. src/middleware.ts imports only next/server; every piece
+ * of cryptography runs in Node-runtime route handlers and server components.
+ */
 const nextConfig: NextConfig = {
   serverExternalPackages: ["exceljs", "@neondatabase/serverless", "ws"],
   eslint: { ignoreDuringBuilds: false },
-
-  /**
-   * Next.js compiles `instrumentation.ts` for BOTH the Node and Edge runtimes.
-   * Our register() hook returns immediately unless NEXT_RUNTIME is "nodejs"
-   * and only then dynamically imports the migration runner and the password
-   * hasher — but webpack still tries to resolve those imports while building
-   * the Edge bundle, and the Edge runtime has no `node:crypto`.
-   *
-   * Aliasing those Node built-ins away in the Edge build lets that bundle
-   * compile. Nothing reaches them at runtime because of the NEXT_RUNTIME
-   * guard, and full session verification happens in Node-runtime server
-   * components and route handlers, never in Edge middleware.
-   */
-  webpack: (config, { nextRuntime, webpack }) => {
-    if (nextRuntime === "edge") {
-      config.plugins = config.plugins ?? [];
-      config.plugins.push(
-        new webpack.NormalModuleReplacementPlugin(/^node:/, (resource: { request: string }) => {
-          resource.request = NOOP_MODULE;
-        }),
-      );
-    }
-    return config;
-  },
+  typescript: { ignoreBuildErrors: false },
 };
 
 export default nextConfig;
