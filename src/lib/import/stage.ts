@@ -279,11 +279,18 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
     }
 
     // --- duplicates --------------------------------------------------------
+    //
+    // The identity keys on NORMALIZED NAMES, never on database ids. On a first
+    // import nobody is canonical yet, so a matched id is null; on a second
+    // import of the same workbook the same people now have ids. Keying on the
+    // id would change the fingerprint between those two runs and let an
+    // entire re-imported workbook through as new. The normalized name is
+    // stable, so the fingerprint is too.
     const identity: TransactionIdentity = {
       checkNumber: p.checkNumber || null,
       checkDate: p.checkDate || null,
-      employeeKey: employee?.matchedId ?? employee?.normalizedName ?? null,
-      individualKey: individual.matchedId ?? individual.normalizedName,
+      employeeKey: employee?.normalizedName ?? null,
+      individualKey: individual.normalizedName,
       programKey: program.code ?? program.normalizedLabel,
       periodBegin: p.periodBegin || null,
       periodEnd: p.periodEnd || null,
