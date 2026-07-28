@@ -9,6 +9,11 @@ import { signSession, readSession, type SessionPayload } from "./crypto";
  *   viewer   read every screen and report
  *   manager  viewer + upload, commit/discard imports, resolve warnings
  *   admin    manager + user management, rate configuration, migrations
+ *
+ * The signed cookie is only the first half of the check. Everything that
+ * matters re-reads the user from the database (see requireUser / apiUser), so
+ * a deactivated account or a demoted role takes effect on the next request
+ * instead of at the end of the cookie's 12 hours.
  */
 
 export const SESSION_COOKIE = "ahivim_session";
@@ -22,6 +27,12 @@ export function roleAtLeast(actual: string | undefined, required: Role): boolean
   if (!actual || !(actual in RANK)) return false;
   return RANK[actual as Role] >= RANK[required];
 }
+
+export const ROLE_LABELS: Record<Role, string> = {
+  admin: "Administrator",
+  manager: "Manager",
+  viewer: "Viewer",
+};
 
 export async function createSessionCookie(user: {
   id: string;
@@ -46,7 +57,13 @@ export async function createSessionCookie(user: {
 
 export async function clearSessionCookie(): Promise<void> {
   const store = await cookies();
-  store.set(SESSION_COOKIE, "", { httpOnly: true, path: "/", maxAge: 0 });
+  store.set(SESSION_COOKIE, "", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+  });
 }
 
 export async function currentSession(): Promise<SessionPayload | null> {
@@ -54,17 +71,65 @@ export async function currentSession(): Promise<SessionPayload | null> {
   return readSession(store.get(SESSION_COOKIE)?.value);
 }
 
-/** For pages: redirect to sign-in when not authenticated / under-privileged. */
-export async function requireSession(minimum: Role = "viewer"): Promise<SessionPayload> {
+export interface AuthenticatedUser {
+  id: string;
+  email: string;
+  displayName: string;
+  role: Role;
+}
+
+/**
+ * Authoritative check. Verifies the cookie signature and expiry, then confirms
+ * the account still exists, is still active, and still holds the role the
+ * cookie claims. Returns null rather than throwing so callers choose their own
+ * failure mode (redirect for pages, status code for APIs).
+ */
+export async function currentUser(): Promise<AuthenticatedUser | null> {
   const session = await currentSession();
-  if (!session) redirect("/signin");
-  if (!roleAtLeast(session.role, minimum)) redirect("/");
-  return session;
+  if (!session) return null;
+
+  const { getPool } = await import("@/lib/db");
+  const { findUserById } = await import("./users");
+
+  let record;
+  try {
+    record = await findUserById(getPool(), session.userId);
+  } catch {
+    return null;
+  }
+  if (!record || !record.isActive) return null;
+
+  return {
+    id: record.id,
+    email: record.email,
+    displayName: record.displayName,
+    role: record.role,
+  };
+}
+
+/** For pages: redirect to sign-in when not authenticated / under-privileged. */
+export async function requireUser(minimum: Role = "viewer"): Promise<AuthenticatedUser> {
+  const user = await currentUser();
+  if (!user) redirect("/signin");
+  if (!roleAtLeast(user.role, minimum)) redirect("/dashboard?denied=1");
+  return user;
 }
 
 /** For API routes: null means the caller must return 401/403 itself. */
-export async function apiSession(minimum: Role = "viewer"): Promise<SessionPayload | null> {
-  const session = await currentSession();
-  if (!session || !roleAtLeast(session.role, minimum)) return null;
-  return session;
+export async function apiUser(minimum: Role = "viewer"): Promise<AuthenticatedUser | null> {
+  const user = await currentUser();
+  if (!user || !roleAtLeast(user.role, minimum)) return null;
+  return user;
+}
+
+/**
+ * Only relative, single-slash paths are accepted as a post-sign-in
+ * destination, so `?next=` cannot be used to bounce a signed-in user to
+ * another site.
+ */
+export function safeRedirectPath(value: string | null | undefined, fallback = "/dashboard"): string {
+  if (!value) return fallback;
+  if (!value.startsWith("/") || value.startsWith("//") || value.startsWith("/\\")) return fallback;
+  if (value.startsWith("/signin")) return fallback;
+  return value;
 }
