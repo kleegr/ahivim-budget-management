@@ -24,8 +24,10 @@ Neither endpoint returns a secret value; both are readable without a session so
 a deployment check can call them.
 
 - `GET /api/health/env` — which variables are **present**, never their values.
-- `GET /api/health/db` — live connectivity, applied migration count, table list
-  and row counts.
+- `GET /api/health/db` — live connectivity, latency, whether migrations are
+  applied, and the table count. The table NAMES and per-table ROW COUNTS are a
+  map of the schema and of how much data sits in each part of it, so they are
+  returned only to a signed-in administrator.
 
 ## Migrations
 
