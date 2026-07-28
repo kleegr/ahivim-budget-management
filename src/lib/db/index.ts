@@ -18,6 +18,22 @@ if (!globalThis.WebSocket) {
   neonConfig.webSocketConstructor = ws;
 }
 
+/**
+ * Local development and end-to-end testing against a plain PostgreSQL.
+ *
+ * The Neon driver speaks the Postgres wire protocol over a WebSocket, so it
+ * cannot talk to a local server directly. Setting NEON_WS_PROXY to a
+ * host:port running a WebSocket-to-TCP bridge points it at one instead.
+ *
+ * Unset in production, where this block does nothing at all. It exists so the
+ * built application can be exercised over real HTTP without a cloud database.
+ */
+if (process.env.NEON_WS_PROXY) {
+  neonConfig.wsProxy = process.env.NEON_WS_PROXY;
+  neonConfig.useSecureWebSocket = false;
+  neonConfig.pipelineConnect = false;
+}
+
 /** Candidate variable names, in priority order. */
 export const CONNECTION_ENV_CANDIDATES = [
   "DATABASE_URL",

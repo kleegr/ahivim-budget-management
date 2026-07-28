@@ -13,7 +13,8 @@
     "db:embed": "tsx scripts/embed-migrations.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "prebuild": "tsx scripts/embed-migrations.ts",
-    "pretest": "tsx scripts/embed-migrations.ts"
+    "pretest": "tsx scripts/embed-migrations.ts",
+    "dev:ws-proxy": "tsx scripts/ws-proxy.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",

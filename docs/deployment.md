@@ -10,6 +10,7 @@
 | `BOOTSTRAP_ADMIN_PASSWORD` | first deploy only | Password of the first administrator, minimum 10 characters. |
 | `MIGRATION_TOKEN` | optional | Allows `POST /api/admin/migrate` without a signed-in administrator. Needed only for a database that has no administrator yet, or for automated deploys. |
 | `MAX_UPLOAD_BYTES` | optional | Upload ceiling in bytes. Defaults to 20 MiB. |
+| `NEON_WS_PROXY` | local dev only | `host:port` of a WebSocket-to-TCP bridge, so the Neon driver can reach a local PostgreSQL. Never set in production. |
 
 Generate a secret with:
 
@@ -74,3 +75,25 @@ logged, or returned in a response.
 than from dashboard state. `npm run build` runs `prebuild`, which embeds the
 SQL migration files into `src/lib/db/migrations.generated.ts`; running
 `next build` directly would skip that step.
+
+## Running against a local PostgreSQL
+
+The Neon driver speaks the Postgres wire protocol over a WebSocket and cannot
+open a socket to a local server. `scripts/ws-proxy.ts` bridges the two, which
+lets the real build run against a local database:
+
+```bash
+createdb ahivim_dev
+npm run dev:ws-proxy          # listens on 5480
+
+DATABASE_URL=postgres://postgres@127.0.0.1:5432/ahivim_dev \
+NEON_WS_PROXY=127.0.0.1:5480 npm run db:migrate
+
+DATABASE_URL=postgres://postgres@127.0.0.1:5432/ahivim_dev \
+NEON_WS_PROXY=127.0.0.1:5480 \
+AUTH_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
+BOOTSTRAP_ADMIN_EMAIL=you@example.com BOOTSTRAP_ADMIN_PASSWORD=a-long-password \
+npm run dev
+```
+
+`NEON_WS_PROXY` is unset in production, where `src/lib/db/index.ts` ignores it.
