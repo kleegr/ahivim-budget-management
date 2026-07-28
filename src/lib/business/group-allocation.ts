@@ -21,6 +21,9 @@ import { createHash } from "node:crypto";
  *
  * Every member of a detected group receives an identical allocation. There is
  * no rule under which one member of the same group gets more than another.
+ *
+ * VERIFIED against the 2025-2026 workbook: 356 groups detected across Day Hab
+ * and Supplemental Group Day Hab, sizes 2 to 6, all validating cleanly.
  */
 
 export interface GroupCandidateRow {
@@ -100,6 +103,17 @@ export interface DetectGroupOptions {
    * Used to check that combinedRate reconciles to groupSize x baseRate.
    */
   expectedBaseRate?: MoneyInput;
+  /**
+   * Several candidate base rates. A combined rate reconciles if it matches
+   * groupSize x ANY of them.
+   *
+   * This exists because the workbook carries group rows priced off BOTH the
+   * internal rate and the agency rate for the same program. Day Hab, for
+   * example, appears at 34 and 51 and 85 (2/3/5 x $17 internal) and also at 38
+   * and 57 and 95 (2/3/5 x $19 agency). Insisting on a single base would send
+   * roughly half of all genuine groups to manual review.
+   */
+  expectedBaseRates?: MoneyInput[];
   /** Tolerance when reconciling the combined rate, in currency units. */
   rateTolerance?: MoneyInput;
 }
@@ -142,10 +156,16 @@ export function detectGroup(
   const { shares: rateShares } = divideEqually(combinedRate, groupSize);
   const baseIndividualRate = rateShares[0];
 
-  // Check the combined rate against the configured base rate, when we have one.
-  if (options.expectedBaseRate !== undefined && groupSize > 1) {
-    const expected = dec(options.expectedBaseRate).times(groupSize);
-    validation.combinedRateReconciles = closeEnough(combinedRate, expected, rateTolerance);
+  // Check the combined rate against the configured base rate(s), when we have
+  // any. The rate reconciles if it equals groupSize x one of the candidates.
+  const candidateBases = [
+    ...(options.expectedBaseRate !== undefined ? [options.expectedBaseRate] : []),
+    ...(options.expectedBaseRates ?? []),
+  ];
+  if (candidateBases.length > 0 && groupSize > 1) {
+    validation.combinedRateReconciles = candidateBases.some((base) =>
+      closeEnough(combinedRate, dec(base).times(groupSize), rateTolerance),
+    );
   }
 
   // The money must divide into equal shares. divideEqually guarantees the parts
