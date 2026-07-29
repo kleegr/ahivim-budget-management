@@ -2,6 +2,7 @@ import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
 import { listUsers } from "@/lib/auth/users";
 import { listPrograms, listAudit } from "@/lib/data/app-queries";
+import { listProgramRules } from "@/lib/manage/program-rules";
 import {
   Card, Table, Th, Td, Tr, Money, EmptyState, ErrorPanel, PageHeader, Badge, Plain,
 } from "@/components/ui";
@@ -9,6 +10,7 @@ import { CreateButton, ActionButton, Field, SelectField, TextAreaField } from "@
 import PasswordForm from "@/components/password-form";
 import ApplyMigrations from "@/components/manage/apply-migrations";
 import UserAdmin from "@/components/user-admin";
+import ProgramRules from "@/components/settings/program-rules";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings — Ahivim Budget Management" };
@@ -20,6 +22,7 @@ export default async function SettingsPage() {
   const result = await withDb(async (pool) => ({
     users: isAdmin ? await listUsers(pool) : [],
     programs: await listPrograms(pool),
+    programRules: isAdmin ? await listProgramRules(pool) : [],
     audit: isAdmin ? await listAudit(pool, 40) : [],
   }));
 
@@ -165,6 +168,8 @@ export default async function SettingsPage() {
                 </Table>
               )}
             </Card>
+
+            {isAdmin ? <ProgramRules programs={result.data.programRules} /> : null}
 
             {isAdmin ? (
               <>
