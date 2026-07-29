@@ -3,6 +3,7 @@ import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
 import { listIndividuals } from "@/lib/data/queries";
 import { getReconciliation, listPrograms, getPortfolioForecast } from "@/lib/data/app-queries";
+import { REPORTS } from "@/lib/data/report-queries";
 import {
   Card, Table, Th, Td, Tr, Money, EmptyState, ErrorPanel, PageHeader, Badge, Plain,
 } from "@/components/ui";
@@ -10,6 +11,18 @@ import { formatHours, formatPercent } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Reports — Ahivim Budget Management" };
+
+// The order the hub presents the reports in.
+const REPORT_ORDER = [
+  "budget-utilization",
+  "agency-earnings",
+  "employee-payable",
+  "program-totals",
+  "expiring-authorizations",
+  "missing-config",
+  "unbilled-schedules",
+  "unscheduled-billing",
+];
 
 export default async function ReportsPage() {
   await requireUser("viewer");
@@ -26,11 +39,51 @@ export default async function ReportsPage() {
       <PageHeader
         eyebrow="Analysis"
         title="Reports"
-        description="Utilization by individual, reconciliation of every committed batch, and the effective-dated rate schedule the figures were computed from."
+        description="Pick a report to filter it on screen and export the exact figures to CSV or Excel. Every money column stays separate — agency gross, internal, agency additional and employee payment are never merged."
       />
 
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {REPORT_ORDER.map((key) => {
+          const def = REPORTS[key];
+          if (!def) return null;
+          return (
+            <div
+              key={key}
+              className="flex flex-col justify-between rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-4"
+            >
+              <div>
+                <Link href={`/reports/${key}`} className="display text-base font-medium hover:underline">
+                  {def.title}
+                </Link>
+                <p className="mt-1 text-sm text-[var(--color-ink-soft)]">{def.description}</p>
+              </div>
+              <div className="mt-3 flex items-center gap-3 text-sm">
+                <Link href={`/reports/${key}`} className="font-medium text-[var(--color-primary)] hover:underline">
+                  Open report
+                </Link>
+                <span className="text-[var(--color-ink-faint)]">·</span>
+                <Link href={`/api/reports/${key}/export?format=csv`} className="underline underline-offset-2">
+                  CSV
+                </Link>
+                <Link href={`/api/reports/${key}/export?format=xlsx`} className="underline underline-offset-2">
+                  Excel
+                </Link>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-8 mb-4">
+        <h2 className="display text-lg font-medium">Live analysis</h2>
+        <p className="mt-1 max-w-prose text-sm text-[var(--color-ink-soft)]">
+          Portfolio forecast, per-individual utilization, batch reconciliation, and the
+          effective-dated rate schedule the figures are computed from.
+        </p>
+      </div>
+
       {!result.ok ? (
-        <ErrorPanel title="Could not load reports">{result.error}</ErrorPanel>
+        <ErrorPanel title="Could not load analysis">{result.error}</ErrorPanel>
       ) : (
         <div className="space-y-4">
           <Card title="Portfolio forecast" description="Projected exhaustion across every authorization">
