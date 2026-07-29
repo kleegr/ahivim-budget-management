@@ -1,7 +1,10 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
 import { getDashboardData } from "@/lib/data/app-queries";
+import { scheduledTotals } from "@/lib/data/schedule-queries";
+import { dashboardReportMetrics } from "@/lib/data/report-queries";
 import {
   Card,
   StatTile,
@@ -17,10 +20,22 @@ import {
   ButtonLink,
   Plain,
 } from "@/components/ui";
-import { formatHours, formatPercent } from "@/lib/money";
+import { formatHours, formatMoney, formatPercent } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Dashboard — Ahivim Budget Management" };
+
+/** A metric tile that is also a link to the report or list it summarizes. */
+function TileLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <Link
+      href={href}
+      className="block rounded-lg outline-offset-2 transition hover:ring-2 hover:ring-[var(--color-primary-soft)] focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]"
+    >
+      {children}
+    </Link>
+  );
+}
 
 export default async function DashboardPage({
   searchParams,
@@ -29,7 +44,11 @@ export default async function DashboardPage({
 }) {
   const user = await requireUser("viewer");
   const denied = (await searchParams).denied;
-  const result = await withDb(getDashboardData);
+  const result = await withDb(async (pool) => ({
+    dashboard: await getDashboardData(pool),
+    scheduled: await scheduledTotals(pool),
+    metrics: await dashboardReportMetrics(pool),
+  }));
 
   if (!result.ok) {
     return (
@@ -45,15 +64,18 @@ export default async function DashboardPage({
     );
   }
 
-  const d = result.data;
+  const d = result.data.dashboard;
+  const scheduled = result.data.scheduled;
+  const m = result.data.metrics;
   const nothingImported = d.counts.transactions === 0;
+  const missingConfig = m.counts.missingRates + m.counts.missingAssignments;
 
   return (
     <>
       <PageHeader
         eyebrow="Overview"
         title="Dashboard"
-        description={`Signed in as ${user.displayName}. Every figure below is read from the operational database.`}
+        description={`Signed in as ${user.displayName}. Every figure below is read from the operational database, and every tile links to the report or list behind it.`}
         action={
           user.role !== "viewer" ? (
             <ButtonLink href="/imports" variant="primary">
@@ -82,80 +104,187 @@ export default async function DashboardPage({
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatTile
-          label="Agency gross"
-          value={`$${Number(d.totals.agencyGross).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-          hint={`${d.counts.transactions.toLocaleString()} transactions`}
-        />
-        <StatTile
-          label="Internal amount"
-          value={`$${Number(d.totals.internalAmount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-          hint="After the agency-rate conversion"
-        />
-        <StatTile
-          label="Agency retention"
-          value={`$${Number(d.totals.agencyRetention).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-          hint="Agency gross less internal amount"
-        />
-        {d.employeeCash.available ? (
+      {/* Money — the four quantities stay separate; nothing is merged. */}
+      <h2 className="eyebrow mb-2">Money</h2>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <TileLink href="/reports/agency-earnings">
           <StatTile
-            label="Employee cash"
-            value={`$${Number(d.employeeCash.amount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-            hint={`Across ${d.employeeCash.accounts} account periods, after the third cut`}
+            label="Total billed (agency gross)"
+            value={formatMoney(d.totals.agencyGross)}
+            hint={`${d.counts.transactions.toLocaleString()} transactions`}
           />
+        </TileLink>
+        <TileLink href="/reports/agency-earnings">
+          <StatTile
+            label="Internal amount"
+            value={formatMoney(d.totals.internalAmount)}
+            hint="After the agency-rate conversion"
+          />
+        </TileLink>
+        {m.agencyAdditional.available ? (
+          <TileLink href="/reports/agency-earnings">
+            <StatTile
+              label="Agency earnings (additional)"
+              value={formatMoney(m.agencyAdditional.amount)}
+              hint="Agency gross less internal amount"
+            />
+          </TileLink>
         ) : (
+          <TileLink href="/reports/agency-earnings">
+            <StatTile
+              label="Agency earnings (additional)"
+              unavailable="The imports on file did not record an agency-additional amount, so this cannot be summed."
+            />
+          </TileLink>
+        )}
+        {m.employeePayable.available ? (
+          <TileLink href="/reports/employee-payable">
+            <StatTile
+              label="Employee payable"
+              value={formatMoney(m.employeePayable.amount)}
+              hint="Total employee payment across all recipients"
+            />
+          </TileLink>
+        ) : (
+          <TileLink href="/reports/employee-payable">
+            <StatTile
+              label="Employee payable"
+              unavailable="The imports on file did not record an employee-payment amount, so this cannot be summed."
+            />
+          </TileLink>
+        )}
+        <TileLink href="/reports/unbilled-schedules">
           <StatTile
-            label="Employee cash"
-            unavailable="No account periods have been configured, so the sequential cuts have nothing to run against."
+            label="Total scheduled (expected internal)"
+            value={formatMoney(scheduled.internal)}
+            hint={`${scheduled.sessions.toLocaleString()} pending sessions · ${formatHours(scheduled.hours)} h`}
           />
+        </TileLink>
+        {d.employeeCash.available ? (
+          <TileLink href="/reports/employee-payable">
+            <StatTile
+              label="Employee cash"
+              value={formatMoney(d.employeeCash.amount)}
+              hint={`Across ${d.employeeCash.accounts} account periods, after the third cut`}
+            />
+          </TileLink>
+        ) : (
+          <TileLink href="/reports/employee-payable">
+            <StatTile
+              label="Employee cash"
+              unavailable="No account periods have been configured, so the sequential cuts have nothing to run against."
+            />
+          </TileLink>
         )}
       </div>
 
-      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {/* Authorization and pace */}
+      <h2 className="eyebrow mt-6 mb-2">Authorization &amp; pace</h2>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {d.authorization.available ? (
           <>
-            <StatTile
-              label="Budget utilization"
-              value={`${d.authorization.utilizationPercent}%`}
-              hint={`${formatHours(d.authorization.usedHours)} of ${formatHours(d.authorization.authorizedHours)} authorized hours`}
-              tone={Number(d.authorization.utilizationPercent) > 100 ? "alert" : "neutral"}
-            />
-            <StatTile
-              label="Remaining authorization"
-              value={`${formatHours(d.authorization.remainingHours)} h`}
-              hint="Authorized hours not yet consumed"
-              tone={Number(d.authorization.remainingHours) < 0 ? "alert" : "good"}
-            />
+            <TileLink href="/reports/budget-utilization">
+              <StatTile
+                label="Budget utilization"
+                value={`${d.authorization.utilizationPercent}%`}
+                hint={`${formatHours(d.authorization.usedHours)} of ${formatHours(d.authorization.authorizedHours)} authorized hours`}
+                tone={Number(d.authorization.utilizationPercent) > 100 ? "alert" : "neutral"}
+              />
+            </TileLink>
+            <TileLink href="/reports/budget-utilization">
+              <StatTile
+                label="Remaining authorization"
+                value={`${formatHours(d.authorization.remainingHours)} h`}
+                hint="Authorized hours not yet consumed"
+                tone={Number(d.authorization.remainingHours) < 0 ? "alert" : "good"}
+              />
+            </TileLink>
           </>
         ) : (
           <>
-            <StatTile
-              label="Budget utilization"
-              unavailable="No authorized hours are recorded. Import the Calculations sheet to establish authorizations."
-            />
-            <StatTile
-              label="Remaining authorization"
-              unavailable="Remaining authorization cannot be computed without authorized hours."
-            />
+            <TileLink href="/reports/budget-utilization">
+              <StatTile
+                label="Budget utilization"
+                unavailable="No authorized hours are recorded. Import the Calculations sheet to establish authorizations."
+              />
+            </TileLink>
+            <TileLink href="/reports/budget-utilization">
+              <StatTile
+                label="Remaining authorization"
+                unavailable="Remaining authorization cannot be computed without authorized hours."
+              />
+            </TileLink>
           </>
         )}
-        <StatTile
-          label="Rows needing review"
-          value={d.counts.reviewRows.toLocaleString()}
-          hint={d.counts.reviewRows ? "Held out of the ledger until resolved" : "Nothing outstanding"}
-          tone={d.counts.reviewRows ? "warn" : "good"}
-        />
-        <StatTile
-          label="Open rate exceptions"
-          value={d.counts.openRateExceptions.toLocaleString()}
-          hint={
-            d.counts.openRateExceptions
-              ? "Imported rates that differ from the schedule"
-              : "Every rate matched its schedule"
-          }
-          tone={d.counts.openRateExceptions ? "warn" : "good"}
-        />
+        <TileLink href="/reports/budget-utilization">
+          <StatTile
+            label="Near exhaustion"
+            value={m.counts.nearExhaustion.toLocaleString()}
+            hint={m.counts.nearExhaustion ? "At or above 90% committed" : "None at or above 90% committed"}
+            tone={m.counts.nearExhaustion ? "warn" : "good"}
+          />
+        </TileLink>
+        <TileLink href="/reports/budget-utilization">
+          <StatTile
+            label="Underutilizing"
+            value={m.counts.underutilizing.toLocaleString()}
+            hint={m.counts.underutilizing ? "Behind pace past mid-period" : "Nobody is behind pace"}
+            tone={m.counts.underutilizing ? "warn" : "good"}
+          />
+        </TileLink>
+        <TileLink href="/reports/expiring-authorizations">
+          <StatTile
+            label="Expiring authorizations"
+            value={m.counts.expiringAuthorizations.toLocaleString()}
+            hint={m.counts.expiringAuthorizations ? "End or renew within 60 days" : "None within 60 days"}
+            tone={m.counts.expiringAuthorizations ? "warn" : "good"}
+          />
+        </TileLink>
+      </div>
+
+      {/* Data quality and reconciliation */}
+      <h2 className="eyebrow mt-6 mb-2">Data quality &amp; reconciliation</h2>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <TileLink href="/imports">
+          <StatTile
+            label="Imports needing review"
+            value={d.counts.reviewRows.toLocaleString()}
+            hint={d.counts.reviewRows ? "Held out of the ledger until resolved" : "Nothing outstanding"}
+            tone={d.counts.reviewRows ? "warn" : "good"}
+          />
+        </TileLink>
+        <TileLink href="/exceptions">
+          <StatTile
+            label="Open rate exceptions"
+            value={d.counts.openRateExceptions.toLocaleString()}
+            hint={d.counts.openRateExceptions ? "Imported rates that differ from the schedule" : "Every rate matched its schedule"}
+            tone={d.counts.openRateExceptions ? "warn" : "good"}
+          />
+        </TileLink>
+        <TileLink href="/reports/unbilled-schedules">
+          <StatTile
+            label="Unbilled schedules"
+            value={m.counts.unbilledSchedules.toLocaleString()}
+            hint={m.counts.unbilledSchedules ? "Planned sessions with no matching transaction" : "Every planned session is matched"}
+            tone={m.counts.unbilledSchedules ? "warn" : "good"}
+          />
+        </TileLink>
+        <TileLink href="/reports/unscheduled-billing">
+          <StatTile
+            label="Unscheduled billing"
+            value={m.counts.unscheduledBilling.toLocaleString()}
+            hint={m.counts.unscheduledBilling ? "Transactions with no planned session" : "Every transaction was planned"}
+            tone={m.counts.unscheduledBilling ? "warn" : "good"}
+          />
+        </TileLink>
+        <TileLink href="/reports/missing-config">
+          <StatTile
+            label="Missing rates / assignments"
+            value={missingConfig.toLocaleString()}
+            hint={`${m.counts.missingRates} missing rate${m.counts.missingRates === 1 ? "" : "s"} · ${m.counts.missingAssignments} missing assignment${m.counts.missingAssignments === 1 ? "" : "s"}`}
+            tone={missingConfig ? "warn" : "good"}
+          />
+        </TileLink>
       </div>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
@@ -195,6 +324,7 @@ export default async function DashboardPage({
         <Card
           title="Reconciliation"
           description="Workbook control totals against what was committed"
+          action={<ButtonLink href="/reports/unscheduled-billing">Reconcile</ButtonLink>}
         >
           {d.reconciliation.length === 0 ? (
             <EmptyState title="Nothing to reconcile yet">
