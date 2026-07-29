@@ -627,3 +627,105 @@ export const assignments = pgTable(
     index("assignments_individual_idx").on(table.individualId),
   ],
 );
+
+/* -------------------------------------------------------------------------- */
+/* Scheduling (Phase 2) — mirror of drizzle/0003_scheduling.sql               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A recurring template. Occurrences are materialised into scheduled_sessions
+ * up front so a single occurrence can be edited or cancelled independently of
+ * the series.
+ */
+export const scheduleSeries = pgTable(
+  "schedule_series",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    employeeId: uuid("employee_id").references(() => employees.id),
+    programId: uuid("program_id").references(() => programs.id),
+    serviceType: text("service_type"),
+    /** 'weekly' | 'daily' */
+    frequency: text("frequency").default("weekly").notNull(),
+    interval: integer("interval").default(1).notNull(),
+    /** JSON array of weekday numbers, 0=Sunday..6=Saturday */
+    weekdays: jsonb("weekdays"),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    startTime: text("start_time"),
+    endTime: text("end_time"),
+    durationHours: numeric("duration_hours", { precision: 10, scale: 4 }),
+    expectedRate: numeric("expected_rate", { precision: 14, scale: 4 }),
+    /** 'active' | 'cancelled' */
+    status: text("status").default("active").notNull(),
+    notes: text("notes"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+);
+
+/**
+ * One planned session on one date. Expected billing mirrors the actual model:
+ * every participant is credited the full session hours; the money divides.
+ * matched_transaction_id / reconciliation_status feed Phase 3 reconciliation.
+ */
+export const scheduledSessions = pgTable(
+  "scheduled_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    seriesId: uuid("series_id").references(() => scheduleSeries.id, { onDelete: "set null" }),
+    employeeId: uuid("employee_id").references(() => employees.id),
+    programId: uuid("program_id").references(() => programs.id),
+    serviceType: text("service_type"),
+    sessionDate: date("session_date").notNull(),
+    startTime: text("start_time"),
+    endTime: text("end_time"),
+    durationHours: numeric("duration_hours", { precision: 10, scale: 4 }).notNull(),
+    isGroup: boolean("is_group").default(false).notNull(),
+    groupSize: integer("group_size").default(1).notNull(),
+    expectedRate: numeric("expected_rate", { precision: 14, scale: 4 }),
+    expectedAgencyGross: numeric("expected_agency_gross", { precision: 14, scale: 4 }),
+    expectedInternalAmount: numeric("expected_internal_amount", { precision: 14, scale: 4 }),
+    expectedEmployeeCost: numeric("expected_employee_cost", { precision: 14, scale: 4 }),
+    /** 'pending' | 'completed' | 'cancelled' | 'no_show' */
+    status: text("status").default("pending").notNull(),
+    overrideReason: text("override_reason"),
+    warnings: jsonb("warnings"),
+    /** 'manual' | 'recurring' */
+    source: text("source").default("manual").notNull(),
+    matchedTransactionId: uuid("matched_transaction_id").references(() => payrollTransactions.id),
+    reconciliationStatus: text("reconciliation_status"),
+    notes: text("notes"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("scheduled_sessions_date_idx").on(table.sessionDate),
+    index("scheduled_sessions_employee_idx").on(table.employeeId, table.sessionDate),
+    index("scheduled_sessions_series_idx").on(table.seriesId),
+  ],
+);
+
+/** One individual's share of a planned session (full hours, divided money). */
+export const scheduledAllocations = pgTable(
+  "scheduled_allocations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    scheduledSessionId: uuid("scheduled_session_id")
+      .notNull()
+      .references(() => scheduledSessions.id, { onDelete: "cascade" }),
+    individualId: uuid("individual_id").notNull().references(() => individuals.id),
+    allocationHours: numeric("allocation_hours", { precision: 10, scale: 4 }).notNull(),
+    allocatedRate: numeric("allocated_rate", { precision: 14, scale: 4 }),
+    allocatedAmount: numeric("allocated_amount", { precision: 14, scale: 4 }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("scheduled_allocations_session_idx").on(table.scheduledSessionId),
+    index("scheduled_allocations_individual_idx").on(table.individualId),
+  ],
+);
