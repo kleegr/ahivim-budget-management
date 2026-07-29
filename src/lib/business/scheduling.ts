@@ -27,6 +27,8 @@ export interface ExpectedBilling {
   agencyGross: string;
   /** Whole-session internal amount (group: summed across members). */
   internalAmount: string;
+  /** Whole-session agency additional = agency gross - internal (0 for self-hire). */
+  agencyAdditional: string;
   /** Per-individual allocation: full hours, one member's share of the money. */
   perIndividual: { hours: string; rate: string; amount: string };
 }
@@ -53,6 +55,9 @@ export function expectedBilling(input: ExpectedBillingInput): ExpectedBilling {
     expectedRate: toMoney(hasAgency ? agencyRate : internalRate),
     agencyGross: toMoney(perAgency.times(size)),
     internalAmount: toMoney(perInternal.times(size)),
+    // Agency additional is what the agency keeps above the internal (employee)
+    // rate. Self-hire has no agency rate, so agency == internal and this is 0.
+    agencyAdditional: toMoney(perAgency.minus(perInternal).times(size)),
     perIndividual: {
       hours: toHours(hours),
       rate: toMoney(internalRate),
