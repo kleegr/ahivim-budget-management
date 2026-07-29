@@ -75,7 +75,7 @@ function FilterField({ spec, value }: { spec: ReportFilterSpec; value: string | 
         <input
           id={spec.key}
           name={spec.key}
-          type={spec.type === "date" ? "date" : "number"}
+          type={spec.type === "date" ? "date" : spec.type === "int" ? "number" : "text"}
           defaultValue={current}
           placeholder={spec.placeholder}
           className={inputClass}
