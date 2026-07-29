@@ -131,6 +131,12 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
 
   let agencyGross = dec(0);
   let internalTotal = dec(0);
+  // Money on rows that are confirmed duplicates of already-committed
+  // transactions. Kept separate so reconciliation can tell a benign re-import
+  // (the workbook is already in the ledger) apart from a genuine shortfall
+  // (rows held for review, or missing).
+  let duplicateAgencyGross = dec(0);
+  let duplicateInternalTotal = dec(0);
   let rateExceptionCount = 0;
   let ambiguousCount = 0;
 
@@ -352,6 +358,11 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
     if (isCountable) {
       agencyGross = agencyGross.plus(dec(p.amount));
       if (internal.internalAmount) internalTotal = internalTotal.plus(dec(internal.internalAmount));
+    } else {
+      duplicateAgencyGross = duplicateAgencyGross.plus(dec(p.amount));
+      if (internal.internalAmount) {
+        duplicateInternalTotal = duplicateInternalTotal.plus(dec(internal.internalAmount));
+      }
     }
 
     // --- status ------------------------------------------------------------
@@ -440,12 +451,39 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
       : closeEnough(internalTotal, wbInternal, "0.05");
 
   const reconciled = agencyGrossMatches === true && internalAmountMatches === true;
-  const note =
-    agencyGrossMatches === null && internalAmountMatches === null
-      ? "No workbook control totals were supplied, so no reconciliation was performed. " +
-        "Totals below are the application's own sums only."
-      : reconciled
-        ? "Application totals agree with the workbook control totals."
+  const bothUnchecked = agencyGrossMatches === null && internalAmountMatches === null;
+
+  // A re-import (whole or partial) is not a reconciliation failure. When the
+  // rows imported now, PLUS the rows skipped because they already exist in the
+  // ledger, together match the workbook, the workbook is fully accounted for —
+  // even though this batch may have written nothing. Only a shortfall that
+  // duplicates do NOT explain (rows held for review, invalid, or genuinely
+  // missing) is worth an "investigate".
+  const confirmedDuplicateRows = staged.filter((r) => r.duplicateStatus === "confirmed").length;
+  const ledgerAgency = agencyGross.plus(duplicateAgencyGross);
+  const ledgerInternal = internalTotal.plus(duplicateInternalTotal);
+  const agencyAccountedFor =
+    wbGross === undefined || wbGross === null ? true : closeEnough(ledgerAgency, wbGross, "0.05");
+  const internalAccountedFor =
+    wbInternal === undefined || wbInternal === null
+      ? true
+      : closeEnough(ledgerInternal, wbInternal, "0.05");
+  const explainedByDuplicates =
+    !reconciled &&
+    !bothUnchecked &&
+    confirmedDuplicateRows > 0 &&
+    agencyAccountedFor &&
+    internalAccountedFor;
+
+  const note = bothUnchecked
+    ? "No workbook control totals were supplied, so no reconciliation was performed. " +
+      "Totals below are the application's own sums only."
+    : reconciled
+      ? "Application totals agree with the workbook control totals."
+      : explainedByDuplicates
+        ? `The workbook's control totals are fully accounted for: rows imported now plus ${confirmedDuplicateRows} ` +
+          "rows that already exist in the ledger from a prior import together match the workbook. " +
+          "The duplicate rows were not re-imported, so no transactions were double-counted."
         : "Application totals DO NOT agree with the workbook control totals. Investigate before relying on this import.";
 
   const counts = {

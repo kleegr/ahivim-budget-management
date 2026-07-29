@@ -316,6 +316,14 @@ suite("Excel import workflow end to end (real PostgreSQL)", () => {
     expect(second.staging.counts.confirmedDuplicates).toBe(ALL_ROWS.length);
     expect(second.staging.counts.valid).toBe(0);
 
+    // A whole-workbook re-import is not a reconciliation failure: nothing new
+    // was imported, but the workbook is fully present in the ledger already.
+    // The note must say so plainly rather than telling the operator to
+    // "investigate" a correct outcome.
+    expect(second.staging.reconciliation.note).not.toMatch(/investigate/i);
+    expect(second.staging.reconciliation.note).toMatch(/fully accounted for/i);
+    expect(second.staging.reconciliation.note).toContain(String(ALL_ROWS.length));
+
     const result = await commit(testPool(), second.fileId, null);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
