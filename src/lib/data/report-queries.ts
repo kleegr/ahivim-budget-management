@@ -48,7 +48,7 @@ export interface ReportTable {
 export interface ReportFilterSpec {
   key: string;
   label: string;
-  type: "date" | "int" | "select";
+  type: "date" | "int" | "select" | "text";
   options?: { value: string; label: string }[];
   placeholder?: string;
   defaultValue?: string;
@@ -662,6 +662,526 @@ export async function dashboardReportMetrics(pool: PgLikePool): Promise<Dashboar
 }
 
 /* -------------------------------------------------------------------------- */
+/* 7. Cuts & monthly calculation                                              */
+/* -------------------------------------------------------------------------- */
+
+export interface CutsMonthlyRow {
+  calculationId: string;
+  individualName: string;
+  programCode: string | null;
+  programName: string | null;
+  annualGross: string | null;
+  monthlyGross: string | null;
+  cut1Amount: string | null;
+  cut2Amount: string | null;
+  clockAdjustment: string | null;
+  finalGross: string | null;
+  finalNet: string | null;
+  afterAll: string | null;
+  spreadsheetValue: string | null;
+  /** spreadsheet value − system After All; null when either is absent. */
+  difference: string | null;
+}
+
+/**
+ * One row per ACTIVE calculation: the whole waterfall (annual/monthly gross,
+ * both cuts, clock adjustment, final gross/net, After All) plus the stored
+ * spreadsheet value and the difference against the system After All. Money is
+ * carried as decimal strings; null figures stay null so the screen shows
+ * "Not available" rather than a fabricated 0.
+ */
+export async function cutsMonthlyReport(
+  pool: PgLikePool,
+  opts: { program?: string } = {},
+): Promise<CutsMonthlyRow[]> {
+  const program = (opts.program ?? "").trim() || null;
+  const { rows } = await pool.query<{
+    calculation_id: string;
+    individual_name: string;
+    program_code: string | null;
+    program_name: string | null;
+    annual_gross: string | null;
+    monthly_gross: string | null;
+    cut1_amount: string | null;
+    cut2_amount: string | null;
+    clock_adjustment: string | null;
+    final_gross: string | null;
+    final_net: string | null;
+    after_all: string | null;
+    spreadsheet_value: string | null;
+    difference: string | null;
+  }>(
+    `SELECT c.id                       AS calculation_id,
+            i.display_name             AS individual_name,
+            p.code                     AS program_code,
+            p.name                     AS program_name,
+            c.annual_gross::text       AS annual_gross,
+            c.monthly_gross::text      AS monthly_gross,
+            c.cut1_amount::text        AS cut1_amount,
+            c.cut2_amount::text        AS cut2_amount,
+            c.clock_adjustment::text   AS clock_adjustment,
+            c.final_gross::text        AS final_gross,
+            c.final_net::text          AS final_net,
+            c.after_all::text          AS after_all,
+            c.spreadsheet_value::text  AS spreadsheet_value,
+            CASE WHEN c.spreadsheet_value IS NOT NULL AND c.after_all IS NOT NULL
+                 THEN (c.spreadsheet_value - c.after_all)::text END AS difference
+     FROM budget_calculations c
+     JOIN individuals i ON i.id = c.individual_id
+     LEFT JOIN programs p ON p.id = c.program_id
+     WHERE c.status = 'active'
+       AND ($1::text IS NULL OR p.code ILIKE '%' || $1 || '%' OR p.name ILIKE '%' || $1 || '%')
+     ORDER BY i.display_name, p.code NULLS FIRST`,
+    [program],
+  );
+  const money = (v: string | null) => (v === null ? null : toMoney(v));
+  return rows.map((r) => ({
+    calculationId: r.calculation_id,
+    individualName: r.individual_name,
+    programCode: r.program_code,
+    programName: r.program_name,
+    annualGross: money(r.annual_gross),
+    monthlyGross: money(r.monthly_gross),
+    cut1Amount: money(r.cut1_amount),
+    cut2Amount: money(r.cut2_amount),
+    clockAdjustment: money(r.clock_adjustment),
+    finalGross: money(r.final_gross),
+    finalNet: money(r.final_net),
+    afterAll: money(r.after_all),
+    spreadsheetValue: money(r.spreadsheet_value),
+    difference: money(r.difference),
+  }));
+}
+
+/* -------------------------------------------------------------------------- */
+/* 8. Alias decisions                                                         */
+/* -------------------------------------------------------------------------- */
+
+export interface AliasDecisionRow {
+  sourceText: string;
+  normalizedAlias: string;
+  canonicalName: string;
+  /** 'individual' | 'employee' */
+  kind: string;
+  status: string;
+  approvedBy: string | null;
+  createdAt: string;
+}
+
+/**
+ * Every individual and employee alias in one list: the imported spelling, its
+ * normalized form, the canonical name it resolves to, its kind and status, who
+ * approved it and the date it was created. Filterable by kind and status.
+ */
+export async function aliasDecisionsReport(
+  pool: PgLikePool,
+  opts: { kind?: string; status?: string } = {},
+): Promise<AliasDecisionRow[]> {
+  const kind = opts.kind === "individual" || opts.kind === "employee" ? opts.kind : null;
+  const status = opts.status === "pending" || opts.status === "approved" ? opts.status : null;
+  const { rows } = await pool.query<{
+    source_text: string;
+    normalized_alias: string;
+    canonical_name: string;
+    kind: string;
+    status: string;
+    approved_by: string | null;
+    created_at: string;
+  }>(
+    `SELECT x.source_text, x.normalized_alias, x.canonical_name, x.kind, x.status,
+            x.approved_by, x.created_at
+     FROM (
+       SELECT ia.source_text, ia.normalized_alias, i.display_name AS canonical_name,
+              'individual'::text AS kind, ia.status,
+              u.display_name AS approved_by, ia.created_at::date::text AS created_at
+       FROM individual_aliases ia
+       JOIN individuals i ON i.id = ia.individual_id
+       LEFT JOIN users u ON u.id = ia.approved_by_user_id
+       UNION ALL
+       SELECT ea.source_text, ea.normalized_alias, e.display_name,
+              'employee'::text, ea.status,
+              u.display_name, ea.created_at::date::text
+       FROM employee_aliases ea
+       JOIN employees e ON e.id = ea.employee_id
+       LEFT JOIN users u ON u.id = ea.approved_by_user_id
+     ) x
+     WHERE ($1::text IS NULL OR x.kind = $1)
+       AND ($2::text IS NULL OR x.status = $2)
+     ORDER BY x.kind, x.canonical_name, x.source_text`,
+    [kind, status],
+  );
+  return rows.map((r) => ({
+    sourceText: r.source_text,
+    normalizedAlias: r.normalized_alias,
+    canonicalName: r.canonical_name,
+    kind: r.kind,
+    status: r.status,
+    approvedBy: r.approved_by,
+    createdAt: r.created_at,
+  }));
+}
+
+/* -------------------------------------------------------------------------- */
+/* 9. Audit history                                                           */
+/* -------------------------------------------------------------------------- */
+
+export interface AuditHistoryRow {
+  timestamp: string;
+  actor: string | null;
+  action: string;
+  entityType: string | null;
+  reason: string | null;
+}
+
+/**
+ * The most recent 500 audit entries with the actor's display name and the
+ * reason recorded in the metadata (metadata->>'reason'). An optional exact
+ * `action` filter narrows to a single action.
+ */
+export async function auditHistoryReport(
+  pool: PgLikePool,
+  opts: { action?: string } = {},
+): Promise<AuditHistoryRow[]> {
+  const action = (opts.action ?? "").trim() || null;
+  const { rows } = await pool.query<{
+    ts: string;
+    actor: string | null;
+    action: string;
+    entity_type: string | null;
+    reason: string | null;
+  }>(
+    `SELECT to_char(a.created_at, 'YYYY-MM-DD HH24:MI') AS ts,
+            u.display_name                              AS actor,
+            a.action                                    AS action,
+            a.entity_type                               AS entity_type,
+            a.metadata->>'reason'                       AS reason
+     FROM audit_logs a
+     LEFT JOIN users u ON u.id = a.user_id
+     WHERE ($1::text IS NULL OR a.action = $1)
+     ORDER BY a.created_at DESC
+     LIMIT 500`,
+    [action],
+  );
+  return rows.map((r) => ({
+    timestamp: r.ts,
+    actor: r.actor,
+    action: r.action,
+    entityType: r.entity_type,
+    reason: r.reason,
+  }));
+}
+
+/* -------------------------------------------------------------------------- */
+/* 10. Group activity                                                         */
+/* -------------------------------------------------------------------------- */
+
+export interface GroupServiceRow {
+  serviceSessionId: string;
+  programCode: string | null;
+  programName: string | null;
+  employeeName: string | null;
+  periodBegin: string | null;
+  periodEnd: string | null;
+  groupSize: number;
+  memberCount: number;
+  combinedAmount: string | null;
+  detectionStatus: string;
+}
+export interface ScheduledGroupCountRow {
+  programCode: string | null;
+  programName: string | null;
+  sessionCount: number;
+}
+export interface GroupActivityReport {
+  sessions: GroupServiceRow[];
+  scheduledCounts: ScheduledGroupCountRow[];
+}
+
+/**
+ * Group service sessions (service_sessions with group_size > 1): program,
+ * employee, period, group size, member count from service_allocations, and the
+ * COMBINED amount kept whole — never re-split here. A companion aggregate counts
+ * planned group sessions per program. Filterable by period and program.
+ */
+export async function groupActivityReport(
+  pool: PgLikePool,
+  opts: { from?: string; to?: string; program?: string } = {},
+): Promise<GroupActivityReport> {
+  const from = asDate(opts.from) ?? null;
+  const to = asDate(opts.to) ?? null;
+  const program = (opts.program ?? "").trim() || null;
+
+  const sessionsRes = await pool.query<{
+    service_session_id: string;
+    program_code: string | null;
+    program_name: string | null;
+    employee_name: string | null;
+    period_begin: string | null;
+    period_end: string | null;
+    group_size: number;
+    member_count: string;
+    combined_amount: string | null;
+    group_detection_status: string;
+  }>(
+    `SELECT ss.id                       AS service_session_id,
+            p.code                       AS program_code,
+            p.name                       AS program_name,
+            e.display_name               AS employee_name,
+            ss.period_begin::text        AS period_begin,
+            ss.period_end::text          AS period_end,
+            ss.group_size                AS group_size,
+            (SELECT count(*) FROM service_allocations sa
+              WHERE sa.service_session_id = ss.id)::text AS member_count,
+            ss.combined_amount::text     AS combined_amount,
+            ss.group_detection_status    AS group_detection_status
+     FROM service_sessions ss
+     LEFT JOIN programs p  ON p.id = ss.program_id
+     LEFT JOIN employees e ON e.id = ss.employee_id
+     WHERE ss.group_size > 1
+       AND ($1::date IS NULL OR ss.period_begin >= $1)
+       AND ($2::date IS NULL OR ss.period_begin <= $2)
+       AND ($3::text IS NULL OR p.code ILIKE '%' || $3 || '%' OR p.name ILIKE '%' || $3 || '%')
+     ORDER BY ss.period_begin NULLS LAST, p.code`,
+    [from, to, program],
+  );
+
+  const countsRes = await pool.query<{
+    program_code: string | null;
+    program_name: string | null;
+    session_count: string;
+  }>(
+    `SELECT p.code AS program_code, p.name AS program_name, count(*)::text AS session_count
+     FROM scheduled_sessions s
+     LEFT JOIN programs p ON p.id = s.program_id
+     WHERE (s.is_group = true OR s.group_size > 1)
+       AND s.status IN ('pending', 'completed')
+       AND ($1::date IS NULL OR s.session_date >= $1)
+       AND ($2::date IS NULL OR s.session_date <= $2)
+       AND ($3::text IS NULL OR p.code ILIKE '%' || $3 || '%' OR p.name ILIKE '%' || $3 || '%')
+     GROUP BY p.code, p.name
+     ORDER BY p.code NULLS LAST`,
+    [from, to, program],
+  );
+
+  return {
+    sessions: sessionsRes.rows.map((r) => ({
+      serviceSessionId: r.service_session_id,
+      programCode: r.program_code,
+      programName: r.program_name,
+      employeeName: r.employee_name,
+      periodBegin: r.period_begin,
+      periodEnd: r.period_end,
+      groupSize: Number(r.group_size),
+      memberCount: Number(r.member_count),
+      combinedAmount: r.combined_amount === null ? null : toMoney(r.combined_amount),
+      detectionStatus: r.group_detection_status,
+    })),
+    scheduledCounts: countsRes.rows.map((r) => ({
+      programCode: r.program_code,
+      programName: r.program_name,
+      sessionCount: Number(r.session_count),
+    })),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 11. Actual vs scheduled                                                    */
+/* -------------------------------------------------------------------------- */
+
+export interface ActualVsScheduledRow {
+  individualId: string;
+  individualName: string;
+  programCode: string | null;
+  programName: string | null;
+  scheduledHours: string;
+  scheduledInternal: string;
+  actualHours: string;
+  actualInternal: string;
+  hoursVariance: string;
+  internalVariance: string;
+}
+
+/**
+ * Per individual + program: scheduled hours and expected internal (from
+ * scheduled_allocations on pending/completed sessions) set against actual hours
+ * and internal (from service_allocations), with the variance (actual − scheduled)
+ * for both hours and money. A UNION of the two key sets means a pair that is only
+ * scheduled, or only actual, still appears with real zeros on the missing side.
+ */
+export async function actualVsScheduledReport(
+  pool: PgLikePool,
+  opts: { program?: string } = {},
+): Promise<ActualVsScheduledRow[]> {
+  const program = (opts.program ?? "").trim() || null;
+  const { rows } = await pool.query<{
+    individual_id: string;
+    individual_name: string;
+    program_code: string | null;
+    program_name: string | null;
+    scheduled_hours: string;
+    scheduled_internal: string;
+    actual_hours: string;
+    actual_internal: string;
+    hours_variance: string;
+    internal_variance: string;
+  }>(
+    `WITH sched AS (
+       SELECT sa.individual_id, s.program_id,
+              COALESCE(sum(sa.allocation_hours), 0) AS hours,
+              COALESCE(sum(sa.allocated_amount), 0) AS internal
+       FROM scheduled_allocations sa
+       JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
+       WHERE s.status IN ('pending', 'completed')
+       GROUP BY sa.individual_id, s.program_id
+     ),
+     actual AS (
+       SELECT al.individual_id, ss.program_id,
+              COALESCE(sum(al.allocation_hours), 0) AS hours,
+              COALESCE(sum(al.allocated_amount), 0) AS internal
+       FROM service_allocations al
+       JOIN service_sessions ss ON ss.id = al.service_session_id
+       GROUP BY al.individual_id, ss.program_id
+     ),
+     keys AS (
+       SELECT individual_id, program_id FROM sched
+       UNION
+       SELECT individual_id, program_id FROM actual
+     )
+     SELECT k.individual_id                                    AS individual_id,
+            i.display_name                                     AS individual_name,
+            p.code                                             AS program_code,
+            p.name                                             AS program_name,
+            COALESCE(s.hours, 0)::text                         AS scheduled_hours,
+            COALESCE(s.internal, 0)::text                      AS scheduled_internal,
+            COALESCE(a.hours, 0)::text                         AS actual_hours,
+            COALESCE(a.internal, 0)::text                      AS actual_internal,
+            (COALESCE(a.hours, 0) - COALESCE(s.hours, 0))::text       AS hours_variance,
+            (COALESCE(a.internal, 0) - COALESCE(s.internal, 0))::text AS internal_variance
+     FROM keys k
+     JOIN individuals i ON i.id = k.individual_id
+     LEFT JOIN programs p ON p.id = k.program_id
+     LEFT JOIN sched s ON s.individual_id = k.individual_id
+                      AND s.program_id IS NOT DISTINCT FROM k.program_id
+     LEFT JOIN actual a ON a.individual_id = k.individual_id
+                       AND a.program_id IS NOT DISTINCT FROM k.program_id
+     WHERE ($1::text IS NULL OR p.code ILIKE '%' || $1 || '%' OR p.name ILIKE '%' || $1 || '%')
+     ORDER BY i.display_name, p.code NULLS FIRST`,
+    [program],
+  );
+  return rows.map((r) => ({
+    individualId: r.individual_id,
+    individualName: r.individual_name,
+    programCode: r.program_code,
+    programName: r.program_name,
+    scheduledHours: toHours(r.scheduled_hours),
+    scheduledInternal: toMoney(r.scheduled_internal),
+    actualHours: toHours(r.actual_hours),
+    actualInternal: toMoney(r.actual_internal),
+    hoursVariance: toHours(r.hours_variance),
+    internalVariance: toMoney(r.internal_variance),
+  }));
+}
+
+/* -------------------------------------------------------------------------- */
+/* 12. Utilization outliers                                                   */
+/* -------------------------------------------------------------------------- */
+
+export interface UtilizationOutlierRow {
+  authorizationId: string;
+  individualId: string;
+  individualName: string;
+  programCode: string;
+  programName: string;
+  periodLabel: string;
+  authorizedHours: string;
+  usedHours: string;
+  remainingHours: string;
+  percentUsed: string | null;
+  /** 'underutilizing' | 'overutilizing' */
+  flag: string;
+}
+
+/**
+ * Authorizations that are utilization outliers: OVER-utilizing (> 100% of the
+ * authorized hours already used) or UNDER-utilizing (< 50% used once more than
+ * half the period has elapsed). Used hours come from service_allocations, like
+ * the utilization report. Filterable by flag and program; only outliers appear.
+ */
+export async function utilizationOutliersReport(
+  pool: PgLikePool,
+  opts: { flag?: string; program?: string } = {},
+): Promise<UtilizationOutlierRow[]> {
+  const flag =
+    opts.flag === "underutilizing" || opts.flag === "overutilizing" ? opts.flag : null;
+  const program = (opts.program ?? "").trim() || null;
+  const { rows } = await pool.query<{
+    authorization_id: string;
+    individual_id: string;
+    individual_name: string;
+    program_code: string;
+    program_name: string;
+    period_label: string;
+    authorized_hours: string;
+    used_hours: string;
+    remaining_hours: string;
+    percent_used: string | null;
+    flag: string;
+  }>(
+    `SELECT * FROM (
+       SELECT ba.id                       AS authorization_id,
+              ba.individual_id            AS individual_id,
+              i.display_name              AS individual_name,
+              p.code                      AS program_code,
+              p.name                      AS program_name,
+              bp.label                    AS period_label,
+              ba.authorized_hours::text   AS authorized_hours,
+              used.h::text                AS used_hours,
+              (ba.authorized_hours - used.h)::text AS remaining_hours,
+              CASE WHEN ba.authorized_hours > 0
+                   THEN round(used.h / ba.authorized_hours * 100, 4)::text END AS percent_used,
+              CASE
+                WHEN ba.authorized_hours > 0 AND used.h > ba.authorized_hours
+                  THEN 'overutilizing'
+                WHEN ba.authorized_hours > 0 AND used.h < ba.authorized_hours * 0.5
+                     AND bp.end_date > bp.start_date
+                     AND (CURRENT_DATE - bp.start_date)::numeric / (bp.end_date - bp.start_date) > 0.5
+                  THEN 'underutilizing'
+                ELSE 'ok'
+              END                         AS flag
+       FROM budget_authorizations ba
+       JOIN budget_periods bp ON bp.id = ba.budget_period_id
+       JOIN individuals i     ON i.id = ba.individual_id
+       JOIN programs p        ON p.id = ba.program_id
+       CROSS JOIN LATERAL (
+         SELECT COALESCE(sum(sa.allocation_hours), 0) AS h
+         FROM service_allocations sa
+         JOIN service_sessions ss ON ss.id = sa.service_session_id
+         WHERE sa.individual_id = ba.individual_id AND ss.program_id = ba.program_id
+       ) used
+       WHERE ba.status = 'active' AND bp.status = 'active'
+     ) x
+     WHERE x.flag <> 'ok'
+       AND ($1::text IS NULL OR x.flag = $1)
+       AND ($2::text IS NULL OR x.program_code ILIKE '%' || $2 || '%' OR x.program_name ILIKE '%' || $2 || '%')
+     ORDER BY x.flag, x.individual_name, x.program_code`,
+    [flag, program],
+  );
+  return rows.map((r) => ({
+    authorizationId: r.authorization_id,
+    individualId: r.individual_id,
+    individualName: r.individual_name,
+    programCode: r.program_code,
+    programName: r.program_name,
+    periodLabel: r.period_label,
+    authorizedHours: toHours(r.authorized_hours),
+    usedHours: toHours(r.used_hours),
+    remainingHours: toHours(r.remaining_hours),
+    percentUsed: r.percent_used,
+    flag: r.flag,
+  }));
+}
+
+/* -------------------------------------------------------------------------- */
 /* Report registry: one definition drives the page table AND the export       */
 /* -------------------------------------------------------------------------- */
 
@@ -972,6 +1492,287 @@ export const REPORTS: Record<string, ReportDefinition> = {
             individualName: l.individualName,
             hours: l.hours,
             amount: l.amount,
+          })),
+        },
+      ];
+    },
+  },
+
+  "cuts-monthly": {
+    key: "cuts-monthly",
+    title: "Cuts & monthly calculation",
+    description:
+      "Every active calculation's waterfall — annual and monthly gross, both cuts, the clock adjustment, final gross and net, After All — beside the spreadsheet value and their difference.",
+    filters: [{ key: "program", label: "Program", type: "text", placeholder: "Code or name" }],
+    async run(pool, filters) {
+      const rows = await cutsMonthlyReport(pool, { program: filters.program });
+      return [
+        {
+          key: "cuts-monthly",
+          emptyMessage: "No active calculations match this filter.",
+          columns: [
+            { key: "individualName", header: "Individual", type: "text" },
+            { key: "programCode", header: "Program", type: "text" },
+            { key: "annualGross", header: "Annual gross", type: "money" },
+            { key: "monthlyGross", header: "Monthly gross", type: "money" },
+            { key: "cut1Amount", header: "Cut 1", type: "money" },
+            { key: "cut2Amount", header: "Cut 2", type: "money" },
+            { key: "clockAdjustment", header: "Clock adj.", type: "money" },
+            { key: "finalGross", header: "Final gross", type: "money" },
+            { key: "finalNet", header: "Final net", type: "money" },
+            { key: "afterAll", header: "After All", type: "money" },
+            { key: "spreadsheetValue", header: "Spreadsheet", type: "money" },
+            { key: "difference", header: "Difference", type: "money" },
+          ],
+          rows: rows.map((r) => ({
+            individualName: r.individualName,
+            programCode: r.programCode,
+            annualGross: r.annualGross,
+            monthlyGross: r.monthlyGross,
+            cut1Amount: r.cut1Amount,
+            cut2Amount: r.cut2Amount,
+            clockAdjustment: r.clockAdjustment,
+            finalGross: r.finalGross,
+            finalNet: r.finalNet,
+            afterAll: r.afterAll,
+            spreadsheetValue: r.spreadsheetValue,
+            difference: r.difference,
+          })),
+        },
+      ];
+    },
+  },
+
+  "alias-decisions": {
+    key: "alias-decisions",
+    title: "Alias decisions",
+    description:
+      "Every individual and employee alias — the imported spelling, its normalized form, the canonical name it resolves to, its kind and status, who approved it and when.",
+    filters: [
+      {
+        key: "kind",
+        label: "Kind",
+        type: "select",
+        options: [
+          { value: "", label: "All kinds" },
+          { value: "individual", label: "Individual" },
+          { value: "employee", label: "Employee" },
+        ],
+      },
+      {
+        key: "status",
+        label: "Status",
+        type: "select",
+        options: [
+          { value: "", label: "All statuses" },
+          { value: "pending", label: "Pending" },
+          { value: "approved", label: "Approved" },
+        ],
+      },
+    ],
+    async run(pool, filters) {
+      const rows = await aliasDecisionsReport(pool, { kind: filters.kind, status: filters.status });
+      return [
+        {
+          key: "alias-decisions",
+          emptyMessage: "No aliases match this filter.",
+          columns: [
+            { key: "sourceText", header: "Imported spelling", type: "text" },
+            { key: "normalizedAlias", header: "Normalized", type: "text" },
+            { key: "canonicalName", header: "Canonical", type: "text" },
+            { key: "kind", header: "Kind", type: "text" },
+            { key: "status", header: "Status", type: "text" },
+            { key: "approvedBy", header: "Approved by", type: "text" },
+            { key: "createdAt", header: "Created", type: "date" },
+          ],
+          rows: rows.map((r) => ({
+            sourceText: r.sourceText,
+            normalizedAlias: r.normalizedAlias,
+            canonicalName: r.canonicalName,
+            kind: r.kind,
+            status: r.status,
+            approvedBy: r.approvedBy,
+            createdAt: r.createdAt,
+          })),
+        },
+      ];
+    },
+  },
+
+  "audit-history": {
+    key: "audit-history",
+    title: "Audit history",
+    description:
+      "The most recent 500 audit entries — when, who, which action, on what entity, and the reason recorded with the change. Filter by a specific action.",
+    filters: [{ key: "action", label: "Action", type: "text", placeholder: "e.g. calculation_saved" }],
+    async run(pool, filters) {
+      const rows = await auditHistoryReport(pool, { action: filters.action });
+      return [
+        {
+          key: "audit-history",
+          emptyMessage: "No audit entries match this filter.",
+          columns: [
+            { key: "timestamp", header: "When", type: "text" },
+            { key: "actor", header: "Actor", type: "text" },
+            { key: "action", header: "Action", type: "text" },
+            { key: "entityType", header: "Entity", type: "text" },
+            { key: "reason", header: "Reason", type: "text" },
+          ],
+          rows: rows.map((r) => ({
+            timestamp: r.timestamp,
+            actor: r.actor,
+            action: r.action,
+            entityType: r.entityType,
+            reason: r.reason,
+          })),
+        },
+      ];
+    },
+  },
+
+  "group-activity": {
+    key: "group-activity",
+    title: "Group activity",
+    description:
+      "Group service sessions (more than one individual) with their combined amount kept whole and their member count, plus a count of planned group sessions per program.",
+    filters: [
+      ...DATE_FILTERS,
+      { key: "program", label: "Program", type: "text", placeholder: "Code or name" },
+    ],
+    async run(pool, filters) {
+      const data = await groupActivityReport(pool, {
+        from: filters.from,
+        to: filters.to,
+        program: filters.program,
+      });
+      return [
+        {
+          key: "group-services",
+          title: "Group service sessions",
+          emptyMessage: "No group service sessions in this range.",
+          columns: [
+            { key: "programCode", header: "Program", type: "text" },
+            { key: "employeeName", header: "Employee", type: "text" },
+            { key: "periodBegin", header: "Period begin", type: "date" },
+            { key: "periodEnd", header: "Period end", type: "date" },
+            { key: "groupSize", header: "Group size", type: "int" },
+            { key: "memberCount", header: "Members", type: "int" },
+            { key: "combinedAmount", header: "Combined amount", type: "money" },
+            { key: "detectionStatus", header: "Detection", type: "text" },
+          ],
+          rows: data.sessions.map((r) => ({
+            programCode: r.programCode,
+            employeeName: r.employeeName,
+            periodBegin: r.periodBegin,
+            periodEnd: r.periodEnd,
+            groupSize: r.groupSize,
+            memberCount: r.memberCount,
+            combinedAmount: r.combinedAmount,
+            detectionStatus: r.detectionStatus,
+          })),
+        },
+        {
+          key: "scheduled-group-counts",
+          title: "Planned group sessions",
+          emptyMessage: "No planned group sessions in this range.",
+          columns: [
+            { key: "programCode", header: "Program", type: "text" },
+            { key: "programName", header: "Program name", type: "text" },
+            { key: "sessionCount", header: "Planned group sessions", type: "int" },
+          ],
+          rows: data.scheduledCounts.map((r) => ({
+            programCode: r.programCode,
+            programName: r.programName,
+            sessionCount: r.sessionCount,
+          })),
+        },
+      ];
+    },
+  },
+
+  "actual-vs-scheduled": {
+    key: "actual-vs-scheduled",
+    title: "Actual vs scheduled",
+    description:
+      "Per individual and program: scheduled hours and expected internal set against actual hours and internal, with the variance (actual minus scheduled) for both.",
+    filters: [{ key: "program", label: "Program", type: "text", placeholder: "Code or name" }],
+    async run(pool, filters) {
+      const rows = await actualVsScheduledReport(pool, { program: filters.program });
+      return [
+        {
+          key: "actual-vs-scheduled",
+          emptyMessage: "No scheduled or actual activity to compare.",
+          columns: [
+            { key: "individualName", header: "Individual", type: "text" },
+            { key: "programCode", header: "Program", type: "text" },
+            { key: "scheduledHours", header: "Scheduled hours", type: "hours" },
+            { key: "actualHours", header: "Actual hours", type: "hours" },
+            { key: "hoursVariance", header: "Hours variance", type: "hours" },
+            { key: "scheduledInternal", header: "Scheduled internal", type: "money" },
+            { key: "actualInternal", header: "Actual internal", type: "money" },
+            { key: "internalVariance", header: "Internal variance", type: "money" },
+          ],
+          rows: rows.map((r) => ({
+            individualName: r.individualName,
+            programCode: r.programCode,
+            scheduledHours: r.scheduledHours,
+            actualHours: r.actualHours,
+            hoursVariance: r.hoursVariance,
+            scheduledInternal: r.scheduledInternal,
+            actualInternal: r.actualInternal,
+            internalVariance: r.internalVariance,
+          })),
+        },
+      ];
+    },
+  },
+
+  "utilization-outliers": {
+    key: "utilization-outliers",
+    title: "Utilization outliers",
+    description:
+      "Authorizations under-utilizing (below 50% used past the halfway point of the period) or over-utilizing (over 100% used), with authorized, used and remaining hours and the flag.",
+    filters: [
+      {
+        key: "flag",
+        label: "Flag",
+        type: "select",
+        options: [
+          { value: "", label: "All outliers" },
+          { value: "underutilizing", label: "Under-utilizing" },
+          { value: "overutilizing", label: "Over-utilizing" },
+        ],
+      },
+      { key: "program", label: "Program", type: "text", placeholder: "Code or name" },
+    ],
+    async run(pool, filters) {
+      const rows = await utilizationOutliersReport(pool, {
+        flag: filters.flag,
+        program: filters.program,
+      });
+      return [
+        {
+          key: "utilization-outliers",
+          emptyMessage: "No authorizations are outliers right now.",
+          columns: [
+            { key: "individualName", header: "Individual", type: "text" },
+            { key: "programCode", header: "Program", type: "text" },
+            { key: "periodLabel", header: "Period", type: "text" },
+            { key: "authorizedHours", header: "Authorized", type: "hours" },
+            { key: "usedHours", header: "Used", type: "hours" },
+            { key: "remainingHours", header: "Remaining", type: "hours" },
+            { key: "percentUsed", header: "% used", type: "percent" },
+            { key: "flag", header: "Flag", type: "text" },
+          ],
+          rows: rows.map((r) => ({
+            individualName: r.individualName,
+            programCode: r.programCode,
+            periodLabel: r.periodLabel,
+            authorizedHours: r.authorizedHours,
+            usedHours: r.usedHours,
+            remainingHours: r.remainingHours,
+            percentUsed: r.percentUsed,
+            flag: r.flag,
           })),
         },
       ];
