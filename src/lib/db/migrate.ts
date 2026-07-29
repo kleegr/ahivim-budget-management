@@ -52,7 +52,16 @@ function splitStatements(sql: string): string[] {
   return sql
     .split("--> statement-breakpoint")
     .map((s) => s.trim())
-    .filter((s) => s.length > 0 && !/^(--[^\n]*\n?)+$/.test(s));
+    .filter((s) => {
+      if (s.length === 0) return false;
+      // Keep a chunk only if it contains at least one real (non-comment) line.
+      // Done line-by-line — a regex like /^(--[^\n]*\n?)+$/ backtracks
+      // catastrophically on a long comment header and can hang the runner.
+      return s
+        .split("\n")
+        .map((line) => line.trim())
+        .some((line) => line.length > 0 && !line.startsWith("--"));
+    });
 }
 
 export async function runMigrations(explicitPool?: MaybePool): Promise<MigrationRunResult> {
