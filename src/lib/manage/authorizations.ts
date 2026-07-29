@@ -2,6 +2,7 @@ import type { PgLikePool } from "@/lib/import/commit";
 import { recordChange } from "./audit";
 import { ok, fail, type Result } from "./errors";
 import { toMoney, toHours } from "@/lib/money";
+import { derivePeriodDates, PERIOD_TYPES, type PeriodType } from "./budget-periods";
 
 /**
  * Authorizations, with full revision history.
@@ -21,28 +22,90 @@ export interface BudgetPeriodRecord {
   label: string;
   startDate: string;
   endDate: string;
+  periodType: string;
+  renewalDate: string | null;
   status: string;
   source: string | null;
   notes: string | null;
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+export interface CreateBudgetPeriodInput {
+  individualId: string;
+  label: string;
+  startDate?: string | null;
+  endDate?: string | null;
+  /** 'calendar' | 'rolling' | 'custom'. Defaults to 'custom'. */
+  periodType?: string | null;
+  /** Optional year for a calendar period; taken from startDate when omitted. */
+  year?: number | string | null;
+  renewalDate?: string | null;
+  notes?: string | null;
+  source?: string | null;
+}
+
 export async function createBudgetPeriod(
   pool: PgLikePool,
-  input: { individualId: string; label: string; startDate: string; endDate: string; notes?: string | null; source?: string | null },
+  input: CreateBudgetPeriodInput,
   actorId: string | null,
   reason?: string | null,
 ): Promise<Result<BudgetPeriodRecord>> {
   if (!isUuid(input.individualId)) return fail("validation", "Choose an individual.");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(input.endDate)) {
-    return fail("validation", "Give start and end dates (YYYY-MM-DD).");
+
+  const periodType: PeriodType = PERIOD_TYPES.includes(input.periodType as PeriodType)
+    ? (input.periodType as PeriodType)
+    : "custom";
+
+  const rawStart = input.startDate?.trim() || "";
+  const rawEnd = input.endDate?.trim() || "";
+  const yearRaw = input.year;
+  const year =
+    yearRaw === undefined || yearRaw === null || yearRaw === ""
+      ? null
+      : Number(yearRaw);
+  if (year !== null && !Number.isInteger(year)) {
+    return fail("validation", "Enter a valid four-digit year.");
   }
-  if (input.endDate < input.startDate) return fail("validation", "The end date is before the start date.");
-  const label = input.label?.trim() || `${input.startDate} to ${input.endDate}`;
+
+  // Calendar periods can be created from a year alone; rolling and custom need a
+  // start date. Custom keeps its explicit end date; the others derive one.
+  let startDate: string;
+  let endDate: string;
+  if (periodType === "calendar") {
+    if (year === null && !ISO_DATE.test(rawStart)) {
+      return fail("validation", "Give a year or a start date for the calendar period.");
+    }
+    try {
+      ({ startDate, endDate } = derivePeriodDates("calendar", rawStart || null, year));
+    } catch (e) {
+      return fail("validation", e instanceof Error ? e.message : "Could not derive the period dates.");
+    }
+  } else if (periodType === "rolling") {
+    if (!ISO_DATE.test(rawStart)) return fail("validation", "Give a start date (YYYY-MM-DD).");
+    ({ startDate, endDate } = derivePeriodDates("rolling", rawStart));
+  } else {
+    if (!ISO_DATE.test(rawStart) || !ISO_DATE.test(rawEnd)) {
+      return fail("validation", "Give start and end dates (YYYY-MM-DD).");
+    }
+    startDate = rawStart;
+    endDate = rawEnd;
+  }
+
+  if (endDate < startDate) return fail("validation", "The end date is before the start date.");
+
+  const renewalDate = input.renewalDate?.trim() || null;
+  if (renewalDate !== null && !ISO_DATE.test(renewalDate)) {
+    return fail("validation", "The renewal date must be a date (YYYY-MM-DD).");
+  }
+
+  const label = input.label?.trim() || `${startDate} to ${endDate}`;
 
   const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO budget_periods (individual_id, label, start_date, end_date, notes, source)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-    [input.individualId, label, input.startDate, input.endDate, input.notes?.trim() || null, input.source ?? "manual"],
+    `INSERT INTO budget_periods
+       (individual_id, label, start_date, end_date, period_type, renewal_date, notes, source)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [input.individualId, label, startDate, endDate, periodType, renewalDate, input.notes?.trim() || null, input.source ?? "manual"],
   );
   const period = await getBudgetPeriod(pool, rows[0]!.id);
   await recordChange(pool, {
@@ -60,15 +123,19 @@ export async function getBudgetPeriod(pool: PgLikePool, id: string): Promise<Bud
   if (!isUuid(id)) return null;
   const { rows } = await pool.query<{
     id: string; individual_id: string; label: string; start_date: string; end_date: string;
-    status: string; source: string | null; notes: string | null;
+    period_type: string; renewal_date: string | null; status: string; source: string | null; notes: string | null;
   }>(
     `SELECT id, individual_id, label, start_date::text AS start_date, end_date::text AS end_date,
-            status, source, notes FROM budget_periods WHERE id = $1`,
+            period_type, renewal_date::text AS renewal_date, status, source, notes
+       FROM budget_periods WHERE id = $1`,
     [id],
   );
   const r = rows[0];
   return r
-    ? { id: r.id, individualId: r.individual_id, label: r.label, startDate: r.start_date, endDate: r.end_date, status: r.status, source: r.source, notes: r.notes }
+    ? {
+        id: r.id, individualId: r.individual_id, label: r.label, startDate: r.start_date, endDate: r.end_date,
+        periodType: r.period_type, renewalDate: r.renewal_date, status: r.status, source: r.source, notes: r.notes,
+      }
     : null;
 }
 
@@ -303,10 +370,10 @@ export async function listAuthorizationsForIndividual(
   const [periodsRes, authRes] = await Promise.all([
     pool.query<{
       id: string; individual_id: string; label: string; start_date: string; end_date: string;
-      status: string; source: string | null; notes: string | null;
+      period_type: string; renewal_date: string | null; status: string; source: string | null; notes: string | null;
     }>(
       `SELECT id, individual_id, label, start_date::text AS start_date, end_date::text AS end_date,
-              status, source, notes FROM budget_periods
+              period_type, renewal_date::text AS renewal_date, status, source, notes FROM budget_periods
        WHERE individual_id = $1 ORDER BY start_date DESC`,
       [individualId],
     ),
@@ -315,7 +382,8 @@ export async function listAuthorizationsForIndividual(
   return {
     periods: periodsRes.rows.map((r) => ({
       id: r.id, individualId: r.individual_id, label: r.label, startDate: r.start_date,
-      endDate: r.end_date, status: r.status, source: r.source, notes: r.notes,
+      endDate: r.end_date, periodType: r.period_type, renewalDate: r.renewal_date,
+      status: r.status, source: r.source, notes: r.notes,
     })),
     authorizations: authRes.rows.map(toAuth),
   };

@@ -25,8 +25,11 @@ export async function POST(request: NextRequest) {
       {
         individualId: body.individualId as string,
         label: body.label as string,
-        startDate: body.startDate as string,
-        endDate: body.endDate as string,
+        startDate: (body.startDate ?? null) as string | null,
+        endDate: (body.endDate ?? null) as string | null,
+        periodType: (body.periodType ?? null) as string | null,
+        year: (body.year ?? null) as string | number | null,
+        renewalDate: (body.renewalDate ?? null) as string | null,
         notes: (body.notes ?? null) as string | null,
         source: (body.source ?? null) as string | null,
       },
