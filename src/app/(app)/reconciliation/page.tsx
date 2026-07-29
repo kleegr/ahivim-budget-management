@@ -4,10 +4,11 @@ import {
   reconciliationSummary,
   listScheduledForReconcile,
   listBilledNotScheduled,
+  reconciliationDetail,
 } from "@/lib/manage/reconciliation";
 import { listPrograms } from "@/lib/data/app-queries";
 import { formatHours, formatMoney } from "@/lib/money";
-import { PageHeader, StatTile, ErrorPanel } from "@/components/ui";
+import { PageHeader, StatTile, ErrorPanel, ButtonLink } from "@/components/ui";
 import ReconcileClient from "@/components/reconciliation/reconcile-client";
 
 export const dynamic = "force-dynamic";
@@ -47,6 +48,7 @@ export default async function ReconciliationPage({
     summary: await reconciliationSummary(pool, filter),
     scheduled: await listScheduledForReconcile(pool, filter, onlyUnmatched),
     billed: await listBilledNotScheduled(pool, filter),
+    detail: await reconciliationDetail(pool, filter),
     programs: await listPrograms(pool),
   }));
 
@@ -56,6 +58,7 @@ export default async function ReconciliationPage({
         eyebrow="Actuals"
         title="Reconciliation"
         description="Match planned sessions against imported transactions. Group sessions are surfaced but never auto-matched — their money divides across individuals, so they are matched by hand."
+        action={<ButtonLink href="/reconciliation/groups">Group review</ButtonLink>}
       />
 
       {!result.ok ? (
