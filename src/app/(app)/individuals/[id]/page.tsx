@@ -100,6 +100,30 @@ export default async function IndividualDetailPage({ params }: { params: Promise
     ? null
     : totalUsed.plus(totalScheduled).dividedBy(totalAuthorized);
 
+  // --- Period boundaries: drive the ten-point panel and the expiry banner. ---
+  const elapsed = report?.elapsed ?? null;
+  const reportPeriodId = report?.budgetPeriod?.id ?? null;
+  const activePeriod =
+    (reportPeriodId ? periods.find((p) => p.id === reportPeriodId) : undefined) ??
+    periods.find((p) => p.status === "active") ??
+    null;
+
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  const now = new Date();
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const daysUntil = (iso: string | null | undefined): number | null => {
+    if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+    return Math.round((new Date(`${iso}T00:00:00Z`).getTime() - todayUtc) / MS_PER_DAY);
+  };
+  const boundaries = activePeriod
+    ? ([
+        { kind: "period end", date: activePeriod.endDate, days: daysUntil(activePeriod.endDate) },
+        { kind: "renewal date", date: activePeriod.renewalDate, days: daysUntil(activePeriod.renewalDate) },
+      ].filter((b) => b.days !== null) as { kind: string; date: string; days: number }[])
+    : [];
+  const nearestBoundary = [...boundaries].sort((a, b) => a.days - b.days)[0] ?? null;
+  const showExpiryWarning = nearestBoundary !== null && nearestBoundary.days <= 60;
+
   const editIndividual = canEdit ? (
     <CreateButton
       label="Edit"
@@ -195,6 +219,25 @@ export default async function IndividualDetailPage({ params }: { params: Promise
               this individual&rsquo;s activity until they are resolved.
             </p>
           </ErrorPanel>
+        </div>
+      ) : null}
+
+      {showExpiryWarning && nearestBoundary ? (
+        <div
+          role="status"
+          className="mt-4 rounded-lg border px-5 py-4"
+          style={{ borderColor: "var(--color-pace-near)", background: "#fff8f1" }}
+        >
+          <p className="text-sm font-medium" style={{ color: "var(--color-pace-near)" }}>
+            {nearestBoundary.days < 0
+              ? `This budget period’s ${nearestBoundary.kind} passed ${Math.abs(nearestBoundary.days)} day${Math.abs(nearestBoundary.days) === 1 ? "" : "s"} ago (${nearestBoundary.date}).`
+              : nearestBoundary.days === 0
+                ? `This budget period’s ${nearestBoundary.kind} is today (${nearestBoundary.date}).`
+                : `This budget period’s ${nearestBoundary.kind} is in ${nearestBoundary.days} day${nearestBoundary.days === 1 ? "" : "s"} (${nearestBoundary.date}).`}
+          </p>
+          <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
+            Review the authorizations below and, if services are continuing, create the next budget period.
+          </p>
         </div>
       ) : null}
 
@@ -316,6 +359,148 @@ export default async function IndividualDetailPage({ params }: { params: Promise
       </div>
 
       {/* ---------------------------------------------------------------- */}
+      {/* Ten-point authorization panel                                    */}
+      {/* ---------------------------------------------------------------- */}
+      <div className="mt-6">
+        <Card
+          title="Authorization panel"
+          description="Ten decision points per active authorization. Every figure is computed decimal-safe; scheduled hours are never folded into actual."
+        >
+          {reportPrograms.length === 0 ? (
+            <EmptyState title="No active authorization to analyse">
+              <p>Add a budget period and an authorization below to populate this panel.</p>
+            </EmptyState>
+          ) : (
+            <div className="divide-y divide-[var(--color-rule)]">
+              {reportPrograms.map((program) => {
+                const u = program.utilization;
+                const rate = dec(u.internalRate);
+                const authorizedH = dec(u.authorizedHours);
+                const usedH = dec(u.usedHours);
+                const sched = scheduledByProgram[program.programCode] ?? null;
+                const scheduledH = dec(sched?.hours ?? 0);
+                const scheduledInternal = dec(sched?.internal ?? 0);
+                const remainingAfterH = authorizedH.minus(usedH).minus(scheduledH);
+                const pctUsed = authorizedH.isZero() ? null : usedH.dividedBy(authorizedH);
+                const pctCommitted = authorizedH.isZero()
+                  ? null
+                  : usedH.plus(scheduledH).dividedBy(authorizedH);
+
+                const totalDays = elapsed?.totalDays ?? 0;
+                const elapsedDays = elapsed?.elapsedDays ?? 0;
+                const expectedPerDay = totalDays > 0 ? authorizedH.dividedBy(totalDays) : null;
+                const actualPerDay = elapsedDays > 0 ? usedH.dividedBy(elapsedDays) : null;
+
+                const f = program.forecast;
+                const projectedUnusedH = f && f.available ? dec(f.projectedRemainingHours) : null;
+
+                const points: { n: number; label: string; value: string; sub?: string }[] = [
+                  {
+                    n: 1,
+                    label: "Total available",
+                    value: `${formatHours(authorizedH)} h`,
+                    sub: formatMoney(u.authorizedValue),
+                  },
+                  {
+                    n: 2,
+                    label: "Actual billed",
+                    value: `${formatHours(usedH)} h`,
+                    sub: formatMoney(u.usedValue),
+                  },
+                  {
+                    n: 3,
+                    label: "Scheduled, not billed",
+                    value: `${formatHours(scheduledH)} h`,
+                    sub: scheduledH.isZero() ? "No pending sessions" : `${formatMoney(scheduledInternal)} expected`,
+                  },
+                  {
+                    n: 4,
+                    label: "Remaining after scheduled",
+                    value: `${formatHours(remainingAfterH)} h`,
+                    sub: formatMoney(remainingAfterH.times(rate)),
+                  },
+                  {
+                    n: 5,
+                    label: "% used",
+                    value: pctUsed ? formatPercent(pctUsed) : "—",
+                    sub: "used ÷ authorized",
+                  },
+                  {
+                    n: 6,
+                    label: "% committed",
+                    value: pctCommitted ? formatPercent(pctCommitted) : "—",
+                    sub: "(used + scheduled) ÷ authorized",
+                  },
+                  {
+                    n: 7,
+                    label: "Days remaining",
+                    value: nearestBoundary ? `${Math.max(nearestBoundary.days, 0)}` : "—",
+                    sub: nearestBoundary ? `to ${nearestBoundary.kind} (${nearestBoundary.date})` : "No period end on file",
+                  },
+                  {
+                    n: 8,
+                    label: "Expected pace",
+                    value: actualPerDay ? `${formatHours(actualPerDay)} h/day` : "—",
+                    sub: expectedPerDay
+                      ? `plan ${formatHours(expectedPerDay)} h/day · ${STATUS_LABELS[u.status]}`
+                      : STATUS_LABELS[u.status],
+                  },
+                  {
+                    n: 9,
+                    label: "Projected unused",
+                    value: projectedUnusedH ? `${formatHours(projectedUnusedH)} h` : "—",
+                    sub: projectedUnusedH
+                      ? formatMoney(projectedUnusedH.times(rate))
+                      : "Forecast not available yet",
+                  },
+                  {
+                    n: 10,
+                    label: "Projected exhaustion",
+                    value: f && f.available ? (f.estimatedExhaustionDate ?? "Beyond period end") : "—",
+                    sub:
+                      f && f.available
+                        ? "at the current pace"
+                        : f
+                          ? "forecast unavailable"
+                          : "no budget period",
+                  },
+                ];
+
+                return (
+                  <div key={program.programCode} className="px-5 py-4">
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <p className="text-sm font-medium">{program.programName}</p>
+                      <span className="text-sm" style={{ color: STATUS_COLOR[u.status] }}>
+                        {STATUS_LABELS[u.status]} · {formatPercent(u.usagePercent)} used
+                      </span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                      {points.map((p) => (
+                        <div key={p.n} className="rounded border border-[var(--color-rule)] px-3 py-2">
+                          <p className="eyebrow">
+                            <span className="tnum text-[var(--color-ink-faint)]">{p.n}.</span> {p.label}
+                          </p>
+                          <p className="tnum mt-1 text-base font-semibold">{p.value}</p>
+                          {p.sub ? (
+                            <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">{p.sub}</p>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                    {f && !f.available ? (
+                      <p className="mt-2 text-xs text-[var(--color-ink-faint)]">
+                        Forecast (points 9–10) unavailable: {f.message}
+                      </p>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      </div>
+
+      {/* ---------------------------------------------------------------- */}
       {/* Authorizations                                                   */}
       {/* ---------------------------------------------------------------- */}
       <div className="mt-6">
@@ -335,8 +520,35 @@ export default async function IndividualDetailPage({ params }: { params: Promise
                   fields={
                     <>
                       <Field label="Label" name="label" placeholder="e.g. 2026 plan year" />
-                      <Field label="Start date" name="startDate" type="date" required />
-                      <Field label="End date" name="endDate" type="date" required />
+                      <SelectField
+                        label="Period type"
+                        name="periodType"
+                        defaultValue="custom"
+                        options={[
+                          { value: "custom", label: "Custom range" },
+                          { value: "calendar", label: "Calendar year (Jan 1 – Dec 31)" },
+                          { value: "rolling", label: "Rolling 12 months" },
+                        ]}
+                      />
+                      <Field
+                        label="Start date"
+                        name="startDate"
+                        type="date"
+                        required
+                        help="Rolling starts here; calendar takes the year from this date; custom uses it as the start."
+                      />
+                      <Field
+                        label="End date"
+                        name="endDate"
+                        type="date"
+                        help="Used only for a custom range. Calendar and rolling periods derive their own end date."
+                      />
+                      <Field
+                        label="Renewal date"
+                        name="renewalDate"
+                        type="date"
+                        help="Optional. A renewal (or period end) within 60 days raises an expiration warning."
+                      />
                       <TextAreaField label="Notes" name="notes" />
                     </>
                   }
