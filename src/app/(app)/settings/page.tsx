@@ -5,7 +5,9 @@ import { listPrograms, listAudit } from "@/lib/data/app-queries";
 import {
   Card, Table, Th, Td, Tr, Money, EmptyState, ErrorPanel, PageHeader, Badge, Plain,
 } from "@/components/ui";
+import { CreateButton, ActionButton, Field, SelectField, TextAreaField } from "@/components/manage/client";
 import PasswordForm from "@/components/password-form";
+import ApplyMigrations from "@/components/manage/apply-migrations";
 import UserAdmin from "@/components/user-admin";
 
 export const dynamic = "force-dynamic";
@@ -74,11 +76,44 @@ export default async function SettingsPage() {
               </Card>
             )}
 
-            <Card title="Programs and rates" description="Read-only view of the effective-dated schedule used by every calculation">
+            <Card
+              title="Programs and rates"
+              description={
+                isAdmin
+                  ? "The effective-dated schedule used by every calculation. Add a program, add a rate, or archive one — history is never overwritten."
+                  : "Read-only view of the effective-dated schedule used by every calculation"
+              }
+              action={
+                isAdmin ? (
+                  <CreateButton
+                    label="New program"
+                    title="New program"
+                    endpoint="/api/programs"
+                    size="sm"
+                    fields={
+                      <>
+                        <Field label="Code" name="code" required help="A short code, e.g. RESPITE. Letters, numbers and underscores." />
+                        <Field label="Name" name="name" required />
+                        <SelectField
+                          label="Group capable"
+                          name="isGroupCapable"
+                          defaultValue="false"
+                          options={[
+                            { value: "false", label: "No" },
+                            { value: "true", label: "Yes" },
+                          ]}
+                        />
+                        <TextAreaField label="Notes" name="notes" />
+                      </>
+                    }
+                  />
+                ) : undefined
+              }
+            >
               {result.data.programs.length === 0 ? (
                 <EmptyState title="No programs are configured" />
               ) : (
-                <Table head={<><Th>Code</Th><Th>Program</Th><Th numeric>Agency</Th><Th numeric>Internal</Th><Th>Effective from</Th><Th>Group</Th><Th>Active</Th></>}>
+                <Table head={<><Th>Code</Th><Th>Program</Th><Th numeric>Agency</Th><Th numeric>Internal</Th><Th>Effective from</Th><Th>Group</Th><Th>Active</Th>{isAdmin ? <Th>Actions</Th> : null}</>}>
                   {result.data.programs.map((p) => (
                     <Tr key={p.id}>
                       <Td><code className="text-xs">{p.code}</code></Td>
@@ -88,6 +123,43 @@ export default async function SettingsPage() {
                       <Td><Plain value={p.effectiveFrom} /></Td>
                       <Td>{p.isGroupCapable ? "Yes" : "No"}</Td>
                       <Td>{p.isActive ? "Yes" : "No"}</Td>
+                      {isAdmin ? (
+                        <Td>
+                          <div className="flex flex-wrap gap-2">
+                            <CreateButton
+                              label="Add rate"
+                              title={`Add rate — ${p.code}`}
+                              endpoint={`/api/programs/${p.id}/rates`}
+                              variant="secondary"
+                              size="sm"
+                              fields={
+                                <>
+                                  <Field label="Effective from" name="effectiveFrom" type="date" required />
+                                  <Field label="Internal rate" name="internalRate" type="number" required />
+                                  <Field label="Agency rate" name="agencyRate" type="number" help="Optional." />
+                                  <TextAreaField label="Notes" name="notes" />
+                                </>
+                              }
+                            />
+                            {p.isActive ? (
+                              <ActionButton
+                                label="Archive"
+                                endpoint={`/api/programs/${p.id}`}
+                                body={{ isActive: false }}
+                                withReason
+                              />
+                            ) : (
+                              <ActionButton
+                                label="Restore"
+                                endpoint={`/api/programs/${p.id}`}
+                                body={{ isActive: true }}
+                                withReason
+                                variant="primary"
+                              />
+                            )}
+                          </div>
+                        </Td>
+                      ) : null}
                     </Tr>
                   ))}
                 </Table>
@@ -95,22 +167,27 @@ export default async function SettingsPage() {
             </Card>
 
             {isAdmin ? (
-              <Card title="Audit trail" description="The 40 most recent recorded actions">
-                {result.data.audit.length === 0 ? (
-                  <EmptyState title="No audit entries yet" />
-                ) : (
-                  <Table head={<><Th>When</Th><Th>Action</Th><Th>Entity</Th><Th>Actor</Th></>}>
-                    {result.data.audit.map((a) => (
-                      <Tr key={a.id}>
-                        <Td><span className="text-xs">{new Date(a.createdAt).toLocaleString()}</span></Td>
-                        <Td>{a.action.replace(/_/g, " ")}</Td>
-                        <Td><Plain value={a.entityType} /></Td>
-                        <Td><Plain value={a.actor} /></Td>
-                      </Tr>
-                    ))}
-                  </Table>
-                )}
-              </Card>
+              <>
+                <Card title="Audit trail" description="The 40 most recent recorded actions">
+                  {result.data.audit.length === 0 ? (
+                    <EmptyState title="No audit entries yet" />
+                  ) : (
+                    <Table head={<><Th>When</Th><Th>Action</Th><Th>Entity</Th><Th>Actor</Th></>}>
+                      {result.data.audit.map((a) => (
+                        <Tr key={a.id}>
+                          <Td><span className="text-xs">{new Date(a.createdAt).toLocaleString()}</span></Td>
+                          <Td>{a.action.replace(/_/g, " ")}</Td>
+                          <Td><Plain value={a.entityType} /></Td>
+                          <Td><Plain value={a.actor} /></Td>
+                        </Tr>
+                      ))}
+                    </Table>
+                  )}
+                </Card>
+                <Card title="Database" description="Administrator maintenance">
+                  <ApplyMigrations />
+                </Card>
+              </>
             ) : null}
           </>
         )}

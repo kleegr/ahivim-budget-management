@@ -1,0 +1,306 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useState, type ReactNode } from "react";
+
+/**
+ * Shared building blocks for the editable screens: a modal, labelled fields,
+ * and two action primitives (a create form and an action button) that talk to
+ * the REST API, surface the server's own error text, and refresh on success.
+ * Every write goes through these, so the UX (confirm, reason, loading, error,
+ * success) is uniform everywhere.
+ */
+
+async function send(
+  method: string,
+  url: string,
+  body?: Record<string, unknown>,
+): Promise<{ ok: boolean; error?: string; data?: unknown }> {
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: body ? { "content-type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; data?: unknown };
+    if (!res.ok || json.ok === false) return { ok: false, error: json.error ?? `Request failed (${res.status}).` };
+    return { ok: true, data: json.data };
+  } catch {
+    return { ok: false, error: "Could not reach the server. Your change was not saved." };
+  }
+}
+
+export function Modal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 p-4 sm:p-8"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onKeyDown={(e) => e.key === "Escape" && onClose()}
+    >
+      <div className="mt-8 w-full max-w-lg rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] shadow-xl">
+        <div className="flex items-center justify-between border-b border-[var(--color-rule)] px-5 py-3">
+          <h2 className="display text-base font-medium">{title}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded px-2 py-1 text-sm text-[var(--color-ink-faint)] hover:bg-[var(--color-paper)]"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="px-5 py-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+export function Field({
+  label,
+  name,
+  type = "text",
+  defaultValue,
+  required,
+  placeholder,
+  help,
+}: {
+  label: string;
+  name: string;
+  type?: string;
+  defaultValue?: string | number | null;
+  required?: boolean;
+  placeholder?: string;
+  help?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="text-sm font-medium">{label}</span>
+      <input
+        name={name}
+        type={type}
+        required={required}
+        placeholder={placeholder}
+        defaultValue={defaultValue ?? undefined}
+        step={type === "number" ? "any" : undefined}
+        className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm"
+      />
+      {help ? <span className="mt-0.5 block text-xs text-[var(--color-ink-faint)]">{help}</span> : null}
+    </label>
+  );
+}
+
+export function TextAreaField({
+  label,
+  name,
+  defaultValue,
+  placeholder,
+}: {
+  label: string;
+  name: string;
+  defaultValue?: string | null;
+  placeholder?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="text-sm font-medium">{label}</span>
+      <textarea
+        name={name}
+        rows={2}
+        placeholder={placeholder}
+        defaultValue={defaultValue ?? undefined}
+        className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm"
+      />
+    </label>
+  );
+}
+
+export function SelectField({
+  label,
+  name,
+  options,
+  defaultValue,
+  required,
+  placeholder,
+}: {
+  label: string;
+  name: string;
+  options: { value: string; label: string }[];
+  defaultValue?: string;
+  required?: boolean;
+  placeholder?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="text-sm font-medium">{label}</span>
+      <select
+        name={name}
+        required={required}
+        defaultValue={defaultValue ?? ""}
+        className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm"
+      >
+        {placeholder ? <option value="">{placeholder}</option> : null}
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** A button that opens a modal form and submits it to an endpoint. */
+export function CreateButton({
+  label,
+  title,
+  endpoint,
+  method = "POST",
+  fields,
+  hidden,
+  transform,
+  variant = "primary",
+  size = "md",
+  onDone,
+}: {
+  label: string;
+  title: string;
+  endpoint: string;
+  method?: string;
+  fields: ReactNode;
+  hidden?: Record<string, string>;
+  transform?: (form: Record<string, string>) => Record<string, unknown>;
+  variant?: "primary" | "secondary";
+  size?: "sm" | "md";
+  onDone?: () => void;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const raw = Object.fromEntries(new FormData(e.currentTarget)) as Record<string, string>;
+    const body = transform ? transform(raw) : raw;
+    setBusy(true);
+    setError(null);
+    const result = await send(method, endpoint, { ...hidden, ...body });
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error ?? "Save failed.");
+      return;
+    }
+    setOpen(false);
+    onDone?.();
+    router.refresh();
+  }
+
+  const cls =
+    variant === "primary"
+      ? "bg-[var(--color-primary)] text-white"
+      : "border border-[var(--color-rule-strong)] bg-white text-[var(--color-ink)]";
+  const pad = size === "sm" ? "px-2.5 py-1 text-xs" : "px-3 py-1.5 text-sm";
+
+  return (
+    <>
+      <button type="button" className={`rounded font-medium ${cls} ${pad}`} onClick={() => setOpen(true)}>
+        {label}
+      </button>
+      {open ? (
+        <Modal title={title} onClose={() => (busy ? null : setOpen(false))}>
+          <form onSubmit={onSubmit} className="space-y-3">
+            {error ? (
+              <p role="alert" className="rounded border border-[var(--color-pace-over)] bg-[#fdf2f5] px-3 py-2 text-sm text-[var(--color-pace-over)]">
+                {error}
+              </p>
+            ) : null}
+            {fields}
+            <div className="flex justify-end gap-2 pt-1">
+              <button type="button" onClick={() => setOpen(false)} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-sm">
+                Cancel
+              </button>
+              <button type="submit" disabled={busy} className="rounded bg-[var(--color-primary)] px-4 py-1.5 text-sm font-medium text-white disabled:opacity-60">
+                {busy ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * A one-click action (archive, restore, approve, cancel…). Confirms first, can
+ * collect a reason, PATCHes/POSTs, and refreshes.
+ */
+export function ActionButton({
+  label,
+  endpoint,
+  method = "PATCH",
+  body,
+  confirm,
+  withReason,
+  variant = "secondary",
+  size = "sm",
+}: {
+  label: string;
+  endpoint: string;
+  method?: string;
+  body?: Record<string, unknown>;
+  confirm?: string;
+  withReason?: boolean;
+  variant?: "primary" | "secondary" | "danger";
+  size?: "sm" | "md";
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run() {
+    let reason: string | undefined;
+    if (withReason) {
+      const entered = window.prompt(`${label} — reason (recorded in the audit log):`, "");
+      if (entered === null) return;
+      reason = entered.trim() || undefined;
+    } else if (confirm && !window.confirm(confirm)) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const result = await send(method, endpoint, { ...body, ...(reason !== undefined ? { reason } : {}) });
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error ?? "Action failed.");
+      return;
+    }
+    router.refresh();
+  }
+
+  const cls =
+    variant === "danger"
+      ? "border border-[var(--color-pace-over)] text-[var(--color-pace-over)]"
+      : variant === "primary"
+        ? "bg-[var(--color-primary)] text-white"
+        : "border border-[var(--color-rule-strong)] text-[var(--color-ink)]";
+  const pad = size === "sm" ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm";
+
+  return (
+    <span className="inline-flex flex-col items-start gap-0.5">
+      <button type="button" onClick={run} disabled={busy} className={`rounded font-medium ${cls} ${pad} disabled:opacity-60`}>
+        {busy ? "…" : label}
+      </button>
+      {error ? <span className="text-xs text-[var(--color-pace-over)]">{error}</span> : null}
+    </span>
+  );
+}
