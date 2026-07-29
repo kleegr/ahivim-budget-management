@@ -3,6 +3,7 @@ import type { ParsedAhivimRow } from "@/lib/excel/parse-workbook";
 import type { StagingResult, StagedRow, RateConfig } from "./stage";
 import { evaluateRateException } from "@/lib/business/rate-exceptions";
 import { normalizePersonName } from "@/lib/business/name-matching";
+import { backfillPaymentAttribution } from "@/lib/manage/payment-attribution";
 
 /**
  * IMPORT COMMIT
@@ -140,6 +141,17 @@ export async function commitStagedImport(
 
     const result = await writeImport(client, input);
     await client.query("COMMIT");
+
+    // Attribute payments (recipient / employee amount / agency additional) for
+    // the freshly-committed batch. Runs AFTER commit so a hiccup here never
+    // rolls back a good import; it only writes the three attribution columns and
+    // never the imported figures. A re-import returns early above with
+    // alreadyCommitted=true and writes nothing, so attribution is never doubled.
+    try {
+      await backfillPaymentAttribution(pool, { batchId: result.importBatchId }, input.committedByUserId);
+    } catch {
+      /* attribution is derived, re-runnable data; a failure must not fail the import */
+    }
     return result;
   } catch (error) {
     // A failed COMMIT leaves the transaction aborted; ROLLBACK is still correct

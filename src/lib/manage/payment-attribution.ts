@@ -31,7 +31,12 @@ export interface AttributePaymentInput {
 
 export interface AttributePaymentResult {
   recipient: PaymentRecipient;
-  /** The internal amount, when the recipient is the employee. Otherwise null. */
+  /**
+   * The internal (employee) amount owed for this transaction. Populated when the
+   * employee is paid directly AND when Excellent Staffing is the payee (the
+   * agency is then responsible for paying that amount to the employee). Null
+   * only when the recipient is unknown or the internal amount is missing.
+   */
   employeePayment: string | null;
   /** imported − internal, floored at zero. Null when either amount is unknown. */
   agencyAdditional: string | null;
@@ -97,9 +102,17 @@ export function attributePayment(input: AttributePaymentInput): AttributePayment
       : `Pay-to “${payTo}” has no agency marker and there is no employee name to match against.`;
   }
 
-  const employeePayment = recipient === "employee" && internal ? toMoney(internal) : null;
+  // The internal amount is owed to the employee whether they are paid directly
+  // OR Excellent Staffing pays them on the agency's behalf. Only 'unknown'
+  // (or a missing internal figure) leaves it null.
+  const owesEmployee = recipient === "employee" || recipient === "excellent_staffing";
+  const employeePayment = owesEmployee && internal ? toMoney(internal) : null;
+  const payNote =
+    recipient === "excellent_staffing" && employeePayment
+      ? ` Excellent Staffing is responsible for paying the employee ${formatMoney(internal!)}.`
+      : "";
 
-  return { recipient, employeePayment, agencyAdditional, reason: reason + agencyNote };
+  return { recipient, employeePayment, agencyAdditional, reason: reason + agencyNote + payNote };
 }
 
 interface BackfillRow {

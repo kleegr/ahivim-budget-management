@@ -4,6 +4,7 @@ import type { PgLikePool } from "@/lib/import/commit";
 import { createIndividual } from "@/lib/manage/individuals";
 import { createEmployee } from "@/lib/manage/employees";
 import { backfillPaymentAttribution } from "@/lib/manage/payment-attribution";
+import { employeePayableReport } from "@/lib/data/report-queries";
 import { dec } from "@/lib/money";
 
 const suite = hasTestDatabase ? describe : describe.skip;
@@ -99,8 +100,9 @@ suite("payment attribution back-fill (real PostgreSQL)", () => {
     const row = await readTx(id);
     expect(row.payment_recipient).toBe("excellent_staffing");
     expect(dec(row.agency_additional_amount).toNumber()).toBe(2); // 19 − 17
-    // Not paid to the employee, so no employee payment is recorded.
-    expect(row.employee_payment_amount).toBeNull();
+    // Excellent Staffing must pay the employee the internal amount — recorded,
+    // not null, so it lands in the "payable by agency" report bucket.
+    expect(dec(row.employee_payment_amount!).toNumber()).toBe(17);
 
     // An audit row is written for the back-fill.
     const audit = await pool.query<{ c: string }>(
@@ -184,5 +186,50 @@ suite("payment attribution back-fill (real PostgreSQL)", () => {
     expect(inside.payment_recipient).toBe("excellent_staffing");
     const outside = await readTx(outOfBatch);
     expect(outside.payment_recipient).toBeNull(); // untouched
+  });
+
+  it("re-running attribution does not duplicate: rows and values are unchanged", async () => {
+    const { ind, emp } = await people();
+    const id = await insertTx({
+      individualId: ind.id, employeeId: emp.id, payToRaw: "Excellent Staffing",
+      importedAmount: "19", calculatedInternal: "17", fingerprint: "fp-rerun-1",
+    });
+    const txCount = async () => Number((await pool.query<{ c: string }>(`SELECT count(*)::text c FROM payroll_transactions`)).rows[0]!.c);
+
+    const first = await backfillPaymentAttribution(pool, {}, ACTOR);
+    const afterFirst = await readTx(id);
+    const countAfterFirst = await txCount();
+
+    // Simulate a re-import back-fill over the same data.
+    const second = await backfillPaymentAttribution(pool, {}, ACTOR);
+    const afterSecond = await readTx(id);
+    const countAfterSecond = await txCount();
+
+    expect(first).toBe(1);
+    expect(second).toBe(1); // updates the same row, never inserts a new one
+    expect(countAfterFirst).toBe(1);
+    expect(countAfterSecond).toBe(1); // NO duplicate transaction created
+    expect(afterSecond.payment_recipient).toBe(afterFirst.payment_recipient);
+    expect(afterSecond.employee_payment_amount).toBe(afterFirst.employee_payment_amount);
+    expect(afterSecond.agency_additional_amount).toBe(afterFirst.agency_additional_amount);
+  });
+
+  it("the Employee Payable report splits paid-directly vs payable-by-agency vs unknown", async () => {
+    const { ind, emp } = await people();
+    // employee paid directly (internal 17), Excellent Staffing payable (internal 20), unknown (internal 10)
+    await insertTx({ individualId: ind.id, employeeId: emp.id, payToRaw: "Miriam Klein",     importedAmount: "19", calculatedInternal: "17", fingerprint: "fp-rep-emp" });
+    await insertTx({ individualId: ind.id, employeeId: emp.id, payToRaw: "Excellent Staffing", importedAmount: "22", calculatedInternal: "20", fingerprint: "fp-rep-agy" });
+    await insertTx({ individualId: ind.id, employeeId: emp.id, payToRaw: "Some Vendor",        importedAmount: "12", calculatedInternal: "10", fingerprint: "fp-rep-unk" });
+
+    await backfillPaymentAttribution(pool, {}, ACTOR);
+    const rows = await employeePayableReport(pool, {});
+    const mine = rows.find((r) => r.employeeName === "Miriam Klein")!;
+    expect(dec(mine.paidToEmployee).toNumber()).toBe(17);    // paid directly
+    expect(dec(mine.payableByAgency).toNumber()).toBe(20);   // Excellent Staffing owes the employee
+    expect(dec(mine.unknownRecipient).toNumber()).toBe(0);   // unknown recipient: amount not asserted
+    expect(dec(mine.totalPayment).toNumber()).toBe(37);      // 17 (direct) + 20 (agency); unknown contributes 0
+    // The three buckets always sum to the total.
+    expect(dec(mine.paidToEmployee).plus(dec(mine.payableByAgency)).plus(dec(mine.unknownRecipient)).toNumber())
+      .toBe(dec(mine.totalPayment).toNumber());
   });
 });

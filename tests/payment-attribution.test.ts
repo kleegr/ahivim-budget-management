@@ -15,7 +15,7 @@ describe("attributePayment (pure)", () => {
     expect(n(r.agencyAdditional)).toBe(2);
   });
 
-  it("classifies an Excellent Staffing payee as excellent_staffing", () => {
+  it("Excellent Staffing must pay the employee: recipient is the agency, employee amount = internal", () => {
     const r = attributePayment({
       payToRaw: "EXCELLENT STAFFING LLC",
       employeeName: "Miriam Klein",
@@ -23,9 +23,12 @@ describe("attributePayment (pure)", () => {
       internalAmount: "17",
     });
     expect(r.recipient).toBe("excellent_staffing");
-    // Not paid to the employee, so no employee payment is recorded.
-    expect(r.employeePayment).toBeNull();
+    // The agency is responsible for paying the employee the internal amount —
+    // this must NOT be null (it feeds the "payable by agency" report bucket).
+    expect(n(r.employeePayment)).toBe(17);
+    expect(n(r.agencyAdditional)).toBe(2);
     expect(r.reason).toMatch(/agency marker/i);
+    expect(r.reason).toMatch(/responsible for paying the employee/i);
   });
 
   it("classifies a payee equal to the employee name as employee, paid the internal amount", () => {
