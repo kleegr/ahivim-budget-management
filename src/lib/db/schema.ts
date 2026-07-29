@@ -207,6 +207,9 @@ export const budgetPeriods = pgTable(
     label: text("label").notNull(),
     startDate: date("start_date").notNull(),
     endDate: date("end_date").notNull(),
+    /** 'calendar' | 'rolling' | 'custom' (0005). */
+    periodType: text("period_type").default("custom").notNull(),
+    renewalDate: date("renewal_date"),
     /** Actual months in the period (e.g. 7.000), for monthly planning. */
     planningMonths: numeric("planning_months", { precision: 6, scale: 3 }),
     isPartialPeriod: boolean("is_partial_period").default(false).notNull(),
@@ -240,6 +243,9 @@ export const budgetAuthorizations = pgTable(
     supersedesId: uuid("supersedes_id"),
     status: text("status").default("active").notNull(),
     authorizedDollars: numeric("authorized_dollars", { precision: 14, scale: 4 }),
+    // Individual-specific rate overrides on an authorization (0005).
+    agencyRate: numeric("agency_rate", { precision: 14, scale: 4 }),
+    individualRateOverride: numeric("individual_rate_override", { precision: 14, scale: 4 }),
     rateBasis: text("rate_basis"),
     notes: text("notes"),
     source: text("source"),
@@ -488,6 +494,12 @@ export const payrollTransactions = pgTable(
     }),
     internalRateApplied: numeric("internal_rate_applied", { precision: 14, scale: 4 }),
     agencyRateApplied: numeric("agency_rate_applied", { precision: 14, scale: 4 }),
+    // Agency-vs-employee split (0005). Back-filled by payment-attribution, never
+    // written during import. imported_amount is never touched.
+    agencyAdditionalAmount: numeric("agency_additional_amount", { precision: 14, scale: 4 }),
+    employeePaymentAmount: numeric("employee_payment_amount", { precision: 14, scale: 4 }),
+    /** 'employee' | 'excellent_staffing' | 'unknown' */
+    paymentRecipient: text("payment_recipient"),
     internalAmountMismatch: boolean("internal_amount_mismatch").default(false).notNull(),
     transactionFingerprint: text("transaction_fingerprint").notNull(),
     /** 'new' | 'possible' | 'confirmed' */
@@ -706,6 +718,11 @@ export const scheduledSessions = pgTable(
     expectedAgencyGross: numeric("expected_agency_gross", { precision: 14, scale: 4 }),
     expectedInternalAmount: numeric("expected_internal_amount", { precision: 14, scale: 4 }),
     expectedEmployeeCost: numeric("expected_employee_cost", { precision: 14, scale: 4 }),
+    // Agency-vs-employee split on the plan side (0005).
+    expectedAgencyAdditional: numeric("expected_agency_additional", { precision: 14, scale: 4 }),
+    expectedEmployeePayment: numeric("expected_employee_payment", { precision: 14, scale: 4 }),
+    /** 'employee' | 'excellent_staffing' | 'unknown' */
+    paymentRecipient: text("payment_recipient"),
     /** 'pending' | 'completed' | 'cancelled' | 'no_show' */
     status: text("status").default("pending").notNull(),
     overrideReason: text("override_reason"),
