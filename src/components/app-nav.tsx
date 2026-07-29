@@ -11,6 +11,7 @@ const LINKS = [
   { href: "/individuals", label: "Individuals" },
   { href: "/employees", label: "Employees" },
   { href: "/schedule", label: "Schedule" },
+  { href: "/reconciliation", label: "Reconciliation" },
   { href: "/transactions", label: "Transactions" },
   { href: "/exceptions", label: "Exceptions" },
   { href: "/aliases", label: "Aliases" },
