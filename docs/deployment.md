@@ -28,6 +28,10 @@ a deployment check can call them.
   applied, and the table count. The table NAMES and per-table ROW COUNTS are a
   map of the schema and of how much data sits in each part of it, so they are
   returned only to a signed-in administrator.
+- `GET /api/health/xlsx` — loads ExcelJS and round-trips a workbook (write then
+  read) in the deployed runtime. Confirms the upload engine works without an
+  authenticated upload; returns `{ok:true}` or, on a require-of-ESM regression,
+  `{ok:false, code:"ERR_REQUIRE_ESM"}`. See the dependency note below.
 
 ## Migrations
 
@@ -99,3 +103,31 @@ npm run dev
 ```
 
 `NEON_WS_PROXY` is unset in production, where `src/lib/db/index.ts` ignores it.
+
+## ExcelJS and the CommonJS dependency chain
+
+ExcelJS is loaded in the Node server runtime with CommonJS `require`, and it
+`require`s `uuid` and `archiver`. Both of those, and much of ExcelJS's
+transitive chain (`glob`, `minimatch`, `brace-expansion`, `zip-stream`,
+`readdir-glob`), have released newer **ESM-only** majors. Forcing ExcelJS onto
+any of them makes its `require` throw `ERR_REQUIRE_ESM` in the serverless
+runtime and takes down `/api/imports` — even though the build succeeds and it
+works locally, because Node >= 22 allows `require()` of an ES module by default
+and the Vercel runtime does not.
+
+`package.json` therefore pins, via `overrides`, ExcelJS's `uuid` to `10.0.0`
+(the newest CommonJS uuid) and does **not** force the rest of the chain onto
+ESM-only versions. `tests/exceljs-cjs-runtime.test.ts` guards this: it loads and
+parses a workbook under `node --no-experimental-require-module`, so any future
+ESM-only pin fails the test instead of production.
+
+The cost is that `npm audit` reports advisories in ExcelJS's chain that have no
+CommonJS-compatible fix (npm's only suggested fix is a major downgrade to
+`exceljs@3.4.0`). These are **DoS/ReDoS**-class issues (no RCE, no data
+exposure) reached only when parsing an uploaded `.xlsx`, and upload is
+restricted to authenticated `manager`/`admin` roles with an extension and size
+check — the input is a trusted internal workbook, not attacker-controlled web
+input. The remaining `npm audit` entries in the `eslint` chain are
+**dev-only**: eslint is not part of the deployed runtime. A working upload was
+prioritised over a green `npm audit`, deliberately, because the green audit is
+what broke the upload.

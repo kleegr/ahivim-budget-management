@@ -46,17 +46,12 @@
   "overrides": {
     "postcss": "^8.5.24",
     "sharp": "^0.35.3",
-    "uuid": "^14.0.1",
-    "brace-expansion": "^5.0.8",
     "esbuild": "^0.28.1",
-    "archiver": "^8.0.0",
-    "archiver-utils": "^5.0.2",
-    "zip-stream": "^7.0.5",
-    "readdir-glob": "^3.0.0",
-    "glob": "^13.0.6",
-    "rimraf": "^6.1.3",
     "next": {
       "postcss": "^8.5.24"
+    },
+    "exceljs": {
+      "uuid": "10.0.0"
     }
   }
 }
