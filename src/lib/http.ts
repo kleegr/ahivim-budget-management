@@ -34,3 +34,19 @@ export function redactError(error: unknown, fallback = "Unexpected error"): stri
 
 export const jsonError = (message: string, status: number) =>
   NextResponse.json({ ok: false, error: message }, { status });
+
+import type { Result } from "@/lib/manage/errors";
+import { STATUS } from "@/lib/manage/errors";
+
+/** Map a service Result to a NextResponse, so route handlers stay tiny. */
+export function resultResponse<T>(result: Result<T>, okStatus = 200): NextResponse {
+  if (result.ok) return NextResponse.json({ ok: true, data: result.data }, { status: okStatus });
+  return NextResponse.json({ ok: false, error: result.message, code: result.code }, {
+    status: STATUS[result.code],
+  });
+}
+
+/** Parse a JSON body defensively; always returns an object. */
+export async function readJson(request: NextRequest): Promise<Record<string, unknown>> {
+  return (await request.json().catch(() => ({}))) as Record<string, unknown>;
+}
