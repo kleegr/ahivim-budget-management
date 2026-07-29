@@ -1,7 +1,7 @@
 import type { PgLikePool } from "@/lib/import/commit";
 import { recordChange } from "./audit";
 import { ok, fail, type Result } from "./errors";
-import { toHours, toMoney } from "@/lib/money";
+import { toHours, toMoney, closeEnough } from "@/lib/money";
 
 /**
  * Scheduled-vs-actual reconciliation.
@@ -370,4 +370,291 @@ export async function autoReconcile(
     });
   }
   return ok({ matched, considered: sessions.length });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Match classification + duplicate detection (detailed reconciliation)       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How well a scheduled session and its matched transaction agree.
+ *   exact             program, employee, hours and amount all line up.
+ *   hours_mismatch    only the hours differ.
+ *   amount_mismatch   only the money differs.
+ *   employee_mismatch a different employee actually billed.
+ *   program_mismatch  a different program was billed.
+ *   probable          the right pair, but both hours AND money differ (e.g. a
+ *                     rate change) — a likely match worth a human glance.
+ */
+export type MatchLabel =
+  | "exact"
+  | "hours_mismatch"
+  | "amount_mismatch"
+  | "employee_mismatch"
+  | "program_mismatch"
+  | "probable";
+
+export const MATCH_LABELS: readonly MatchLabel[] = [
+  "exact",
+  "hours_mismatch",
+  "amount_mismatch",
+  "employee_mismatch",
+  "program_mismatch",
+  "probable",
+] as const;
+
+export interface MatchScheduled {
+  durationHours: string | null;
+  expectedInternalAmount: string | null;
+  employeeId: string | null;
+  programId: string | null;
+}
+export interface MatchTransaction {
+  importedHours: string | null;
+  importedAmount: string | null;
+  employeeId: string | null;
+  programId: string | null;
+}
+
+/** Both values present and further apart than the tolerance. Missing data never flags. */
+function differs(a: string | null, b: string | null, tolerance: string): boolean {
+  if (a === null || b === null) return false;
+  return !closeEnough(a, b, tolerance);
+}
+
+/**
+ * Classify a scheduled↔transaction pair. Pure: hours/amount within $0.01 /
+ * 0.01h are treated as equal, ids compared only when both are known. Program
+ * and employee differences dominate a numeric one because they mean a
+ * different service was billed, not merely a different figure.
+ */
+export function classifyMatch(scheduled: MatchScheduled, transaction: MatchTransaction): MatchLabel {
+  if (
+    scheduled.programId &&
+    transaction.programId &&
+    scheduled.programId !== transaction.programId
+  ) {
+    return "program_mismatch";
+  }
+  if (
+    scheduled.employeeId &&
+    transaction.employeeId &&
+    scheduled.employeeId !== transaction.employeeId
+  ) {
+    return "employee_mismatch";
+  }
+  const hoursDiff = differs(scheduled.durationHours, transaction.importedHours, "0.01");
+  const amountDiff = differs(scheduled.expectedInternalAmount, transaction.importedAmount, "0.01");
+  if (hoursDiff && amountDiff) return "probable";
+  if (hoursDiff) return "hours_mismatch";
+  if (amountDiff) return "amount_mismatch";
+  return "exact";
+}
+
+export interface MatchedDetail {
+  sessionId: string;
+  transactionId: string;
+  sessionDate: string;
+  programCode: string | null;
+  individualNames: string[];
+  isGroup: boolean;
+  scheduledHours: string;
+  scheduledAmount: string | null;
+  matchedHours: string | null;
+  matchedAmount: string | null;
+  label: MatchLabel;
+}
+
+export interface DuplicateGroup {
+  reason: "fingerprint" | "composite";
+  count: number;
+  transactionIds: string[];
+  individualName: string | null;
+  programCode: string | null;
+  amount: string | null;
+}
+
+export interface ReconciliationDetail {
+  matched: MatchedDetail[];
+  labelCounts: Record<MatchLabel, number>;
+  duplicates: DuplicateGroup[];
+}
+
+/**
+ * For every matched session in range, the pair and its classifyMatch label,
+ * plus transactions that look duplicated (same fingerprint, or the same
+ * individual+program+period+amount appearing more than once).
+ */
+export async function reconciliationDetail(
+  pool: PgLikePool,
+  filter: ReconcileFilter,
+): Promise<ReconciliationDetail> {
+  const f = sqlFilter(filter);
+
+  const { rows: matchedRows } = await pool.query<{
+    session_id: string;
+    session_date: string;
+    program_code: string | null;
+    is_group: boolean;
+    duration_hours: string;
+    expected_internal_amount: string | null;
+    s_employee_id: string | null;
+    s_program_id: string | null;
+    transaction_id: string;
+    imported_hours: string | null;
+    imported_amount: string | null;
+    t_employee_id: string | null;
+    t_program_id: string | null;
+    individual_names: string[] | null;
+  }>(
+    `SELECT s.id AS session_id, s.session_date::text, p.code AS program_code, s.is_group,
+            s.duration_hours::text, s.expected_internal_amount::text,
+            s.employee_id AS s_employee_id, s.program_id AS s_program_id,
+            t.id AS transaction_id, t.imported_hours::text, t.imported_amount::text,
+            t.employee_id AS t_employee_id, t.program_id AS t_program_id,
+            array_agg(i.display_name ORDER BY i.display_name)
+              FILTER (WHERE i.id IS NOT NULL) AS individual_names
+     FROM scheduled_sessions s
+     JOIN payroll_transactions t ON t.id = s.matched_transaction_id
+     LEFT JOIN programs p ON p.id = s.program_id
+     LEFT JOIN scheduled_allocations a ON a.scheduled_session_id = s.id
+     LEFT JOIN individuals i ON i.id = a.individual_id
+     WHERE s.session_date BETWEEN $1 AND $2
+       AND s.status IN ('pending','completed')
+       AND ($3::uuid IS NULL OR s.program_id = $3)
+       AND ($4::uuid IS NULL OR EXISTS (
+             SELECT 1 FROM scheduled_allocations aa
+             WHERE aa.scheduled_session_id = s.id AND aa.individual_id = $4))
+     GROUP BY s.id, p.code, t.id
+     ORDER BY s.session_date
+     LIMIT 500`,
+    [f.from, f.to, f.programId, f.individualId],
+  );
+
+  const labelCounts: Record<MatchLabel, number> = {
+    exact: 0,
+    hours_mismatch: 0,
+    amount_mismatch: 0,
+    employee_mismatch: 0,
+    program_mismatch: 0,
+    probable: 0,
+  };
+
+  const matched: MatchedDetail[] = matchedRows.map((r) => {
+    const label = classifyMatch(
+      {
+        durationHours: r.duration_hours,
+        expectedInternalAmount: r.expected_internal_amount,
+        employeeId: r.s_employee_id,
+        programId: r.s_program_id,
+      },
+      {
+        importedHours: r.imported_hours,
+        importedAmount: r.imported_amount,
+        employeeId: r.t_employee_id,
+        programId: r.t_program_id,
+      },
+    );
+    labelCounts[label] += 1;
+    return {
+      sessionId: r.session_id,
+      transactionId: r.transaction_id,
+      sessionDate: r.session_date,
+      programCode: r.program_code,
+      individualNames: (r.individual_names ?? []).filter(Boolean),
+      isGroup: r.is_group,
+      scheduledHours: toHours(r.duration_hours),
+      scheduledAmount: r.expected_internal_amount ? toMoney(r.expected_internal_amount) : null,
+      matchedHours: r.imported_hours ? toHours(r.imported_hours) : null,
+      matchedAmount: r.imported_amount ? toMoney(r.imported_amount) : null,
+      label,
+    };
+  });
+
+  const duplicates = await findDuplicateTransactions(pool, f);
+  return { matched, labelCounts, duplicates };
+}
+
+/**
+ * Transactions that appear more than once in the window, by two definitions:
+ * an identical fingerprint, and the same individual+program+period+amount. The
+ * two lists are merged so an identical set of ids is reported once, fingerprint
+ * taking precedence because it is the stronger signal.
+ */
+async function findDuplicateTransactions(
+  pool: PgLikePool,
+  f: { from: string; to: string; programId: string | null; individualId: string | null },
+): Promise<DuplicateGroup[]> {
+  const byFingerprint = await pool.query<{
+    c: number;
+    ids: string[];
+    individual_name: string | null;
+    program_code: string | null;
+    amount: string | null;
+  }>(
+    `SELECT count(*)::int AS c,
+            array_agg(t.id::text ORDER BY t.id) AS ids,
+            max(i.display_name) AS individual_name,
+            max(p.code) AS program_code,
+            max(t.imported_amount)::text AS amount
+     FROM payroll_transactions t
+     LEFT JOIN individuals i ON i.id = t.individual_id
+     LEFT JOIN programs p ON p.id = t.program_id
+     WHERE t.period_begin BETWEEN $1 AND $2
+       AND ($3::uuid IS NULL OR t.program_id = $3)
+       AND ($4::uuid IS NULL OR t.individual_id = $4)
+     GROUP BY t.transaction_fingerprint
+     HAVING count(*) > 1
+     ORDER BY count(*) DESC
+     LIMIT 200`,
+    [f.from, f.to, f.programId, f.individualId],
+  );
+
+  const byComposite = await pool.query<{
+    c: number;
+    ids: string[];
+    individual_name: string | null;
+    program_code: string | null;
+    amount: string | null;
+  }>(
+    `SELECT count(*)::int AS c,
+            array_agg(t.id::text ORDER BY t.id) AS ids,
+            max(i.display_name) AS individual_name,
+            max(p.code) AS program_code,
+            t.imported_amount::text AS amount
+     FROM payroll_transactions t
+     LEFT JOIN individuals i ON i.id = t.individual_id
+     LEFT JOIN programs p ON p.id = t.program_id
+     WHERE t.period_begin BETWEEN $1 AND $2
+       AND ($3::uuid IS NULL OR t.program_id = $3)
+       AND ($4::uuid IS NULL OR t.individual_id = $4)
+       AND t.individual_id IS NOT NULL AND t.program_id IS NOT NULL
+     GROUP BY t.individual_id, t.program_id, t.period_begin, t.period_end, t.imported_amount
+     HAVING count(*) > 1
+     ORDER BY count(*) DESC
+     LIMIT 200`,
+    [f.from, f.to, f.programId, f.individualId],
+  );
+
+  const out: DuplicateGroup[] = [];
+  const seen = new Set<string>();
+  const add = (reason: DuplicateGroup["reason"], rows: typeof byFingerprint.rows) => {
+    for (const r of rows) {
+      const ids = (r.ids ?? []).slice().sort();
+      const key = ids.join(",");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        reason,
+        count: Number(r.c),
+        transactionIds: ids,
+        individualName: r.individual_name,
+        programCode: r.program_code,
+        amount: r.amount != null ? toMoney(r.amount) : null,
+      });
+    }
+  };
+  add("fingerprint", byFingerprint.rows);
+  add("composite", byComposite.rows);
+  return out;
 }
