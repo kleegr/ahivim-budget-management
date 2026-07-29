@@ -22,6 +22,12 @@ const REPORT_ORDER = [
   "missing-config",
   "unbilled-schedules",
   "unscheduled-billing",
+  "cuts-monthly",
+  "alias-decisions",
+  "audit-history",
+  "group-activity",
+  "actual-vs-scheduled",
+  "utilization-outliers",
 ];
 
 export default async function ReportsPage() {
