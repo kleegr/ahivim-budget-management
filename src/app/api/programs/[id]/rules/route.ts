@@ -1,1 +1,64 @@
-"import { NextRequest } from \"next/server\";\nimport { getPool } from \"@/lib/db\";\nimport { apiUser } from \"@/lib/auth/session\";\nimport { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from \"@/lib/http\";\nimport { updateProgramRules, type ProgramRulesInput } from \"@/lib/manage/program-rules\";\n\nexport const runtime = \"nodejs\";\nexport const dynamic = \"force-dynamic\";\n\nconst asBool = (v: unknown): boolean | undefined =>\n  typeof v === \"boolean\" ? v : v === \"true\" ? true : v === \"false\" ? false : undefined;\n\n/** \"\" / null → null (clear); a number → the integer; otherwise leave untouched. */\nconst asIntOrNull = (v: unknown): number | null | undefined => {\n  if (v === undefined) return undefined;\n  if (v === null || v === \"\") return null;\n  const n = Number(v);\n  return Number.isFinite(n) ? Math.floor(n) : undefined;\n};\n\nconst asNumStrOrNull = (v: unknown): string | null | undefined => {\n  if (v === undefined) return undefined;\n  if (v === null || v === \"\") return null;\n  if (typeof v === \"number\") return Number.isFinite(v) ? String(v) : undefined;\n  if (typeof v === \"string\") return v.trim() || null;\n  return undefined;\n};\n\n/**\n * Edit a program's rule flags. Only the fields present in the body are changed.\n * Admin only: these rules drive one-to-one vs group behaviour, the money split,\n * rate overrides and what an authorization must specify.\n */\nexport async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {\n  const origin = sameOriginOrFail(request);\n  if (origin) return origin;\n\n  const user = await apiUser(\"admin\");\n  if (!user) return jsonError(\"Administrator role required\", 403);\n\n  const { id } = await params;\n  const body = await readJson(request);\n  const reason = typeof body.reason === \"string\" ? body.reason : null;\n\n  const rules: ProgramRulesInput = {};\n  if (\"oneToOneRequired\" in body) rules.oneToOneRequired = asBool(body.oneToOneRequired);\n  if (\"groupsAllowed\" in body) rules.groupsAllowed = asBool(body.groupsAllowed);\n  if (\"maxGroupSize\" in body) rules.maxGroupSize = asIntOrNull(body.maxGroupSize);\n  if (\"allowMultipleEmployees\" in body) rules.allowMultipleEmployees = asBool(body.allowMultipleEmployees);\n  if (\"allowMultipleIndividuals\" in body) rules.allowMultipleIndividuals = asBool(body.allowMultipleIndividuals);\n  if (\"allowIndividualRateOverride\" in body)\n    rules.allowIndividualRateOverride = asBool(body.allowIndividualRateOverride);\n  if (\"selfHireConverts\" in body) rules.selfHireConverts = asBool(body.selfHireConverts);\n  if (\"agencyAdditionalRate\" in body) rules.agencyAdditionalRate = asNumStrOrNull(body.agencyAdditionalRate);\n  if (\"requiredAuthType\" in body && typeof body.requiredAuthType === \"string\")\n    rules.requiredAuthType = body.requiredAuthType;\n\n  try {\n    const result = await updateProgramRules(getPool(), id, rules, user.id, reason);\n    return resultResponse(result, 200);\n  } catch (error) {\n    return jsonError(redactError(error), 500);\n  }\n}\n"
+import { NextRequest } from "next/server";
+import { getPool } from "@/lib/db";
+import { apiUser } from "@/lib/auth/session";
+import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
+import { updateProgramRules, type ProgramRulesInput } from "@/lib/manage/program-rules";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const asBool = (v: unknown): boolean | undefined =>
+  typeof v === "boolean" ? v : v === "true" ? true : v === "false" ? false : undefined;
+
+/** "" / null → null (clear); a number → the integer; otherwise leave untouched. */
+const asIntOrNull = (v: unknown): number | null | undefined => {
+  if (v === undefined) return undefined;
+  if (v === null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.floor(n) : undefined;
+};
+
+const asNumStrOrNull = (v: unknown): string | null | undefined => {
+  if (v === undefined) return undefined;
+  if (v === null || v === "") return null;
+  if (typeof v === "number") return Number.isFinite(v) ? String(v) : undefined;
+  if (typeof v === "string") return v.trim() || null;
+  return undefined;
+};
+
+/**
+ * Edit a program's rule flags. Only the fields present in the body are changed.
+ * Admin only: these rules drive one-to-one vs group behaviour, the money split,
+ * rate overrides and what an authorization must specify.
+ */
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const origin = sameOriginOrFail(request);
+  if (origin) return origin;
+
+  const user = await apiUser("admin");
+  if (!user) return jsonError("Administrator role required", 403);
+
+  const { id } = await params;
+  const body = await readJson(request);
+  const reason = typeof body.reason === "string" ? body.reason : null;
+
+  const rules: ProgramRulesInput = {};
+  if ("oneToOneRequired" in body) rules.oneToOneRequired = asBool(body.oneToOneRequired);
+  if ("groupsAllowed" in body) rules.groupsAllowed = asBool(body.groupsAllowed);
+  if ("maxGroupSize" in body) rules.maxGroupSize = asIntOrNull(body.maxGroupSize);
+  if ("allowMultipleEmployees" in body) rules.allowMultipleEmployees = asBool(body.allowMultipleEmployees);
+  if ("allowMultipleIndividuals" in body) rules.allowMultipleIndividuals = asBool(body.allowMultipleIndividuals);
+  if ("allowIndividualRateOverride" in body)
+    rules.allowIndividualRateOverride = asBool(body.allowIndividualRateOverride);
+  if ("selfHireConverts" in body) rules.selfHireConverts = asBool(body.selfHireConverts);
+  if ("agencyAdditionalRate" in body) rules.agencyAdditionalRate = asNumStrOrNull(body.agencyAdditionalRate);
+  if ("requiredAuthType" in body && typeof body.requiredAuthType === "string")
+    rules.requiredAuthType = body.requiredAuthType;
+
+  try {
+    const result = await updateProgramRules(getPool(), id, rules, user.id, reason);
+    return resultResponse(result, 200);
+  } catch (error) {
+    return jsonError(redactError(error), 500);
+  }
+}
