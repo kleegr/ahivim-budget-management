@@ -9,6 +9,7 @@ import {
 import { CreateButton, ActionButton, Field, SelectField, TextAreaField } from "@/components/manage/client";
 import PasswordForm from "@/components/password-form";
 import ApplyMigrations from "@/components/manage/apply-migrations";
+import AttributePayments from "@/components/settings/attribute-payments";
 import UserAdmin from "@/components/user-admin";
 import ProgramRules from "@/components/settings/program-rules";
 
@@ -191,6 +192,7 @@ export default async function SettingsPage() {
                 </Card>
                 <Card title="Database" description="Administrator maintenance">
                   <ApplyMigrations />
+                  <AttributePayments />
                 </Card>
               </>
             ) : null}
