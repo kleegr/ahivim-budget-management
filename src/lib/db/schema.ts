@@ -133,6 +133,17 @@ export const programs = pgTable(
     name: text("name").notNull(),
     isGroupCapable: boolean("is_group_capable").default(false).notNull(),
     isActive: boolean("is_active").default(true).notNull(),
+    // Configurable operational rules (0005). Defaults: most programs are
+    // one-to-one; groups are opt-in; self-hire does not convert.
+    oneToOneRequired: boolean("one_to_one_required").default(true).notNull(),
+    groupsAllowed: boolean("groups_allowed").default(false).notNull(),
+    maxGroupSize: integer("max_group_size"),
+    allowMultipleEmployees: boolean("allow_multiple_employees").default(false).notNull(),
+    allowMultipleIndividuals: boolean("allow_multiple_individuals").default(false).notNull(),
+    allowIndividualRateOverride: boolean("allow_individual_rate_override").default(true).notNull(),
+    selfHireConverts: boolean("self_hire_converts").default(false).notNull(),
+    agencyAdditionalRate: numeric("agency_additional_rate", { precision: 14, scale: 4 }),
+    requiredAuthType: text("required_auth_type").default("hours").notNull(),
     notes: text("notes"),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: createdAt(),
@@ -742,3 +753,64 @@ export const scheduledAllocations = pgTable(
     index("scheduled_allocations_individual_idx").on(table.individualId),
   ],
 );
+
+/* -------------------------------------------------------------------------- */
+/* Calculation workflow + config (Phase 4A) — mirror of 0005                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One saved calculation for an individual/program: annual gross -> monthly ->
+ * sequential cuts -> clock adjustment -> final gross / net / "After All". Every
+ * step is stored, not just the result. Revisions supersede; history is kept.
+ */
+export const budgetCalculations = pgTable(
+  "budget_calculations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    individualId: uuid("individual_id").notNull().references(() => individuals.id),
+    programId: uuid("program_id").references(() => programs.id),
+    budgetPeriodId: uuid("budget_period_id").references(() => budgetPeriods.id),
+    annualAuthorizedHours: numeric("annual_authorized_hours", { precision: 10, scale: 4 }),
+    annualAuthorizedDollars: numeric("annual_authorized_dollars", { precision: 14, scale: 4 }),
+    programRate: numeric("program_rate", { precision: 14, scale: 4 }),
+    individualRateOverride: numeric("individual_rate_override", { precision: 14, scale: 4 }),
+    effectiveRate: numeric("effective_rate", { precision: 14, scale: 4 }),
+    months: integer("months").default(12).notNull(),
+    annualGross: numeric("annual_gross", { precision: 14, scale: 4 }),
+    monthlyGross: numeric("monthly_gross", { precision: 14, scale: 4 }),
+    cut1Percent: numeric("cut1_percent", { precision: 9, scale: 6 }),
+    cut1Amount: numeric("cut1_amount", { precision: 14, scale: 4 }),
+    cut2Percent: numeric("cut2_percent", { precision: 9, scale: 6 }),
+    cut2Amount: numeric("cut2_amount", { precision: 14, scale: 4 }),
+    clockAdjustment: numeric("clock_adjustment", { precision: 14, scale: 4 }).default("0").notNull(),
+    finalGross: numeric("final_gross", { precision: 14, scale: 4 }),
+    finalNet: numeric("final_net", { precision: 14, scale: 4 }),
+    afterAll: numeric("after_all", { precision: 14, scale: 4 }),
+    agencyAdditional: numeric("agency_additional", { precision: 14, scale: 4 }),
+    basis: text("basis").default("annual").notNull(),
+    formulaVersion: text("formula_version").default("v1").notNull(),
+    spreadsheetValue: numeric("spreadsheet_value", { precision: 14, scale: 4 }),
+    revision: integer("revision").default(1).notNull(),
+    supersedesId: uuid("supersedes_id"),
+    status: text("status").default("active").notNull(),
+    effectiveFrom: date("effective_from"),
+    notes: text("notes"),
+    reason: text("reason"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("budget_calculations_individual_idx").on(table.individualId, table.status),
+    index("budget_calculations_program_idx").on(table.programId),
+  ],
+);
+
+/** Admin-editable global configuration (default cuts, cut order, months, …). */
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull(),
+  updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+  updatedAt: updatedAt(),
+});
