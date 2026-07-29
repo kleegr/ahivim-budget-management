@@ -8,6 +8,7 @@ import { getIndividual } from "@/lib/manage/individuals";
 import { listAuthorizationsForIndividual } from "@/lib/manage/authorizations";
 import { listAssignments } from "@/lib/manage/assignments";
 import { listAliases } from "@/lib/manage/aliases";
+import { scheduledByProgramForIndividual } from "@/lib/data/schedule-queries";
 import {
   Card, Table, Th, Td, Tr, Money, Hours, Plain, Badge, EmptyState, ErrorPanel, PageHeader, StatTile, PaceBar, ButtonLink,
 } from "@/components/ui";
@@ -37,13 +38,14 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   const result = await withDb(async (pool) => {
     const individual = await getIndividual(pool, id);
     if (!individual) return null;
-    const [report, authz, assignments, aliasesAll, programs, employees] = await Promise.all([
+    const [report, authz, assignments, aliasesAll, programs, employees, scheduledByProgram] = await Promise.all([
       getIndividualReport(pool, id),
       listAuthorizationsForIndividual(pool, id),
       listAssignments(pool, { individualId: id, includeInactive: true }),
       listAliases(pool, { kind: "individual" }),
       listPrograms(pool),
       listEmployees(pool),
+      scheduledByProgramForIndividual(pool, id),
     ]);
     return {
       individual,
@@ -54,6 +56,7 @@ export default async function IndividualDetailPage({ params }: { params: Promise
       aliases: aliasesAll.filter((a) => a.canonicalId === id),
       programs,
       employees,
+      scheduledByProgram,
     };
   });
 
@@ -67,7 +70,7 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   }
   if (!result.data) notFound();
 
-  const { individual, report, periods, authorizations, assignments, aliases, programs, employees } = result.data;
+  const { individual, report, periods, authorizations, assignments, aliases, programs, employees, scheduledByProgram } = result.data;
 
   const programOptions = programs.map((p) => ({ value: p.id, label: `${p.code} — ${p.name}` }));
   const periodOptions = periods.map((p) => ({
@@ -80,15 +83,17 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   const periodById = new Map(periods.map((p) => [p.id, p]));
 
   // --- Budget summary: actual / scheduled / remaining kept strictly separate ---
+  // Scheduled hours come from pending sessions (Phase 2), keyed by program code.
   const reportPrograms = report?.programs ?? [];
-  const scheduled = dec(0); // No future schedule feed exists yet.
+  const scheduledHoursFor = (code: string) => dec(scheduledByProgram[code]?.hours ?? 0);
   let totalAuthorized = dec(0);
   let totalUsed = dec(0);
+  let totalScheduled = dec(0);
   for (const p of reportPrograms) {
     totalAuthorized = totalAuthorized.plus(dec(p.utilization.authorizedHours));
     totalUsed = totalUsed.plus(dec(p.utilization.usedHours));
+    totalScheduled = totalScheduled.plus(scheduledHoursFor(p.programCode));
   }
-  const totalScheduled = scheduled.times(reportPrograms.length);
   const totalRemaining = totalAuthorized.minus(totalUsed).minus(totalScheduled);
   const totalPctUsed = totalAuthorized.isZero() ? null : totalUsed.dividedBy(totalAuthorized);
   const totalPctCommitted = totalAuthorized.isZero()
@@ -200,6 +205,7 @@ export default async function IndividualDetailPage({ params }: { params: Promise
         <Card
           title="Budget summary"
           description="Actual, scheduled and remaining are shown separately. Scheduled is never folded into actual."
+          action={<ButtonLink href={`/schedule?individualId=${id}`}>View schedule</ButtonLink>}
         >
           {reportPrograms.length === 0 ? (
             <EmptyState title="No authorization entered — add one below.">
@@ -213,7 +219,12 @@ export default async function IndividualDetailPage({ params }: { params: Promise
             <>
               <div className="grid gap-3 border-b border-[var(--color-rule)] px-5 py-4 sm:grid-cols-2 lg:grid-cols-5">
                 <StatTile label="Actual used" value={`${formatHours(totalUsed)} h`} hint="Billed / delivered" />
-                <StatTile label="Scheduled, not yet billed" value="0 h" hint="No future schedule yet" />
+                <StatTile
+                  label="Scheduled, not yet billed"
+                  value={`${formatHours(totalScheduled)} h`}
+                  hint={totalScheduled.isZero() ? "No pending sessions" : "From pending sessions"}
+                  tone={totalScheduled.isZero() ? "neutral" : "warn"}
+                />
                 <StatTile
                   label="Remaining after schedule"
                   value={`${formatHours(totalRemaining)} h`}
@@ -233,6 +244,8 @@ export default async function IndividualDetailPage({ params }: { params: Promise
                   const u = program.utilization;
                   const authorized = dec(u.authorizedHours);
                   const used = dec(u.usedHours);
+                  const scheduled = scheduledHoursFor(program.programCode);
+                  const scheduledInternal = scheduledByProgram[program.programCode]?.internal ?? null;
                   const remainingAfter = authorized.minus(used).minus(scheduled);
                   const pctCommitted = authorized.isZero()
                     ? dec(0)
@@ -256,8 +269,14 @@ export default async function IndividualDetailPage({ params }: { params: Promise
                         </div>
                         <div className="rounded border border-[var(--color-rule)] px-3 py-2">
                           <p className="eyebrow">Scheduled, not billed</p>
-                          <p className="tnum mt-1 text-lg font-semibold text-[var(--color-ink-faint)]">0 h</p>
-                          <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">No future schedule yet</p>
+                          <p className={`tnum mt-1 text-lg font-semibold ${scheduled.isZero() ? "text-[var(--color-ink-faint)]" : ""}`}>
+                            {formatHours(scheduled)} h
+                          </p>
+                          <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
+                            {scheduled.isZero()
+                              ? "No pending sessions"
+                              : `${formatMoney(scheduledInternal ?? "0")} expected internal`}
+                          </p>
                         </div>
                         <div className="rounded border border-[var(--color-rule)] px-3 py-2">
                           <p className="eyebrow">Remaining after schedule</p>
