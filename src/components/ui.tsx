@@ -145,6 +145,16 @@ const BADGE_TONES: Record<string, string> = {
   invalid: "bg-[#fdf2f5] text-[var(--color-pace-over)]",
   discarded: "bg-[var(--color-rule)] text-[var(--color-ink-soft)]",
   open: "bg-[#fff4ed] text-[var(--color-pace-near)]",
+  // Group-detection classifications and reconciliation match labels.
+  confirmed: "bg-[var(--color-primary-soft)] text-[var(--color-primary)]",
+  exact: "bg-[var(--color-primary-soft)] text-[var(--color-primary)]",
+  probable: "bg-[#eef2ff] text-[var(--color-pace-behind)]",
+  not_a_group: "bg-[var(--color-rule)] text-[var(--color-ink-soft)]",
+  requires_review: "bg-[#fff4ed] text-[var(--color-pace-near)]",
+  hours_mismatch: "bg-[#fff4ed] text-[var(--color-pace-near)]",
+  amount_mismatch: "bg-[#fff4ed] text-[var(--color-pace-near)]",
+  employee_mismatch: "bg-[#fdf2f5] text-[var(--color-pace-over)]",
+  program_mismatch: "bg-[#fdf2f5] text-[var(--color-pace-over)]",
 };
 
 export function Badge({ value, label }: { value: string; label?: string }) {
