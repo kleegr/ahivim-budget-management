@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { listTables, LEDGER_TABLE } from "@/lib/db/migrate";
 import { MIGRATIONS } from "@/lib/db/migrations.generated";
+import { ensureMigrationsApplied } from "@/lib/db/auto-migrate";
 import { apiUser } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 /**
  * Schema health check.
@@ -20,6 +22,16 @@ export const dynamic = "force-dynamic";
  */
 export async function GET() {
   const pool = getPool();
+
+  // Bring the schema current on first request (idempotent, once per process),
+  // so a fresh deployment reaches its expected schema without an operator. The
+  // detailed outcome goes to the server log; the public surface stays a boolean.
+  let migrate: Awaited<ReturnType<typeof ensureMigrationsApplied>> | null = null;
+  try {
+    migrate = await ensureMigrationsApplied();
+  } catch {
+    /* never let a migration attempt fail the health check */
+  }
 
   // Health is computed server-side; only the boolean crosses the public surface.
   let healthy = false;
@@ -52,6 +64,7 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       healthy,
+      migrate,
       tableCount: tables.length,
       migrationCount: migrations.length,
       expectedMigrationCount: MIGRATIONS.length,
