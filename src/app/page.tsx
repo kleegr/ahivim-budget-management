@@ -1,8 +1,1 @@
-import { redirect } from "next/navigation";
-
-export const dynamic = "force-dynamic";
-
-/** The application entry point is the dashboard; middleware handles anonymity. */
-export default function RootPage() {
-  redirect("/dashboard");
-}
+"import { redirect } from \"next/navigation\";\nimport { withDb } from \"@/lib/data/pool\";\nimport { getSetting } from \"@/lib/manage/app-settings\";\n\nexport const dynamic = \"force-dynamic\";\n\n/**\n * Application entry point. Sends people to whichever workspace the team has\n * chosen as its default landing page (Transactions or Calculations), falling\n * back to the dashboard. Middleware handles anonymity.\n */\nexport default async function RootPage() {\n  const result = await withDb((pool) => getSetting<string>(pool, \"default_landing\"));\n  const choice = result.ok ? result.data : null;\n  const dest =\n    choice === \"transactions\" ? \"/transactions\" : choice === \"calculations\" ? \"/calculations\" : \"/dashboard\";\n  redirect(dest);\n}\n"
