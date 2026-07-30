@@ -102,6 +102,32 @@ function buildColumns(programs: ProgramRate[]): ColDef[] {
   return [...base, ...programCols, ...computed];
 }
 
+function pct100(frac: string | null | undefined): string | null {
+  if (frac === null || frac === undefined || frac === "") return null;
+  try {
+    return dec(frac).times(100).toDecimalPlaces(0).toString();
+  } catch {
+    return null;
+  }
+}
+
+// Optional read-only analysis columns: actual-vs-plan, forecast, and the
+// workbook↔system parity check. Shown when the user toggles "Show analysis".
+function buildAnalyticsColumns(): ColDef[] {
+  return [
+    { key: "a_actualHours", header: "Actual hrs", type: "hours", editable: false, get: (r) => r.analytics?.actualHours ?? null },
+    { key: "a_actualInternal", header: "Actual $", type: "computed", editable: false, get: (r) => r.analytics?.actualInternal ?? null },
+    { key: "a_scheduledHours", header: "Scheduled hrs", type: "hours", editable: false, get: (r) => r.analytics?.scheduledHours ?? null },
+    { key: "a_remainingHours", header: "Remaining hrs", type: "hours", editable: false, get: (r) => r.analytics?.remainingHours ?? null },
+    { key: "a_utilization", header: "Utilization", type: "percent", editable: false, get: (r) => pct100(r.analytics?.utilizationPercent) },
+    { key: "a_projected", header: "Projected exhaustion", type: "date", editable: false, get: (r) => r.analytics?.projectedExhaustion ?? null },
+    { key: "a_workbook", header: "Workbook (After All)", type: "computed", editable: false, get: (r) => r.analytics?.workbookValue ?? null },
+    { key: "a_system", header: "System (Net)", type: "computed", editable: false, get: (r) => r.analytics?.systemValue ?? null },
+    { key: "a_diff", header: "Δ (wb − sys)", type: "computed", editable: false, get: (r) => r.analytics?.difference ?? null },
+    { key: "a_flags", header: "Flags", type: "text", editable: false, get: (r) => (r.analytics?.warnings.length ? r.analytics.warnings.join(", ") : null) },
+  ];
+}
+
 const EXPORT_TYPE: Record<FieldType, ExportFieldType> = {
   text: "text", money: "money", hours: "hours", date: "date", percent: "text", computed: "money",
 };
@@ -169,7 +195,11 @@ export default function CalculationsGrid({
   canManage: boolean;
 }) {
   const router = useRouter();
-  const COLUMNS = useMemo(() => buildColumns(programs), [programs]);
+  const [showAnalytics, setShowAnalytics] = useState(false);
+  const COLUMNS = useMemo(
+    () => (showAnalytics ? [...buildColumns(programs), ...buildAnalyticsColumns()] : buildColumns(programs)),
+    [programs, showAnalytics],
+  );
   const colByKey = useMemo(() => new Map(COLUMNS.map((c) => [c.key, c])), [COLUMNS]);
 
   const [filters, setFilters] = useState<Record<string, ColumnFilter>>({});
@@ -439,6 +469,9 @@ export default function CalculationsGrid({
       {/* toolbar */}
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search individual, line, account…" className="min-w-[240px] flex-1 rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5" />
+        <button type="button" onClick={() => setShowAnalytics((s) => !s)} className={`btn btn-sm ${showAnalytics ? "btn-primary" : "btn-secondary"}`}>
+          {showAnalytics ? "Hide analysis" : "Show analysis"}
+        </button>
         <button type="button" onClick={() => exportView("csv")} disabled={busy} className="rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 font-medium disabled:opacity-50">Export CSV</button>
         <button type="button" onClick={() => exportView("xlsx")} disabled={busy} className="rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 font-medium disabled:opacity-50">Export Excel</button>
         <button type="button" onClick={clearAll} disabled={!anyFilter} className="rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 font-medium disabled:opacity-40">Clear all filters</button>
