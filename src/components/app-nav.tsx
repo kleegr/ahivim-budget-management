@@ -32,6 +32,7 @@ const GROUPS: NavGroup[] = [
     items: [
       { href: "/individuals", label: "Individuals" },
       { href: "/employees", label: "Employees" },
+      { href: "/matches", label: "Name matches" },
     ],
   },
   {

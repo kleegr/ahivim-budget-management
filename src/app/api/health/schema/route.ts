@@ -3,6 +3,7 @@ import { getPool } from "@/lib/db";
 import { listTables, LEDGER_TABLE } from "@/lib/db/migrate";
 import { MIGRATIONS } from "@/lib/db/migrations.generated";
 import { ensureMigrationsApplied } from "@/lib/db/auto-migrate";
+import { ensurePostMigrationTasks } from "@/lib/db/post-migrate";
 import { apiUser } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
@@ -29,8 +30,10 @@ export async function GET() {
   let migrate: Awaited<ReturnType<typeof ensureMigrationsApplied>> | null = null;
   try {
     migrate = await ensureMigrationsApplied();
+    // One-time data tasks (e.g. the first name-match scan) after the schema is current.
+    await ensurePostMigrationTasks();
   } catch {
-    /* never let a migration attempt fail the health check */
+    /* never let a maintenance attempt fail the health check */
   }
 
   // Health is computed server-side; only the boolean crosses the public surface.
