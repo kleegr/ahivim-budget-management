@@ -1,0 +1,148 @@
+import { dec, toMoney, formatMoney, formatHours, type MoneyInput, type Decimal } from "@/lib/money";
+
+/**
+ * The Calculation-tab formula chain, reproduced exactly and step by step so a
+ * number can always be explained rather than taken on faith. Verified against
+ * the workbook (e.g. Joel Duestch: 780×21 + 860×38 + 1075×17 + 430×17 = 74,645
+ * yearly; ÷12 = 6,220.42 monthly; −23% then −28% = 3,448.60 gross-net; −300
+ * clock = 3,148.60 net).
+ *
+ * Pure and decimal-safe. Internal rates come from the caller (read from the
+ * effective-dated program_rate_schedules), never hardcoded here.
+ */
+export interface StrategyLineInput {
+  programLabel: string;
+  hours: MoneyInput;
+  internalRate: MoneyInput;
+}
+
+export interface StrategyInput {
+  lines: StrategyLineInput[];
+  monthDivisor?: MoneyInput; // default 12
+  cut1Percent?: MoneyInput; // fraction (0.24) or percent (24) — normalised
+  cut2Percent?: MoneyInput;
+  clockAdjustment?: MoneyInput;
+  otherAdjustment?: MoneyInput;
+  afterAll?: MoneyInput | null;
+}
+
+export interface StrategyStep {
+  key: string;
+  label: string;
+  formula: string;
+  value: string; // money string, 4dp
+}
+
+export interface StrategyLineGross {
+  programLabel: string;
+  hours: string;
+  rate: string;
+  gross: string;
+}
+
+export interface StrategyResult {
+  yearlyGross: string;
+  monthlyGross: string;
+  monthDivisor: string;
+  cut1Fraction: string;
+  cut1Amount: string;
+  afterCut1: string;
+  cut2Fraction: string;
+  cut2Amount: string;
+  grossNet: string; // workbook "Gross Net" (after both cuts)
+  clockAdjustment: string;
+  otherAdjustment: string;
+  net: string; // workbook "Net"
+  afterAll: string | null; // manual final figure
+  lineGross: StrategyLineGross[];
+  steps: StrategyStep[];
+}
+
+/** Accept 0.24 or 24 (or "24%") and return a fraction. Values > 1 are percents. */
+function toFraction(value: MoneyInput): Decimal {
+  if (value === null || value === undefined || value === "") return dec(0);
+  const raw = typeof value === "string" ? value.replace("%", "") : value;
+  const d = dec(raw);
+  return d.abs().greaterThan(1) ? d.dividedBy(100) : d;
+}
+
+export function computeStrategy(input: StrategyInput): StrategyResult {
+  const divisor = input.monthDivisor != null && dec(input.monthDivisor).greaterThan(0)
+    ? dec(input.monthDivisor)
+    : dec(12);
+  const cut1 = toFraction(input.cut1Percent);
+  const cut2 = toFraction(input.cut2Percent);
+  const clock = dec(input.clockAdjustment ?? 0);
+  const other = dec(input.otherAdjustment ?? 0);
+
+  const lineGross: StrategyLineGross[] = [];
+  let yearly = dec(0);
+  for (const line of input.lines) {
+    const h = dec(line.hours ?? 0);
+    const r = dec(line.internalRate ?? 0);
+    const g = h.times(r);
+    if (h.isZero() && r.isZero()) continue;
+    yearly = yearly.plus(g);
+    lineGross.push({ programLabel: line.programLabel, hours: toMoney(h), rate: toMoney(r), gross: toMoney(g) });
+  }
+
+  const monthly = yearly.dividedBy(divisor);
+  const cut1Amount = monthly.times(cut1);
+  const afterCut1 = monthly.minus(cut1Amount);
+  const cut2Amount = afterCut1.times(cut2);
+  const grossNet = afterCut1.minus(cut2Amount);
+  const net = grossNet.plus(clock).plus(other);
+  const afterAll = input.afterAll == null || input.afterAll === "" ? null : dec(input.afterAll);
+
+  const pct = (f: Decimal) => `${f.times(100).toDecimalPlaces(2).toString()}%`;
+  const yearlyFormula =
+    lineGross.length > 0
+      ? lineGross.map((l) => `${formatHours(l.hours)}h × ${formatMoney(l.rate)}`).join("  +  ")
+      : "no program hours";
+
+  const steps: StrategyStep[] = [
+    { key: "yearly_gross", label: "Yearly gross", formula: yearlyFormula, value: toMoney(yearly) },
+    { key: "monthly_gross", label: "Monthly gross", formula: `${formatMoney(yearly)} ÷ ${divisor.toString()}`, value: toMoney(monthly) },
+    { key: "cut1", label: "First cut", formula: `${formatMoney(monthly)} × ${pct(cut1)}`, value: toMoney(cut1Amount) },
+    { key: "after_cut1", label: "After first cut", formula: `${formatMoney(monthly)} − ${formatMoney(cut1Amount)}`, value: toMoney(afterCut1) },
+    { key: "cut2", label: "Second cut", formula: `${formatMoney(afterCut1)} × ${pct(cut2)}`, value: toMoney(cut2Amount) },
+    { key: "gross_net", label: "Gross net (after both cuts)", formula: `${formatMoney(afterCut1)} − ${formatMoney(cut2Amount)}`, value: toMoney(grossNet) },
+    { key: "net", label: "Net (after adjustments)", formula: `${formatMoney(grossNet)} + ${formatMoney(clock)} clock + ${formatMoney(other)} adj`, value: toMoney(net) },
+    { key: "after_all", label: "After All (final, entered)", formula: afterAll == null ? "not set" : "final configured figure", value: afterAll == null ? "" : toMoney(afterAll) },
+  ];
+
+  return {
+    yearlyGross: toMoney(yearly),
+    monthlyGross: toMoney(monthly),
+    monthDivisor: divisor.toString(),
+    cut1Fraction: cut1.toString(),
+    cut1Amount: toMoney(cut1Amount),
+    afterCut1: toMoney(afterCut1),
+    cut2Fraction: cut2.toString(),
+    cut2Amount: toMoney(cut2Amount),
+    grossNet: toMoney(grossNet),
+    clockAdjustment: toMoney(clock),
+    otherAdjustment: toMoney(other),
+    net: toMoney(net),
+    afterAll: afterAll == null ? null : toMoney(afterAll),
+    lineGross,
+    steps,
+  };
+}
+
+/**
+ * Derive the 12-month budget period from a renewal date alone:
+ * start = renewal − 12 months, end = renewal. (Renewal 2023-01-01 ⇒
+ * 2022-01-01 → 2023-01-01.) Returns ISO date strings, or nulls if no renewal.
+ */
+export function derivePeriodFromRenewal(renewalDate: string | null): {
+  start: string | null;
+  end: string | null;
+} {
+  if (!renewalDate) return { start: null, end: null };
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(renewalDate);
+  if (!m) return { start: null, end: renewalDate };
+  const year = Number(m[1]);
+  const start = `${year - 1}-${m[2]}-${m[3]}`;
+  return { start, end: `${m[1]}-${m[2]}-${m[3]}` };
+}
