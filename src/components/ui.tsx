@@ -18,13 +18,11 @@ export function Card({
   className?: string;
 }) {
   return (
-    <section
-      className={`rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] ${className}`}
-    >
+    <section className={`card overflow-hidden ${className}`}>
       {(title || action) && (
-        <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3">
+        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3.5">
           <div>
-            {title ? <h2 className="display text-base font-medium">{title}</h2> : null}
+            {title ? <h2 className="display text-[0.95rem] font-semibold text-[var(--color-ink)]">{title}</h2> : null}
             {description ? (
               <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">{description}</p>
             ) : null}
@@ -36,6 +34,13 @@ export function Card({
     </section>
   );
 }
+
+const TONE_COLOR: Record<string, string> = {
+  alert: "var(--color-danger)",
+  warn: "var(--color-warn)",
+  good: "var(--color-success)",
+  neutral: "var(--color-ink)",
+};
 
 export function StatTile({
   label,
@@ -50,25 +55,17 @@ export function StatTile({
   unavailable?: string;
   tone?: "neutral" | "warn" | "alert" | "good";
 }) {
-  const toneColor =
-    tone === "alert"
-      ? "var(--color-pace-over)"
-      : tone === "warn"
-        ? "var(--color-pace-near)"
-        : tone === "good"
-          ? "var(--color-pace-on)"
-          : "var(--color-ink)";
   return (
-    <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-3">
+    <div className="card px-4 py-3.5 transition hover:shadow-md">
       <p className="eyebrow">{label}</p>
       {unavailable ? (
         <>
-          <p className="mt-1 text-sm font-medium text-[var(--color-ink-faint)]">Not available</p>
+          <p className="mt-1.5 text-sm font-medium text-[var(--color-ink-faint)]">Not available</p>
           <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{unavailable}</p>
         </>
       ) : (
         <>
-          <p className="tnum mt-1 text-xl font-semibold" style={{ color: toneColor }}>
+          <p className="tnum mt-1 text-[1.35rem] font-semibold leading-tight" style={{ color: TONE_COLOR[tone] }}>
             {value}
           </p>
           {hint ? <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{hint}</p> : null}
@@ -109,12 +106,10 @@ export function EmptyState({
   action?: ReactNode;
 }) {
   return (
-    <div className="px-5 py-10 text-center">
-      <p className="display text-sm font-medium">{title}</p>
+    <div className="px-5 py-12 text-center">
+      <p className="display text-[0.95rem] font-semibold">{title}</p>
       {children ? (
-        <div className="mx-auto mt-2 max-w-prose text-sm text-[var(--color-ink-soft)]">
-          {children}
-        </div>
+        <div className="mx-auto mt-1.5 max-w-prose text-sm text-[var(--color-ink-soft)]">{children}</div>
       ) : null}
       {action ? <div className="mt-4">{action}</div> : null}
     </div>
@@ -125,42 +120,36 @@ export function ErrorPanel({ title, children }: { title: string; children?: Reac
   return (
     <div
       role="alert"
-      className="rounded-lg border border-[var(--color-pace-over)] bg-[#fdf2f5] px-5 py-4"
+      className="rounded-xl border border-[var(--color-rule)] border-l-4 border-l-[var(--color-danger)] bg-[var(--color-danger-soft)] px-5 py-4"
     >
-      <p className="text-sm font-medium text-[var(--color-pace-over)]">{title}</p>
-      {children ? (
-        <div className="mt-1 text-sm text-[var(--color-ink-soft)]">{children}</div>
-      ) : null}
+      <p className="text-sm font-semibold text-[var(--color-danger)]">{title}</p>
+      {children ? <div className="mt-1 text-sm text-[var(--color-ink-soft)]">{children}</div> : null}
     </div>
   );
 }
 
-const BADGE_TONES: Record<string, string> = {
-  valid: "bg-[var(--color-primary-soft)] text-[var(--color-primary)]",
-  committed: "bg-[var(--color-primary-soft)] text-[var(--color-primary)]",
-  staged: "bg-[#eef2ff] text-[var(--color-pace-behind)]",
-  pending: "bg-[#eef2ff] text-[var(--color-pace-behind)]",
-  needs_review: "bg-[#fff4ed] text-[var(--color-pace-near)]",
-  duplicate: "bg-[#fdf2f5] text-[var(--color-pace-over)]",
-  invalid: "bg-[#fdf2f5] text-[var(--color-pace-over)]",
-  discarded: "bg-[var(--color-rule)] text-[var(--color-ink-soft)]",
-  open: "bg-[#fff4ed] text-[var(--color-pace-near)]",
-  // Group-detection classifications and reconciliation match labels.
-  confirmed: "bg-[var(--color-primary-soft)] text-[var(--color-primary)]",
-  exact: "bg-[var(--color-primary-soft)] text-[var(--color-primary)]",
-  probable: "bg-[#eef2ff] text-[var(--color-pace-behind)]",
-  not_a_group: "bg-[var(--color-rule)] text-[var(--color-ink-soft)]",
-  requires_review: "bg-[#fff4ed] text-[var(--color-pace-near)]",
-  hours_mismatch: "bg-[#fff4ed] text-[var(--color-pace-near)]",
-  amount_mismatch: "bg-[#fff4ed] text-[var(--color-pace-near)]",
-  employee_mismatch: "bg-[#fdf2f5] text-[var(--color-pace-over)]",
-  program_mismatch: "bg-[#fdf2f5] text-[var(--color-pace-over)]",
+// Semantic → (background, text) using the soft tokens; every badge gets a dot.
+const BADGE_TONES: Record<string, "good" | "info" | "warn" | "danger" | "muted"> = {
+  valid: "good", committed: "good", confirmed: "good", exact: "good", approved: "good", balanced: "good",
+  staged: "info", pending: "info", probable: "info", review: "info",
+  needs_review: "warn", open: "warn", requires_review: "warn", hours_mismatch: "warn", amount_mismatch: "warn",
+  duplicate: "danger", invalid: "danger", employee_mismatch: "danger", program_mismatch: "danger", rejected: "danger",
+  discarded: "muted", not_a_group: "muted", archived: "muted",
+};
+
+const TONE_STYLE: Record<string, string> = {
+  good: "bg-[var(--color-success-soft)] text-[var(--color-success)]",
+  info: "bg-[var(--color-info-soft)] text-[var(--color-info)]",
+  warn: "bg-[var(--color-warn-soft)] text-[var(--color-warn)]",
+  danger: "bg-[var(--color-danger-soft)] text-[var(--color-danger)]",
+  muted: "bg-[var(--color-surface-strong)] text-[var(--color-ink-soft)]",
 };
 
 export function Badge({ value, label }: { value: string; label?: string }) {
-  const tone = BADGE_TONES[value] ?? "bg-[var(--color-rule)] text-[var(--color-ink-soft)]";
+  const tone = BADGE_TONES[value] ?? "muted";
   return (
-    <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${tone}`}>
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${TONE_STYLE[tone]}`}>
+      <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
       {label ?? value.replace(/_/g, " ")}
     </span>
   );
@@ -201,11 +190,11 @@ export function Table({
   caption?: string;
 }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="scroll-thin overflow-x-auto">
       <table className="w-full border-collapse text-sm">
         {caption ? <caption className="sr-only">{caption}</caption> : null}
         <thead>
-          <tr className="border-b border-[var(--color-rule)] text-left">{head}</tr>
+          <tr className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-left">{head}</tr>
         </thead>
         <tbody>{children}</tbody>
       </table>
@@ -225,7 +214,7 @@ export function Th({
   return (
     <th
       scope={scope}
-      className={`px-4 py-2 text-xs font-semibold tracking-wide text-[var(--color-ink-faint)] uppercase ${
+      className={`px-4 py-2.5 text-[0.6875rem] font-semibold tracking-wide text-[var(--color-ink-faint)] uppercase ${
         numeric ? "text-right" : "text-left"
       }`}
     >
@@ -244,12 +233,16 @@ export function Td({
   className?: string;
 }) {
   return (
-    <td className={`px-4 py-2 align-top ${numeric ? "text-right" : ""} ${className}`}>{children}</td>
+    <td className={`px-4 py-2.5 align-top ${numeric ? "text-right tnum" : ""} ${className}`}>{children}</td>
   );
 }
 
 export function Tr({ children }: { children: ReactNode }) {
-  return <tr className="border-b border-[var(--color-rule)] last:border-0">{children}</tr>;
+  return (
+    <tr className="border-b border-[var(--color-rule)] transition-colors last:border-0 hover:bg-[var(--color-surface-muted)]">
+      {children}
+    </tr>
+  );
 }
 
 export function PageHeader({
@@ -267,9 +260,9 @@ export function PageHeader({
     <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div>
         {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
-        <h1 className="display mt-0.5 text-2xl font-medium">{title}</h1>
+        <h1 className="display mt-1 text-[1.6rem] font-semibold leading-tight">{title}</h1>
         {description ? (
-          <p className="mt-1 max-w-prose text-sm text-[var(--color-ink-soft)]">{description}</p>
+          <p className="mt-1.5 max-w-2xl text-sm text-[var(--color-ink-soft)]">{description}</p>
         ) : null}
       </div>
       {action}
@@ -284,14 +277,10 @@ export function ButtonLink({
 }: {
   href: string;
   children: ReactNode;
-  variant?: "primary" | "secondary";
+  variant?: "primary" | "secondary" | "ghost" | "danger";
 }) {
-  const style =
-    variant === "primary"
-      ? "bg-[var(--color-primary)] text-white"
-      : "border border-[var(--color-rule-strong)] bg-white text-[var(--color-ink)]";
   return (
-    <Link className={`inline-block rounded px-3 py-1.5 text-sm font-medium ${style}`} href={href}>
+    <Link className={`btn btn-sm btn-${variant}`} href={href}>
       {children}
     </Link>
   );
@@ -329,9 +318,7 @@ export function Pagination({
         {from}–{to} of {total}
       </p>
       <div className="flex gap-2">
-        {offset > 0 ? (
-          <ButtonLink href={build(Math.max(0, offset - limit))}>Previous</ButtonLink>
-        ) : null}
+        {offset > 0 ? <ButtonLink href={build(Math.max(0, offset - limit))}>Previous</ButtonLink> : null}
         {to < total ? <ButtonLink href={build(offset + limit)}>Next</ButtonLink> : null}
       </div>
     </nav>
