@@ -207,7 +207,10 @@ export default function CalculationsGrid({
   const [search, setSearch] = useState("");
   const [openFilter, setOpenFilter] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ rowId: string; colKey: string } | null>(null);
+  const [active, setActive] = useState<{ row: number; col: number } | null>(null);
+  const [selEnd, setSelEnd] = useState<{ row: number; col: number } | null>(null);
   const [drawerId, setDrawerId] = useState<string | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [addFor, setAddFor] = useState("");
@@ -318,6 +321,136 @@ export default function CalculationsGrid({
     },
     [router],
   );
+
+  /* ---- multi-cell selection, copy & paste (Excel-style) ---- */
+  const selBounds = useMemo(() => {
+    if (!active) return null;
+    const end = selEnd ?? active;
+    return {
+      r0: Math.min(active.row, end.row),
+      r1: Math.max(active.row, end.row),
+      c0: Math.min(active.col, end.col),
+      c1: Math.max(active.col, end.col),
+    };
+  }, [active, selEnd]);
+
+  const inSelection = (r: number, c: number) =>
+    !!selBounds && r >= selBounds.r0 && r <= selBounds.r1 && c >= selBounds.c0 && c <= selBounds.c1;
+
+  const mergePatch = (target: Record<string, unknown>, addition: Record<string, unknown>) => {
+    for (const [k, v] of Object.entries(addition)) {
+      if (k === "hours" && target.hours) {
+        target.hours = { ...(target.hours as Record<string, unknown>), ...(v as Record<string, unknown>) };
+      } else {
+        target[k] = v;
+      }
+    }
+    return target;
+  };
+
+  const saveCells = useCallback(
+    async (edits: { rowId: string; body: Record<string, unknown> }[]) => {
+      if (edits.length === 0) return;
+      setBusy(true);
+      setNotice(null);
+      try {
+        const byRow = new Map<string, Record<string, unknown>>();
+        for (const e of edits) byRow.set(e.rowId, mergePatch(byRow.get(e.rowId) ?? {}, e.body));
+        for (const [rowId, body] of byRow) {
+          const res = await fetch(`/api/calculation-strategies/${rowId}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const j = await res.json().catch(() => ({}));
+          if (!res.ok || j.ok === false) throw new Error(j.error ?? "Could not save pasted values.");
+        }
+        setNotice(`Updated ${byRow.size} row${byRow.size === 1 ? "" : "s"} from paste.`);
+        router.refresh();
+      } catch (e) {
+        setNotice(e instanceof Error ? e.message : "Paste failed.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [router],
+  );
+
+  const copySelection = useCallback(() => {
+    if (!selBounds) return;
+    const lines: string[] = [];
+    for (let r = selBounds.r0; r <= selBounds.r1; r++) {
+      const cells: string[] = [];
+      for (let c = selBounds.c0; c <= selBounds.c1; c++) {
+        const col = COLUMNS[c];
+        const row = sorted[r];
+        cells.push(col && row ? col.get(row) ?? "" : "");
+      }
+      lines.push(cells.join("\t"));
+    }
+    navigator.clipboard
+      ?.writeText(lines.join("\n"))
+      .then(() => setNotice(`Copied ${selBounds.r1 - selBounds.r0 + 1} × ${selBounds.c1 - selBounds.c0 + 1} cells.`))
+      .catch(() => {});
+  }, [selBounds, sorted, COLUMNS]);
+
+  const pasteBlock = useCallback(
+    (text: string) => {
+      if (!canManage || !active) return;
+      const matrix = text.replace(/\r/g, "").replace(/\n$/, "").split("\n").map((l) => l.split("\t"));
+      const edits: { rowId: string; body: Record<string, unknown> }[] = [];
+      let skipped = 0;
+      for (let di = 0; di < matrix.length; di++) {
+        const row = sorted[active.row + di];
+        if (!row) break;
+        for (let dj = 0; dj < matrix[di]!.length; dj++) {
+          const col = COLUMNS[active.col + dj];
+          if (!col) continue;
+          if (!col.editable || !col.patch) {
+            skipped++;
+            continue;
+          }
+          edits.push({ rowId: row.id, body: col.patch(matrix[di]![dj]!.trim()) as Record<string, unknown> });
+        }
+      }
+      if (edits.length === 0) {
+        setNotice(skipped ? "Those cells are read-only — paste onto editable columns." : "Nothing to paste.");
+        return;
+      }
+      saveCells(edits);
+    },
+    [canManage, active, sorted, COLUMNS, saveCells],
+  );
+
+  const onGridKeyDown = (e: React.KeyboardEvent) => {
+    if (editing || !active) return;
+    const move = (dr: number, dc: number, extend: boolean) => {
+      e.preventDefault();
+      const nr = Math.min(Math.max(0, active.row + dr), sorted.length - 1);
+      const nc = Math.min(Math.max(0, active.col + dc), COLUMNS.length - 1);
+      if (extend) setSelEnd({ row: nr, col: nc });
+      else {
+        setActive({ row: nr, col: nc });
+        setSelEnd(null);
+      }
+    };
+    if (e.key === "ArrowDown") move(1, 0, e.shiftKey);
+    else if (e.key === "ArrowUp") move(-1, 0, e.shiftKey);
+    else if (e.key === "ArrowLeft") move(0, -1, e.shiftKey);
+    else if (e.key === "ArrowRight") move(0, 1, e.shiftKey);
+    else if (e.key === "Enter" || e.key === "F2") {
+      const col = COLUMNS[active.col];
+      const row = sorted[active.row];
+      if (canManage && col?.editable && row) {
+        e.preventDefault();
+        setEditing({ rowId: row.id, colKey: col.key });
+      }
+    } else if (e.key === "Escape") setSelEnd(null);
+    else if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) {
+      e.preventDefault();
+      copySelection();
+    }
+  };
 
   const toggleSort = (key: string, additive: boolean) => {
     setSort((prev) => {
@@ -468,13 +601,13 @@ export default function CalculationsGrid({
     <div className="space-y-3">
       {/* toolbar */}
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search individual, line, account…" className="min-w-[240px] flex-1 rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5" />
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search individual, line, account…" className="input min-w-[240px] flex-1" />
         <button type="button" onClick={() => setShowAnalytics((s) => !s)} className={`btn btn-sm ${showAnalytics ? "btn-primary" : "btn-secondary"}`}>
           {showAnalytics ? "Hide analysis" : "Show analysis"}
         </button>
-        <button type="button" onClick={() => exportView("csv")} disabled={busy} className="rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 font-medium disabled:opacity-50">Export CSV</button>
-        <button type="button" onClick={() => exportView("xlsx")} disabled={busy} className="rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 font-medium disabled:opacity-50">Export Excel</button>
-        <button type="button" onClick={clearAll} disabled={!anyFilter} className="rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 font-medium disabled:opacity-40">Clear all filters</button>
+        <button type="button" onClick={() => exportView("csv")} disabled={busy} className="btn btn-sm btn-secondary disabled:opacity-50">Export CSV</button>
+        <button type="button" onClick={() => exportView("xlsx")} disabled={busy} className="btn btn-sm btn-secondary disabled:opacity-50">Export Excel</button>
+        <button type="button" onClick={clearAll} disabled={!anyFilter} className="btn btn-sm btn-secondary disabled:opacity-40">Clear all filters</button>
         {canManage && (
           <span className="ml-auto inline-flex items-center gap-1">
             <select value={addFor} onChange={(e) => setAddFor(e.target.value)} className="rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1.5">
@@ -483,7 +616,7 @@ export default function CalculationsGrid({
                 <option key={i.id} value={i.id}>{i.name}</option>
               ))}
             </select>
-            <button type="button" onClick={addStrategy} disabled={busy || !addFor} className="rounded bg-[var(--color-primary)] px-2.5 py-1.5 font-medium text-white disabled:opacity-50">Add</button>
+            <button type="button" onClick={addStrategy} disabled={busy || !addFor} className="btn btn-sm btn-primary disabled:opacity-50">Add</button>
           </span>
         )}
       </div>
@@ -501,7 +634,7 @@ export default function CalculationsGrid({
         {canManage && (
           <span className="ml-auto inline-flex items-center gap-1">
             <input value={viewName} onChange={(e) => setViewName(e.target.value)} placeholder="Name this view" className="w-36 rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1" />
-            <button type="button" onClick={saveView} disabled={busy || !viewName.trim()} className="rounded bg-[var(--color-primary)] px-2.5 py-1 font-medium text-white disabled:opacity-50">Save view</button>
+            <button type="button" onClick={saveView} disabled={busy || !viewName.trim()} className="btn btn-sm btn-primary disabled:opacity-50">Save view</button>
           </span>
         )}
       </div>
@@ -510,7 +643,22 @@ export default function CalculationsGrid({
       {!canManage && <div className="rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-1.5 text-sm text-[var(--color-text-soft)]">You have read-only access. Editing is available to managers.</div>}
 
       {/* grid */}
-      <div className="relative max-h-[64vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
+      {canManage && (
+        <p className="text-xs text-[var(--color-text-soft)]">
+          Tip: click a cell to select, drag-select with Shift-click or arrow keys, <kbd className="rounded border border-[var(--color-rule-strong)] px-1">Ctrl/⌘+C</kbd> to copy, and paste a block from Excel with <kbd className="rounded border border-[var(--color-rule-strong)] px-1">Ctrl/⌘+V</kbd>. Double-click or <kbd className="rounded border border-[var(--color-rule-strong)] px-1">Enter</kbd> to edit.
+        </p>
+      )}
+      <div
+        ref={gridRef}
+        tabIndex={0}
+        onKeyDown={onGridKeyDown}
+        onPaste={(e) => {
+          if (!canManage || !active) return;
+          e.preventDefault();
+          pasteBlock(e.clipboardData.getData("text/plain"));
+        }}
+        className="scroll-thin relative max-h-[64vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)] outline-none focus:ring-2 focus:ring-[var(--color-primary-soft)]"
+      >
         <table className="border-collapse text-sm" style={{ tableLayout: "auto" }}>
           <thead className="sticky top-0 z-20">
             <tr>
@@ -518,7 +666,7 @@ export default function CalculationsGrid({
                 const sortIdx = sort.findIndex((s) => s.key === c.key);
                 const s = sort[sortIdx];
                 const isFrozen = c.key in frozenLeft;
-                const active = filterActive(c, filters[c.key]);
+                const hasFilter = filterActive(c, filters[c.key]);
                 return (
                   <th key={c.key} className="relative whitespace-nowrap border-b border-r border-[var(--color-rule-strong)] bg-[var(--color-surface-strong,#f1efe9)] px-2 py-1.5 text-left align-bottom font-semibold" style={isFrozen ? { position: "sticky", left: frozenLeft[c.key], zIndex: 30, minWidth: c.key === "individual" ? 170 : 130 } : undefined}>
                     <div className="flex items-center gap-1">
@@ -526,7 +674,7 @@ export default function CalculationsGrid({
                         {c.header}
                         {s && <span className="ml-1 text-[10px] text-[var(--color-primary)]">{s.dir === "asc" ? "▲" : "▼"}{sort.length > 1 ? sortIdx + 1 : ""}</span>}
                       </button>
-                      <button type="button" aria-label={`Filter ${c.header}`} onClick={() => setOpenFilter((k) => (k === c.key ? null : c.key))} className={`shrink-0 rounded px-1 text-xs ${active ? "bg-[var(--color-primary)] text-white" : "text-[var(--color-text-soft)] hover:bg-black/5"}`}>▾</button>
+                      <button type="button" aria-label={`Filter ${c.header}`} onClick={() => setOpenFilter((k) => (k === c.key ? null : c.key))} className={`shrink-0 rounded px-1 text-xs ${hasFilter ? "bg-[var(--color-primary)] text-white" : "text-[var(--color-text-soft)] hover:bg-black/5"}`}>▾</button>
                     </div>
                     {openFilter === c.key && (
                       <FilterPopover col={c} filter={filters[c.key]} values={valueCounts} onChange={(p) => setFilter(c.key, p)} onClear={() => setFilter(c.key, null)} onClose={() => setOpenFilter(null)} />
@@ -538,19 +686,30 @@ export default function CalculationsGrid({
             </tr>
           </thead>
           <tbody>
-            {sorted.map((r) => (
+            {sorted.map((r, ri) => (
               <tr key={r.id} className="hover:bg-black/[0.02]">
-                {visibleCols.map((c) => {
+                {visibleCols.map((c, ci) => {
                   const isFrozen = c.key in frozenLeft;
                   const numeric = NUMERIC.has(c.type);
                   const isEditing = editing?.rowId === r.id && editing?.colKey === c.key;
                   const canEdit = canManage && c.editable;
+                  const isActive = active?.row === ri && active?.col === ci;
+                  const selected = inSelection(ri, ci);
+                  const frozenBg = isActive ? "var(--color-primary-tint)" : selected ? "var(--color-primary-soft)" : "white";
                   return (
                     <td
                       key={c.key}
-                      onClick={() => canEdit && !isEditing && setEditing({ rowId: r.id, colKey: c.key })}
-                      className={`whitespace-nowrap border-b border-r border-[var(--color-rule)] px-2 py-1 ${numeric ? "text-right tabular-nums" : "text-left"} ${canEdit ? "cursor-text" : ""} ${c.type === "computed" ? "bg-[var(--color-surface)] text-[var(--color-text-soft)]" : ""}`}
-                      style={isFrozen ? { position: "sticky", left: frozenLeft[c.key], zIndex: 10, background: "white", minWidth: c.key === "individual" ? 170 : 130 } : undefined}
+                      onClick={(e) => {
+                        if (e.shiftKey && active) setSelEnd({ row: ri, col: ci });
+                        else {
+                          setActive({ row: ri, col: ci });
+                          setSelEnd(null);
+                        }
+                        gridRef.current?.focus();
+                      }}
+                      onDoubleClick={() => canEdit && setEditing({ rowId: r.id, colKey: c.key })}
+                      className={`relative whitespace-nowrap border-b border-r px-2 py-1 ${numeric ? "text-right tabular-nums" : "text-left"} ${canEdit ? "cursor-cell" : "cursor-default"} ${c.type === "computed" ? "text-[var(--color-text-soft)]" : ""} ${isActive ? "border-[var(--color-primary)] ring-1 ring-inset ring-[var(--color-primary)]" : "border-[var(--color-rule)]"} ${selected && !isActive ? "bg-[var(--color-primary-soft)]" : c.type === "computed" ? "bg-[var(--color-surface-muted)]" : ""}`}
+                      style={isFrozen ? { position: "sticky", left: frozenLeft[c.key], zIndex: 10, background: frozenBg, minWidth: c.key === "individual" ? 170 : 130 } : undefined}
                       title={c.key === "renewalDate" && r.periodStart ? `Budget period: ${r.periodStart} → ${r.periodEnd}` : undefined}
                     >
                       {c.key === "individual" ? (
