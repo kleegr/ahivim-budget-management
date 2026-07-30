@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { hasTestDatabase, testPool, resetSchema, truncateBusinessTables, closeTestPool } from "../support/database";
 import type { PgLikePool } from "@/lib/import/commit";
@@ -7,20 +7,26 @@ import { listTransactionsForGrid } from "@/lib/data/transactions-grid";
 import { computeGridTotals } from "@/lib/business/transaction-totals";
 import { closeEnough } from "@/lib/money";
 
-const suite = hasTestDatabase ? describe : describe.skip;
-let pool: PgLikePool;
-
+// The row-level fixture is derived from the client's workbook and contains real
+// payroll PII (names, amounts, check numbers), so it is NOT committed. Generate
+// it locally with `python3 tests/fixtures/build-workbook-parity.py <wb>.xlsx`
+// alongside a small companion export, or from the workbook directly. When it is
+// absent the suite skips cleanly; `workbook-parity.json` (aggregates only, no
+// per-person rows) is committed and drives the expected totals.
 type Row = (string | number | null)[];
-const rowsFx = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/ahivim-rows.json", import.meta.url)), "utf8")) as { fields: string[]; rows: Row[] };
+const rowsPath = fileURLToPath(new URL("../fixtures/ahivim-rows.json", import.meta.url));
+const hasRowFixture = existsSync(rowsPath);
+const suite = hasTestDatabase && hasRowFixture ? describe : describe.skip;
+let pool: PgLikePool;
+let rowsFx: { fields: string[]; rows: Row[] };
+let F: Record<string, number>;
+
 const parity = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/workbook-parity.json", import.meta.url)), "utf8")) as {
   ahivim: {
     totals: { gross: string; internal: string; agencyAdditional: string; netOnce: string; transactions: number; checks: number; individuals: number; employees: number };
     byProgram: Record<string, { gross: string; internal: string; agencyAdditional: string; netOnce: string; transactions: number; checks: number }>;
   };
 };
-
-// column indices in the fixture rows
-const F = Object.fromEntries(rowsFx.fields.map((n, i) => [n, i])) as Record<string, number>;
 
 async function loadWorkbook() {
   // Bulk-insert all rows in one round-trip via UNNEST. Only raw import fields +
@@ -45,6 +51,8 @@ async function loadWorkbook() {
 
 suite("Transactions workspace — workbook parity at full scale (3,069 rows)", () => {
   beforeAll(async () => {
+    rowsFx = JSON.parse(readFileSync(rowsPath, "utf8")) as { fields: string[]; rows: Row[] };
+    F = Object.fromEntries(rowsFx.fields.map((n, i) => [n, i]));
     await resetSchema();
     pool = testPool();
     await truncateBusinessTables();
