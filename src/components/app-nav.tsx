@@ -5,18 +5,19 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import type { AuthenticatedUser } from "@/lib/auth/session";
 
+// The two spreadsheet workspaces lead; everything else supports them.
 const LINKS = [
   { href: "/dashboard", label: "Dashboard" },
+  { href: "/transactions", label: "Transactions" },
+  { href: "/calculations", label: "Calculations" },
+  { href: "/schedule", label: "Schedule" },
   { href: "/imports", label: "Imports" },
+  { href: "/reconciliation", label: "Reconciliation" },
   { href: "/individuals", label: "Individuals" },
   { href: "/employees", label: "Employees" },
-  { href: "/schedule", label: "Schedule" },
-  { href: "/reconciliation", label: "Reconciliation" },
-  { href: "/calculations", label: "Calculations" },
-  { href: "/transactions", label: "Transactions" },
+  { href: "/reports", label: "Reports" },
   { href: "/exceptions", label: "Exceptions" },
   { href: "/aliases", label: "Aliases" },
-  { href: "/reports", label: "Reports" },
   { href: "/settings", label: "Settings" },
 ];
 
