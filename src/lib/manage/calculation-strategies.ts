@@ -7,6 +7,8 @@ import {
   derivePeriodFromRenewal,
   type StrategyResult,
 } from "@/lib/business/calculation-strategy";
+import { calculatePeriodElapsed } from "@/lib/business/utilization";
+import { calculateForecast } from "@/lib/business/forecast";
 
 /**
  * Services for calculation strategies — the editable "Calculations" workspace.
@@ -48,6 +50,29 @@ export interface StrategyGridRow {
   grossNet: string;
   net: string;
   revisionCount: number;
+  analytics?: StrategyAnalytics;
+}
+
+/**
+ * Live actual-vs-plan analytics for a strategy, joined from the billed ledger
+ * and the schedule. Actuals reflect the strategy's canonical individual — so a
+ * merged (name-matched) person's transactions count here, which is the whole
+ * point of connecting the two workspaces.
+ */
+export interface StrategyAnalytics {
+  plannedHours: string; // Σ program-line hours
+  actualHours: string; // billed
+  actualInternal: string;
+  scheduledHours: string; // pending schedule
+  scheduledInternal: string;
+  remainingHours: string; // planned − actual − scheduled
+  utilizationPercent: string | null; // actual / planned (fraction)
+  committedPercent: string | null; // (actual + scheduled) / planned
+  projectedExhaustion: string | null; // forecast date, when derivable
+  workbookValue: string | null; // the workbook's After All (entered final figure)
+  systemValue: string; // the system's step-by-step Net
+  difference: string | null; // workbook − system
+  warnings: string[];
 }
 
 interface RateScheduleRow {
@@ -88,7 +113,7 @@ export async function listProgramRates(pool: PgLikePool, asOf?: string | null): 
 
 export async function listStrategies(
   pool: PgLikePool,
-  opts: { individualId?: string; includeArchived?: boolean } = {},
+  opts: { individualId?: string; includeArchived?: boolean; withAnalytics?: boolean } = {},
 ): Promise<{ rows: StrategyGridRow[]; programs: ProgramRate[] }> {
   const params: unknown[] = [];
   const where: string[] = [];
@@ -198,7 +223,104 @@ export async function listStrategies(
     };
   });
 
+  if (opts.withAnalytics && rows.length > 0) {
+    await attachStrategyAnalytics(pool, rows);
+  }
   return { rows, programs };
+}
+
+/** Bulk actual-vs-plan analytics for a set of strategy rows (2 aggregate queries). */
+async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]): Promise<void> {
+  const individualIds = [...new Set(rows.map((r) => r.individualId))];
+
+  // Billed actuals per (individual, program) — the workbook rows are per-individual.
+  const billed = await pool.query<{ individual_id: string; program_id: string; hours: string; internal: string }>(
+    `SELECT individual_id, program_id,
+            COALESCE(sum(imported_hours),0)::text AS hours,
+            COALESCE(sum(COALESCE(calculated_internal_amount, spreadsheet_internal_amount,
+                     internal_rate_applied * imported_hours, 0)),0)::text AS internal
+       FROM payroll_transactions
+      WHERE individual_id = ANY($1::uuid[]) AND program_id IS NOT NULL
+      GROUP BY individual_id, program_id`,
+    [individualIds],
+  );
+  // Pending scheduled per (individual, program).
+  const scheduled = await pool.query<{ individual_id: string; program_id: string; hours: string; internal: string }>(
+    `SELECT sa.individual_id, ss.program_id,
+            COALESCE(sum(sa.allocation_hours),0)::text AS hours,
+            COALESCE(sum(sa.allocated_amount),0)::text AS internal
+       FROM scheduled_allocations sa
+       JOIN scheduled_sessions ss ON ss.id = sa.scheduled_session_id
+      WHERE sa.individual_id = ANY($1::uuid[]) AND ss.status = 'pending' AND ss.program_id IS NOT NULL
+      GROUP BY sa.individual_id, ss.program_id`,
+    [individualIds],
+  );
+
+  const key = (i: string, p: string) => `${i}:${p}`;
+  const billedMap = new Map<string, { hours: string; internal: string }>();
+  for (const r of billed.rows) billedMap.set(key(r.individual_id, r.program_id), { hours: r.hours, internal: r.internal });
+  const schedMap = new Map<string, { hours: string; internal: string }>();
+  for (const r of scheduled.rows) schedMap.set(key(r.individual_id, r.program_id), { hours: r.hours, internal: r.internal });
+
+  for (const row of rows) {
+    const programIds = Object.keys(row.hours);
+    let planned = dec(0);
+    let actualH = dec(0), actualI = dec(0), schedH = dec(0), schedI = dec(0);
+    for (const pid of programIds) {
+      planned = planned.plus(dec(row.hours[pid] ?? 0));
+      const b = billedMap.get(key(row.individualId, pid));
+      if (b) { actualH = actualH.plus(dec(b.hours)); actualI = actualI.plus(dec(b.internal)); }
+      const s = schedMap.get(key(row.individualId, pid));
+      if (s) { schedH = schedH.plus(dec(s.hours)); schedI = schedI.plus(dec(s.internal)); }
+    }
+    const remaining = planned.minus(actualH).minus(schedH);
+    const util = planned.greaterThan(0) ? actualH.dividedBy(planned) : null;
+    const committed = planned.greaterThan(0) ? actualH.plus(schedH).dividedBy(planned) : null;
+
+    // Forecast projected exhaustion, when the period has run long enough to be meaningful.
+    let projectedExhaustion: string | null = null;
+    if (row.periodStart && row.periodEnd && planned.greaterThan(0) && actualH.greaterThan(0)) {
+      try {
+        const elapsed = calculatePeriodElapsed({ startDate: row.periodStart, endDate: row.periodEnd });
+        const observationCount = billedMap.has(key(row.individualId, programIds[0] ?? "")) ? 4 : 0;
+        const f = calculateForecast({
+          authorizedHours: toHours(planned),
+          usedHours: toHours(actualH),
+          elapsed,
+          periodStartDate: row.periodStart,
+          observationCount: Math.max(observationCount, 3),
+        });
+        if (f.available) projectedExhaustion = f.estimatedExhaustionDate;
+      } catch {
+        /* forecast is best-effort */
+      }
+    }
+
+    const warnings: string[] = [];
+    if (committed && committed.greaterThan(1)) warnings.push("over-budget");
+    if (util && util.isZero() && planned.greaterThan(0)) warnings.push("no actuals yet");
+    if (remaining.isNegative()) warnings.push("plan exceeded");
+
+    const workbookValue = row.afterAll;
+    const systemValue = row.net;
+    const difference = workbookValue == null ? null : toMoney(dec(workbookValue).minus(dec(systemValue)));
+
+    row.analytics = {
+      plannedHours: toHours(planned),
+      actualHours: toHours(actualH),
+      actualInternal: toMoney(actualI),
+      scheduledHours: toHours(schedH),
+      scheduledInternal: toMoney(schedI),
+      remainingHours: toHours(remaining),
+      utilizationPercent: util ? util.toString() : null,
+      committedPercent: committed ? committed.toString() : null,
+      projectedExhaustion,
+      workbookValue,
+      systemValue,
+      difference,
+      warnings,
+    };
+  }
 }
 
 /** Full step-by-step calculation for one strategy — powers the formula panel. */
