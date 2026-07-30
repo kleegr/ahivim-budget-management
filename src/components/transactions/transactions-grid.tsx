@@ -425,12 +425,12 @@ export default function TransactionsGrid({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search individual, employee, program, pay to, check #…"
-          className="min-w-[260px] flex-1 rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5"
+          className="input min-w-[260px] flex-1"
         />
         <button
           type="button"
           onClick={() => setShowCols((s) => !s)}
-          className="rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 font-medium"
+          className="btn btn-sm btn-secondary"
         >
           Columns ({visibleCols.length})
         </button>
@@ -439,7 +439,7 @@ export default function TransactionsGrid({
             type="button"
             onClick={() => exportView("csv")}
             disabled={busy}
-            className="rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 font-medium disabled:opacity-50"
+            className="btn btn-sm btn-secondary disabled:opacity-50"
           >
             Export CSV
           </button>
@@ -448,7 +448,7 @@ export default function TransactionsGrid({
           type="button"
           onClick={() => exportView("xlsx")}
           disabled={busy}
-          className="rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 font-medium disabled:opacity-50"
+          className="btn btn-sm btn-secondary disabled:opacity-50"
         >
           Export Excel
         </button>
@@ -456,7 +456,7 @@ export default function TransactionsGrid({
           type="button"
           onClick={clearAll}
           disabled={!anyFilter}
-          className="rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 font-medium disabled:opacity-40"
+          className="btn btn-sm btn-secondary disabled:opacity-40"
         >
           Clear all filters
         </button>
@@ -486,7 +486,7 @@ export default function TransactionsGrid({
               placeholder="Name this view"
               className="w-36 rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1"
             />
-            <button type="button" onClick={saveView} disabled={busy || !viewName.trim()} className="rounded bg-[var(--color-primary)] px-2.5 py-1 font-medium text-white disabled:opacity-50">
+            <button type="button" onClick={saveView} disabled={busy || !viewName.trim()} className="btn btn-sm btn-primary disabled:opacity-50">
               Save view
             </button>
           </span>
