@@ -35,19 +35,11 @@ export interface MatchCandidate {
 
 const AUTO_MIN = 0.88;
 const AUTO_TOKEN_MIN = 0.8;
-const REVIEW_MIN = 0.74;
-const SURNAME_TOKEN_MIN = 0.86;
-
-function bestTokenPair(a: string[], b: string[]): { sim: number; aTok: string; bTok: string } {
-  let best = { sim: 0, aTok: "", bTok: "" };
-  for (const x of a) {
-    for (const y of b) {
-      const s = similarity(x, y);
-      if (s > best.sim) best = { sim: s, aTok: x, bTok: y };
-    }
-  }
-  return best;
-}
+// Require the WHOLE name to be similar to queue a review. A merely-shared surname
+// is not enough — otherwise every pair of siblings (Yaakov vs Yoel Neuwirth) would
+// be flagged. Genuine spelling variants of a full name (Duestch vs Deutsch ≈ 0.75)
+// clear this bar; clearly-different first names do not.
+const REVIEW_MIN = 0.72;
 
 export interface PairScore {
   score: number;
@@ -60,7 +52,6 @@ export function scorePair(aName: string, bName: string): PairScore {
   const score = similarity(aName, bName);
   const ta = aName.split(" ").filter(Boolean);
   const tb = bName.split(" ").filter(Boolean);
-  const token = bestTokenPair(ta, tb);
 
   // Single-token typo: same token count, exactly one position differs.
   if (ta.length === tb.length) {
@@ -82,13 +73,6 @@ export function scorePair(aName: string, bName: string): PairScore {
 
   if (score >= REVIEW_MIN) {
     return { score, kind: "review", reason: `Names are ${(score * 100).toFixed(0)}% similar overall.` };
-  }
-  if (token.sim >= SURNAME_TOKEN_MIN) {
-    return {
-      score: Math.max(score, token.sim * 0.9),
-      kind: "review",
-      reason: `Shares a near-identical name part (“${token.aTok}” ≈ “${token.bTok}”).`,
-    };
   }
   return { score, kind: "none", reason: "" };
 }

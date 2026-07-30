@@ -13,7 +13,7 @@ export default async function CalculationsPage() {
   const canManage = user.role !== "viewer";
 
   const result = await withDb(async (pool) => {
-    const strategies = await listStrategies(pool, {});
+    const strategies = await listStrategies(pool, { withAnalytics: true });
     const individuals = (await listIndividualsManaged(pool, { status: "active" })).map((i) => ({
       id: i.id,
       name: i.displayName,

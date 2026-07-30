@@ -125,6 +125,28 @@ suite("calculation strategies (real PostgreSQL)", () => {
     expect(Number(individualsCount.rows[0]!.c)).toBe(1); // no duplicate individual created
   });
 
+  it("computes actual-vs-plan analytics from billed transactions", async () => {
+    const ind = unwrap(await createIndividual(pool, { displayName: "Analytics Person" }, ACTOR));
+    const p = await program("COMHAB", "Com Hab", "21");
+    const strat = unwrap(await createStrategy(pool, { individualId: ind.id }, ACTOR));
+    unwrap(await updateStrategy(pool, { id: strat.id, hours: { [p]: "1000" } }, ACTOR)); // plan 1000 hrs
+
+    // 300 hours actually billed for this individual+program
+    await pool.query(
+      `INSERT INTO payroll_transactions (individual_id, program_id, imported_hours, calculated_internal_amount, transaction_fingerprint)
+       VALUES ($1,$2,'300','6300','fp-an-1')`,
+      [ind.id, p],
+    );
+
+    const { rows } = await listStrategies(pool, { individualId: ind.id, withAnalytics: true });
+    const a = rows[0]!.analytics!;
+    expect(Number(a.plannedHours)).toBeCloseTo(1000, 2);
+    expect(Number(a.actualHours)).toBeCloseTo(300, 2);
+    expect(Number(a.remainingHours)).toBeCloseTo(700, 2); // 1000 − 300 − 0 scheduled
+    expect(Number(a.utilizationPercent)).toBeCloseTo(0.3, 3); // 300/1000
+    expect(Number(a.actualInternal)).toBeCloseTo(6300, 2);
+  });
+
   it("archives non-destructively (kept, not deleted) and hides from the active grid", async () => {
     const ind = unwrap(await createIndividual(pool, { displayName: "Archive Test" }, ACTOR));
     const strat = unwrap(await createStrategy(pool, { individualId: ind.id }, ACTOR));
