@@ -18,12 +18,15 @@ export async function ensurePostMigrationTasks(): Promise<void> {
   started = true;
   try {
     const pool = getPool();
-    const flag = await getSetting<boolean>(pool, "match_scan_v1_done");
+    const flag = await getSetting<boolean>(pool, "match_scan_v2_done");
     if (flag) return;
+    // Clear any queue from an earlier, looser scan (undecided rows only — a human's
+    // confirm/reject is preserved), then re-scan with the current, tighter rules.
+    await pool.query(`DELETE FROM individual_match_reviews WHERE status = 'pending'`).catch(() => {});
     const res = await scanMatches(pool, null);
     if (res.ok) {
-      await setSetting(pool, "match_scan_v1_done", true, null);
-      console.log(`[post-migrate] match scan: merged=${res.data.merged} queued=${res.data.queued}`);
+      await setSetting(pool, "match_scan_v2_done", true, null);
+      console.log(`[post-migrate] match scan v2: merged=${res.data.merged} queued=${res.data.queued}`);
     }
   } catch (error) {
     // Never let a maintenance task affect the request; retried on a later boot.

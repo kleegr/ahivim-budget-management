@@ -46,9 +46,10 @@ suite("individual matching + merge (real PostgreSQL)", () => {
     // scorePair takes already-normalized (sorted-token) names, as loadIndividualsForMatch supplies.
     expect(scorePair("berl markovitz", "berl markowitz").kind).toBe("auto"); // Markovitz/Markowitz
     expect(scorePair("fleischman moshe", "fleishman moshe").kind).toBe("auto"); // Fleischman/Fleishman
-    // Same surname, clearly different first name → never auto; a human decides.
-    const sib = scorePair("neuwirth yaakov", "neuwirth yoel");
-    expect(sib.kind).toBe("review");
+    // A genuine full-name spelling variant → review (a human confirms).
+    expect(scorePair("duestch joel", "deutsch joel").kind).toBe("review"); // Duestch/Deutsch ≈ 75%
+    // Same surname but clearly different first name (siblings) → NOT flagged, no noise.
+    expect(scorePair("neuwirth yaakov", "neuwirth yoel").kind).toBe("none");
     // Unrelated names → nothing.
     expect(scorePair("aaron levy", "klein miriam").kind).toBe("none");
   });
