@@ -52,7 +52,7 @@ interface ExplainResult {
   grossNet: string;
   net: string;
   afterAll: string | null;
-  lineGross: { programLabel: string; hours: string; rate: string; gross: string }[];
+  lineGross: { programLabel: string; programId?: string; hours: string; rate: string; gross: string; isOverride: boolean; defaultRate: string }[];
   steps: ExplainStep[];
 }
 interface Revision {
@@ -759,7 +759,7 @@ export default function CalculationsGrid({
         <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]"># Individuals</div><div className="text-lg font-semibold tabular-nums">{totals.individuals}</div></div>
       </div>
 
-      {drawerId && <ExplainDrawer strategyId={drawerId} row={rows.find((r) => r.id === drawerId)} onClose={() => setDrawerId(null)} />}
+      {drawerId && <ExplainDrawer strategyId={drawerId} row={rows.find((r) => r.id === drawerId)} canManage={canManage} onClose={() => setDrawerId(null)} />}
     </div>
   );
 }
@@ -838,9 +838,19 @@ function FilterPopover({ col, filter, values, onChange, onClear, onClose }: { co
 
 /* -------------------------------------------------------------- drawer */
 
-function ExplainDrawer({ strategyId, row, onClose }: { strategyId: string; row: StrategyGridRow | undefined; onClose: () => void }) {
+function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: string; row: StrategyGridRow | undefined; canManage: boolean; onClose: () => void }) {
+  const router = useRouter();
   const [data, setData] = useState<{ explain: ExplainResult; revisions: Revision[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [savingRate, setSavingRate] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    return fetch(`/api/calculation-strategies/${strategyId}`)
+      .then((r) => r.json())
+      .then((j) => { if (j.ok) setData(j.data); else setError(j.error ?? "Could not load."); })
+      .catch(() => setError("Could not load."));
+  }, [strategyId]);
+
   useEffect(() => {
     let live = true;
     fetch(`/api/calculation-strategies/${strategyId}`)
@@ -849,6 +859,23 @@ function ExplainDrawer({ strategyId, row, onClose }: { strategyId: string; row: 
       .catch(() => live && setError("Could not load."));
     return () => { live = false; };
   }, [strategyId]);
+
+  const saveRate = async (programId: string, value: string) => {
+    setSavingRate(programId);
+    try {
+      const res = await fetch(`/api/calculation-strategies/${strategyId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rateOverrides: { [programId]: value === "" ? null : value } }),
+      });
+      if (res.ok) {
+        await load(); // refresh the drawer's own numbers
+        router.refresh(); // refresh the grid's computed columns
+      }
+    } finally {
+      setSavingRate(null);
+    }
+  };
 
   return (
     <div className="fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-auto border-l border-[var(--color-rule-strong)] bg-white shadow-2xl">
@@ -865,14 +892,55 @@ function ExplainDrawer({ strategyId, row, onClose }: { strategyId: string; row: 
         {!data && !error && <div className="text-[var(--color-text-soft)]">Loading…</div>}
         {data && (
           <>
-            <div className="eyebrow mb-1 text-[var(--color-text-soft)]">Yearly gross = Σ (program hours × internal rate)</div>
+            <div className="eyebrow mb-1 text-[var(--color-text-soft)]">Program rates — yearly gross = Σ (hours × rate)</div>
             <table className="mb-3 w-full text-xs">
+              <thead>
+                <tr className="text-[var(--color-text-soft)]">
+                  <th className="py-0.5 text-left font-medium">Program</th>
+                  <th className="py-0.5 text-right font-medium">Hours</th>
+                  <th className="py-0.5 text-right font-medium">Rate /hr</th>
+                  <th className="py-0.5 text-right font-medium">Gross</th>
+                </tr>
+              </thead>
               <tbody>
                 {data.explain.lineGross.map((l, i) => (
-                  <tr key={i}><td className="py-0.5">{l.programLabel}</td><td className="py-0.5 text-right tabular-nums">{formatHours(l.hours)}h × {formatMoney(l.rate)}</td><td className="py-0.5 text-right tabular-nums font-medium">{formatMoney(l.gross)}</td></tr>
+                  <tr key={i} className="border-t border-[var(--color-rule)]">
+                    <td className="py-1">{l.programLabel}</td>
+                    <td className="py-1 text-right tabular-nums">{formatHours(l.hours)}</td>
+                    <td className="py-1 text-right">
+                      {canManage && l.programId ? (
+                        <span className="inline-flex items-center justify-end gap-1">
+                          <input
+                            type="number"
+                            step="any"
+                            defaultValue={dec(l.rate).toString()}
+                            disabled={savingRate === l.programId}
+                            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                            onBlur={(e) => {
+                              const v = e.target.value.trim();
+                              if (v !== dec(l.rate).toString()) saveRate(l.programId!, v);
+                            }}
+                            className="w-16 rounded border border-[var(--color-rule-strong)] px-1 py-0.5 text-right tabular-nums"
+                            title={l.isOverride ? `Override. Default is ${formatMoney(l.defaultRate)}. Clear to use default.` : "Default rate. Type to override for this strategy."}
+                          />
+                          <span className={`rounded px-1 text-[10px] ${l.isOverride ? "bg-[var(--color-warn-soft)] text-[var(--color-warn)]" : "bg-[var(--color-surface-strong)] text-[var(--color-text-soft)]"}`}>
+                            {l.isOverride ? "override" : "default"}
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="tabular-nums">{formatMoney(l.rate)}{l.isOverride ? " *" : ""}</span>
+                      )}
+                    </td>
+                    <td className="py-1 text-right tabular-nums font-medium">{formatMoney(l.gross)}</td>
+                  </tr>
                 ))}
               </tbody>
             </table>
+            {canManage && (
+              <p className="mb-3 text-[11px] text-[var(--color-text-soft)]">
+                Type a rate to override it for this strategy; clear the box to return to the program default. Changing a rate recalculates everything instantly.
+              </p>
+            )}
             <div className="space-y-1.5">
               {data.explain.steps.map((s) => (
                 <div key={s.key} className="flex items-baseline justify-between gap-3 border-b border-[var(--color-rule)] py-1">
