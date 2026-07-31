@@ -36,7 +36,6 @@ async function time<T>(label: string, fn: () => Promise<T>): Promise<{ ms: numbe
   const t0 = process.hrtime.bigint();
   const value = await fn();
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-  // eslint-disable-next-line no-console
   console.log(`  ⏱  ${label}: ${ms.toFixed(0)} ms`);
   return { ms, value };
 }

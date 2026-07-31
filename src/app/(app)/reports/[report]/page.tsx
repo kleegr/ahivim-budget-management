@@ -1,58 +1,17 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { ReactNode } from "react";
 import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
 import {
   REPORTS,
   isReportKey,
   selectFilters,
-  type ReportFieldType,
-  type ReportCell,
   type ReportFilterSpec,
 } from "@/lib/data/report-queries";
-import {
-  Card,
-  Table,
-  Th,
-  Td,
-  Tr,
-  Money,
-  Hours,
-  Plain,
-  EmptyState,
-  ErrorPanel,
-  PageHeader,
-  ButtonLink,
-} from "@/components/ui";
-import { dec } from "@/lib/money";
+import { ErrorPanel, PageHeader, ButtonLink } from "@/components/ui";
+import ReportGrid from "@/components/reports/report-grid";
 
 export const dynamic = "force-dynamic";
-
-function numericType(type: ReportFieldType): boolean {
-  return type === "money" || type === "hours" || type === "percent" || type === "int";
-}
-
-function renderCell(type: ReportFieldType, value: ReportCell): ReactNode {
-  if (value === null || value === undefined || value === "") {
-    if (type === "money" || type === "hours") {
-      return type === "money" ? <Money value={null} /> : <Hours value={null} />;
-    }
-    return <span className="text-[var(--color-ink-faint)]">—</span>;
-  }
-  switch (type) {
-    case "money":
-      return <Money value={String(value)} />;
-    case "hours":
-      return <Hours value={String(value)} />;
-    case "percent":
-      return <span className="tnum">{dec(value).toDecimalPlaces(1).toFixed(1)}%</span>;
-    case "int":
-      return <span className="tnum">{Number(value).toLocaleString()}</span>;
-    default:
-      return <Plain value={value} />;
-  }
-}
 
 function FilterField({ spec, value }: { spec: ReportFilterSpec; value: string | undefined }) {
   const inputClass =
@@ -98,7 +57,7 @@ export default async function ReportPage({
   params: Promise<{ report: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireUser("viewer");
+  const user = await requireUser("viewer");
   const { report } = await params;
   if (!isReportKey(report)) notFound();
 
@@ -157,37 +116,14 @@ export default async function ReportPage({
       {!result.ok ? (
         <ErrorPanel title="Could not run this report">{result.error}</ErrorPanel>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-6">
           {result.data.map((table) => (
-            <Card key={table.key} title={table.title}>
-              {table.rows.length === 0 ? (
-                <EmptyState title="Nothing to report">
-                  <p>{table.emptyMessage ?? "No rows match the current filters."}</p>
-                </EmptyState>
-              ) : (
-                <Table
-                  head={
-                    <>
-                      {table.columns.map((c) => (
-                        <Th key={c.key} numeric={numericType(c.type)}>
-                          {c.header}
-                        </Th>
-                      ))}
-                    </>
-                  }
-                >
-                  {table.rows.map((row, i) => (
-                    <Tr key={i}>
-                      {table.columns.map((c) => (
-                        <Td key={c.key} numeric={numericType(c.type)}>
-                          {renderCell(c.type, row[c.key] ?? null)}
-                        </Td>
-                      ))}
-                    </Tr>
-                  ))}
-                </Table>
-              )}
-            </Card>
+            <ReportGrid
+              key={table.key}
+              table={table}
+              reportKey={report}
+              canManage={user.role !== "viewer"}
+            />
           ))}
         </div>
       )}
