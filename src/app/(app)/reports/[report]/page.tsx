@@ -7,7 +7,9 @@ import {
   isReportKey,
   selectFilters,
   type ReportFilterSpec,
+  type ReportTable,
 } from "@/lib/data/report-queries";
+import type { PgLikePool } from "@/lib/import/commit";
 import { ErrorPanel, PageHeader, ButtonLink } from "@/components/ui";
 import ReportGrid from "@/components/reports/report-grid";
 
@@ -50,6 +52,52 @@ export async function generateMetadata({ params }: { params: Promise<{ report: s
   return { title: `${def ? def.title : "Report"} — Ahivim Budget Management` };
 }
 
+/**
+ * Attach entity ids to report rows so the grid can deep-link name cells to the
+ * individual/employee. Ids are resolved by matching the displayed name against
+ * the canonical display_name — generic across every report, no per-report code.
+ */
+async function attachEntityIds(pool: PgLikePool, tables: ReportTable[]): Promise<void> {
+  const needsInd = tables.some((t) => t.columns.some((c) => /individual/i.test(c.key)));
+  const needsEmp = tables.some((t) => t.columns.some((c) => /employee/i.test(c.key)));
+  if (!needsInd && !needsEmp) return;
+
+  const indMap = new Map<string, string>();
+  const empMap = new Map<string, string>();
+  if (needsInd) {
+    const { rows } = await pool.query<{ id: string; display_name: string }>(
+      `SELECT id, display_name FROM individuals WHERE status <> 'archived' AND display_name IS NOT NULL`,
+    );
+    for (const r of rows) indMap.set(r.display_name, r.id);
+  }
+  if (needsEmp) {
+    const { rows } = await pool.query<{ id: string; display_name: string }>(
+      `SELECT id, display_name FROM employees WHERE display_name IS NOT NULL`,
+    );
+    for (const r of rows) empMap.set(r.display_name, r.id);
+  }
+
+  for (const t of tables) {
+    const indCols = t.columns.filter((c) => /individual/i.test(c.key));
+    const empCols = t.columns.filter((c) => /employee/i.test(c.key));
+    if (indCols.length === 0 && empCols.length === 0) continue;
+    for (const row of t.rows) {
+      if (row.individualId == null) {
+        for (const c of indCols) {
+          const v = row[c.key];
+          if (typeof v === "string" && indMap.has(v)) { row.individualId = indMap.get(v)!; break; }
+        }
+      }
+      if (row.employeeId == null) {
+        for (const c of empCols) {
+          const v = row[c.key];
+          if (typeof v === "string" && empMap.has(v)) { row.employeeId = empMap.get(v)!; break; }
+        }
+      }
+    }
+  }
+}
+
 export default async function ReportPage({
   params,
   searchParams,
@@ -74,7 +122,11 @@ export default async function ReportPage({
   const csvHref = `/api/reports/${report}/export?format=csv${exportQuery.toString() ? `&${exportQuery}` : ""}`;
   const xlsxHref = `/api/reports/${report}/export?format=xlsx${exportQuery.toString() ? `&${exportQuery}` : ""}`;
 
-  const result = await withDb((pool) => def.run(pool, filters));
+  const result = await withDb(async (pool) => {
+    const tables = await def.run(pool, filters);
+    await attachEntityIds(pool, tables);
+    return tables;
+  });
 
   return (
     <>
