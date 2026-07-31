@@ -125,6 +125,38 @@ suite("calculation strategies (real PostgreSQL)", () => {
     expect(Number(individualsCount.rows[0]!.c)).toBe(1); // no duplicate individual created
   });
 
+  it("applies a per-strategy program rate override and recalculates immediately", async () => {
+    const ind = unwrap(await createIndividual(pool, { displayName: "Rate Override Person" }, ACTOR));
+    const p = await program("COMHAB", "Com Hab", "21"); // default rate 21
+    const strat = unwrap(await createStrategy(pool, { individualId: ind.id }, ACTOR));
+    unwrap(await updateStrategy(pool, { id: strat.id, hours: { [p]: "100" } }, ACTOR));
+
+    // default: 100 × 21 = 2100
+    let list = await listStrategies(pool, { individualId: ind.id });
+    expect(Number(list.rows[0]!.yearlyGross)).toBeCloseTo(2100, 2);
+
+    // override to 30 → 100 × 30 = 3000, recomputed on the very next read
+    unwrap(await updateStrategy(pool, { id: strat.id, rateOverrides: { [p]: "30" } }, ACTOR));
+    list = await listStrategies(pool, { individualId: ind.id });
+    expect(Number(list.rows[0]!.yearlyGross)).toBeCloseTo(3000, 2);
+
+    // the explain panel marks it as an override and remembers the default
+    const explain = await explainStrategy(pool, strat.id);
+    const line = explain!.lineGross[0]!;
+    expect(line.isOverride).toBe(true);
+    expect(Number(line.rate)).toBeCloseTo(30, 2);
+    expect(Number(line.defaultRate)).toBeCloseTo(21, 2);
+
+    // the change is in the strategy's revision history (non-destructive)
+    const revs = await listStrategyRevisions(pool, strat.id);
+    expect(revs.length).toBeGreaterThanOrEqual(2);
+
+    // clearing reverts to the default
+    unwrap(await updateStrategy(pool, { id: strat.id, rateOverrides: { [p]: null } }, ACTOR));
+    list = await listStrategies(pool, { individualId: ind.id });
+    expect(Number(list.rows[0]!.yearlyGross)).toBeCloseTo(2100, 2);
+  });
+
   it("computes actual-vs-plan analytics from billed transactions", async () => {
     const ind = unwrap(await createIndividual(pool, { displayName: "Analytics Person" }, ACTOR));
     const p = await program("COMHAB", "Com Hab", "21");
