@@ -713,7 +713,15 @@ export default function CalculationsGrid({
                       title={c.key === "renewalDate" && r.periodStart ? `Budget period: ${r.periodStart} → ${r.periodEnd}` : undefined}
                     >
                       {c.key === "individual" ? (
-                        <Link href={`/individuals/${r.individualId}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>{r.individualName}</Link>
+                        <Link
+                          href={`/individuals/${r.individualId}`}
+                          className="group inline-flex items-center gap-1 font-medium text-[var(--color-primary)] hover:underline"
+                          onClick={(e) => e.stopPropagation()}
+                          title={`Open ${r.individualName}`}
+                        >
+                          {r.individualName}
+                          <span className="opacity-0 transition-opacity group-hover:opacity-100">→</span>
+                        </Link>
                       ) : isEditing ? (
                         <EditCell
                           type={c.type}
