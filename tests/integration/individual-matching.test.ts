@@ -11,6 +11,7 @@ import {
   loadIndividualsForMatch,
 } from "@/lib/manage/individual-merge";
 import { scorePair } from "@/lib/business/individual-matching";
+import { listStrategies, updateStrategy } from "@/lib/manage/calculation-strategies";
 
 const suite = hasTestDatabase ? describe : describe.skip;
 const ACTOR = "00000000-0000-4000-8000-000000000001";
@@ -119,6 +120,46 @@ suite("individual matching + merge (real PostgreSQL)", () => {
     expect(second.queued).toBe(0); // rejected pair not re-queued
     expect(await listMatchReviews(pool, { status: "pending" })).toHaveLength(0);
     expect(await loadIndividualsForMatch(pool)).toHaveLength(2); // both kept as distinct people
+  });
+
+  it("connects billing to the strategy through a merge: actuals follow the canonical individual", async () => {
+    // Program with a default rate.
+    const { rows: pr } = await pool.query<{ id: string }>(
+      `INSERT INTO programs (code, name) VALUES ('COMHAB','Com Hab') RETURNING id`,
+    );
+    const program = pr[0]!.id;
+    await pool.query(`INSERT INTO program_rate_schedules (program_id, effective_from, internal_rate) VALUES ($1,'2020-01-01','21')`, [program]);
+
+    // The billed spelling has 100 hours billed; the planning spelling has the strategy (200 planned).
+    const billed = unwrap(await createIndividual(pool, { displayName: "Deutsch, Joel" }, ACTOR));
+    await pool.query(
+      `INSERT INTO payroll_transactions (individual_id, program_id, imported_hours, calculated_internal_amount, transaction_fingerprint)
+       VALUES ($1,$2,'100','2100','fp-conn-1')`,
+      [billed.id, program],
+    );
+    const planned = unwrap(await createIndividual(pool, { displayName: "Joel Duestch" }, ACTOR));
+    const strat = unwrap(await createStrategy(pool, { individualId: planned.id, label: "1" }, ACTOR));
+    unwrap(await updateStrategy(pool, { id: strat.id, hours: { [program]: "200" } }, ACTOR));
+
+    // Before merge: the planning strategy sees NO actuals (different individual row).
+    let list = await listStrategies(pool, { individualId: planned.id, withAnalytics: true });
+    expect(Number(list.rows[0]!.analytics!.actualHours)).toBe(0);
+
+    // Scan queues the uncertain pair; confirm it → merge (the billed row survives, being heavier).
+    unwrap(await scanMatches(pool, ACTOR));
+    const [review] = await listMatchReviews(pool, { status: "pending" });
+    expect(review).toBeTruthy();
+    unwrap(await decideMatchReview(pool, { id: review!.id, decision: "confirm" }, ACTOR));
+
+    // After merge: exactly one individual, and its strategy now sees the billed 100 hours as actuals.
+    const active = await loadIndividualsForMatch(pool);
+    expect(active).toHaveLength(1);
+    const merged = await listStrategies(pool, { individualId: active[0]!.id, withAnalytics: true });
+    expect(merged.rows).toHaveLength(1); // the strategy followed the person
+    const a = merged.rows[0]!.analytics!;
+    expect(Number(a.plannedHours)).toBeCloseTo(200, 2);
+    expect(Number(a.actualHours)).toBeCloseTo(100, 2); // canonical individual's real billing
+    expect(Number(a.remainingHours)).toBeCloseTo(100, 2);
   });
 
   it("a direct merge repoints EVERY individual_id child table (nothing orphaned)", async () => {
