@@ -159,8 +159,8 @@ export async function listStrategies(
   const ids = strategies.map((s) => s.id);
   const lines = ids.length
     ? (
-        await pool.query<{ strategy_id: string; program_id: string; authorized_hours: string }>(
-          `SELECT strategy_id, program_id, authorized_hours::text
+        await pool.query<{ strategy_id: string; program_id: string; authorized_hours: string; rate_override: string | null }>(
+          `SELECT strategy_id, program_id, authorized_hours::text, rate_override::text
              FROM calculation_strategy_lines WHERE strategy_id = ANY($1::uuid[])`,
           [ids],
         )
@@ -174,20 +174,32 @@ export async function listStrategies(
   const programs = await listProgramRates(pool);
 
   const hoursByStrategy = new Map<string, Record<string, string>>();
+  const overrideByStrategy = new Map<string, Record<string, string | null>>();
   for (const l of lines) {
     const m = hoursByStrategy.get(l.strategy_id) ?? {};
     m[l.program_id] = l.authorized_hours;
     hoursByStrategy.set(l.strategy_id, m);
+    const o = overrideByStrategy.get(l.strategy_id) ?? {};
+    o[l.program_id] = l.rate_override;
+    overrideByStrategy.set(l.strategy_id, o);
   }
 
   const rows: StrategyGridRow[] = strategies.map((s) => {
     const hours = hoursByStrategy.get(s.id) ?? {};
+    const overrides = overrideByStrategy.get(s.id) ?? {};
     const period = derivePeriodFromRenewal(s.renewal_date);
-    const strategyLines = Object.entries(hours).map(([programId, h]) => ({
-      programLabel: programId,
-      hours: h,
-      internalRate: rateAsOf(schedules, programId, s.renewal_date),
-    }));
+    const strategyLines = Object.entries(hours).map(([programId, h]) => {
+      const def = rateAsOf(schedules, programId, s.renewal_date);
+      const override = overrides[programId];
+      return {
+        programLabel: programId,
+        programId,
+        hours: h,
+        internalRate: override ?? def, // effective rate: override wins
+        isOverride: override != null,
+        defaultRate: def,
+      };
+    });
     const computed = computeStrategy({
       lines: strategyLines,
       monthDivisor: s.month_divisor,
@@ -342,10 +354,11 @@ export async function explainStrategy(pool: PgLikePool, id: string): Promise<Str
   );
   const s = rows[0];
   if (!s) return null;
-  const { rows: lines } = await pool.query<{ program_id: string; program_label: string; authorized_hours: string }>(
-    `SELECT csl.program_id, COALESCE(p.name, p.code) AS program_label, csl.authorized_hours::text
+  const { rows: lines } = await pool.query<{ program_id: string; program_label: string; authorized_hours: string; rate_override: string | null }>(
+    `SELECT csl.program_id, COALESCE(p.name, p.code) AS program_label, csl.authorized_hours::text, csl.rate_override::text
        FROM calculation_strategy_lines csl JOIN programs p ON p.id = csl.program_id
-      WHERE csl.strategy_id = $1`,
+      WHERE csl.strategy_id = $1
+      ORDER BY p.code`,
     [id],
   );
   const { rows: schedules } = await pool.query<RateScheduleRow>(
@@ -353,11 +366,17 @@ export async function explainStrategy(pool: PgLikePool, id: string): Promise<Str
        FROM program_rate_schedules`,
   );
   return computeStrategy({
-    lines: lines.map((l) => ({
-      programLabel: l.program_label,
-      hours: l.authorized_hours,
-      internalRate: rateAsOf(schedules, l.program_id, s.renewal_date),
-    })),
+    lines: lines.map((l) => {
+      const def = rateAsOf(schedules, l.program_id, s.renewal_date);
+      return {
+        programLabel: l.program_label,
+        programId: l.program_id,
+        hours: l.authorized_hours,
+        internalRate: l.rate_override ?? def,
+        isOverride: l.rate_override != null,
+        defaultRate: def,
+      };
+    }),
     monthDivisor: s.month_divisor,
     cut1Percent: s.cut1_percent,
     cut2Percent: s.cut2_percent,
@@ -432,6 +451,7 @@ export interface UpdateStrategyInput {
   afterAll?: string | number | null;
   account?: string | null;
   hours?: Record<string, string | number | null>; // programId -> hours (upsert; null clears)
+  rateOverrides?: Record<string, string | number | null>; // programId -> rate (null reverts to default)
 }
 
 export async function updateStrategy(
@@ -485,6 +505,21 @@ export async function updateStrategy(
             [input.id, programId, toHours(h as string)],
           );
         }
+      }
+    }
+
+    if (input.rateOverrides) {
+      for (const [programId, rate] of Object.entries(input.rateOverrides)) {
+        if (!UUID.test(programId)) continue;
+        const value = rate === null || rate === "" ? null : toMoney(rate as string);
+        // Upsert the line (create with 0 hours if the program isn't on the strategy yet)
+        // so a rate can be set before hours; null reverts to the schedule default.
+        await client.query(
+          `INSERT INTO calculation_strategy_lines (strategy_id, program_id, authorized_hours, rate_override)
+           VALUES ($1,$2,0,$3)
+           ON CONFLICT (strategy_id, program_id) DO UPDATE SET rate_override = EXCLUDED.rate_override, updated_at = now()`,
+          [input.id, programId, value],
+        );
       }
     }
 
