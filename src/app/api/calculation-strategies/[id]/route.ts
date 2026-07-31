@@ -43,6 +43,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     ...(body.afterAll !== undefined ? { afterAll: body.afterAll as string } : {}),
     ...(body.account !== undefined ? { account: body.account === null ? null : String(body.account) } : {}),
     ...(body.hours !== undefined ? { hours: body.hours as Record<string, string> } : {}),
+    ...(body.rateOverrides !== undefined ? { rateOverrides: body.rateOverrides as Record<string, string> } : {}),
   };
   const result = await updateStrategy(getPool(), patch, user.id, reason);
   if (!result.ok) return resultResponse(result);

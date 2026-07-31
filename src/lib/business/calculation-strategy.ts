@@ -12,8 +12,11 @@ import { dec, toMoney, formatMoney, formatHours, type MoneyInput, type Decimal }
  */
 export interface StrategyLineInput {
   programLabel: string;
+  programId?: string;
   hours: MoneyInput;
-  internalRate: MoneyInput;
+  internalRate: MoneyInput; // the EFFECTIVE rate used (override if set, else default)
+  isOverride?: boolean;
+  defaultRate?: MoneyInput; // the schedule default, for a default-vs-override display
 }
 
 export interface StrategyInput {
@@ -35,9 +38,12 @@ export interface StrategyStep {
 
 export interface StrategyLineGross {
   programLabel: string;
+  programId?: string;
   hours: string;
-  rate: string;
+  rate: string; // effective rate
   gross: string;
+  isOverride: boolean;
+  defaultRate: string;
 }
 
 export interface StrategyResult {
@@ -83,7 +89,15 @@ export function computeStrategy(input: StrategyInput): StrategyResult {
     const g = h.times(r);
     if (h.isZero() && r.isZero()) continue;
     yearly = yearly.plus(g);
-    lineGross.push({ programLabel: line.programLabel, hours: toMoney(h), rate: toMoney(r), gross: toMoney(g) });
+    lineGross.push({
+      programLabel: line.programLabel,
+      programId: line.programId,
+      hours: toMoney(h),
+      rate: toMoney(r),
+      gross: toMoney(g),
+      isOverride: line.isOverride === true,
+      defaultRate: toMoney(line.defaultRate ?? r),
+    });
   }
 
   const monthly = yearly.dividedBy(divisor);
