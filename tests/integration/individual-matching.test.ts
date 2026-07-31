@@ -142,7 +142,7 @@ suite("individual matching + merge (real PostgreSQL)", () => {
     unwrap(await updateStrategy(pool, { id: strat.id, hours: { [program]: "200" } }, ACTOR));
 
     // Before merge: the planning strategy sees NO actuals (different individual row).
-    let list = await listStrategies(pool, { individualId: planned.id, withAnalytics: true });
+    const list = await listStrategies(pool, { individualId: planned.id, withAnalytics: true });
     expect(Number(list.rows[0]!.analytics!.actualHours)).toBe(0);
 
     // Scan queues the uncertain pair; confirm it → merge (the billed row survives, being heavier).
