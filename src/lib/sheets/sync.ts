@@ -416,13 +416,18 @@ export async function runSheetSync(
       for (const t of newTxns) newTxnByFingerprint.set(t.transaction_fingerprint, t.id);
     }
 
-    // 7. Upsert tracking rows for every current, non-changed row and mark them active.
-    const activeTxnIds: string[] = [];
-    let added = 0;
+    // 7. Upsert tracking rows for every current, non-changed row and mark them
+    //    active. Built as ONE bulk upsert (keyed by transaction id) rather than a
+    //    per-row round-trip, so a full sheet of thousands of rows stays fast and
+    //    finishes well inside the function's time budget.
+    const changedRowNumbers = new Set(changed.map((c) => c.staged.sourceRowNumber));
+    const trackByTxn = new Map<
+      string,
+      { naturalKey: string; fingerprint: string; sourceRowNumber: number; identity: string; wasUnchanged: boolean }
+    >();
     for (const st of staging.rows) {
       if (!st.fingerprint || !st.naturalKey) continue;
-      const isChanged = changed.some((c) => c.staged.sourceRowNumber === st.sourceRowNumber);
-      if (isChanged) continue;
+      if (changedRowNumbers.has(st.sourceRowNumber)) continue;
 
       const wasUnchanged = ledger.fingerprints.has(st.fingerprint);
       const txnId = wasUnchanged
@@ -430,17 +435,34 @@ export async function runSheetSync(
         : newTxnByFingerprint.get(st.fingerprint) ?? null;
       if (!txnId) continue; // a genuinely-new row that stayed in review (e.g. unknown program): no transaction yet
 
-      if (!wasUnchanged) added++;
-      activeTxnIds.push(txnId);
+      const parsed = parsedByRow.get(st.sourceRowNumber);
+      // De-dup by transaction id: two identical sheet rows share a fingerprint
+      // and would otherwise hit the same ON CONFLICT target twice in one insert.
+      trackByTxn.set(txnId, {
+        naturalKey: st.naturalKey,
+        fingerprint: st.fingerprint,
+        sourceRowNumber: st.sourceRowNumber,
+        identity: JSON.stringify(parsed ? incomingIdentity(parsed) : {}),
+        wasUnchanged,
+      });
+    }
 
-      const identity = parsedByRow.get(st.sourceRowNumber)
-        ? incomingIdentity(parsedByRow.get(st.sourceRowNumber)!)
-        : {};
+    const activeTxnIds = [...trackByTxn.keys()];
+    let added = 0;
+    for (const v of trackByTxn.values()) if (!v.wasUnchanged) added++;
+
+    // Bulk upsert in chunks so the parameter arrays stay a sane size.
+    const txnEntries = [...trackByTxn.entries()];
+    const CHUNK = 500;
+    for (let i = 0; i < txnEntries.length; i += CHUNK) {
+      const slice = txnEntries.slice(i, i + CHUNK);
       await pool.query(
         `INSERT INTO sheet_sync_rows
            (natural_key, fingerprint, source_row_number, payroll_transaction_id, identity,
             state, first_seen_run_id, last_seen_run_id, last_seen_at)
-         VALUES ($1,$2,$3,$4,$5::jsonb,'active',$6,$6, now())
+         SELECT nk, fp, srn, txn::uuid, ident::jsonb, 'active', $6::uuid, $6::uuid, now()
+           FROM unnest($1::text[], $2::text[], $3::int[], $4::uuid[], $5::text[])
+                AS t(nk, fp, srn, txn, ident)
          ON CONFLICT (payroll_transaction_id) DO UPDATE
            SET natural_key = EXCLUDED.natural_key,
                fingerprint = EXCLUDED.fingerprint,
@@ -450,7 +472,14 @@ export async function runSheetSync(
                last_seen_run_id = EXCLUDED.last_seen_run_id,
                last_seen_at = now(),
                updated_at = now()`,
-        [st.naturalKey, st.fingerprint, st.sourceRowNumber, txnId, JSON.stringify(identity), runId],
+        [
+          slice.map(([, v]) => v.naturalKey),
+          slice.map(([, v]) => v.fingerprint),
+          slice.map(([, v]) => v.sourceRowNumber),
+          slice.map(([txn]) => txn),
+          slice.map(([, v]) => v.identity),
+          runId,
+        ],
       );
     }
 
