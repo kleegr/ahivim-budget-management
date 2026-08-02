@@ -274,7 +274,7 @@ export function parseSheetCsv(csvText: string): SheetCsvParseResult {
   // Sort so row re-ordering in the sheet does not read as a content change.
   signatures.sort();
   const snapshotSha256 = createHash("sha256")
-    .update(signatures.join(""))
+    .update(signatures.join(""))
     .digest("hex");
 
   return {
