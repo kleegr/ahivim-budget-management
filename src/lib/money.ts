@@ -32,7 +32,13 @@ export function dec(value: MoneyInput): Decimal {
     // binary rounding error.
     return new Decimal(value.toString());
   }
-  const trimmed = value.trim().replace(/[$,]/g, "");
+  // Strip currency symbols, thousands separators (commas OR spaces) and any
+  // other whitespace, so a display-formatted cell like "1 888.60" or
+  // "10,563.1" parses. In ECMAScript, \s also covers the non-breaking space
+  // (U+00A0) and BOM (U+FEFF) that spreadsheet CSV exports emit. Removing
+  // whitespace can only rescue a value that would otherwise throw; a clean
+  // number is unaffected.
+  const trimmed = value.replace(/[\s$,]/g, "");
   if (trimmed === "" || trimmed === "-") return new Decimal(0);
   const parsed = new Decimal(trimmed);
   if (!parsed.isFinite()) {
