@@ -23,16 +23,17 @@ suite("migration runner (real PostgreSQL)", () => {
       "budget_calculations", "app_settings",
       "calculation_strategies", "calculation_strategy_lines", "calculation_strategy_revisions",
       "individual_match_reviews",
+      "sheet_sync_runs", "sheet_sync_rows", "sheet_sync_conflicts",
     ]) {
       expect(tables, `missing table ${table}`).toContain(table);
     }
-    expect(tables.length).toBe(33);
+    expect(tables.length).toBe(36);
   });
 
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(11);
+    expect(again.skipped).toBe(12);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -40,7 +41,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(11);
+    expect(rows).toHaveLength(12);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -52,6 +53,7 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[8].name).toBe("0008_individual_matching.sql");
     expect(rows[9].name).toBe("0009_perf_indexes.sql");
     expect(rows[10].name).toBe("0010_strategy_rate_overrides.sql");
+    expect(rows[11].name).toBe("0011_sheet_sync.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 

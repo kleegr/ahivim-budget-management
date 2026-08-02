@@ -16,9 +16,19 @@ export default async function ImportsPage() {
     <>
       <PageHeader
         eyebrow="Workbooks"
-        title="Imports"
-        description="Upload → parse → stage → review → commit. Nothing reaches the ledger until a manager commits it, and the same file cannot be committed twice."
+        title="Imports (backup)"
+        description="Manual workbook upload is a backup path. The normal workflow syncs Transactions automatically from the Google Sheet."
       />
+
+      <div className="mb-6 rounded-xl border border-[var(--color-rule)] border-l-4 border-l-[var(--color-primary)] bg-[var(--color-primary-tint)] px-5 py-3.5">
+        <p className="text-sm text-[var(--color-ink)]">
+          Transactions now sync automatically from the Google Sheet.{" "}
+          <Link className="font-medium underline underline-offset-2" href="/sync">
+            Open Sheet sync
+          </Link>{" "}
+          for status, history and review. Use the upload below only as a manual backup.
+        </p>
+      </div>
 
       {user.role === "viewer" ? null : <UploadForm />}
 

@@ -22,8 +22,9 @@ const GROUPS: NavGroup[] = [
   {
     heading: "Operations",
     items: [
+      { href: "/sync", label: "Sheet sync" },
       { href: "/schedule", label: "Schedule" },
-      { href: "/imports", label: "Imports" },
+      { href: "/imports", label: "Imports (backup)" },
       { href: "/reconciliation", label: "Reconciliation" },
     ],
   },
