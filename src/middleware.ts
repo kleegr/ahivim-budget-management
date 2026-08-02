@@ -16,7 +16,20 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const PUBLIC_PATHS = new Set(["/signin"]);
 
-const PUBLIC_API_PREFIXES = ["/api/auth/login", "/api/auth/logout", "/api/health/"];
+// The sync cron and one-time bootstrap must be reachable WITHOUT a session
+// cookie: the Vercel Cron calls the endpoint with a CRON_SECRET bearer header
+// (no cookie), and the bootstrap is a one-time self-service trigger. Both do
+// their own authorization at the route level (CRON_SECRET / one-shot flag), so
+// they are safe to let past this cookie-only redirect layer. The interactive
+// sync routes (/api/sync/run, /config, /conflicts, /history) are NOT listed and
+// stay behind the session check.
+const PUBLIC_API_PREFIXES = [
+  "/api/auth/login",
+  "/api/auth/logout",
+  "/api/health/",
+  "/api/sync/cron",
+  "/api/sync/bootstrap",
+];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
