@@ -33,10 +33,12 @@ describe("decimal-safe money", () => {
 
   it("parses numbers that use a space as the thousands separator (Google Sheet CSV export)", () => {
     // gviz CSV returns numbers as display text; some locales separate thousands
-    // with a space or a non-breaking space rather than a comma.
+    // with a space rather than a comma. The non-breaking space (U+00A0) is
+    // constructed explicitly so the source stays ASCII while the value tests it.
+    const nbsp = String.fromCharCode(0xa0);
     expect(toMoney("1 888.60")).toBe("1888.6000");
     expect(toMoney("10 563.10")).toBe("10563.1000");
-    expect(toMoney("1 234.50")).toBe("1234.5000"); // non-breaking space
+    expect(toMoney(`1${nbsp}234.50`)).toBe("1234.5000");
     expect(dec("1 888.60").toString()).toBe("1888.6");
   });
 
