@@ -70,6 +70,8 @@ export interface StagedRow {
   individualId: string | null;
   employeeId: string | null;
   fingerprint: string | null;
+  /** Fingerprint minus money/hours; stable per source identity. Exposed for the sheet-sync tracking layer. */
+  naturalKey: string | null;
   duplicateStatus: "new" | "possible" | "confirmed";
   importedAmount: string;
   spreadsheetInternalAmount: string | null;
@@ -151,6 +153,7 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
         individualId: null,
         employeeId: null,
         fingerprint: null,
+        naturalKey: null,
         duplicateStatus: "new",
         importedAmount: "0.0000",
         spreadsheetInternalAmount: null,
@@ -396,6 +399,7 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
       individualId: individual.matchedId,
       employeeId: employee?.matchedId ?? null,
       fingerprint: duplicate.fingerprint,
+      naturalKey: duplicate.naturalKey,
       duplicateStatus: duplicate.status,
       importedAmount: toMoney(p.amount),
       spreadsheetInternalAmount: comparison.spreadsheetValue,
