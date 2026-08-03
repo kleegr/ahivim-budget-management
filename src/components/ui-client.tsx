@@ -4,10 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 /**
- * Interactive primitives (client-only): accessible Tabs and a modal Dialog.
- * Kept separate from ui.tsx so the server-rendered pieces there never pull in
- * a client boundary. These are the building blocks for the Individual
- * workspace tabs and for unifying the app's ad-hoc modals.
+ * Interactive primitives (client-only): accessible Tabs, a server-composable
+ * TabPanels, and a modal Dialog. Kept separate from ui.tsx so the
+ * server-rendered pieces there never pull in a client boundary.
  */
 
 export type TabDef = { id: string; label: string; badge?: ReactNode };
@@ -63,6 +62,51 @@ export function Tabs({
           {children(active)}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+export type TabPanel = { id: string; label: string; badge?: ReactNode; content: ReactNode };
+
+/**
+ * Tabs whose panels are pre-rendered (server components allowed). All panel
+ * content is sent once and toggled client-side — one unified workspace instead
+ * of a long scroll, with no extra round-trips.
+ */
+export function TabPanels({ panels, initialId }: { panels: TabPanel[]; initialId?: string }) {
+  const [active, setActive] = useState<string>(initialId ?? panels[0]?.id ?? "");
+  const current = panels.find((p) => p.id === active) ?? panels[0];
+  return (
+    <div>
+      <div role="tablist" className="scroll-thin flex flex-wrap gap-1 overflow-x-auto border-b border-[var(--color-rule)]">
+        {panels.map((p) => {
+          const isActive = p.id === (current?.id ?? "");
+          return (
+            <button
+              key={p.id}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              onClick={() => setActive(p.id)}
+              className={`relative -mb-px flex items-center gap-1.5 whitespace-nowrap rounded-t-lg px-4 py-2.5 text-sm font-medium transition-colors ${
+                isActive
+                  ? "border-b-2 border-[var(--color-primary)] text-[var(--color-primary)]"
+                  : "border-b-2 border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"
+              }`}
+            >
+              {p.label}
+              {p.badge != null ? (
+                <span className="rounded-full bg-[var(--color-surface-strong)] px-1.5 text-xs text-[var(--color-ink-soft)]">
+                  {p.badge}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+      <div role="tabpanel" className="pt-5">
+        {current?.content}
+      </div>
     </div>
   );
 }
