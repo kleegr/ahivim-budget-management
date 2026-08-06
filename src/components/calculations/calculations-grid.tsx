@@ -508,7 +508,7 @@ export default function CalculationsGrid({
                 const s = grid.sort[sortIdx];
                 const isFrozen = c.key in frozenLeft;
                 return (
-                  <th key={c.key} className="relative whitespace-nowrap border-b border-r border-[var(--color-rule-strong)] bg-[var(--color-surface-strong,#f1efe9)] px-2 py-1.5 text-left align-bottom font-semibold" style={isFrozen ? { position: "sticky", left: frozenLeft[c.key], zIndex: 30, minWidth: c.key === "individual" ? 170 : 130 } : undefined}>
+                  <th key={c.key} aria-sort={s ? (s.dir === "asc" ? "ascending" : "descending") : "none"} className="relative whitespace-nowrap border-b border-r border-[var(--color-rule-strong)] bg-[var(--color-surface-strong,#f1efe9)] px-2 py-1.5 text-left align-bottom font-semibold" style={isFrozen ? { position: "sticky", left: frozenLeft[c.key], zIndex: 30, minWidth: c.key === "individual" ? 170 : 130 } : undefined}>
                     <div className="flex items-center gap-1">
                       <button type="button" className="flex-1 truncate text-left hover:underline" title="Sort (Shift-click to add a level)" onClick={(e) => grid.toggleSort(c.key, e.shiftKey)}>
                         {c.label}
