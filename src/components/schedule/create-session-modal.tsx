@@ -4,8 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionPreview } from "@/lib/manage/schedule";
 import {
   send, ModalShell, addDays, weekday, durationFromTimes, WEEKDAYS,
+  classifyWarningCode, type WarningCategory,
   type Picker, type ProgramPicker,
 } from "./shared";
+import { dec, formatHours } from "@/lib/money";
 
 /** Create a one-time or recurring session, with a live forecast + warnings. */
 export default function CreateSessionModal({
@@ -239,6 +241,8 @@ export default function CreateSessionModal({
 
         {/* Right: live forecast + warnings */}
         <div className="space-y-3">
+          {preview ? <BudgetImpact preview={preview} isGroup={isGroup} /> : null}
+
           <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-paper)] p-3">
             <p className="eyebrow">Expected billing</p>
             {preview?.billing ? (
@@ -250,17 +254,6 @@ export default function CreateSessionModal({
               </dl>
             ) : <p className="mt-1 text-sm text-[var(--color-ink-faint)]">Pick a program, at least one individual, a date and a duration.</p>}
           </div>
-
-          {warnings.length > 0 ? (
-            <div className="rounded-lg border border-[var(--color-pace-near)] bg-[#fff8f2] p-3">
-              <p className="eyebrow text-[var(--color-pace-near)]">Warnings — you can still save with a reason</p>
-              <ul className="mt-1 space-y-1 text-xs text-[var(--color-ink-soft)]">
-                {warnings.map((w, idx) => <li key={idx}>• {w.message}</li>)}
-              </ul>
-            </div>
-          ) : preview ? (
-            <div className="rounded-lg border border-[var(--color-pace-on)] bg-[#f0f9f3] p-3 text-xs text-[var(--color-pace-on)]">No conflicts detected.</div>
-          ) : null}
 
           {preview && preview.forecast.length > 0 ? (
             <div className="rounded-lg border border-[var(--color-rule)] p-3">
@@ -287,5 +280,77 @@ export default function CreateSessionModal({
         </div>
       </div>
     </ModalShell>
+  );
+}
+
+/**
+ * Prominent, colour-coded read-out of the preview's budget impact: is the
+ * authorisation valid, are there enough remaining hours, is there a conflict —
+ * and what each individual would have left after this session. Surfaces only
+ * what the preview endpoint already returned; no money maths here.
+ */
+function BudgetImpact({ preview, isGroup }: { preview: SessionPreview; isGroup: boolean }) {
+  const cats: Record<WarningCategory, string[]> = { budget: [], conflict: [], other: [] };
+  for (const w of preview.warnings) cats[classifyWarningCode(w.code)].push(w.message);
+
+  let over = false;
+  for (const f of preview.forecast) {
+    if (f.remainingAfterHours !== null && dec(f.remainingAfterHours).isNegative()) over = true;
+  }
+  const flagged = cats.budget.length > 0 || cats.conflict.length > 0 || cats.other.length > 0;
+  const tone: "over" | "warn" | "ok" = over ? "over" : flagged ? "warn" : "ok";
+  const color =
+    tone === "over" ? "var(--color-pace-over)" : tone === "warn" ? "var(--color-pace-near)" : "var(--color-pace-on)";
+  const heading = tone === "over" ? "Over authorisation" : tone === "warn" ? "Review before saving" : "Clear to schedule";
+  const sub =
+    tone === "over"
+      ? "This schedule exceeds the remaining authorised hours for at least one individual."
+      : tone === "warn"
+        ? "You can still save with a reason, but check the flags below first."
+        : "Authorisation valid, hours available, and no conflicts detected.";
+
+  return (
+    <div className="rounded-lg border p-3" role="status" style={{ borderColor: color, background: `color-mix(in srgb, ${color} 8%, transparent)` }}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-semibold" style={{ color }}>{heading}</p>
+        <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} />
+      </div>
+      <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">{sub}</p>
+
+      {preview.forecast.length > 0 ? (
+        <div className="mt-2 border-t border-[var(--color-rule)] pt-2">
+          <p className="eyebrow">Remaining after this session</p>
+          <div className="mt-1 space-y-0.5">
+            {preview.forecast.map((f) => {
+              const rem = f.remainingAfterHours;
+              const neg = rem !== null && dec(rem).isNegative();
+              return (
+                <div key={f.individualId} className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-xs text-[var(--color-ink-soft)]">{isGroup ? f.individualName : "Remaining hours"}</span>
+                  <span className="tnum text-sm font-semibold" style={{ color: neg ? "var(--color-pace-over)" : undefined }}>
+                    {rem === null ? "no authorisation on file" : `${formatHours(rem)} h`}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {cats.budget.length > 0 ? <WarnList color="var(--color-pace-over)" title="Authorisation / budget" items={cats.budget} /> : null}
+      {cats.conflict.length > 0 ? <WarnList color="var(--color-pace-near)" title="Conflicts" items={cats.conflict} /> : null}
+      {cats.other.length > 0 ? <WarnList color="var(--color-pace-near)" title="Other flags" items={cats.other} /> : null}
+    </div>
+  );
+}
+
+function WarnList({ color, title, items }: { color: string; title: string; items: string[] }) {
+  return (
+    <div className="mt-2 border-t border-[var(--color-rule)] pt-2">
+      <p className="eyebrow" style={{ color }}>{title}</p>
+      <ul className="mt-0.5 space-y-0.5 text-xs text-[var(--color-ink-soft)]">
+        {items.map((m, i) => <li key={i}>• {m}</li>)}
+      </ul>
+    </div>
   );
 }

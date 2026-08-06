@@ -114,6 +114,70 @@ export const STATUS_LABEL: Record<string, string> = {
 };
 
 /* ---------------------------------------------------------------------------
+ * Planning status: colour a session by whether it is on-track, in conflict, or
+ * a budget/authorisation risk — reusing the --color-pace-* tokens so the
+ * calendar speaks the same colour language as PaceBar / UtilizationBadge.
+ * ------------------------------------------------------------------------- */
+export interface SessionFlags {
+  hasConflict: boolean;
+  hasBudgetRisk: boolean;
+  warningCount?: number;
+}
+
+export type WarningCategory = "conflict" | "budget" | "other";
+
+/**
+ * Bucket a stored/preview warning code. Mirrors the server-side sets in
+ * data/schedule-queries.ts (listSessionWarningFlags); kept here as a pure
+ * client helper so the create-session modal can categorise live preview
+ * warnings without importing server code.
+ */
+export function classifyWarningCode(code: string): WarningCategory {
+  switch (code) {
+    case "over_authorized_hours":
+    case "missing_authorization":
+    case "outside_authorization_dates":
+      return "budget";
+    case "employee_double_booked":
+    case "individual_double_booked":
+    case "individual_two_employees_one_to_one":
+    case "program_not_group":
+    case "group_over_max":
+      return "conflict";
+    default:
+      return "other";
+  }
+}
+
+export type EventTone = "on_track" | "flagged" | "over_risk" | "completed" | "cancelled";
+
+export const EVENT_TONE_COLOR: Record<EventTone, string> = {
+  on_track: "var(--color-pace-on)",
+  flagged: "var(--color-pace-near)",
+  over_risk: "var(--color-pace-over)",
+  completed: "var(--color-pace-on)",
+  cancelled: "var(--color-pace-idle)",
+};
+
+export const EVENT_TONE_LABEL: Record<EventTone, string> = {
+  on_track: "On track",
+  flagged: "Conflict / flagged",
+  over_risk: "Over-budget risk",
+  completed: "Completed",
+  cancelled: "Cancelled",
+};
+
+/** The most severe tone that applies to a session, budget risk winning over conflicts. */
+export function sessionTone(s: CalendarSession, flags?: SessionFlags): EventTone {
+  if (s.status === "cancelled") return "cancelled";
+  if (s.status === "no_show") return "over_risk";
+  if (flags?.hasBudgetRisk) return "over_risk";
+  if (s.warningCount > 0 || flags?.hasConflict) return "flagged";
+  if (s.status === "completed") return "completed";
+  return "on_track";
+}
+
+/* ---------------------------------------------------------------------------
  * Shared modal shell.
  * ------------------------------------------------------------------------- */
 export function ModalShell({
@@ -140,19 +204,29 @@ export function ModalShell({
 /* ---------------------------------------------------------------------------
  * A compact session chip used in the month and week views.
  * ------------------------------------------------------------------------- */
-export function SessionChip({ s, onSelect }: { s: CalendarSession; onSelect: (s: CalendarSession) => void }) {
+export function SessionChip({ s, flags, onSelect }: { s: CalendarSession; flags?: SessionFlags; onSelect: (s: CalendarSession) => void }) {
   const who = s.employeeName ?? "Unassigned";
+  const tone = sessionTone(s, flags);
+  const color = EVENT_TONE_COLOR[tone];
+  const cancelled = tone === "cancelled";
+  const toneNote =
+    tone === "over_risk" ? (s.status === "no_show" ? "No-show" : "Over-budget / authorisation risk")
+    : tone === "flagged" ? `${s.warningCount} warning${s.warningCount === 1 ? "" : "s"}`
+    : EVENT_TONE_LABEL[tone];
   return (
     <button
       type="button"
       onClick={() => onSelect(s)}
-      title={`${prettyTime(s.startTime)} ${s.programName} — ${who}`}
-      className={`block w-full truncate rounded border-l-2 px-1 py-0.5 text-left text-[11px] leading-tight ${STATUS_STYLE[s.status] ?? "bg-[var(--color-rule)]"}`}
+      title={`${prettyTime(s.startTime)} ${s.programName} — ${who} · ${toneNote}`}
+      style={{ borderLeftColor: color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}
+      className={`block w-full truncate rounded border-l-[3px] px-1 py-0.5 text-left text-[11px] leading-tight text-[var(--color-ink)] ${cancelled ? "line-through opacity-70" : ""}`}
     >
       {s.startTime ? <span className="tnum mr-1">{prettyTime(s.startTime)}</span> : null}
       {s.programName}
       {s.isGroup ? <span className="ml-1">·{s.groupSize}</span> : null}
-      {s.warningCount > 0 ? <span className="ml-1" title={`${s.warningCount} warning(s)`}>⚠</span> : null}
+      {tone === "completed" ? <span className="ml-1" style={{ color }} aria-hidden>✓</span> : null}
+      {tone === "over_risk" ? <span className="ml-1 font-bold" style={{ color }} aria-label={toneNote} title={toneNote}>●</span> : null}
+      {tone === "flagged" ? <span className="ml-1 font-bold" style={{ color }} aria-label={toneNote} title={toneNote}>▲</span> : null}
     </button>
   );
 }
