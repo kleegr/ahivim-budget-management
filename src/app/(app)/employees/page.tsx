@@ -40,6 +40,20 @@ export default async function EmployeesPage({
     }),
   );
 
+  const count = result.ok ? result.data.length : 0;
+  const buildHref = (p: { q?: string; status?: string; archived?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (p.q) qs.set("q", p.q);
+    if (p.status) qs.set("status", p.status);
+    if (p.archived) qs.set("archived", "1");
+    const s = qs.toString();
+    return s ? `/employees?${s}` : "/employees";
+  };
+  const activeFilters: { label: string; href: string }[] = [];
+  if (q) activeFilters.push({ label: `Search: "${q}"`, href: buildHref({ status: statusFilter, archived }) });
+  if (statusFilter) activeFilters.push({ label: `Status: ${statusFilter}`, href: buildHref({ q, archived }) });
+  if (archived) activeFilters.push({ label: "Including archived", href: buildHref({ q, status: statusFilter }) });
+
   return (
     <>
       <PageHeader
@@ -60,25 +74,16 @@ export default async function EmployeesPage({
 
       <form
         method="get"
-        className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-3"
+        className="mb-3 flex flex-wrap items-end gap-3 rounded-xl border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-3"
       >
         <label className="block">
-          <span className="text-xs font-medium text-[var(--color-ink-faint)]">Search</span>
-          <input
-            name="q"
-            defaultValue={q}
-            placeholder="Name or reference"
-            className="mt-1 block w-56 rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm"
-          />
+          <span className="eyebrow">Search</span>
+          <input name="q" defaultValue={q} placeholder="Name or reference" className="input mt-1 block w-56" />
         </label>
         <label className="block">
-          <span className="text-xs font-medium text-[var(--color-ink-faint)]">Status</span>
-          <select
-            name="status"
-            defaultValue={statusFilter}
-            className="mt-1 block rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm"
-          >
-            <option value="">All</option>
+          <span className="eyebrow">Status</span>
+          <select name="status" defaultValue={statusFilter} className="select mt-1 block">
+            <option value="">All statuses</option>
             {EMPLOYEE_STATUSES.map((s) => (
               <option key={s} value={s}>
                 {s}
@@ -86,23 +91,39 @@ export default async function EmployeesPage({
             ))}
           </select>
         </label>
-        <label className="flex items-center gap-2 pb-1.5 text-sm">
+        <label className="flex items-center gap-2 pb-2 text-sm">
           <input type="checkbox" name="archived" value="1" defaultChecked={archived} />
           Include archived
         </label>
-        <button
-          type="submit"
-          className="rounded bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-white"
-        >
-          Apply
+        <button type="submit" className="btn btn-sm btn-primary">
+          Apply filters
         </button>
-        <Link
-          href="/employees"
-          className="rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm font-medium"
-        >
-          Clear
+        <Link href="/employees" className="btn btn-sm btn-secondary">
+          Reset
         </Link>
+        <span className="ml-auto self-center text-sm text-[var(--color-ink-faint)]">
+          <span className="tnum font-semibold text-[var(--color-ink)]">{count}</span> {count === 1 ? "employee" : "employees"}
+        </span>
       </form>
+
+      {activeFilters.length > 0 ? (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <span className="eyebrow">Active filters</span>
+          {activeFilters.map((f) => (
+            <Link
+              key={f.label}
+              href={f.href}
+              className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-primary-tint)] px-2.5 py-1 text-xs font-medium text-[var(--color-primary)] transition-colors hover:bg-[var(--color-primary-soft)]"
+            >
+              {f.label}
+              <span aria-hidden>✕</span>
+            </Link>
+          ))}
+          <Link href="/employees" className="text-xs text-[var(--color-ink-faint)] underline underline-offset-2">
+            Clear all
+          </Link>
+        </div>
+      ) : null}
 
       {!result.ok ? (
         <ErrorPanel title="Could not load employees">{result.error}</ErrorPanel>
@@ -132,7 +153,7 @@ export default async function EmployeesPage({
               {result.data.map((row) => (
                 <Tr key={row.id}>
                   <Td>
-                    <Link className="underline underline-offset-2" href={`/employees/${row.id}`}>
+                    <Link className="font-medium text-[var(--color-primary)] underline-offset-2 hover:underline" href={`/employees/${row.id}`}>
                       {row.displayName}
                     </Link>
                     {row.externalRef ? (
