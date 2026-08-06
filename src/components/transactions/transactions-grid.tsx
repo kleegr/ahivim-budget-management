@@ -230,6 +230,7 @@ export default function TransactionsGrid({
                 return (
                   <th
                     key={c.key}
+                    aria-sort={s ? (s.dir === "asc" ? "ascending" : "descending") : "none"}
                     className="relative border-b border-r border-[var(--color-rule-strong)] bg-[var(--color-surface-strong,#f1efe9)] px-2 py-1.5 text-left align-bottom font-semibold"
                     style={isFrozen ? { position: "sticky", left: frozenLeft[c.key], zIndex: 30 } : undefined}
                   >
@@ -271,6 +272,16 @@ export default function TransactionsGrid({
               <tr
                 key={r.id}
                 onClick={() => setSelected(r)}
+                onKeyDown={(e) => {
+                  // Only when the row itself is focused, so nested links keep their own Enter/Space.
+                  if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    setSelected(r);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                aria-label={`View transaction details${r.individual ? ` for ${r.individual}` : ""}${r.checkDate ? ` on ${r.checkDate}` : ""}`}
                 className={`cursor-pointer ${selected?.id === r.id ? "bg-[var(--color-primary-soft,#eef2ff)]" : "hover:bg-black/[0.03]"}`}
                 style={{ height: ROW_H }}
               >
