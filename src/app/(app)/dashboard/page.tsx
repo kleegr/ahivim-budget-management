@@ -100,7 +100,7 @@ export default async function DashboardPage({
       {/* Big workspace buttons */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <BigButton href="/transactions" title="Transactions" sub="Billed payroll, like the Ahivim tab" />
-        <BigButton href="/calculations" title="Calculations" sub="Budgets & strategies" />
+        <BigButton href="/calculations" title="Projections" sub="Budgets, pacing & utilization" />
         <BigButton href="/schedule" title="Schedule" sub="Planned sessions" />
         <BigButton href="/imports" title="Imports" sub="Upload & commit workbooks" />
         <BigButton href="/reports" title="Reports" sub="Export & analyze" />
@@ -133,7 +133,7 @@ export default async function DashboardPage({
           <StatTile label="Scheduled (expected)" value={formatMoney(scheduled.internal)} hint={`${scheduled.sessions.toLocaleString()} pending · ${formatHours(scheduled.hours)} h`} />
         </TileLink>
         <TileLink href="/calculations">
-          <StatTile label="Budget strategies" value={result.data.strategies.toLocaleString()} hint="Active calculation lines" />
+          <StatTile label="Budget projections" value={result.data.strategies.toLocaleString()} hint="Active projection lines" />
         </TileLink>
       </div>
 
@@ -172,7 +172,7 @@ export default async function DashboardPage({
               </>
             ) : (
               <TileLink href="/calculations">
-                <StatTile label="Budget used" unavailable="Set renewal dates and hours in Calculations to track this." />
+                <StatTile label="Budget used" unavailable="Set renewal dates and hours in Projections to track this." />
               </TileLink>
             )}
             <TileLink href="/reports/expiring-authorizations">
