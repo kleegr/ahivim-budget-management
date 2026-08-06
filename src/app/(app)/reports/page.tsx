@@ -3,31 +3,48 @@ import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
 import { listIndividuals } from "@/lib/data/queries";
 import { getReconciliation, listPrograms, getPortfolioForecast } from "@/lib/data/app-queries";
-import { REPORTS } from "@/lib/data/report-queries";
+import {
+  REPORTS,
+  agencyEarningsReport,
+  programTotalsReport,
+  utilizationOutliersReport,
+} from "@/lib/data/report-queries";
 import {
   Card, Table, Th, Td, Tr, Money, EmptyState, ErrorPanel, PageHeader, Badge, Plain,
 } from "@/components/ui";
+import {
+  PortfolioBurndownCard,
+  AgencyInternalDonut,
+  ProgramTotalsBar,
+  UtilizationDistribution,
+} from "@/components/charts";
 import { formatHours, formatPercent } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Reports — Ahivim Budget Management" };
 
-// The order the hub presents the reports in.
-const REPORT_ORDER = [
-  "budget-utilization",
-  "agency-earnings",
-  "employee-payable",
-  "program-totals",
-  "expiring-authorizations",
-  "missing-config",
-  "unbilled-schedules",
-  "unscheduled-billing",
-  "cuts-monthly",
-  "alias-decisions",
-  "audit-history",
-  "group-activity",
-  "actual-vs-scheduled",
-  "utilization-outliers",
+// The hub groups the reports by the decision they support, not alphabetically.
+const REPORT_GROUPS: { heading: string; description: string; keys: string[] }[] = [
+  {
+    heading: "Budgets & utilization",
+    description: "Where authorized hours stand, what is about to lapse, and who is off pace.",
+    keys: ["budget-utilization", "expiring-authorizations", "utilization-outliers"],
+  },
+  {
+    heading: "Money & payments",
+    description: "Agency, internal and employee money — every figure kept in its own column.",
+    keys: ["agency-earnings", "employee-payable", "program-totals", "cuts-monthly"],
+  },
+  {
+    heading: "Data quality / attention",
+    description: "Configuration gaps and decisions that quietly distort the figures downstream.",
+    keys: ["missing-config", "alias-decisions", "audit-history"],
+  },
+  {
+    heading: "Reconciliation",
+    description: "Planned against actual: what was billed but not scheduled, and the reverse.",
+    keys: ["unbilled-schedules", "unscheduled-billing", "actual-vs-scheduled", "group-activity"],
+  },
 ];
 
 export default async function ReportsPage() {
@@ -38,6 +55,9 @@ export default async function ReportsPage() {
     reconciliation: await getReconciliation(pool, 25),
     programs: await listPrograms(pool),
     forecast: await getPortfolioForecast(pool),
+    agencyEarnings: await agencyEarningsReport(pool),
+    programTotals: await programTotalsReport(pool),
+    utilizationOutliers: await utilizationOutliersReport(pool),
   }));
 
   return (
@@ -48,43 +68,53 @@ export default async function ReportsPage() {
         description="Pick a report to filter it on screen and export the exact figures to CSV or Excel. Every money column stays separate — agency gross, internal, agency additional and employee payment are never merged."
       />
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {REPORT_ORDER.map((key) => {
-          const def = REPORTS[key];
-          if (!def) return null;
-          return (
-            <div
-              key={key}
-              className="flex flex-col justify-between rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-4"
-            >
-              <div>
-                <Link href={`/reports/${key}`} className="display text-base font-medium hover:underline">
-                  {def.title}
-                </Link>
-                <p className="mt-1 text-sm text-[var(--color-ink-soft)]">{def.description}</p>
-              </div>
-              <div className="mt-3 flex items-center gap-3 text-sm">
-                <Link href={`/reports/${key}`} className="font-medium text-[var(--color-primary)] hover:underline">
-                  Open report
-                </Link>
-                <span className="text-[var(--color-ink-faint)]">·</span>
-                <Link href={`/api/reports/${key}/export?format=csv`} className="underline underline-offset-2">
-                  CSV
-                </Link>
-                <Link href={`/api/reports/${key}/export?format=xlsx`} className="underline underline-offset-2">
-                  Excel
-                </Link>
-              </div>
+      <div className="space-y-8">
+        {REPORT_GROUPS.map((group) => (
+          <section key={group.heading}>
+            <div className="mb-3">
+              <h2 className="display text-lg font-medium">{group.heading}</h2>
+              <p className="mt-0.5 max-w-prose text-sm text-[var(--color-ink-soft)]">{group.description}</p>
             </div>
-          );
-        })}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {group.keys.map((key) => {
+                const def = REPORTS[key];
+                if (!def) return null;
+                return (
+                  <div
+                    key={key}
+                    className="flex flex-col justify-between rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-4"
+                  >
+                    <div>
+                      <Link href={`/reports/${key}`} className="display text-base font-medium hover:underline">
+                        {def.title}
+                      </Link>
+                      <p className="mt-1 text-sm text-[var(--color-ink-soft)]">{def.description}</p>
+                    </div>
+                    <div className="mt-3 flex items-center gap-3 text-sm">
+                      <Link href={`/reports/${key}`} className="font-medium text-[var(--color-primary)] hover:underline">
+                        Open report
+                      </Link>
+                      <span className="text-[var(--color-ink-faint)]">·</span>
+                      <Link href={`/api/reports/${key}/export?format=csv`} className="underline underline-offset-2">
+                        CSV
+                      </Link>
+                      <Link href={`/api/reports/${key}/export?format=xlsx`} className="underline underline-offset-2">
+                        Excel
+                      </Link>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        ))}
       </div>
 
-      <div className="mt-8 mb-4">
+      <div className="mt-10 mb-4">
         <h2 className="display text-lg font-medium">Live analysis</h2>
         <p className="mt-1 max-w-prose text-sm text-[var(--color-ink-soft)]">
-          Portfolio forecast, per-individual utilization, batch reconciliation, and the
-          effective-dated rate schedule the figures are computed from.
+          Portfolio burn-down, the agency-vs-internal split, program totals and utilization
+          outliers at a glance — then the per-individual, reconciliation and rate detail below.
         </p>
       </div>
 
@@ -92,6 +122,31 @@ export default async function ReportsPage() {
         <ErrorPanel title="Could not load analysis">{result.error}</ErrorPanel>
       ) : (
         <div className="space-y-4">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="card px-4 py-4">
+              <PortfolioBurndownCard forecast={result.data.forecast} />
+            </div>
+            <div className="card px-4 py-4">
+              <AgencyInternalDonut
+                items={result.data.agencyEarnings.map((r) => ({
+                  internal: r.internalAmount,
+                  additional: r.agencyAdditional,
+                }))}
+              />
+            </div>
+            <div className="card px-4 py-4">
+              <ProgramTotalsBar
+                items={result.data.programTotals.map((r) => ({
+                  label: r.programName,
+                  value: r.agencyGross,
+                }))}
+              />
+            </div>
+            <div className="card px-4 py-4">
+              <UtilizationDistribution flags={result.data.utilizationOutliers.map((r) => r.flag)} />
+            </div>
+          </div>
+
           <Card title="Portfolio forecast" description="Projected exhaustion across every authorization">
             <div className="px-5 py-4 text-sm">
               {!result.data.forecast.available ? (

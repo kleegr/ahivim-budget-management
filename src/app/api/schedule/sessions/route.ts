@@ -3,7 +3,7 @@ import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { createSession, type CreateSessionInput } from "@/lib/manage/schedule";
-import { listSessions } from "@/lib/data/schedule-queries";
+import { listSessions, listSessionWarningFlags, type CalendarFilter } from "@/lib/data/schedule-queries";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,18 +33,25 @@ export async function GET(request: NextRequest) {
   const from = isDate(sp.get("from")) ? sp.get("from")! : range.from;
   const to = isDate(sp.get("to")) ? sp.get("to")! : range.to;
 
+  const filter: CalendarFilter = {
+    from,
+    to,
+    employeeId: asString(sp.get("employeeId")),
+    individualId: asString(sp.get("individualId")),
+    programId: asString(sp.get("programId")),
+    unassigned: sp.get("unassigned") === "true",
+    status: asString(sp.get("status")),
+  };
+
   try {
     const pool = getPool();
-    const sessions = await listSessions(pool, {
-      from,
-      to,
-      employeeId: asString(sp.get("employeeId")),
-      individualId: asString(sp.get("individualId")),
-      programId: asString(sp.get("programId")),
-      unassigned: sp.get("unassigned") === "true",
-      status: asString(sp.get("status")),
-    });
-    return NextResponse.json({ ok: true, data: { from, to, sessions } });
+    // warningFlags is additive: it classifies each session's stored warnings so
+    // the calendar can colour conflicts vs budget risk. listSessions is unchanged.
+    const [sessions, warningFlags] = await Promise.all([
+      listSessions(pool, filter),
+      listSessionWarningFlags(pool, filter),
+    ]);
+    return NextResponse.json({ ok: true, data: { from, to, sessions, warningFlags } });
   } catch (error) {
     return jsonError(redactError(error), 500);
   }

@@ -12,6 +12,7 @@ import {
 import type { PgLikePool } from "@/lib/import/commit";
 import { ErrorPanel, PageHeader, ButtonLink } from "@/components/ui";
 import ReportGrid from "@/components/reports/report-grid";
+import { ReportInlineChart } from "@/components/charts";
 
 export const dynamic = "force-dynamic";
 
@@ -170,12 +171,14 @@ export default async function ReportPage({
       ) : (
         <div className="space-y-6">
           {result.data.map((table) => (
-            <ReportGrid
-              key={table.key}
-              table={table}
-              reportKey={report}
-              canManage={user.role !== "viewer"}
-            />
+            <div key={table.key} className="space-y-4">
+              <ReportInlineChart table={table} />
+              <ReportGrid
+                table={table}
+                reportKey={report}
+                canManage={user.role !== "viewer"}
+              />
+            </div>
           ))}
         </div>
       )}
