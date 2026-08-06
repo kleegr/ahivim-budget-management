@@ -5,6 +5,7 @@ import { dec, toHours } from "@/lib/money";
 import {
   expectedBilling, durationBetween, timesOverlap, generateOccurrences,
 } from "@/lib/business/scheduling";
+import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
 import { individualProgramForecast } from "@/lib/data/schedule-queries";
 
 const isUuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
@@ -15,19 +16,35 @@ export interface ScheduleWarning {
   message: string;
 }
 
-/** The current rate for a program on a date (latest effective_from <= date). */
+/** The rate in force for a program on a date, via the one effective-dated resolver. */
 export async function currentRate(
   pool: PgLikePool,
   programId: string,
   onDate: string,
 ): Promise<{ agencyRate: string | null; internalRate: string } | null> {
-  const { rows } = await pool.query<{ agency_rate: string | null; internal_rate: string }>(
-    `SELECT agency_rate::text, internal_rate::text FROM program_rate_schedules
-     WHERE program_id = $1 AND effective_from <= $2 AND archived_at IS NULL
-     ORDER BY effective_from DESC LIMIT 1`,
-    [programId, onDate],
+  const { rows } = await pool.query<{
+    agency_rate: string | null;
+    internal_rate: string;
+    effective_from: string;
+    effective_to: string | null;
+  }>(
+    `SELECT agency_rate::text    AS agency_rate,
+            internal_rate::text  AS internal_rate,
+            effective_from::text AS effective_from,
+            effective_to::text   AS effective_to
+       FROM program_rate_schedules
+      WHERE program_id = $1 AND archived_at IS NULL`,
+    [programId],
   );
-  return rows[0] ? { agencyRate: rows[0].agency_rate, internalRate: rows[0].internal_rate } : null;
+  return resolveEffectiveRate(
+    rows.map((r) => ({
+      effectiveFrom: r.effective_from,
+      effectiveTo: r.effective_to,
+      agencyRate: r.agency_rate,
+      internalRate: r.internal_rate,
+    })),
+    onDate,
+  );
 }
 
 export interface SessionDraft {

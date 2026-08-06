@@ -9,6 +9,7 @@ import {
 } from "@/lib/business/calculation-strategy";
 import { calculatePeriodElapsed } from "@/lib/business/utilization";
 import { calculateForecast } from "@/lib/business/forecast";
+import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
 
 /**
  * Services for calculation strategies — the editable "Calculations" workspace.
@@ -81,34 +82,59 @@ interface RateScheduleRow {
   effective_from: string;
 }
 
-/** Pick each program's internal rate effective on or before `asOf` (or the earliest if none). */
+/**
+ * Each program's internal rate effective on `asOf`, via the ONE effective-dated
+ * resolver (`@/lib/business/rate-resolver`). A null `asOf` means "the latest
+ * configured rate" (used when a strategy has no renewal date yet). Returns "0"
+ * when the program has no rate in force.
+ */
 function rateAsOf(schedules: RateScheduleRow[], programId: string, asOf: string | null): string {
   const forProgram = schedules
     .filter((s) => s.program_id === programId)
-    .sort((a, b) => a.effective_from.localeCompare(b.effective_from));
-  if (forProgram.length === 0) return "0";
-  const cutoff = asOf ?? "9999-12-31";
-  let chosen = forProgram[0]!;
-  for (const s of forProgram) {
-    if (s.effective_from <= cutoff) chosen = s;
-    else break;
-  }
-  return chosen.internal_rate;
+    .map((s) => ({ effectiveFrom: s.effective_from, internalRate: s.internal_rate }));
+  const resolved = resolveEffectiveRate(forProgram, asOf ?? "9999-12-31");
+  return resolved?.internalRate ?? "0";
 }
 
 export async function listProgramRates(pool: PgLikePool, asOf?: string | null): Promise<ProgramRate[]> {
-  const { rows } = await pool.query<{ id: string; code: string; name: string; internal_rate: string | null }>(
-    `SELECT p.id, p.code, p.name,
-            (SELECT prs.internal_rate::text FROM program_rate_schedules prs
-              WHERE prs.program_id = p.id
-                AND prs.effective_from <= COALESCE($1::date, CURRENT_DATE)
-              ORDER BY prs.effective_from DESC LIMIT 1) AS internal_rate
+  const { rows } = await pool.query<{ id: string; code: string; name: string; as_of: string }>(
+    `SELECT p.id, p.code, p.name, COALESCE($1::date, CURRENT_DATE)::text AS as_of
        FROM programs p
       WHERE p.is_active IS DISTINCT FROM false
       ORDER BY p.code`,
     [asOf ?? null],
   );
-  return rows.map((r) => ({ id: r.id, code: r.code, name: r.name, internalRate: r.internal_rate ?? "0" }));
+  const { rows: schedules } = await pool.query<RateScheduleRow>(
+    `SELECT program_id, internal_rate::text, to_char(effective_from,'YYYY-MM-DD') AS effective_from
+       FROM program_rate_schedules`,
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    code: r.code,
+    name: r.name,
+    internalRate: rateAsOf(schedules, r.id, r.as_of),
+  }));
+}
+
+/**
+ * The effective internal rate for one strategy line, and whether the override
+ * actually applied. A `rate_override` applies when it has no effective-from
+ * (NULL — the legacy behaviour) OR the strategy's renewal date is on or after
+ * that effective-from; otherwise the effective-dated schedule default is used.
+ * With no renewal date to compare against, a dated override does not apply.
+ */
+function effectiveLineRate(args: {
+  override: string | null;
+  overrideEffectiveFrom: string | null;
+  renewalDate: string | null;
+  defaultRate: string;
+}): { rate: string; isOverride: boolean } {
+  const { override, overrideEffectiveFrom, renewalDate, defaultRate } = args;
+  const overrideApplies =
+    override != null &&
+    (overrideEffectiveFrom == null ||
+      (renewalDate != null && renewalDate >= overrideEffectiveFrom));
+  return overrideApplies ? { rate: override, isOverride: true } : { rate: defaultRate, isOverride: false };
 }
 
 export async function listStrategies(
@@ -159,8 +185,9 @@ export async function listStrategies(
   const ids = strategies.map((s) => s.id);
   const lines = ids.length
     ? (
-        await pool.query<{ strategy_id: string; program_id: string; authorized_hours: string; rate_override: string | null }>(
-          `SELECT strategy_id, program_id, authorized_hours::text, rate_override::text
+        await pool.query<{ strategy_id: string; program_id: string; authorized_hours: string; rate_override: string | null; rate_override_effective_from: string | null }>(
+          `SELECT strategy_id, program_id, authorized_hours::text, rate_override::text,
+                  to_char(rate_override_effective_from, 'YYYY-MM-DD') AS rate_override_effective_from
              FROM calculation_strategy_lines WHERE strategy_id = ANY($1::uuid[])`,
           [ids],
         )
@@ -175,6 +202,7 @@ export async function listStrategies(
 
   const hoursByStrategy = new Map<string, Record<string, string>>();
   const overrideByStrategy = new Map<string, Record<string, string | null>>();
+  const overrideFromByStrategy = new Map<string, Record<string, string | null>>();
   for (const l of lines) {
     const m = hoursByStrategy.get(l.strategy_id) ?? {};
     m[l.program_id] = l.authorized_hours;
@@ -182,21 +210,30 @@ export async function listStrategies(
     const o = overrideByStrategy.get(l.strategy_id) ?? {};
     o[l.program_id] = l.rate_override;
     overrideByStrategy.set(l.strategy_id, o);
+    const of = overrideFromByStrategy.get(l.strategy_id) ?? {};
+    of[l.program_id] = l.rate_override_effective_from;
+    overrideFromByStrategy.set(l.strategy_id, of);
   }
 
   const rows: StrategyGridRow[] = strategies.map((s) => {
     const hours = hoursByStrategy.get(s.id) ?? {};
     const overrides = overrideByStrategy.get(s.id) ?? {};
+    const overrideFroms = overrideFromByStrategy.get(s.id) ?? {};
     const period = derivePeriodFromRenewal(s.renewal_date);
     const strategyLines = Object.entries(hours).map(([programId, h]) => {
       const def = rateAsOf(schedules, programId, s.renewal_date);
-      const override = overrides[programId];
+      const { rate, isOverride } = effectiveLineRate({
+        override: overrides[programId] ?? null,
+        overrideEffectiveFrom: overrideFroms[programId] ?? null,
+        renewalDate: s.renewal_date,
+        defaultRate: def,
+      });
       return {
         programLabel: programId,
         programId,
         hours: h,
-        internalRate: override ?? def, // effective rate: override wins
-        isOverride: override != null,
+        internalRate: rate, // effective rate: override wins when in effect
+        isOverride,
         defaultRate: def,
       };
     });
@@ -246,11 +283,13 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
   const individualIds = [...new Set(rows.map((r) => r.individualId))];
 
   // Billed actuals per (individual, program) — the workbook rows are per-individual.
-  const billed = await pool.query<{ individual_id: string; program_id: string; hours: string; internal: string }>(
+  // `observations` is the real transaction count, used to gate the forecast.
+  const billed = await pool.query<{ individual_id: string; program_id: string; hours: string; internal: string; observations: string }>(
     `SELECT individual_id, program_id,
             COALESCE(sum(imported_hours),0)::text AS hours,
             COALESCE(sum(COALESCE(calculated_internal_amount, spreadsheet_internal_amount,
-                     internal_rate_applied * imported_hours, 0)),0)::text AS internal
+                     internal_rate_applied * imported_hours, 0)),0)::text AS internal,
+            count(*)::text AS observations
        FROM payroll_transactions
       WHERE individual_id = ANY($1::uuid[]) AND program_id IS NOT NULL
       GROUP BY individual_id, program_id`,
@@ -269,8 +308,8 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
   );
 
   const key = (i: string, p: string) => `${i}:${p}`;
-  const billedMap = new Map<string, { hours: string; internal: string }>();
-  for (const r of billed.rows) billedMap.set(key(r.individual_id, r.program_id), { hours: r.hours, internal: r.internal });
+  const billedMap = new Map<string, { hours: string; internal: string; observations: string }>();
+  for (const r of billed.rows) billedMap.set(key(r.individual_id, r.program_id), { hours: r.hours, internal: r.internal, observations: r.observations });
   const schedMap = new Map<string, { hours: string; internal: string }>();
   for (const r of scheduled.rows) schedMap.set(key(r.individual_id, r.program_id), { hours: r.hours, internal: r.internal });
 
@@ -278,10 +317,11 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
     const programIds = Object.keys(row.hours);
     let planned = dec(0);
     let actualH = dec(0), actualI = dec(0), schedH = dec(0), schedI = dec(0);
+    let observations = 0;
     for (const pid of programIds) {
       planned = planned.plus(dec(row.hours[pid] ?? 0));
       const b = billedMap.get(key(row.individualId, pid));
-      if (b) { actualH = actualH.plus(dec(b.hours)); actualI = actualI.plus(dec(b.internal)); }
+      if (b) { actualH = actualH.plus(dec(b.hours)); actualI = actualI.plus(dec(b.internal)); observations += Number(b.observations); }
       const s = schedMap.get(key(row.individualId, pid));
       if (s) { schedH = schedH.plus(dec(s.hours)); schedI = schedI.plus(dec(s.internal)); }
     }
@@ -289,18 +329,19 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
     const util = planned.greaterThan(0) ? actualH.dividedBy(planned) : null;
     const committed = planned.greaterThan(0) ? actualH.plus(schedH).dividedBy(planned) : null;
 
-    // Forecast projected exhaustion, when the period has run long enough to be meaningful.
+    // Forecast projected exhaustion. Pass the REAL billed-transaction count so a
+    // strategy projection obeys the same 28-day / 3-observation guardrails that
+    // forecast.ts enforces everywhere else — no forced minimum, no fabrication.
     let projectedExhaustion: string | null = null;
     if (row.periodStart && row.periodEnd && planned.greaterThan(0) && actualH.greaterThan(0)) {
       try {
         const elapsed = calculatePeriodElapsed({ startDate: row.periodStart, endDate: row.periodEnd });
-        const observationCount = billedMap.has(key(row.individualId, programIds[0] ?? "")) ? 4 : 0;
         const f = calculateForecast({
           authorizedHours: toHours(planned),
           usedHours: toHours(actualH),
           elapsed,
           periodStartDate: row.periodStart,
-          observationCount: Math.max(observationCount, 3),
+          observationCount: observations,
         });
         if (f.available) projectedExhaustion = f.estimatedExhaustionDate;
       } catch {
@@ -354,8 +395,9 @@ export async function explainStrategy(pool: PgLikePool, id: string): Promise<Str
   );
   const s = rows[0];
   if (!s) return null;
-  const { rows: lines } = await pool.query<{ program_id: string; program_label: string; authorized_hours: string; rate_override: string | null }>(
-    `SELECT csl.program_id, COALESCE(p.name, p.code) AS program_label, csl.authorized_hours::text, csl.rate_override::text
+  const { rows: lines } = await pool.query<{ program_id: string; program_label: string; authorized_hours: string; rate_override: string | null; rate_override_effective_from: string | null }>(
+    `SELECT csl.program_id, COALESCE(p.name, p.code) AS program_label, csl.authorized_hours::text, csl.rate_override::text,
+            to_char(csl.rate_override_effective_from, 'YYYY-MM-DD') AS rate_override_effective_from
        FROM calculation_strategy_lines csl JOIN programs p ON p.id = csl.program_id
       WHERE csl.strategy_id = $1
       ORDER BY p.code`,
@@ -368,12 +410,18 @@ export async function explainStrategy(pool: PgLikePool, id: string): Promise<Str
   return computeStrategy({
     lines: lines.map((l) => {
       const def = rateAsOf(schedules, l.program_id, s.renewal_date);
+      const { rate, isOverride } = effectiveLineRate({
+        override: l.rate_override,
+        overrideEffectiveFrom: l.rate_override_effective_from,
+        renewalDate: s.renewal_date,
+        defaultRate: def,
+      });
       return {
         programLabel: l.program_label,
         programId: l.program_id,
         hours: l.authorized_hours,
-        internalRate: l.rate_override ?? def,
-        isOverride: l.rate_override != null,
+        internalRate: rate,
+        isOverride,
         defaultRate: def,
       };
     }),

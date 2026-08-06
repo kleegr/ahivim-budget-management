@@ -157,6 +157,49 @@ suite("calculation strategies (real PostgreSQL)", () => {
     expect(Number(list.rows[0]!.yearlyGross)).toBeCloseTo(2100, 2);
   });
 
+  it("gates a rate override by its effective-from against the strategy renewal date", async () => {
+    const ind = unwrap(await createIndividual(pool, { displayName: "Effective Override Person" }, ACTOR));
+    const p = await program("COMHAB", "Com Hab", "21"); // schedule default 21
+    const strat = unwrap(await createStrategy(pool, { individualId: ind.id }, ACTOR));
+    unwrap(
+      await updateStrategy(
+        pool,
+        { id: strat.id, renewalDate: "2025-03-01", hours: { [p]: "100" }, rateOverrides: { [p]: "30" } },
+        ACTOR,
+      ),
+    );
+
+    // NULL effective-from (the default): the override applies exactly as before.
+    let list = await listStrategies(pool, { individualId: ind.id });
+    expect(Number(list.rows[0]!.yearlyGross)).toBeCloseTo(3000, 2); // 100 × 30 override
+    let explain = await explainStrategy(pool, strat.id);
+    expect(explain!.lineGross[0]!.isOverride).toBe(true);
+    expect(Number(explain!.lineGross[0]!.rate)).toBeCloseTo(30, 2);
+
+    // effective-from AFTER the renewal date (2099 > 2025-03-01): override is
+    // ignored and the effective-dated schedule default is used instead.
+    await pool.query(
+      `UPDATE calculation_strategy_lines SET rate_override_effective_from = '2099-01-01'
+        WHERE strategy_id = $1 AND program_id = $2`,
+      [strat.id, p],
+    );
+    list = await listStrategies(pool, { individualId: ind.id });
+    expect(Number(list.rows[0]!.yearlyGross)).toBeCloseTo(2100, 2); // 100 × 21 default
+    explain = await explainStrategy(pool, strat.id);
+    expect(explain!.lineGross[0]!.isOverride).toBe(false);
+    expect(Number(explain!.lineGross[0]!.rate)).toBeCloseTo(21, 2);
+    expect(Number(explain!.lineGross[0]!.defaultRate)).toBeCloseTo(21, 2);
+
+    // effective-from ON the renewal date (inclusive: renewal >= from): applies again.
+    await pool.query(
+      `UPDATE calculation_strategy_lines SET rate_override_effective_from = '2025-03-01'
+        WHERE strategy_id = $1 AND program_id = $2`,
+      [strat.id, p],
+    );
+    list = await listStrategies(pool, { individualId: ind.id });
+    expect(Number(list.rows[0]!.yearlyGross)).toBeCloseTo(3000, 2); // override back in effect
+  });
+
   it("computes actual-vs-plan analytics from billed transactions", async () => {
     const ind = unwrap(await createIndividual(pool, { displayName: "Analytics Person" }, ACTOR));
     const p = await program("COMHAB", "Com Hab", "21");
