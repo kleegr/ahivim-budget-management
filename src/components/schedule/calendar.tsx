@@ -1,14 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { CalendarSession } from "@/lib/data/schedule-queries";
+import type {
+  CalendarSession, SessionWarningFlags, ScheduleUtilizationSummary,
+} from "@/lib/data/schedule-queries";
 import {
   send, SessionChip, addDays, weekday, startOfWeek, startOfMonth, monthGridStart,
-  monthLabel, humanDate, prettyTime, WEEKDAYS, STATUS_STYLE, STATUS_LABEL,
+  monthLabel, humanDate, prettyTime, WEEKDAYS, STATUS_LABEL,
+  sessionTone, EVENT_TONE_COLOR, EVENT_TONE_LABEL, type EventTone, type SessionFlags,
   type Picker, type ProgramPicker, type View,
 } from "./shared";
 import SessionDetail from "./session-detail";
 import CreateSessionModal from "./create-session-modal";
+import { PaceBar } from "@/components/ui";
+import { BigStat, ProgressBar, UtilizationBadge } from "@/components/ui-viz";
+import { dec, formatHours, formatPercent } from "@/lib/money";
+
+type FlagMap = Map<string, SessionFlags>;
 
 export interface ScheduleCalendarProps {
   canManage: boolean;
@@ -41,10 +49,13 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
     status: initialFilters?.status ?? "",
   });
   const [sessions, setSessions] = useState<CalendarSession[]>([]);
+  const [flags, setFlags] = useState<FlagMap>(new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<CalendarSession | null>(null);
   const [creating, setCreating] = useState<null | { date: string }>(null);
+  const [summary, setSummary] = useState<ScheduleUtilizationSummary | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
 
   const range = useMemo(() => {
     if (view === "day") return { from: anchor, to: anchor };
@@ -70,15 +81,38 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
     if (!res.ok) {
       setError(res.error ?? "Could not load the schedule.");
       setSessions([]);
+      setFlags(new Map());
       return;
     }
-    const data = res.data as { sessions: CalendarSession[] };
+    const data = res.data as { sessions: CalendarSession[]; warningFlags?: SessionWarningFlags[] };
     setSessions(data.sessions ?? []);
+    setFlags(new Map<string, SessionFlags>((data.warningFlags ?? []).map((f) => [f.id, f])));
   }, [range, filters]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Utilisation strip: load the authorised/used/scheduled/remaining picture for
+  // the individual currently in focus. Only meaningful for a single individual.
+  useEffect(() => {
+    const individualId = filters.individualId;
+    if (!individualId) {
+      setSummary(null);
+      setSummaryLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSummary(null); // avoid showing a prior individual's figures while loading
+    setSummaryLoading(true);
+    void (async () => {
+      const res = await send("GET", `/api/schedule/utilization?individualId=${encodeURIComponent(individualId)}`);
+      if (cancelled) return;
+      setSummaryLoading(false);
+      setSummary(res.ok ? ((res.data as ScheduleUtilizationSummary | null) ?? null) : null);
+    })();
+    return () => { cancelled = true; };
+  }, [filters.individualId]);
 
   const byDate = useMemo(() => {
     const map = new Map<string, CalendarSession[]>();
@@ -165,16 +199,23 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
         ) : null}
       </div>
 
+      {/* Utilisation strip: budget headroom for the individual in focus. */}
+      {filters.individualId ? (
+        <UtilizationStrip summary={summary} loading={summaryLoading} />
+      ) : null}
+
+      <CalendarLegend />
+
       {error ? (
         <div role="alert" className="rounded-lg border border-[var(--color-pace-over)] bg-[#fdf2f5] px-4 py-3 text-sm text-[var(--color-pace-over)]">{error}</div>
       ) : null}
 
       {view === "month" ? (
-        <MonthGrid anchor={anchor} today={today} byDate={byDate} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d }) : undefined} />
+        <MonthGrid anchor={anchor} today={today} byDate={byDate} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d }) : undefined} />
       ) : view === "week" ? (
-        <WeekList anchor={anchor} today={today} byDate={byDate} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d }) : undefined} />
+        <WeekList anchor={anchor} today={today} byDate={byDate} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d }) : undefined} />
       ) : (
-        <DayList date={anchor} today={today} sessions={byDate.get(anchor) ?? []} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d }) : undefined} />
+        <DayList date={anchor} today={today} sessions={byDate.get(anchor) ?? []} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d }) : undefined} />
       )}
 
       {selected ? (
@@ -204,11 +245,12 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
  * Month grid.
  * ========================================================================= */
 function MonthGrid({
-  anchor, today, byDate, onSelect, onAdd,
+  anchor, today, byDate, flags, onSelect, onAdd,
 }: {
   anchor: string;
   today: string;
   byDate: Map<string, CalendarSession[]>;
+  flags: FlagMap;
   onSelect: (s: CalendarSession) => void;
   onAdd?: (date: string) => void;
 }) {
@@ -216,30 +258,38 @@ function MonthGrid({
   const month = anchor.slice(0, 7);
   const days = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
   return (
-    <div className="overflow-hidden rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)]">
-      <div className="grid grid-cols-7 border-b border-[var(--color-rule)] text-xs font-semibold text-[var(--color-ink-faint)]">
-        {WEEKDAYS.map((w) => <div key={w} className="px-2 py-1.5 text-center uppercase">{w}</div>)}
-      </div>
-      <div className="grid grid-cols-7">
-        {days.map((d) => {
-          const inMonth = d.slice(0, 7) === month;
-          const isToday = d === today;
-          const list = byDate.get(d) ?? [];
-          return (
-            <div key={d} className={`min-h-[92px] border-b border-r border-[var(--color-rule)] p-1 ${inMonth ? "" : "bg-[var(--color-paper)]"}`}>
-              <div className="mb-1 flex items-center justify-between">
-                <span className={`tnum text-xs ${isToday ? "rounded bg-[var(--color-primary)] px-1.5 py-0.5 font-semibold text-white" : inMonth ? "text-[var(--color-ink)]" : "text-[var(--color-ink-faint)]"}`}>
-                  {Number(d.slice(8, 10))}
-                </span>
-                {onAdd ? <button type="button" onClick={() => onAdd(d)} aria-label={`Add session on ${d}`} className="text-xs text-[var(--color-ink-faint)] hover:text-[var(--color-primary)]">+</button> : null}
-              </div>
-              <div className="space-y-0.5">
-                {list.slice(0, 4).map((s) => <SessionChip key={s.id} s={s} onSelect={onSelect} />)}
-                {list.length > 4 ? <span className="block px-1 text-[10px] text-[var(--color-ink-faint)]">+{list.length - 4} more</span> : null}
-              </div>
+    <div className="scroll-thin overflow-x-auto rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)]">
+      {/* min-width keeps cells usable on phones; the container scrolls instead of squishing. */}
+      <div className="min-w-[680px] sm:min-w-0">
+        <div className="grid grid-cols-7 border-b border-[var(--color-rule)] text-xs font-semibold text-[var(--color-ink-faint)]">
+          {WEEKDAYS.map((w) => (
+            <div key={w} className="px-2 py-1.5 text-center uppercase">
+              <span className="sm:hidden">{w.slice(0, 1)}</span>
+              <span className="hidden sm:inline">{w}</span>
             </div>
-          );
-        })}
+          ))}
+        </div>
+        <div className="grid grid-cols-7">
+          {days.map((d) => {
+            const inMonth = d.slice(0, 7) === month;
+            const isToday = d === today;
+            const list = byDate.get(d) ?? [];
+            return (
+              <div key={d} className={`min-h-[84px] border-b border-r border-[var(--color-rule)] p-1 sm:min-h-[92px] ${inMonth ? "" : "bg-[var(--color-paper)]"}`}>
+                <div className="mb-1 flex items-center justify-between">
+                  <span className={`tnum text-xs ${isToday ? "rounded bg-[var(--color-primary)] px-1.5 py-0.5 font-semibold text-white" : inMonth ? "text-[var(--color-ink)]" : "text-[var(--color-ink-faint)]"}`}>
+                    {Number(d.slice(8, 10))}
+                  </span>
+                  {onAdd ? <button type="button" onClick={() => onAdd(d)} aria-label={`Add session on ${d}`} className="text-xs text-[var(--color-ink-faint)] hover:text-[var(--color-primary)]">+</button> : null}
+                </div>
+                <div className="space-y-0.5">
+                  {list.slice(0, 4).map((s) => <SessionChip key={s.id} s={s} flags={flags.get(s.id)} onSelect={onSelect} />)}
+                  {list.length > 4 ? <span className="block px-1 text-[10px] text-[var(--color-ink-faint)]">+{list.length - 4} more</span> : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -249,11 +299,12 @@ function MonthGrid({
  * Week + day lists.
  * ========================================================================= */
 function WeekList({
-  anchor, today, byDate, onSelect, onAdd,
+  anchor, today, byDate, flags, onSelect, onAdd,
 }: {
   anchor: string;
   today: string;
   byDate: Map<string, CalendarSession[]>;
+  flags: FlagMap;
   onSelect: (s: CalendarSession) => void;
   onAdd?: (date: string) => void;
 }) {
@@ -268,7 +319,7 @@ function WeekList({
             {onAdd ? <button type="button" onClick={() => onAdd(d)} className="text-xs text-[var(--color-ink-faint)] hover:text-[var(--color-primary)]">+</button> : null}
           </div>
           <div className="space-y-1">
-            {(byDate.get(d) ?? []).map((s) => <SessionChip key={s.id} s={s} onSelect={onSelect} />)}
+            {(byDate.get(d) ?? []).map((s) => <SessionChip key={s.id} s={s} flags={flags.get(s.id)} onSelect={onSelect} />)}
             {(byDate.get(d) ?? []).length === 0 ? <p className="text-[11px] text-[var(--color-ink-faint)]">—</p> : null}
           </div>
         </div>
@@ -278,11 +329,12 @@ function WeekList({
 }
 
 function DayList({
-  date, today, sessions, onSelect, onAdd,
+  date, today, sessions, flags, onSelect, onAdd,
 }: {
   date: string;
   today: string;
   sessions: CalendarSession[];
+  flags: FlagMap;
   onSelect: (s: CalendarSession) => void;
   onAdd?: (date: string) => void;
 }) {
@@ -297,20 +349,156 @@ function DayList({
         <p className="px-4 py-8 text-center text-sm text-[var(--color-ink-faint)]">Nothing scheduled.</p>
       ) : (
         <ul className="divide-y divide-[var(--color-rule)]">
-          {sorted.map((s) => (
-            <li key={s.id}>
-              <button type="button" onClick={() => onSelect(s)} className="flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-[var(--color-paper)]">
-                <span className="tnum w-24 text-xs text-[var(--color-ink-soft)]">{s.startTime ? `${prettyTime(s.startTime)}${s.endTime ? `–${prettyTime(s.endTime)}` : ""}` : "—"}</span>
-                <span className={`rounded border-l-2 px-1.5 py-0.5 text-xs ${STATUS_STYLE[s.status]}`}>{STATUS_LABEL[s.status] ?? s.status}</span>
-                <span className="text-sm">{s.programName}</span>
-                <span className="text-xs text-[var(--color-ink-soft)]">{s.individualNames.join(", ")}</span>
-                <span className="ml-auto text-xs text-[var(--color-ink-faint)]">{s.employeeName ?? "Unassigned"}</span>
-                {s.warningCount > 0 ? <span className="text-[var(--color-pace-near)]" title={`${s.warningCount} warning(s)`}>⚠</span> : null}
-              </button>
-            </li>
-          ))}
+          {sorted.map((s) => {
+            const f = flags.get(s.id);
+            const tone = sessionTone(s, f);
+            const color = EVENT_TONE_COLOR[tone];
+            const flagged = tone === "over_risk" || tone === "flagged";
+            return (
+              <li key={s.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(s)}
+                  className="flex w-full items-center gap-3 border-l-[3px] px-4 py-2 text-left hover:bg-[var(--color-paper)]"
+                  style={{ borderLeftColor: color }}
+                >
+                  <span className="tnum w-24 text-xs text-[var(--color-ink-soft)]">{s.startTime ? `${prettyTime(s.startTime)}${s.endTime ? `–${prettyTime(s.endTime)}` : ""}` : "—"}</span>
+                  <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium" style={{ color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}>
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
+                    {STATUS_LABEL[s.status] ?? s.status}
+                  </span>
+                  <span className="text-sm">{s.programName}</span>
+                  <span className="text-xs text-[var(--color-ink-soft)]">{s.individualNames.join(", ")}</span>
+                  <span className="ml-auto text-xs text-[var(--color-ink-faint)]">{s.employeeName ?? "Unassigned"}</span>
+                  {flagged ? (
+                    <span className="text-xs font-semibold" style={{ color }} title={`${s.warningCount} warning(s)`}>
+                      {tone === "over_risk" ? "Budget risk" : "Conflict"}
+                    </span>
+                  ) : null}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
+    </div>
+  );
+}
+
+/* ===========================================================================
+ * Utilisation strip: at-a-glance budget headroom for the individual in focus,
+ * so a planner sees whether the authorisation will be used before it renews.
+ * ========================================================================= */
+function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSummary | null; loading: boolean }) {
+  if (loading && !summary) {
+    return (
+      <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-ink-faint)]">
+        Loading utilisation…
+      </div>
+    );
+  }
+  if (!summary) return null;
+
+  if (!summary.hasAuthorization) {
+    return (
+      <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-3 text-sm">
+        <span className="font-medium">{summary.individualName}</span>{" "}
+        <span className="text-[var(--color-ink-faint)]">has no active authorisation, so utilisation cannot be shown. Add a budget period and authorisation to plan against a budget.</span>
+      </div>
+    );
+  }
+
+  const usagePctNum = dec(summary.usagePercent).times(100).toNumber();
+  const committedPctNum = dec(summary.committedPercent).times(100).toNumber();
+  const elapsedNum = dec(summary.timeElapsedPercent).times(100).toNumber();
+  const remaining = dec(summary.remainingAfterHours);
+  const overBudget = remaining.isNegative();
+  const barTone: "good" | "warn" | "danger" = overBudget ? "danger" : usagePctNum >= 90 ? "warn" : "good";
+  const bigTone: "good" | "warn" | "danger" = overBudget ? "danger" : committedPctNum >= 100 ? "warn" : "good";
+
+  // Pace to fully utilise the remaining, unscheduled hours before the period ends.
+  const days = summary.daysRemaining;
+  const weeksLeft = days !== null && days > 0 ? days / 7 : null;
+  const requiredWeekly = weeksLeft && remaining.gt(0) ? remaining.dividedBy(weeksLeft) : null;
+
+  return (
+    <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="eyebrow">Budget utilisation</p>
+          <p className="display text-sm font-medium">
+            {summary.individualName}
+            {summary.period ? <span className="ml-2 text-xs font-normal text-[var(--color-ink-faint)]">{summary.period.label} · {summary.period.startDate} → {summary.period.endDate}</span> : null}
+          </p>
+        </div>
+        <UtilizationBadge status={summary.status} />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <BigStat label="Authorised" value={`${formatHours(summary.authorizedHours)} h`} hint="this budget period" />
+        <BigStat label="Used" value={`${formatHours(summary.usedHours)} h`} tone={bigTone} hint={`${formatPercent(summary.usagePercent)} of authorised`} />
+        <BigStat label="Scheduled" value={`${formatHours(summary.scheduledHours)} h`} tone={dec(summary.scheduledHours).isZero() ? "muted" : "info"} hint="pending, not yet billed" />
+        <BigStat
+          label="Unscheduled remaining"
+          value={`${formatHours(summary.remainingAfterHours)} h`}
+          tone={overBudget ? "danger" : "good"}
+          hint={overBudget ? "over authorisation" : "still available to plan"}
+        />
+      </div>
+
+      <div className="mt-3">
+        <ProgressBar percent={usagePctNum} tone={barTone} target={elapsedNum} label="Hours used vs. period elapsed" />
+        <p className="mt-2 text-xs text-[var(--color-ink-faint)]">
+          The marker is how far the budget period has elapsed. {formatPercent(summary.committedPercent)} committed once scheduled work is counted.
+          {overBudget
+            ? ` Scheduling exceeds the authorisation by ${formatHours(remaining.abs())} h — reduce or reallocate.`
+            : requiredWeekly
+              ? ` ${formatHours(summary.remainingAfterHours)} h remain unscheduled with ${days} day${days === 1 ? "" : "s"} left — about ${formatHours(requiredWeekly)} h/week to fully utilise.`
+              : days !== null && days <= 0
+                ? " The budget period has ended."
+                : ` ${formatHours(summary.remainingAfterHours)} h remain unscheduled.`}
+        </p>
+      </div>
+
+      {summary.programs.length > 1 ? (
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {summary.programs.map((p) => {
+            const pOver = p.remainingAfterHours !== null && dec(p.remainingAfterHours).isNegative();
+            const pColor = EVENT_TONE_COLOR[pOver ? "over_risk" : dec(p.usagePercent).gte("0.9") ? "flagged" : "on_track"];
+            return (
+              <div key={p.programId} className="rounded border border-[var(--color-rule)] px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-xs font-medium">{p.programName}</span>
+                  <span className="tnum text-xs" style={{ color: pColor }}>{p.remainingAfterHours === null ? "—" : `${formatHours(p.remainingAfterHours)} h left`}</span>
+                </div>
+                <div className="mt-1.5">
+                  <PaceBar usagePercent={p.usagePercent} timeElapsedPercent={summary.timeElapsedPercent} color={pColor} />
+                </div>
+                <p className="mt-1 text-[11px] text-[var(--color-ink-faint)]">
+                  {formatHours(p.usedHours)} used · {formatHours(p.scheduledHours)} scheduled · {formatHours(p.authorizedHours ?? "0")} authorised
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* A compact key so the event colours are legible without hovering. */
+function CalendarLegend() {
+  const items: EventTone[] = ["on_track", "flagged", "over_risk", "cancelled"];
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-xs text-[var(--color-ink-soft)]">
+      <span className="eyebrow">Legend</span>
+      {items.map((t) => (
+        <span key={t} className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-sm" style={{ background: EVENT_TONE_COLOR[t] }} />
+          {EVENT_TONE_LABEL[t]}
+        </span>
+      ))}
+      <span className="text-[var(--color-ink-faint)]">✓ completed</span>
     </div>
   );
 }
