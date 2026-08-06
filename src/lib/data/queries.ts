@@ -8,6 +8,7 @@ import {
   type PeriodElapsed,
 } from "@/lib/business/utilization";
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
+import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
 
 /**
  * READ MODEL
@@ -49,24 +50,41 @@ export async function currentRatesByProgram(
     code: string;
     agency_rate: string | null;
     internal_rate: string;
+    effective_from: string;
+    effective_to: string | null;
   }>(
-    `SELECT DISTINCT ON (p.code)
-            p.code,
-            s.agency_rate::text   AS agency_rate,
-            s.internal_rate::text AS internal_rate
+    `SELECT p.code,
+            s.agency_rate::text    AS agency_rate,
+            s.internal_rate::text  AS internal_rate,
+            s.effective_from::text AS effective_from,
+            s.effective_to::text   AS effective_to
        FROM programs p
-       JOIN program_rate_schedules s ON s.program_id = p.id
-      WHERE s.effective_from <= $1::date
-        AND (s.effective_to IS NULL OR s.effective_to >= $1::date)
-      ORDER BY p.code, s.effective_from DESC`,
-    [asOf],
+       JOIN program_rate_schedules s ON s.program_id = p.id`,
   );
 
-  const out: Record<string, RateConfig> = {};
+  // Group by program, then let the ONE resolver pick the row in force on asOf.
+  const byCode = new Map<string, typeof rows>();
   for (const row of rows) {
-    out[row.code] = {
-      agencyRate: row.agency_rate === null ? null : toMoney(row.agency_rate),
-      internalRate: toMoney(row.internal_rate),
+    const list = byCode.get(row.code) ?? [];
+    list.push(row);
+    byCode.set(row.code, list);
+  }
+
+  const out: Record<string, RateConfig> = {};
+  for (const [code, scheduleRows] of byCode) {
+    const resolved = resolveEffectiveRate(
+      scheduleRows.map((r) => ({
+        effectiveFrom: r.effective_from,
+        effectiveTo: r.effective_to,
+        agencyRate: r.agency_rate,
+        internalRate: r.internal_rate,
+      })),
+      asOf,
+    );
+    if (resolved === null) continue;
+    out[code] = {
+      agencyRate: resolved.agencyRate === null ? null : toMoney(resolved.agencyRate),
+      internalRate: toMoney(resolved.internalRate),
     };
   }
   return out;

@@ -2,6 +2,7 @@ import type { PgLikePool } from "@/lib/import/commit";
 import { addMoney, dec, toMoney } from "@/lib/money";
 import { calculatePeriodElapsed, type PeriodElapsed } from "@/lib/business/utilization";
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
+import { pickEffectiveRateRow } from "@/lib/business/rate-resolver";
 
 /**
  * Read models for the application screens.
@@ -785,35 +786,57 @@ export async function listPrograms(pool: PgLikePool): Promise<ProgramRow[]> {
     name: string;
     is_group_capable: boolean;
     is_active: boolean;
-    agency_rate: string | null;
-    internal_rate: string | null;
-    effective_from: string | null;
     alias_count: string;
+    as_of: string;
   }>(
     `SELECT p.id, p.code, p.name, p.is_group_capable, p.is_active,
-            s.agency_rate::text, s.internal_rate::text, s.effective_from::text,
-            (SELECT count(*)::text FROM program_aliases a WHERE a.program_id = p.id) AS alias_count
+            (SELECT count(*)::text FROM program_aliases a WHERE a.program_id = p.id) AS alias_count,
+            CURRENT_DATE::text AS as_of
      FROM programs p
-     LEFT JOIN LATERAL (
-       SELECT agency_rate, internal_rate, effective_from
-       FROM program_rate_schedules r
-       WHERE r.program_id = p.id AND r.effective_from <= CURRENT_DATE
-       ORDER BY r.effective_from DESC
-       LIMIT 1
-     ) s ON true
      ORDER BY p.code`,
   );
-  return rows.map((r) => ({
-    id: r.id,
-    code: r.code,
-    name: r.name,
-    isGroupCapable: r.is_group_capable,
-    isActive: r.is_active,
-    agencyRate: r.agency_rate,
-    internalRate: r.internal_rate,
-    effectiveFrom: r.effective_from,
-    aliasCount: Number(r.alias_count),
-  }));
+
+  const { rows: schedules } = await pool.query<{
+    program_id: string;
+    agency_rate: string | null;
+    internal_rate: string;
+    effective_from: string;
+    effective_to: string | null;
+  }>(
+    `SELECT program_id, agency_rate::text AS agency_rate, internal_rate::text AS internal_rate,
+            effective_from::text AS effective_from, effective_to::text AS effective_to
+     FROM program_rate_schedules`,
+  );
+  const byProgram = new Map<string, typeof schedules>();
+  for (const s of schedules) {
+    const list = byProgram.get(s.program_id) ?? [];
+    list.push(s);
+    byProgram.set(s.program_id, list);
+  }
+
+  return rows.map((r) => {
+    // The one effective-dated resolver picks the row in force on CURRENT_DATE.
+    const chosen = pickEffectiveRateRow(
+      (byProgram.get(r.id) ?? []).map((s) => ({
+        effectiveFrom: s.effective_from,
+        effectiveTo: s.effective_to,
+        agencyRate: s.agency_rate,
+        internalRate: s.internal_rate,
+      })),
+      r.as_of,
+    );
+    return {
+      id: r.id,
+      code: r.code,
+      name: r.name,
+      isGroupCapable: r.is_group_capable,
+      isActive: r.is_active,
+      agencyRate: chosen ? chosen.agencyRate ?? null : null,
+      internalRate: chosen ? chosen.internalRate : null,
+      effectiveFrom: chosen ? chosen.effectiveFrom : null,
+      aliasCount: Number(r.alias_count),
+    };
+  });
 }
 
 export interface AuditRow {
