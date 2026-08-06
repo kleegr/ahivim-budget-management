@@ -1,7 +1,23 @@
 import type { PgLikePool } from "@/lib/import/commit";
 import { toMoney, toHours, dec } from "@/lib/money";
+import {
+  calculatePeriodElapsed,
+  classifyUtilization,
+  type PeriodElapsed,
+  type UtilizationStatus,
+} from "@/lib/business/utilization";
 
 const isUuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
+
+/** Elapsed placeholder for classification when an individual has no budget period. */
+const NOT_STARTED_ELAPSED: PeriodElapsed = {
+  totalDays: 0,
+  elapsedDays: 0,
+  remainingDays: 0,
+  timeElapsedPercent: "0.000000",
+  hasStarted: false,
+  hasEnded: false,
+};
 
 export interface CalendarSession {
   id: string;
@@ -220,6 +236,222 @@ export async function individualProgramForecast(
     scheduledAmount: toMoney(scheduled.rows[0]?.amt ?? "0"),
     remainingAfterScheduleHours: remaining === null ? null : toHours(remaining),
   };
+}
+
+/* ===========================================================================
+ * ADDITIVE: utilisation summary for the schedule planner strip.
+ *
+ * Aggregates the schedule domain's own view of authorised / used / scheduled /
+ * remaining-after-schedule hours across every active authorisation for one
+ * individual, plus the pace (used vs time elapsed) against their current budget
+ * period. Reuses individualProgramForecast so the figures match the modal
+ * preview and the individual-detail page exactly; nothing here re-derives the
+ * money/billing maths.
+ * ========================================================================= */
+export interface ScheduleUtilizationProgram {
+  programId: string;
+  programCode: string;
+  programName: string;
+  authorizedHours: string | null;
+  usedHours: string;
+  scheduledHours: string;
+  remainingAfterHours: string | null;
+  /** used / authorized, as a decimal fraction (matches PaceBar/UtilizationBadge). */
+  usagePercent: string;
+  /** (used + scheduled) / authorized, as a decimal fraction. */
+  committedPercent: string;
+  status: UtilizationStatus;
+}
+
+export interface ScheduleUtilizationSummary {
+  individualId: string;
+  individualName: string;
+  hasAuthorization: boolean;
+  period: { label: string; startDate: string; endDate: string; renewalDate: string | null } | null;
+  /** Fraction of the budget period elapsed; "0" when there is no active period. */
+  timeElapsedPercent: string;
+  /** Whole days from today to the period end; null when there is no active period. */
+  daysRemaining: number | null;
+  authorizedHours: string;
+  usedHours: string;
+  scheduledHours: string;
+  /** authorized − used − scheduled: the hours still available AND unplanned. */
+  remainingAfterHours: string;
+  usagePercent: string;
+  committedPercent: string;
+  status: UtilizationStatus;
+  programs: ScheduleUtilizationProgram[];
+}
+
+export async function individualScheduleSummary(
+  pool: PgLikePool,
+  individualId: string,
+  asOf: Date = new Date(),
+): Promise<ScheduleUtilizationSummary | null> {
+  if (!isUuid(individualId)) return null;
+  const person = await pool.query<{ display_name: string }>(
+    `SELECT display_name FROM individuals WHERE id = $1`,
+    [individualId],
+  );
+  if (!person.rows[0]) return null;
+
+  // The current active budget period drives pace and renewal messaging.
+  const periodRes = await pool.query<{
+    label: string; start_date: string; end_date: string; renewal_date: string | null;
+  }>(
+    `SELECT label, start_date::text AS start_date, end_date::text AS end_date,
+            renewal_date::text AS renewal_date
+     FROM budget_periods
+     WHERE individual_id = $1 AND status = 'active'
+     ORDER BY start_date DESC LIMIT 1`,
+    [individualId],
+  );
+  const periodRow = periodRes.rows[0] ?? null;
+  const elapsed = periodRow
+    ? calculatePeriodElapsed({ startDate: periodRow.start_date, endDate: periodRow.end_date }, asOf)
+    : null;
+
+  // Programs this individual has an active authorisation for.
+  const progRes = await pool.query<{ id: string; code: string; name: string }>(
+    `SELECT DISTINCT p.id, p.code, p.name
+     FROM budget_authorizations ba
+     JOIN budget_periods bp ON bp.id = ba.budget_period_id
+     JOIN programs p ON p.id = ba.program_id
+     WHERE ba.individual_id = $1 AND ba.status = 'active' AND bp.status = 'active'
+     ORDER BY p.name`,
+    [individualId],
+  );
+
+  let totalAuth = dec(0);
+  let totalUsed = dec(0);
+  let totalSched = dec(0);
+  let hasAuthorization = false;
+  const programs: ScheduleUtilizationProgram[] = [];
+
+  for (const p of progRes.rows) {
+    const f = await individualProgramForecast(pool, individualId, p.id);
+    const auth = f.authorizedHours === null ? null : dec(f.authorizedHours);
+    const used = dec(f.actualHours);
+    const sched = dec(f.scheduledHours);
+    if (auth !== null) {
+      hasAuthorization = true;
+      totalAuth = totalAuth.plus(auth);
+    }
+    totalUsed = totalUsed.plus(used);
+    totalSched = totalSched.plus(sched);
+    const usage = auth && !auth.isZero() ? used.dividedBy(auth) : dec(0);
+    const committed = auth && !auth.isZero() ? used.plus(sched).dividedBy(auth) : dec(0);
+    programs.push({
+      programId: p.id,
+      programCode: p.code,
+      programName: p.name,
+      authorizedHours: f.authorizedHours,
+      usedHours: f.actualHours,
+      scheduledHours: f.scheduledHours,
+      remainingAfterHours: f.remainingAfterScheduleHours,
+      usagePercent: usage.toFixed(6),
+      committedPercent: committed.toFixed(6),
+      status: classifyUtilization(usage, elapsed ?? NOT_STARTED_ELAPSED),
+    });
+  }
+
+  const remainingAfter = totalAuth.minus(totalUsed).minus(totalSched);
+  const usagePercent = totalAuth.isZero() ? dec(0) : totalUsed.dividedBy(totalAuth);
+  const committedPercent = totalAuth.isZero() ? dec(0) : totalUsed.plus(totalSched).dividedBy(totalAuth);
+
+  let daysRemaining: number | null = null;
+  if (periodRow) {
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    const todayUtc = Date.UTC(asOf.getUTCFullYear(), asOf.getUTCMonth(), asOf.getUTCDate());
+    daysRemaining = Math.round(
+      (new Date(`${periodRow.end_date}T00:00:00Z`).getTime() - todayUtc) / MS_PER_DAY,
+    );
+  }
+
+  return {
+    individualId,
+    individualName: person.rows[0].display_name,
+    hasAuthorization,
+    period: periodRow
+      ? { label: periodRow.label, startDate: periodRow.start_date, endDate: periodRow.end_date, renewalDate: periodRow.renewal_date }
+      : null,
+    timeElapsedPercent: elapsed ? elapsed.timeElapsedPercent : "0",
+    daysRemaining,
+    authorizedHours: toHours(totalAuth),
+    usedHours: toHours(totalUsed),
+    scheduledHours: toHours(totalSched),
+    remainingAfterHours: toHours(remainingAfter),
+    usagePercent: usagePercent.toFixed(6),
+    committedPercent: committedPercent.toFixed(6),
+    status: classifyUtilization(usagePercent, elapsed ?? NOT_STARTED_ELAPSED),
+    programs,
+  };
+}
+
+/* ===========================================================================
+ * ADDITIVE: per-session warning classification for colour-coding calendar
+ * events. Reads the warnings JSON already stored on each planned session (set
+ * by detectConflicts at save time) and buckets the codes into "conflict" vs
+ * "budget/authorisation risk" so the calendar can colour them distinctly
+ * without changing listSessions. Same filter shape as listSessions.
+ *
+ * NB: the code buckets below mirror classifyWarningCode() in
+ * components/schedule/shared.tsx, which does the same job for the live preview
+ * warnings in the create-session modal.
+ * ========================================================================= */
+const CONFLICT_WARNING_CODES = new Set([
+  "employee_double_booked",
+  "individual_double_booked",
+  "individual_two_employees_one_to_one",
+  "program_not_group",
+  "group_over_max",
+]);
+const BUDGET_WARNING_CODES = new Set([
+  "over_authorized_hours",
+  "missing_authorization",
+  "outside_authorization_dates",
+]);
+
+export interface SessionWarningFlags {
+  id: string;
+  hasConflict: boolean;
+  hasBudgetRisk: boolean;
+  warningCount: number;
+}
+
+export async function listSessionWarningFlags(
+  pool: PgLikePool,
+  filter: CalendarFilter,
+): Promise<SessionWarningFlags[]> {
+  const employeeId = filter.employeeId && isUuid(filter.employeeId) ? filter.employeeId : null;
+  const individualId = filter.individualId && isUuid(filter.individualId) ? filter.individualId : null;
+  const programId = filter.programId && isUuid(filter.programId) ? filter.programId : null;
+  const status = ["pending", "completed", "cancelled", "no_show"].includes(filter.status ?? "") ? filter.status! : null;
+
+  const { rows } = await pool.query<{ id: string; warnings: unknown }>(
+    `SELECT s.id, s.warnings
+     FROM scheduled_sessions s
+     WHERE s.session_date BETWEEN $1 AND $2
+       AND ($3::uuid IS NULL OR s.employee_id = $3)
+       AND ($4::uuid IS NULL OR s.program_id = $4)
+       AND ($5::boolean IS NOT TRUE OR s.employee_id IS NULL)
+       AND ($6::text IS NULL OR s.status = $6)
+       AND ($7::uuid IS NULL OR EXISTS (
+             SELECT 1 FROM scheduled_allocations aa WHERE aa.scheduled_session_id = s.id AND aa.individual_id = $7))`,
+    [filter.from, filter.to, employeeId, programId, filter.unassigned ?? false, status, individualId],
+  );
+
+  return rows.map((r) => {
+    const arr = Array.isArray(r.warnings) ? (r.warnings as Array<{ code?: unknown }>) : [];
+    let hasConflict = false;
+    let hasBudgetRisk = false;
+    for (const w of arr) {
+      const code = typeof w?.code === "string" ? w.code : "";
+      if (BUDGET_WARNING_CODES.has(code)) hasBudgetRisk = true;
+      else if (CONFLICT_WARNING_CODES.has(code)) hasConflict = true;
+    }
+    return { id: r.id, hasConflict, hasBudgetRisk, warningCount: arr.length };
+  });
 }
 
 export async function listSeriesForEmployee(pool: PgLikePool, employeeId: string) {
