@@ -33,7 +33,7 @@ suite("migration runner (real PostgreSQL)", () => {
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(12);
+    expect(again.skipped).toBe(13);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -41,7 +41,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(12);
+    expect(rows).toHaveLength(13);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -54,6 +54,7 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[9].name).toBe("0009_perf_indexes.sql");
     expect(rows[10].name).toBe("0010_strategy_rate_overrides.sql");
     expect(rows[11].name).toBe("0011_sheet_sync.sql");
+    expect(rows[12].name).toBe("0012_effective_dated_overrides.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 
