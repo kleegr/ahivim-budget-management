@@ -446,13 +446,13 @@ export default function CalcWorkspace({
                   <p className="eyebrow mb-1">Agency vs employee split</p>
                   <div className="grid gap-3 sm:grid-cols-3">
                     <StatTile
-                      label="Agency gross"
+                      label="Agency total"
                       value={result.agencyGross ? formatMoney(result.agencyGross) : undefined}
                       unavailable={result.agencyGross ? undefined : "Needs hours and an agency rate."}
                     />
-                    <StatTile label="Internal amount" value={formatMoney(result.internalAmount)} />
+                    <StatTile label="Employee amount" value={formatMoney(result.internalAmount)} />
                     <StatTile
-                      label="Agency additional"
+                      label="Agency markup"
                       value={result.agencyAdditional ? formatMoney(result.agencyAdditional) : undefined}
                       unavailable={result.agencyAdditional ? undefined : "No agency uplift."}
                     />
