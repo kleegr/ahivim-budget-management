@@ -26,10 +26,17 @@ import { dec, formatHours, formatMoney } from "@/lib/money";
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Employee — Ahivim Budget Management" };
 
-export default async function EmployeeDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function EmployeeDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const user = await requireUser("viewer");
   const canEdit = user.role !== "viewer";
   const { id } = await params;
+  const initialTab = typeof (await searchParams).tab === "string" ? ((await searchParams).tab as string) : undefined;
   if (!isUuid(id)) notFound();
 
   const result = await withDb(async (pool) => {
@@ -167,8 +174,8 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
           </p>
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <StatTile label="Agency gross" value={formatMoney(report.agencyGross)} hint="Billed to the funder" />
-            <StatTile label="Internal amount" value={formatMoney(report.internalAmount)} hint="Owed to the employee" />
+            <StatTile label="Agency total" value={formatMoney(report.agencyGross)} hint="Billed to the funder" />
+            <StatTile label="Employee amount" value={formatMoney(report.internalAmount)} hint="Owed to the employee" />
             <StatTile
               label="Rate exceptions"
               value={report.rateExceptions.toLocaleString()}
@@ -188,9 +195,9 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
               hint="Excellent Staffing pays the employee"
             />
             <StatTile
-              label="Agency additional"
+              label="Agency markup"
               value={formatMoney(payment.agencyAdditional)}
-              hint="Agency gross above the internal amount"
+              hint="Agency total above the internal amount"
             />
           </div>
 
@@ -253,7 +260,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
                 <Th numeric>Physical h</Th>
                 <Th numeric>Allocation h</Th>
                 <Th numeric>Transactions</Th>
-                <Th numeric>Agency gross</Th>
+                <Th numeric>Agency total</Th>
                 <Th numeric>Internal</Th>
               </>
             }
@@ -327,7 +334,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
         ) : (
           <Table
             caption="Individuals this employee has served"
-            head={<><Th>Individual</Th><Th numeric>Allocation h</Th><Th numeric>Transactions</Th><Th numeric>Agency gross</Th><Th numeric>Internal</Th></>}
+            head={<><Th>Individual</Th><Th numeric>Allocation h</Th><Th numeric>Transactions</Th><Th numeric>Agency total</Th><Th numeric>Internal</Th></>}
           >
             {individualsServed.map((row) => (
               <Tr key={row.id}>
@@ -555,7 +562,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatTile label="Agency gross" value={formatMoney(payment.agencyGross)} hint={`${payment.checkCount} distinct checks`} />
+        <StatTile label="Agency total" value={formatMoney(payment.agencyGross)} hint={`${payment.checkCount} distinct checks`} />
         <StatTile label="Internal (employee) amount" value={formatMoney(payment.internalAmount)} hint="Total owed to the employee" />
         <StatTile
           label="Paid directly to employee"
@@ -595,7 +602,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
           ) : (
             <Table
               caption="Monthly payment totals for this employee"
-              head={<><Th>Month</Th><Th numeric>Agency gross</Th><Th numeric>Internal</Th><Th numeric>Paid directly</Th><Th numeric>Payable by agency</Th><Th numeric>Checks</Th></>}
+              head={<><Th>Month</Th><Th numeric>Agency total</Th><Th numeric>Internal</Th><Th numeric>Paid directly</Th><Th numeric>Payable by agency</Th><Th numeric>Checks</Th></>}
             >
               {monthly.map((m) => (
                 <Tr key={m.month ?? "undated"}>
@@ -617,7 +624,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
           <Card title="Yearly totals" description="Rolled up from the monthly figures.">
             <Table
               caption="Yearly payment totals for this employee"
-              head={<><Th>Year</Th><Th numeric>Agency gross</Th><Th numeric>Internal</Th><Th numeric>Paid directly</Th><Th numeric>Payable by agency</Th><Th numeric>Checks</Th></>}
+              head={<><Th>Year</Th><Th numeric>Agency total</Th><Th numeric>Internal</Th><Th numeric>Paid directly</Th><Th numeric>Payable by agency</Th><Th numeric>Checks</Th></>}
             >
               {yearlyRows.map(([year, y]) => (
                 <Tr key={year}>
@@ -683,7 +690,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
         {employee.externalRef ? <span className="text-[var(--color-ink-faint)]">Ref: {employee.externalRef}</span> : null}
       </div>
 
-      <TabPanels panels={panels} />
+      <TabPanels panels={panels} initialId={initialTab} paramKey="tab" />
 
       <p className="mt-6 text-xs text-[var(--color-ink-faint)]">
         <Badge value="valid" label="Note" /> Physical hours are time the employee was present; allocation hours sum
