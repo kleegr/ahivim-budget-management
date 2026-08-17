@@ -3,21 +3,10 @@ import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
 import { listIndividuals } from "@/lib/data/queries";
 import { getReconciliation, listPrograms, getPortfolioForecast } from "@/lib/data/app-queries";
-import {
-  REPORTS,
-  agencyEarningsReport,
-  programTotalsReport,
-  utilizationOutliersReport,
-} from "@/lib/data/report-queries";
+import { REPORTS } from "@/lib/data/report-queries";
 import {
   Card, Table, Th, Td, Tr, Money, EmptyState, ErrorPanel, PageHeader, Badge, Plain,
 } from "@/components/ui";
-import {
-  PortfolioBurndownCard,
-  AgencyInternalDonut,
-  ProgramTotalsBar,
-  UtilizationDistribution,
-} from "@/components/charts";
 import { formatHours, formatPercent } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
@@ -55,9 +44,6 @@ export default async function ReportsPage() {
     reconciliation: await getReconciliation(pool, 25),
     programs: await listPrograms(pool),
     forecast: await getPortfolioForecast(pool),
-    agencyEarnings: await agencyEarningsReport(pool),
-    programTotals: await programTotalsReport(pool),
-    utilizationOutliers: await utilizationOutliersReport(pool),
   }));
 
   return (
@@ -111,10 +97,10 @@ export default async function ReportsPage() {
       </div>
 
       <div className="mt-10 mb-4">
-        <h2 className="display text-lg font-medium">Live analysis</h2>
+        <h2 className="display text-lg font-medium">Quick reference</h2>
         <p className="mt-1 max-w-prose text-sm text-[var(--color-ink-soft)]">
-          Portfolio burn-down, the agency-vs-internal split, program totals and utilization
-          outliers at a glance — then the per-individual, reconciliation and rate detail below.
+          A few portfolio-wide figures inline, so you don&rsquo;t have to open a report for the
+          everyday questions. Each full report — with its own chart and filters — is one card above.
         </p>
       </div>
 
@@ -122,31 +108,6 @@ export default async function ReportsPage() {
         <ErrorPanel title="Could not load analysis">{result.error}</ErrorPanel>
       ) : (
         <div className="space-y-4">
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="card px-4 py-4">
-              <PortfolioBurndownCard forecast={result.data.forecast} />
-            </div>
-            <div className="card px-4 py-4">
-              <AgencyInternalDonut
-                items={result.data.agencyEarnings.map((r) => ({
-                  internal: r.internalAmount,
-                  additional: r.agencyAdditional,
-                }))}
-              />
-            </div>
-            <div className="card px-4 py-4">
-              <ProgramTotalsBar
-                items={result.data.programTotals.map((r) => ({
-                  label: r.programName,
-                  value: r.agencyGross,
-                }))}
-              />
-            </div>
-            <div className="card px-4 py-4">
-              <UtilizationDistribution flags={result.data.utilizationOutliers.map((r) => r.flag)} />
-            </div>
-          </div>
-
           <Card title="Portfolio forecast" description="Projected exhaustion across every authorization">
             <div className="px-5 py-4 text-sm">
               {!result.data.forecast.available ? (
