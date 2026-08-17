@@ -170,7 +170,7 @@ export default async function ReviewPage() {
             <p className="display mt-4 text-lg font-semibold">All clear</p>
             <p className="mx-auto mt-2 max-w-md text-sm text-[var(--color-ink-soft)]">
               Nothing needs a human right now. The system will surface new items here as soon as an
-              import or sync finds something it can't resolve on its own.
+              import or sync finds something it can&rsquo;t resolve on its own.
             </p>
           </div>
         </Card>
