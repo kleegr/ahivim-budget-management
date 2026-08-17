@@ -44,11 +44,10 @@ function summarizeBudget(list: StrategyGridRow[], programCode: Map<string, strin
   if (list.length === 0) return { budget: null, programs: [] };
 
   const programs = new Set<string>();
-  let planned = dec(0);
-  let actual = dec(0);
-  let remaining = dec(0);
-  let worst: { status: UtilizationStatus; elapsed: string | null } | null = null;
-  let renews: string | null = null;
+  // The row reflects the plan that most needs attention, so the badge, % used,
+  // pace bar and hours-left all describe the SAME plan (no "Over budget · 76%"
+  // mismatch from averaging a healthy plan with a blown one).
+  let worst: StrategyGridRow | null = null;
 
   for (const s of list) {
     for (const [pid, hrs] of Object.entries(s.hours)) {
@@ -57,28 +56,22 @@ function summarizeBudget(list: StrategyGridRow[], programCode: Map<string, strin
         if (code) programs.add(code);
       }
     }
-    const a = s.analytics;
-    if (a) {
-      planned = planned.plus(dec(a.plannedHours || 0));
-      actual = actual.plus(dec(a.actualHours || 0));
-      remaining = remaining.plus(dec(a.remainingHours || 0));
-      if (!worst || SEVERITY[a.status] < SEVERITY[worst.status]) {
-        worst = { status: a.status, elapsed: a.timeElapsedPercent };
-      }
-    }
-    if (s.renewalDate && (renews === null || s.renewalDate < renews)) renews = s.renewalDate;
+    const st = s.analytics?.status ?? "not_started";
+    const worstSt = worst?.analytics?.status ?? "not_started";
+    if (!worst || SEVERITY[st] < SEVERITY[worstSt]) worst = s;
   }
 
-  const usedPct = planned.greaterThan(0) ? actual.dividedBy(planned).times(100).toNumber() : null;
-  const elapsedPct = worst?.elapsed ? dec(worst.elapsed).times(100).toNumber() : null;
+  const a = worst?.analytics;
+  const usedPct = a?.utilizationPercent != null ? dec(a.utilizationPercent).times(100).toNumber() : null;
+  const elapsedPct = a?.timeElapsedPercent ? dec(a.timeElapsedPercent).times(100).toNumber() : null;
 
   return {
     budget: {
-      status: worst?.status ?? "not_started",
+      status: a?.status ?? "not_started",
       usedPct,
       elapsedPct,
-      renews,
-      hoursLeft: remaining.toNumber(),
+      renews: worst?.renewalDate ?? null,
+      hoursLeft: a?.remainingHours != null ? dec(a.remainingHours).toNumber() : null,
       plans: list.length,
     },
     programs: [...programs].sort(),
@@ -118,7 +111,7 @@ export default async function IndividualsPage() {
         </Card>
       ) : (
         (() => {
-          const programCode = new Map(result.data.strategies.programs.map((p) => [p.id, p.code]));
+          const programCode = new Map(result.data.strategies.programs.map((p) => [p.id, p.name]));
           const byIndividual = new Map<string, StrategyGridRow[]>();
           for (const s of result.data.strategies.rows) {
             const arr = byIndividual.get(s.individualId) ?? [];

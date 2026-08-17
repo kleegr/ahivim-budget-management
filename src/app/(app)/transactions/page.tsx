@@ -18,7 +18,7 @@ export default async function TransactionsPage() {
       <PageHeader
         eyebrow="Ledger"
         title="Transactions"
-        description="Every committed payroll row, in one filterable grid — like the Ahivim workbook tab. Filter any column, sort, and the totals below update to match exactly what you see."
+        description="Every committed payroll row, in one filterable grid — like the Ahivim workbook tab. Filter any column or pick a period, sort, and the totals update to match exactly what you see."
       />
 
       {!result.ok ? (

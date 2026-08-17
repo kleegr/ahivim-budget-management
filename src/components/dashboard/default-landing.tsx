@@ -33,9 +33,9 @@ export default function DefaultLanding({ current }: { current: string }) {
         disabled={busy}
         className="rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1"
       >
-        <option value="dashboard">Dashboard</option>
+        <option value="dashboard">Home</option>
         <option value="transactions">Transactions</option>
-        <option value="calculations">Calculations</option>
+        <option value="calculations">Projections</option>
       </select>
       {saved && <span className="text-xs text-[var(--color-text-soft)]">Saved</span>}
     </label>
