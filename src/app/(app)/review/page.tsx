@@ -89,7 +89,7 @@ export default async function ReviewPage() {
       key: "names",
       question: "Unknown or misspelled names",
       detail:
-        "The import saw a name it doesn't recognise, or a near-duplicate spelling. Approve the spelling once and the system will match it automatically from then on.",
+        "The import saw a name it doesn't recognize, or a near-duplicate spelling. Approve the spelling once and the system will match it automatically from then on.",
       href: "/aliases",
       count: c.unmatchedNames + c.pendingAliases,
       tone: "warn",
@@ -170,7 +170,7 @@ export default async function ReviewPage() {
             <p className="display mt-4 text-lg font-semibold">All clear</p>
             <p className="mx-auto mt-2 max-w-md text-sm text-[var(--color-ink-soft)]">
               Nothing needs a human right now. The system will surface new items here as soon as an
-              import or sync finds something it can&rsquo;t resolve on its own.
+              import or sync finds something it can’t resolve on its own.
             </p>
           </div>
         </Card>

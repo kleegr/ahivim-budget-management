@@ -1,9 +1,12 @@
-import Link from "next/link";
 import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
-import { listIndividualsManaged, INDIVIDUAL_STATUSES } from "@/lib/manage/individuals";
-import { Card, Table, Th, Td, Tr, Badge, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
-import { CreateButton, ActionButton, Field, TextAreaField } from "@/components/manage/client";
+import { listIndividualsManaged } from "@/lib/manage/individuals";
+import { listStrategies, type StrategyGridRow } from "@/lib/manage/calculation-strategies";
+import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
+import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
+import { dec } from "@/lib/money";
+import type { UtilizationStatus } from "@/lib/business/utilization";
+import IndividualsList, { type IndividualRow, type IndividualBudget } from "@/components/individuals/individuals-list";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Individuals — Ahivim Budget Management" };
@@ -21,172 +24,121 @@ function individualFields() {
   );
 }
 
-export default async function IndividualsPage({
-  searchParams,
-}: {
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
-}) {
+const SEVERITY: Record<UtilizationStatus, number> = {
+  over_authorization: 0,
+  fully_used: 1,
+  near_exhaustion: 2,
+  behind_pace: 3,
+  ahead_of_pace: 4,
+  on_pace: 5,
+  not_started: 6,
+};
+
+/**
+ * Roll a person's one or more active plans into a single budget-health summary:
+ * the worst pace status floats up, hours aggregate, and the earliest renewal is
+ * the one to watch. This reuses the exact same analytics the Projections screen
+ * uses (no new query, no new maths).
+ */
+function summarizeBudget(list: StrategyGridRow[], programCode: Map<string, string>): { budget: IndividualBudget | null; programs: string[] } {
+  if (list.length === 0) return { budget: null, programs: [] };
+
+  const programs = new Set<string>();
+  let planned = dec(0);
+  let actual = dec(0);
+  let remaining = dec(0);
+  let worst: { status: UtilizationStatus; elapsed: string | null } | null = null;
+  let renews: string | null = null;
+
+  for (const s of list) {
+    for (const [pid, hrs] of Object.entries(s.hours)) {
+      if (hrs && dec(hrs).greaterThan(0)) {
+        const code = programCode.get(pid);
+        if (code) programs.add(code);
+      }
+    }
+    const a = s.analytics;
+    if (a) {
+      planned = planned.plus(dec(a.plannedHours || 0));
+      actual = actual.plus(dec(a.actualHours || 0));
+      remaining = remaining.plus(dec(a.remainingHours || 0));
+      if (!worst || SEVERITY[a.status] < SEVERITY[worst.status]) {
+        worst = { status: a.status, elapsed: a.timeElapsedPercent };
+      }
+    }
+    if (s.renewalDate && (renews === null || s.renewalDate < renews)) renews = s.renewalDate;
+  }
+
+  const usedPct = planned.greaterThan(0) ? actual.dividedBy(planned).times(100).toNumber() : null;
+  const elapsedPct = worst?.elapsed ? dec(worst.elapsed).times(100).toNumber() : null;
+
+  return {
+    budget: {
+      status: worst?.status ?? "not_started",
+      usedPct,
+      elapsedPct,
+      renews,
+      hoursLeft: remaining.toNumber(),
+      plans: list.length,
+    },
+    programs: [...programs].sort(),
+  };
+}
+
+export default async function IndividualsPage() {
   const user = await requireUser("viewer");
   const canEdit = user.role !== "viewer";
 
-  const sp = await searchParams;
-  const q = typeof sp.q === "string" ? sp.q : "";
-  const statusFilter = typeof sp.status === "string" ? sp.status : "";
-  const archived = sp.archived === "1";
-
-  const result = await withDb((pool) =>
-    listIndividualsManaged(pool, {
-      search: q || undefined,
-      status: statusFilter || undefined,
-      includeArchived: archived,
-    }),
-  );
-
-  const count = result.ok ? result.data.length : 0;
-  const buildHref = (p: { q?: string; status?: string; archived?: boolean }) => {
-    const qs = new URLSearchParams();
-    if (p.q) qs.set("q", p.q);
-    if (p.status) qs.set("status", p.status);
-    if (p.archived) qs.set("archived", "1");
-    const s = qs.toString();
-    return s ? `/individuals?${s}` : "/individuals";
-  };
-  const activeFilters: { label: string; href: string }[] = [];
-  if (q) activeFilters.push({ label: `Search: "${q}"`, href: buildHref({ status: statusFilter, archived }) });
-  if (statusFilter) activeFilters.push({ label: `Status: ${statusFilter}`, href: buildHref({ q, archived }) });
-  if (archived) activeFilters.push({ label: "Including archived", href: buildHref({ q, status: statusFilter }) });
+  const result = await withDb(async (pool) => {
+    const individuals = await listIndividualsManaged(pool, { includeArchived: true });
+    const strategies = await listStrategies(pool, { withAnalytics: true });
+    return { individuals, strategies };
+  });
 
   return (
     <>
       <PageHeader
         eyebrow="Register"
         title="Individuals"
-        description="Everyone with authorized services. Search, filter by status, and open a record to manage budgets, authorizations and assignments."
+        description="Everyone with authorized services, with each person's budget health at a glance. Search or sort live, and open a record to manage budgets, authorizations and assignments."
         action={
           canEdit ? (
-            <CreateButton
-              label="New individual"
-              title="New individual"
-              endpoint="/api/individuals"
-              fields={individualFields()}
-            />
+            <CreateButton label="New individual" title="New individual" endpoint="/api/individuals" fields={individualFields()} />
           ) : undefined
         }
       />
 
-      <form
-        method="get"
-        className="mb-3 flex flex-wrap items-end gap-3 rounded-xl border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-3"
-      >
-        <label className="block">
-          <span className="eyebrow">Search</span>
-          <input name="q" defaultValue={q} placeholder="Name or reference" className="input mt-1 block w-56" />
-        </label>
-        <label className="block">
-          <span className="eyebrow">Status</span>
-          <select name="status" defaultValue={statusFilter} className="select mt-1 block">
-            <option value="">All statuses</option>
-            {INDIVIDUAL_STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex items-center gap-2 pb-2 text-sm">
-          <input type="checkbox" name="archived" value="1" defaultChecked={archived} />
-          Include archived
-        </label>
-        <button type="submit" className="btn btn-sm btn-primary">
-          Apply filters
-        </button>
-        <Link href="/individuals" className="btn btn-sm btn-secondary">
-          Reset
-        </Link>
-        <span className="ml-auto self-center text-sm text-[var(--color-ink-faint)]">
-          <span className="tnum font-semibold text-[var(--color-ink)]">{count}</span> {count === 1 ? "individual" : "individuals"}
-        </span>
-      </form>
-
-      {activeFilters.length > 0 ? (
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <span className="eyebrow">Active filters</span>
-          {activeFilters.map((f) => (
-            <Link
-              key={f.label}
-              href={f.href}
-              className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-primary-tint)] px-2.5 py-1 text-xs font-medium text-[var(--color-primary)] transition-colors hover:bg-[var(--color-primary-soft)]"
-            >
-              {f.label}
-              <span aria-hidden>✕</span>
-            </Link>
-          ))}
-          <Link href="/individuals" className="text-xs text-[var(--color-ink-faint)] underline underline-offset-2">
-            Clear all
-          </Link>
-        </div>
-      ) : null}
-
       {!result.ok ? (
         <ErrorPanel title="Could not load individuals">{result.error}</ErrorPanel>
-      ) : (
+      ) : result.data.individuals.length === 0 ? (
         <Card>
-          {result.data.length === 0 ? (
-            <EmptyState title="No individuals match">
-              <p>
-                No one matches these filters.{" "}
-                {q || statusFilter || archived ? "Clear the filters" : "Individuals also appear here once a workbook is committed"}
-                {canEdit ? ", or add one with the New individual button." : "."}
-              </p>
-            </EmptyState>
-          ) : (
-            <Table
-              caption="Individuals with their lifecycle status"
-              head={
-                <>
-                  <Th>Name</Th>
-                  <Th>Status</Th>
-                  {canEdit ? <Th>Actions</Th> : null}
-                </>
-              }
-            >
-              {result.data.map((row) => (
-                <Tr key={row.id}>
-                  <Td>
-                    <Link className="font-medium text-[var(--color-primary)] underline-offset-2 hover:underline" href={`/individuals/${row.id}`}>
-                      {row.displayName}
-                    </Link>
-                    {row.preferredName ? (
-                      <span className="text-[var(--color-ink-faint)]"> ({row.preferredName})</span>
-                    ) : null}
-                  </Td>
-                  <Td>
-                    <Badge value={row.status} />
-                  </Td>
-                  {canEdit ? (
-                    <Td>
-                      {row.status === "archived" ? (
-                        <ActionButton
-                          label="Restore"
-                          endpoint={`/api/individuals/${row.id}`}
-                          body={{ action: "restore" }}
-                          withReason
-                        />
-                      ) : (
-                        <ActionButton
-                          label="Archive"
-                          endpoint={`/api/individuals/${row.id}`}
-                          body={{ action: "archive" }}
-                          withReason
-                        />
-                      )}
-                    </Td>
-                  ) : null}
-                </Tr>
-              ))}
-            </Table>
-          )}
+          <EmptyState title="No individuals yet">
+            <p>Individuals appear here once a workbook is committed{canEdit ? ", or add one with the New individual button." : "."}</p>
+          </EmptyState>
         </Card>
+      ) : (
+        (() => {
+          const programCode = new Map(result.data.strategies.programs.map((p) => [p.id, p.code]));
+          const byIndividual = new Map<string, StrategyGridRow[]>();
+          for (const s of result.data.strategies.rows) {
+            const arr = byIndividual.get(s.individualId) ?? [];
+            arr.push(s);
+            byIndividual.set(s.individualId, arr);
+          }
+          const rows: IndividualRow[] = result.data.individuals.map((ind) => {
+            const { budget, programs } = summarizeBudget(byIndividual.get(ind.id) ?? [], programCode);
+            return {
+              id: ind.id,
+              name: ind.displayName,
+              preferredName: ind.preferredName,
+              status: ind.status,
+              archived: ind.status === "archived" || ind.archivedAt !== null,
+              programs,
+              budget,
+            };
+          });
+          return <IndividualsList rows={rows} canEdit={canEdit} />;
+        })()
       )}
     </>
   );
