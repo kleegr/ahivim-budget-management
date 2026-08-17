@@ -176,7 +176,7 @@ export default async function ReportsPage() {
                 <p>Commit an import and every person it names becomes reportable here.</p>
               </EmptyState>
             ) : (
-              <Table head={<><Th>Individual</Th><Th numeric>Transactions</Th><Th numeric>Agency gross</Th><Th>Report</Th></>}>
+              <Table head={<><Th>Individual</Th><Th numeric>Transactions</Th><Th numeric>Agency total</Th><Th>Report</Th></>}>
                 {result.data.individuals.map((row) => (
                   <Tr key={row.id}>
                     <Td>{row.displayName}</Td>
