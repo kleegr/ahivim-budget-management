@@ -893,7 +893,7 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
       <div className="flex items-center justify-between border-b border-[var(--color-rule)] px-4 py-3">
         <div>
           <div className="eyebrow text-[var(--color-text-soft)]">Calculation</div>
-          <div className="text-lg font-semibold">{row ? `${row.individualName} — ${row.label}` : "Strategy"}</div>
+          <div className="text-lg font-semibold">{row ? `${row.individualName} — ${row.label}` : "Budget plan"}</div>
           {row?.periodStart && <div className="text-xs text-[var(--color-text-soft)]">Budget period {row.periodStart} → {row.periodEnd} (from renewal date)</div>}
         </div>
         <button type="button" onClick={onClose} className="rounded px-2 py-1 text-lg hover:bg-black/5" aria-label="Close">×</button>
@@ -949,7 +949,7 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
             </table>
             {canManage && (
               <p className="mb-3 text-[11px] text-[var(--color-text-soft)]">
-                Type a rate to override it for this strategy; clear the box to return to the program default. Changing a rate recalculates everything instantly.
+                Type a rate to override it for this plan; clear the box to return to the program default. Changing a rate recalculates everything instantly.
               </p>
             )}
             <div className="space-y-1.5">
