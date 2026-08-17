@@ -5,13 +5,26 @@ import { withDb } from "@/lib/data/pool";
 import { getDashboardData } from "@/lib/data/app-queries";
 import { scheduledTotals } from "@/lib/data/schedule-queries";
 import { dashboardReportMetrics } from "@/lib/data/report-queries";
+import { exceptionCounts } from "@/lib/data/queries";
 import { getSetting } from "@/lib/manage/app-settings";
 import { StatTile, ErrorPanel, PageHeader, ButtonLink } from "@/components/ui";
 import { formatHours, formatMoney } from "@/lib/money";
 import DefaultLanding from "@/components/dashboard/default-landing";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Dashboard — Ahivim Budget Management" };
+export const metadata = { title: "Home — Ahivim Budget Management" };
+
+/*
+  Home (a.k.a. Dashboard) — redesigned to lead with "what needs me today".
+
+  The user opens this screen every morning. What they need first is not a
+  menu of doors — the nav already offers those. What they need is the
+  answer to "did anything change I need to look at?" So this page now
+  leads with a strip of four attention tiles (over budget, expiring,
+  needs review, behind pace), each a one-tap link into the exact list.
+
+  Money tiles come second, then a quiet row of workspace shortcuts.
+*/
 
 function TileLink({ href, children }: { href: string; children: ReactNode }) {
   return (
@@ -24,15 +37,51 @@ function TileLink({ href, children }: { href: string; children: ReactNode }) {
   );
 }
 
-/** A large, obvious button to a whole workspace. */
-function BigButton({ href, title, sub }: { href: string; title: string; sub: string }) {
+/** Big attention tile — a coloured left rail, a plain-English label and a link. */
+function AttentionTile({
+  href,
+  label,
+  count,
+  hint,
+  tone,
+}: {
+  href: string;
+  label: string;
+  count: number;
+  hint: string;
+  tone: "danger" | "warn" | "info" | "behind" | "good";
+}) {
+  const styles: Record<typeof tone, { edge: string; value: string }> = {
+    danger: { edge: "border-l-[var(--color-danger)]", value: "text-[var(--color-danger)]" },
+    warn: { edge: "border-l-[var(--color-warn)]", value: "text-[var(--color-warn)]" },
+    info: { edge: "border-l-[var(--color-info)]", value: "text-[var(--color-info)]" },
+    behind: { edge: "border-l-[var(--color-pace-behind)]", value: "text-[var(--color-pace-behind)]" },
+    good: { edge: "border-l-[var(--color-success)]", value: "text-[var(--color-success)]" },
+  } as Record<string, { edge: string; value: string }>;
+  const s = styles[tone];
   return (
     <Link
       href={href}
-      className="flex flex-col rounded-xl border border-[var(--color-rule-strong)] bg-[var(--color-surface)] px-5 py-4 transition hover:border-[var(--color-primary)] hover:shadow-sm"
+      className={`card block border-l-4 ${s.edge} px-4 py-3.5 transition hover:shadow-md`}
     >
-      <span className="text-lg font-semibold">{title}</span>
-      <span className="mt-0.5 text-sm text-[var(--color-text-soft)]">{sub}</span>
+      <p className="eyebrow">{label}</p>
+      <p className={`tnum mt-1 text-2xl font-semibold leading-tight ${s.value}`}>
+        {count.toLocaleString()}
+      </p>
+      <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{hint}</p>
+    </Link>
+  );
+}
+
+/** Quiet workspace shortcut — smaller than the old giant buttons. */
+function Shortcut({ href, title, sub }: { href: string; title: string; sub: string }) {
+  return (
+    <Link
+      href={href}
+      className="flex flex-col rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 transition hover:border-[var(--color-primary)] hover:bg-[var(--color-primary-tint)]"
+    >
+      <span className="text-sm font-semibold">{title}</span>
+      <span className="text-xs text-[var(--color-ink-faint)]">{sub}</span>
     </Link>
   );
 }
@@ -50,6 +99,7 @@ export default async function DashboardPage({
     dashboard: await getDashboardData(pool),
     scheduled: await scheduledTotals(pool),
     metrics: await dashboardReportMetrics(pool),
+    review: await exceptionCounts(pool),
     strategies: Number(
       (await pool.query<{ c: string }>(`SELECT count(*)::text c FROM calculation_strategies WHERE status = 'active'`)).rows[0]?.c ?? 0,
     ),
@@ -59,8 +109,8 @@ export default async function DashboardPage({
   if (!result.ok) {
     return (
       <>
-        <PageHeader eyebrow="Overview" title="Dashboard" />
-        <ErrorPanel title="Could not load the dashboard">{result.error}</ErrorPanel>
+        <PageHeader eyebrow="Home" title="Home" />
+        <ErrorPanel title="Could not load the home screen">{result.error}</ErrorPanel>
       </>
     );
   }
@@ -68,24 +118,66 @@ export default async function DashboardPage({
   const d = result.data.dashboard;
   const m = result.data.metrics;
   const scheduled = result.data.scheduled;
+  const review = result.data.review;
 
-  // Needs-attention: only surface what actually needs a person, in plain English.
+  const reviewTotal =
+    review.rateExceptions +
+    review.unmatchedNames +
+    review.pendingAliases +
+    review.duplicateCandidates +
+    review.groupReviewIssues +
+    review.reconciliationDifferences +
+    review.overAuthorization +
+    review.unknownPrograms;
+
+  // The four attention tiles that lead the page.
   const attention = [
-    { n: d.counts.reviewRows, href: "/imports", label: "import rows waiting for review", none: "No imports are waiting for review" },
-    { n: d.counts.openRateExceptions, href: "/exceptions", label: "rates that differ from the schedule", none: "Every rate matches its schedule" },
-    { n: m.counts.unbilledSchedules, href: "/reconciliation", label: "planned sessions not yet billed", none: "Every planned session is billed" },
-    { n: m.counts.unscheduledBilling, href: "/reconciliation", label: "billed transactions with no plan", none: "Every transaction was planned" },
-    { n: m.counts.missingRates + m.counts.missingAssignments, href: "/reports/missing-config", label: "missing rates or assignments", none: "Rates and assignments are complete" },
-    { n: d.counts.pendingAliases, href: "/aliases", label: "name matches awaiting approval", none: "No name matches are pending" },
+    {
+      key: "over",
+      label: "Over budget",
+      count: review.overAuthorization,
+      hint: review.overAuthorization ? "People past their approved hours" : "No one is over their approved hours",
+      tone: "danger" as const,
+      href: "/calculations",
+    },
+    {
+      key: "expiring",
+      label: "Renew < 60 days",
+      count: m.counts.expiringAuthorizations,
+      hint: m.counts.expiringAuthorizations ? "Authorizations expiring soon" : "None expiring in the next 60 days",
+      tone: "warn" as const,
+      href: "/reports/expiring-authorizations",
+    },
+    {
+      key: "review",
+      label: "Needs review",
+      count: reviewTotal,
+      hint: reviewTotal ? "Items waiting on a decision" : "Review inbox is clear",
+      tone: "info" as const,
+      href: "/review",
+    },
+    {
+      key: "behind",
+      label: "Behind pace",
+      count: m.counts.underutilizing,
+      hint: m.counts.underutilizing ? "Using budgets too slowly" : "Everyone is on pace",
+      tone: "behind" as const,
+      href: "/reports/budget-utilization",
+    },
   ];
-  const open = attention.filter((a) => a.n > 0);
+  const totalAttention = attention.reduce((sum, a) => sum + a.count, 0);
+
+  const firstName = user.displayName.split(" ")[0];
+  const now = new Date();
+  const greeting = now.getHours() < 12 ? "Good morning" : now.getHours() < 18 ? "Good afternoon" : "Good evening";
+  const dayLine = now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 
   return (
     <>
       <PageHeader
-        eyebrow="Overview"
-        title={`Welcome, ${user.displayName.split(" ")[0]}`}
-        description="Start in a workspace, or scan what needs attention below. Every number is clickable."
+        eyebrow="Home"
+        title={`${greeting}, ${firstName}`}
+        description={`${dayLine} — everything below is one tap into the exact list.`}
         action={canManage ? <ButtonLink href="/imports" variant="primary">Import a workbook</ButtonLink> : undefined}
       />
 
@@ -97,96 +189,87 @@ export default async function DashboardPage({
         </div>
       ) : null}
 
-      {/* Big workspace buttons */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <BigButton href="/transactions" title="Transactions" sub="Billed payroll, like the Ahivim tab" />
-        <BigButton href="/calculations" title="Projections" sub="Budgets, pacing & utilization" />
-        <BigButton href="/schedule" title="Schedule" sub="Planned sessions" />
-        <BigButton href="/imports" title="Imports" sub="Upload & commit workbooks" />
-        <BigButton href="/reports" title="Reports" sub="Export & analyze" />
-      </div>
-
-      {/* 6 headline totals — all clickable */}
-      <h2 className="eyebrow mb-2 mt-6">The numbers</h2>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <TileLink href="/transactions">
-          <StatTile label="Total billed" value={formatMoney(d.totals.agencyGross)} hint={`${d.counts.transactions.toLocaleString()} transactions`} />
-        </TileLink>
-        <TileLink href="/transactions">
-          <StatTile label="Internal / employee amount" value={formatMoney(d.totals.internalAmount)} hint="What the employees earned" />
-        </TileLink>
-        {m.agencyAdditional.available ? (
-          <TileLink href="/reports/agency-earnings">
-            <StatTile label="Agency additional" value={formatMoney(m.agencyAdditional.amount)} hint="Billed less internal" />
-          </TileLink>
-        ) : (
-          <TileLink href="/reports/agency-earnings"><StatTile label="Agency additional" unavailable="Not recorded on the imports on file." /></TileLink>
-        )}
-        {m.employeePayable.available ? (
-          <TileLink href="/reports/employee-payable">
-            <StatTile label="Employee payable" value={formatMoney(m.employeePayable.amount)} hint="Owed to employees" />
-          </TileLink>
-        ) : (
-          <TileLink href="/reports/employee-payable"><StatTile label="Employee payable" unavailable="Not recorded on the imports on file." /></TileLink>
-        )}
-        <TileLink href="/schedule">
-          <StatTile label="Scheduled (expected)" value={formatMoney(scheduled.internal)} hint={`${scheduled.sessions.toLocaleString()} pending · ${formatHours(scheduled.hours)} h`} />
-        </TileLink>
-        <TileLink href="/calculations">
-          <StatTile label="Budget projections" value={result.data.strategies.toLocaleString()} hint="Active projection lines" />
-        </TileLink>
-      </div>
-
-      <div className="mt-6 grid gap-4 lg:grid-cols-2">
-        {/* Needs attention */}
-        <div className="rounded-xl border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-5">
-          <h2 className="text-lg font-semibold">Needs attention</h2>
-          {open.length === 0 ? (
-            <p className="mt-2 text-sm text-[var(--color-text-soft)]">All clear — nothing is waiting on you right now.</p>
-          ) : (
-            <ul className="mt-3 space-y-2">
-              {open.map((a) => (
-                <li key={a.label}>
-                  <Link href={a.href} className="flex items-baseline justify-between gap-3 rounded-lg px-3 py-2 hover:bg-black/[0.03]">
-                    <span className="text-sm">{a.label}</span>
-                    <span className="rounded-full bg-[var(--color-primary)] px-2 py-0.5 text-xs font-semibold text-white">{a.n.toLocaleString()}</span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* Budget status */}
-        <div className="rounded-xl border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-5">
-          <h2 className="text-lg font-semibold">Budget status</h2>
-          <div className="mt-3 grid grid-cols-2 gap-3">
-            {d.authorization.available ? (
-              <>
-                <TileLink href="/reports/budget-utilization">
-                  <StatTile label="Budget used" value={`${d.authorization.utilizationPercent}%`} hint={`${formatHours(d.authorization.remainingHours)} h left`} tone={Number(d.authorization.utilizationPercent) > 100 ? "alert" : "neutral"} />
-                </TileLink>
-                <TileLink href="/reports/budget-utilization">
-                  <StatTile label="Near exhaustion" value={m.counts.nearExhaustion.toLocaleString()} hint={m.counts.nearExhaustion ? "At/above 90% used" : "None above 90%"} tone={m.counts.nearExhaustion ? "warn" : "good"} />
-                </TileLink>
-              </>
-            ) : (
-              <TileLink href="/calculations">
-                <StatTile label="Budget used" unavailable="Set renewal dates and hours in Projections to track this." />
-              </TileLink>
-            )}
-            <TileLink href="/reports/expiring-authorizations">
-              <StatTile label="Expiring soon" value={m.counts.expiringAuthorizations.toLocaleString()} hint={m.counts.expiringAuthorizations ? "Renew within 60 days" : "None within 60 days"} tone={m.counts.expiringAuthorizations ? "warn" : "good"} />
-            </TileLink>
-            <TileLink href="/reports/budget-utilization">
-              <StatTile label="Underutilizing" value={m.counts.underutilizing.toLocaleString()} hint={m.counts.underutilizing ? "Behind pace" : "On pace"} tone={m.counts.underutilizing ? "warn" : "good"} />
-            </TileLink>
+      {/* ---- Needs you: the answer to "did anything change?" ---- */}
+      <section aria-labelledby="needs-you-heading">
+        <h2 id="needs-you-heading" className="eyebrow mb-2">Needs you</h2>
+        {totalAttention === 0 ? (
+          <div className="card flex items-center gap-3 border-l-4 border-l-[var(--color-success)] px-5 py-4">
+            <span className="grid h-8 w-8 place-items-center rounded-full bg-[var(--color-success-soft)] text-[var(--color-success)]">
+              ✓
+            </span>
+            <div>
+              <p className="text-sm font-semibold text-[var(--color-success)]">All clear</p>
+              <p className="text-xs text-[var(--color-ink-soft)]">
+                Nothing is waiting on you right now. Enjoy the calm.
+              </p>
+            </div>
           </div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {attention.map((a) => (
+              <AttentionTile
+                key={a.key}
+                href={a.href}
+                label={a.label}
+                count={a.count}
+                hint={a.hint}
+                tone={a.count === 0 ? "good" : a.tone}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* ---- The numbers: money at a glance ---- */}
+      <section aria-labelledby="numbers-heading" className="mt-8">
+        <h2 id="numbers-heading" className="eyebrow mb-2">The numbers</h2>
+        <p className="mb-2 text-xs text-[var(--color-ink-faint)]">
+          Three parallel money figures live side by side — the agency total (what the funder pays),
+          the employee amount (what workers earned), and the difference between them (agency markup).
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <TileLink href="/transactions">
+            <StatTile label="Agency total (billed)" value={formatMoney(d.totals.agencyGross)} hint={`${d.counts.transactions.toLocaleString()} transactions`} />
+          </TileLink>
+          <TileLink href="/transactions">
+            <StatTile label="Employee amount" value={formatMoney(d.totals.internalAmount)} hint="What the employees earned" />
+          </TileLink>
+          {m.agencyAdditional.available ? (
+            <TileLink href="/reports/agency-earnings">
+              <StatTile label="Agency markup" value={formatMoney(m.agencyAdditional.amount)} hint="Billed less employee amount" />
+            </TileLink>
+          ) : (
+            <TileLink href="/reports/agency-earnings"><StatTile label="Agency markup" unavailable="Not recorded on the imports on file." /></TileLink>
+          )}
+          {m.employeePayable.available ? (
+            <TileLink href="/reports/employee-payable">
+              <StatTile label="Employee payable" value={formatMoney(m.employeePayable.amount)} hint="Owed to employees" />
+            </TileLink>
+          ) : (
+            <TileLink href="/reports/employee-payable"><StatTile label="Employee payable" unavailable="Not recorded on the imports on file." /></TileLink>
+          )}
+          <TileLink href="/schedule">
+            <StatTile label="Planned (not yet billed)" value={formatMoney(scheduled.internal)} hint={`${scheduled.sessions.toLocaleString()} pending · ${formatHours(scheduled.hours)} h`} />
+          </TileLink>
+          <TileLink href="/calculations">
+            <StatTile label="Budget plans" value={result.data.strategies.toLocaleString()} hint="Active projection lines" />
+          </TileLink>
         </div>
-      </div>
+      </section>
+
+      {/* ---- Workspaces: a quiet strip, since the nav does the same job ---- */}
+      <section aria-labelledby="jump-heading" className="mt-8">
+        <h2 id="jump-heading" className="eyebrow mb-2">Jump to a workspace</h2>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <Shortcut href="/transactions" title="Transactions" sub="What was billed" />
+          <Shortcut href="/calculations" title="Projections" sub="Budgets & pacing" />
+          <Shortcut href="/people" title="People" sub="Individuals & employees" />
+          <Shortcut href="/schedule" title="Schedule" sub="Plan sessions" />
+        </div>
+      </section>
 
       {canManage && (
-        <div className="mt-6 rounded-xl border border-[var(--color-rule)] bg-[var(--color-surface)] px-5 py-3">
+        <div className="mt-8 rounded-xl border border-[var(--color-rule)] bg-[var(--color-surface)] px-5 py-3">
           <DefaultLanding current={result.data.defaultLanding} />
         </div>
       )}
