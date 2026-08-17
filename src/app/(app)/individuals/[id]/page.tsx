@@ -238,8 +238,8 @@ export default async function IndividualDetailPage({
             </p>
           </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <StatTile label="Agency gross" value={formatMoney(report.totals.agencyGross)} />
-            <StatTile label="Internal amount" value={formatMoney(report.totals.internalAmount)} />
+            <StatTile label="Agency total" value={formatMoney(report.totals.agencyGross)} />
+            <StatTile label="Employee amount" value={formatMoney(report.totals.internalAmount)} />
             <StatTile label="Hours used" value={`${formatHours(report.totals.usedHours)} h`} hint="From service allocations" />
             <StatTile
               label="Group sessions"
@@ -554,7 +554,7 @@ export default async function IndividualDetailPage({
       </div>
       {report && report.usageByProgram.length > 0 ? (
         <Card title="Usage by program" description="Delivered hours and money from the billed ledger">
-          <Table head={<><Th>Program</Th><Th numeric>Hours</Th><Th numeric>Agency gross</Th><Th numeric>Internal</Th></>}>
+          <Table head={<><Th>Program</Th><Th numeric>Hours</Th><Th numeric>Agency total</Th><Th numeric>Internal</Th></>}>
             {report.usageByProgram.map((row) => (
               <Tr key={row.programCode}>
                 <Td>{row.programName}<p className="text-xs text-[var(--color-ink-faint)]">{row.transactionCount} transactions</p></Td>
