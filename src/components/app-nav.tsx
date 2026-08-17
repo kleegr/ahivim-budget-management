@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { AuthenticatedUser } from "@/lib/auth/session";
+import CommandBar from "@/components/command-bar";
 
 /*
   Navigation, redesigned.
@@ -378,6 +379,8 @@ export default function AppNav({
         Skip to content
       </a>
 
+      <CommandBar />
+
       {/* Mobile top bar */}
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 md:hidden">
         <Wordmark />
@@ -404,8 +407,16 @@ export default function AppNav({
           open ? "translate-x-0 shadow-lg" : "-translate-x-full"
         }`}
       >
-        <div className="hidden items-center px-5 py-4 md:flex">
+        <div className="hidden flex-col gap-3 px-5 py-4 md:flex">
           <Wordmark />
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new Event("open-command-bar"))}
+            className="flex items-center justify-between gap-2 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface-muted)] px-2.5 py-1.5 text-xs text-[var(--color-ink-faint)] transition-colors hover:border-[var(--color-primary)] hover:text-[var(--color-ink)]"
+          >
+            <span>Go to…</span>
+            <kbd className="rounded border border-[var(--color-rule-strong)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[0.65rem] font-medium">⌘K</kbd>
+          </button>
         </div>
         <div className="flex items-center justify-between px-5 py-4 md:hidden">
           <Wordmark />
