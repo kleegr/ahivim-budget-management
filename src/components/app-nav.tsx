@@ -35,10 +35,10 @@ const ADMIN_ITEMS: { href: string; label: string }[] = [
   { href: "/settings", label: "Settings" },
   { href: "/sync", label: "Sheet sync" },
   { href: "/imports", label: "Imports (backup)" },
-  { href: "/reconciliation", label: "Reconciliation" },
-  { href: "/aliases", label: "Aliases" },
+  { href: "/reconciliation", label: "Sheet vs. system" },
+  { href: "/aliases", label: "Known spellings" },
   { href: "/matches", label: "Name matches" },
-  { href: "/exceptions", label: "Exceptions (raw)" },
+  { href: "/exceptions", label: "All flagged items" },
 ];
 
 const ROLE_LABEL: Record<string, string> = {

@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 /**
  * Interactive primitives (client-only): accessible Tabs, a server-composable
@@ -73,9 +72,30 @@ export type TabPanel = { id: string; label: string; badge?: ReactNode; content: 
  * content is sent once and toggled client-side — one unified workspace instead
  * of a long scroll, with no extra round-trips.
  */
-export function TabPanels({ panels, initialId }: { panels: TabPanel[]; initialId?: string }) {
-  const [active, setActive] = useState<string>(initialId ?? panels[0]?.id ?? "");
+export function TabPanels({
+  panels,
+  initialId,
+  paramKey,
+}: {
+  panels: TabPanel[];
+  initialId?: string;
+  /** When set, the active tab is mirrored into this URL search param so the view
+   *  is linkable and survives a refresh. We use history.replaceState to avoid a
+   *  server round-trip on force-dynamic pages. */
+  paramKey?: string;
+}) {
+  const valid = (id: string | undefined) => (id && panels.some((p) => p.id === id) ? id : undefined);
+  const [active, setActive] = useState<string>(valid(initialId) ?? panels[0]?.id ?? "");
   const current = panels.find((p) => p.id === active) ?? panels[0];
+
+  const select = (id: string) => {
+    setActive(id);
+    if (paramKey && typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set(paramKey, id);
+      window.history.replaceState(null, "", url.toString());
+    }
+  };
   return (
     <div>
       <div role="tablist" className="scroll-thin flex flex-wrap gap-1 overflow-x-auto border-b border-[var(--color-rule)]">
@@ -87,7 +107,7 @@ export function TabPanels({ panels, initialId }: { panels: TabPanel[]; initialId
               type="button"
               role="tab"
               aria-selected={isActive}
-              onClick={() => setActive(p.id)}
+              onClick={() => select(p.id)}
               className={`relative -mb-px flex items-center gap-1.5 whitespace-nowrap rounded-t-lg px-4 py-2.5 text-sm font-medium transition-colors ${
                 isActive
                   ? "border-b-2 border-[var(--color-primary)] text-[var(--color-primary)]"
