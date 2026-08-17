@@ -10,6 +10,7 @@ import { getSetting } from "@/lib/manage/app-settings";
 import { StatTile, ErrorPanel, PageHeader, ButtonLink } from "@/components/ui";
 import { formatHours, formatMoney } from "@/lib/money";
 import DefaultLanding from "@/components/dashboard/default-landing";
+import FirstRunWelcome from "@/components/first-run-welcome";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Home — Ahivim Budget Management" };
@@ -188,6 +189,8 @@ export default async function DashboardPage({
           </ErrorPanel>
         </div>
       ) : null}
+
+      <FirstRunWelcome />
 
       {/* ---- Needs you: the answer to "did anything change?" ---- */}
       <section aria-labelledby="needs-you-heading">
