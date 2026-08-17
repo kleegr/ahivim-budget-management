@@ -138,7 +138,7 @@ function RuleEditor({ program }: { program: ProgramRulesRow }) {
           />
         </label>
         <label className="block">
-          <span className="eyebrow">Agency additional rate</span>
+          <span className="eyebrow">Agency markup rate</span>
           <input
             type="number"
             step="any"

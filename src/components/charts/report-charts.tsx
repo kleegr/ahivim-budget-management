@@ -78,15 +78,15 @@ export function AgencyInternalDonut({
   const additional = sumCol(items.map((i) => i.additional));
   const gross = dec(internal).plus(dec(additional)).toString();
   const slices: DonutSlice[] = [
-    { label: "Internal amount", value: internal, display: formatMoney(internal), color: CHART_COLORS.primary },
-    { label: "Agency additional", value: additional, display: formatMoney(additional), color: CHART_COLORS.accent },
+    { label: "Employee amount", value: internal, display: formatMoney(internal), color: CHART_COLORS.primary },
+    { label: "Agency markup", value: additional, display: formatMoney(additional), color: CHART_COLORS.accent },
   ];
   return (
     <Donut
       data={slices}
       title={title}
       subtitle={subtitle ?? "Share of agency gross retained internally vs the agency additional."}
-      centerLabel="Agency gross"
+      centerLabel="Agency total"
       centerValue={formatMoney(gross)}
     />
   );
@@ -97,7 +97,7 @@ export function AgencyInternalDonut({
 export function ProgramTotalsBar({
   items,
   title = "Program totals",
-  subtitle = "Agency gross by program (top 10).",
+  subtitle = "Agency total by program (top 10).",
 }: {
   items: { label: string; value: string }[];
   title?: string;
