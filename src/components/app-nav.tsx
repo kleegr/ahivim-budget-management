@@ -6,38 +6,39 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { AuthenticatedUser } from "@/lib/auth/session";
 
-type NavItem = { href: string; label: string };
-type NavGroup = { heading: string; items: NavItem[] };
+/*
+  Navigation, redesigned.
 
-// The two spreadsheet workspaces lead the whole product; everything else is a
-// quieter "supporting" region grouped under clear headings.
-const SUPPORTING: NavGroup[] = [
-  {
-    heading: "Operations",
-    items: [
-      { href: "/sync", label: "Sheet sync" },
-      { href: "/schedule", label: "Schedule" },
-      { href: "/imports", label: "Imports (backup)" },
-      { href: "/reconciliation", label: "Reconciliation" },
-    ],
-  },
-  {
-    heading: "People",
-    items: [
-      { href: "/individuals", label: "Individuals" },
-      { href: "/employees", label: "Employees" },
-      { href: "/matches", label: "Name matches" },
-    ],
-  },
-  {
-    heading: "Insight & admin",
-    items: [
-      { href: "/reports", label: "Reports" },
-      { href: "/exceptions", label: "Exceptions" },
-      { href: "/aliases", label: "Aliases" },
-      { href: "/settings", label: "Settings" },
-    ],
-  },
+  The mental model is deliberately small:
+
+    Home     — one place to see what needs you today
+    -----
+    Workspaces
+      Transactions   — what was actually billed
+      Projections    — budgets, pacing and what's left
+      People         — individuals and employees, together
+    -----
+    Overview
+      Schedule       — plan sessions on a calendar
+      Review · N     — one inbox for everything the system can't decide alone
+      Reports        — exports and analysis
+    -----
+    Admin
+      Settings & data tools (rarely opened)
+
+  What used to be 15 top-level doors is now three workspaces, one inbox, and a
+  quiet admin drawer. Nothing has been deleted — every legacy screen is still
+  reachable — they just stop competing with the daily work.
+*/
+
+const ADMIN_ITEMS: { href: string; label: string }[] = [
+  { href: "/settings", label: "Settings" },
+  { href: "/sync", label: "Sheet sync" },
+  { href: "/imports", label: "Imports (backup)" },
+  { href: "/reconciliation", label: "Reconciliation" },
+  { href: "/aliases", label: "Aliases" },
+  { href: "/matches", label: "Name matches" },
+  { href: "/exceptions", label: "Exceptions (raw)" },
 ];
 
 const ROLE_LABEL: Record<string, string> = {
@@ -66,20 +67,68 @@ function ProjectionsIcon() {
   );
 }
 
-function DashboardIcon() {
+function PeopleIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden>
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M3 20c0-3 2.7-5 6-5s6 2 6 5" />
+      <circle cx="17" cy="9" r="2.6" />
+      <path d="M15 20c0-2.4 1.6-4.2 4-4.6" />
+    </svg>
+  );
+}
+
+function HomeIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
-      <rect x="3" y="3" width="7" height="9" rx="1" />
-      <rect x="14" y="3" width="7" height="5" rx="1" />
-      <rect x="14" y="12" width="7" height="9" rx="1" />
-      <rect x="3" y="16" width="7" height="5" rx="1" />
+      <path d="M3 10.5 12 3l9 7.5" />
+      <path d="M5 9.5V21h14V9.5" />
+      <path d="M10 21v-6h4v6" />
+    </svg>
+  );
+}
+
+function CalendarIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
+      <rect x="3" y="5" width="18" height="16" rx="2" />
+      <path d="M3 10h18" />
+      <path d="M8 3v4M16 3v4" />
+    </svg>
+  );
+}
+
+function InboxIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
+      <path d="M3 13h5l2 3h4l2-3h5" />
+      <path d="M3 13V7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6" />
+      <path d="M3 13v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6" />
+    </svg>
+  );
+}
+
+function ReportsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+      <path d="M8 16v-4M12 16V8M16 16v-6" />
+    </svg>
+  );
+}
+
+function CogIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9c.3.6.9 1 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
     </svg>
   );
 }
 
 function Wordmark() {
   return (
-    <Link href="/dashboard" className="flex items-center gap-2.5">
+    <Link href="/home" className="flex items-center gap-2.5">
       <span className="grid h-8 w-8 place-items-center rounded-lg bg-[var(--color-primary)] text-sm font-bold text-white">A</span>
       <span className="leading-tight">
         <span className="block text-sm font-semibold text-[var(--color-ink)]">Ahivim</span>
@@ -130,13 +179,79 @@ function PrimaryTile({
   );
 }
 
-function NavLinks({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
+function QuietLink({
+  href,
+  label,
+  icon,
+  active,
+  onNavigate,
+  count,
+}: {
+  href: string;
+  label: string;
+  icon?: ReactNode;
+  active: boolean;
+  onNavigate?: () => void;
+  count?: number;
+}) {
+  return (
+    <Link
+      href={href}
+      onClick={onNavigate}
+      aria-current={active ? "page" : undefined}
+      className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors ${
+        active
+          ? "bg-[var(--color-primary-tint)] font-medium text-[var(--color-primary)]"
+          : "text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
+      }`}
+    >
+      {icon ? (
+        <span className={active ? "text-[var(--color-primary)]" : "text-[var(--color-ink-faint)]"}>{icon}</span>
+      ) : (
+        <span className={`h-1.5 w-1.5 rounded-full ${active ? "bg-[var(--color-primary)]" : "bg-[var(--color-rule-strong)]"}`} />
+      )}
+      <span className="flex-1">{label}</span>
+      {count && count > 0 ? (
+        <span className="tnum inline-flex min-w-[1.5rem] justify-center rounded-full bg-[var(--color-warn-soft)] px-1.5 py-0.5 text-[0.65rem] font-semibold text-[var(--color-warn)]">
+          {count > 99 ? "99+" : count}
+        </span>
+      ) : null}
+    </Link>
+  );
+}
+
+function NavLinks({
+  pathname,
+  onNavigate,
+  reviewCount,
+}: {
+  pathname: string;
+  onNavigate?: () => void;
+  reviewCount: number;
+}) {
   const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
   const projectionsActive = isActive("/calculations") || isActive("/projections");
+  const peopleActive = isActive("/people") || isActive("/individuals") || isActive("/employees");
+  const homeActive = isActive("/home") || isActive("/dashboard");
 
   return (
     <nav aria-label="Primary" className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
-      {/* The two dominant workspaces */}
+      {/* Home */}
+      <div>
+        <ul className="space-y-0.5">
+          <li>
+            <QuietLink
+              href="/home"
+              label="Home"
+              icon={<HomeIcon />}
+              active={homeActive}
+              onNavigate={onNavigate}
+            />
+          </li>
+        </ul>
+      </div>
+
+      {/* The three daily workspaces */}
       <div>
         <p className="eyebrow px-2 pb-1.5">Workspaces</p>
         <div className="space-y-2">
@@ -151,69 +266,73 @@ function NavLinks({ pathname, onNavigate }: { pathname: string; onNavigate?: () 
           <PrimaryTile
             href="/calculations"
             label="Projections"
-            sub="Budgets, pacing & utilization"
+            sub="Budgets, pacing & what's left"
             icon={<ProjectionsIcon />}
             active={projectionsActive}
+            onNavigate={onNavigate}
+          />
+          <PrimaryTile
+            href="/people"
+            label="People"
+            sub="Individuals & employees"
+            icon={<PeopleIcon />}
+            active={peopleActive}
             onNavigate={onNavigate}
           />
         </div>
       </div>
 
-      {/* Overview */}
+      {/* Overview: everything you sometimes need */}
       <div>
+        <p className="eyebrow px-2 pb-1.5">Overview</p>
         <ul className="space-y-0.5">
           <li>
-            <Link
-              href="/dashboard"
-              onClick={onNavigate}
-              aria-current={isActive("/dashboard") ? "page" : undefined}
-              className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors ${
-                isActive("/dashboard")
-                  ? "bg-[var(--color-primary-tint)] font-medium text-[var(--color-primary)]"
-                  : "text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
-              }`}
-            >
-              <span className={isActive("/dashboard") ? "text-[var(--color-primary)]" : "text-[var(--color-ink-faint)]"}>
-                <DashboardIcon />
-              </span>
-              Dashboard
-            </Link>
+            <QuietLink
+              href="/schedule"
+              label="Schedule"
+              icon={<CalendarIcon />}
+              active={isActive("/schedule")}
+              onNavigate={onNavigate}
+            />
+          </li>
+          <li>
+            <QuietLink
+              href="/review"
+              label="Review"
+              icon={<InboxIcon />}
+              active={isActive("/review")}
+              onNavigate={onNavigate}
+              count={reviewCount}
+            />
+          </li>
+          <li>
+            <QuietLink
+              href="/reports"
+              label="Reports"
+              icon={<ReportsIcon />}
+              active={isActive("/reports")}
+              onNavigate={onNavigate}
+            />
           </li>
         </ul>
       </div>
 
-      {/* Supporting screens */}
-      <div className="space-y-5 border-t border-[var(--color-rule)] pt-4">
-        <p className="eyebrow px-2 -mb-2">Supporting</p>
-        {SUPPORTING.map((group) => (
-          <div key={group.heading}>
-            <p className="eyebrow px-2 pb-1.5 text-[0.625rem] opacity-80">{group.heading}</p>
-            <ul className="space-y-0.5">
-              {group.items.map((link) => {
-                const active = isActive(link.href);
-                return (
-                  <li key={link.href}>
-                    <Link
-                      href={link.href}
-                      onClick={onNavigate}
-                      aria-current={active ? "page" : undefined}
-                      className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors ${
-                        active
-                          ? "bg-[var(--color-primary-tint)] font-medium text-[var(--color-primary)]"
-                          : "text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
-                      }`}
-                    >
-                      <span
-                        className={`h-1.5 w-1.5 rounded-full ${active ? "bg-[var(--color-primary)]" : "bg-[var(--color-rule-strong)]"}`}
-                      />
-                      {link.label}
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        ))}
+      {/* Admin — the drawer everyone rarely opens */}
+      <div className="space-y-1.5 border-t border-[var(--color-rule)] pt-4">
+        <p className="eyebrow px-2 pb-1">Admin</p>
+        <ul className="space-y-0.5">
+          {ADMIN_ITEMS.map((item, i) => (
+            <li key={item.href}>
+              <QuietLink
+                href={item.href}
+                label={item.label}
+                icon={i === 0 ? <CogIcon /> : undefined}
+                active={isActive(item.href)}
+                onNavigate={onNavigate}
+              />
+            </li>
+          ))}
+        </ul>
       </div>
     </nav>
   );
@@ -235,7 +354,13 @@ function UserFooter({ user }: { user: AuthenticatedUser }) {
   );
 }
 
-export default function AppNav({ user }: { user: AuthenticatedUser }) {
+export default function AppNav({
+  user,
+  reviewCount = 0,
+}: {
+  user: AuthenticatedUser;
+  reviewCount?: number;
+}) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
 
@@ -288,7 +413,7 @@ export default function AppNav({ user }: { user: AuthenticatedUser }) {
             ✕
           </button>
         </div>
-        <NavLinks pathname={pathname} onNavigate={() => setOpen(false)} />
+        <NavLinks pathname={pathname} onNavigate={() => setOpen(false)} reviewCount={reviewCount} />
         <UserFooter user={user} />
       </aside>
     </>
