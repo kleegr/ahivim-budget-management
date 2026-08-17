@@ -10,6 +10,7 @@ import { formatCell, rawValue } from "@/components/data-grid/engine";
 import { useGrid } from "@/components/data-grid/use-grid";
 import { Toolbar } from "@/components/data-grid/toolbar";
 import { FilterBar } from "@/components/data-grid/filter-bar";
+import { UtilizationBadge, utilizationColor, type UtilizationStatus } from "@/components/ui-viz";
 
 /**
  * The Calculations workspace on top of the shared data-grid engine. The engine
@@ -70,6 +71,215 @@ function pct100(frac: string | null | undefined): string | null {
   }
 }
 
+/* ------------------------------------------------------------ glance view */
+
+// Risk ordering: the rows that need action float to the top of the glance view.
+const SEVERITY: Record<UtilizationStatus, number> = {
+  over_authorization: 0,
+  fully_used: 1,
+  near_exhaustion: 2,
+  behind_pace: 3,
+  ahead_of_pace: 4,
+  on_pace: 5,
+  not_started: 6,
+};
+
+type GlanceSortKey = "status" | "name" | "plan" | "renews" | "used" | "left";
+
+function statusOf(r: StrategyGridRow): UtilizationStatus {
+  return r.analytics?.status ?? "not_started";
+}
+function usedPct(r: StrategyGridRow): number {
+  const u = r.analytics?.utilizationPercent;
+  return u ? dec(u).times(100).toNumber() : 0;
+}
+function elapsedPct(r: StrategyGridRow): number | null {
+  const t = r.analytics?.timeElapsedPercent;
+  return t ? dec(t).times(100).toNumber() : null;
+}
+function hrsLeft(r: StrategyGridRow): number | null {
+  const h = r.analytics?.remainingHours;
+  return h === undefined ? null : dec(h).toNumber();
+}
+
+/** The compact signature meter: fill = hours used, notch = period elapsed. */
+function GlancePace({ row }: { row: StrategyGridRow }) {
+  const status = statusOf(row);
+  const used = Math.max(0, Math.min(100, usedPct(row)));
+  const elapsed = elapsedPct(row);
+  const color = utilizationColor(status);
+  return (
+    <div
+      className="pace-track"
+      role="img"
+      aria-label={`${Math.round(used)}% used${elapsed !== null ? `, ${Math.round(elapsed)}% of the period elapsed` : ""}`}
+      title={
+        elapsed !== null
+          ? `${Math.round(used)}% of hours used · ${Math.round(elapsed)}% of the budget period elapsed. Fill past the notch = spending faster than time; short of it = slower.`
+          : `${Math.round(used)}% of hours used`
+      }
+    >
+      <div className="pace-fill" style={{ width: `${used}%`, background: color }} />
+      {elapsed !== null ? <div className="pace-notch" style={{ left: `${Math.max(0, Math.min(100, elapsed))}%` }} /> : null}
+    </div>
+  );
+}
+
+function GlanceTile({ label, value, color }: { label: string; value: number; color?: string }) {
+  return (
+    <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2">
+      <div className="eyebrow text-[var(--color-text-soft)]">{label}</div>
+      <div className="tnum text-xl font-semibold leading-tight" style={color ? { color } : undefined}>
+        {value.toLocaleString()}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The default "glance" over the projection portfolio. One row answers the whole
+ * question — person, plan, renewal, a pace bar, % used, hours left and a status
+ * badge — with the rows that need action sorted to the top. Click any row to
+ * open the same step-by-step Explain drawer as the full sheet. Every figure the
+ * grid can show still lives one click away under "Full sheet".
+ */
+function GlanceView({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: (id: string) => void }) {
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<{ key: GlanceSortKey; dir: "asc" | "desc" }>({ key: "status", dir: "asc" });
+
+  const counts = useMemo(() => {
+    const c = { total: rows.length, on_pace: 0, behind: 0, ahead: 0, over: 0, not_started: 0 };
+    for (const r of rows) {
+      const s = statusOf(r);
+      if (s === "on_pace") c.on_pace++;
+      else if (s === "behind_pace") c.behind++;
+      else if (s === "ahead_of_pace") c.ahead++;
+      else if (s === "not_started") c.not_started++;
+      else c.over++; // near_exhaustion, fully_used, over_authorization
+    }
+    return c;
+  }, [rows]);
+
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const filtered = needle
+      ? rows.filter((r) => r.individualName.toLowerCase().includes(needle) || r.label.toLowerCase().includes(needle))
+      : rows.slice();
+    const cmp = (a: StrategyGridRow, b: StrategyGridRow): number => {
+      let d = 0;
+      switch (sort.key) {
+        case "status":
+          d = SEVERITY[statusOf(a)] - SEVERITY[statusOf(b)];
+          break;
+        case "name":
+          d = a.individualName.localeCompare(b.individualName);
+          break;
+        case "plan":
+          d = a.label.localeCompare(b.label);
+          break;
+        case "renews":
+          d = (a.renewalDate ?? "9999").localeCompare(b.renewalDate ?? "9999");
+          break;
+        case "used":
+          d = usedPct(a) - usedPct(b);
+          break;
+        case "left":
+          d = (hrsLeft(a) ?? Infinity) - (hrsLeft(b) ?? Infinity);
+          break;
+      }
+      if (d === 0) d = a.individualName.localeCompare(b.individualName);
+      return sort.dir === "asc" ? d : -d;
+    };
+    return filtered.sort(cmp);
+  }, [rows, q, sort]);
+
+  const toggle = (key: GlanceSortKey) =>
+    setSort((p) => (p.key === key ? { key, dir: p.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "status" || key === "name" || key === "plan" || key === "renews" ? "asc" : "desc" }));
+
+  const SortHead = ({ k, children, align = "left" }: { k: GlanceSortKey; children: React.ReactNode; align?: "left" | "right" }) => (
+    <th className={`whitespace-nowrap border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 font-semibold ${align === "right" ? "text-right" : "text-left"}`}>
+      <button type="button" onClick={() => toggle(k)} className={`inline-flex items-center gap-1 hover:underline ${align === "right" ? "flex-row-reverse" : ""}`} title="Sort">
+        {children}
+        <span className="text-[10px] text-[var(--color-primary)]">{sort.key === k ? (sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+      </button>
+    </th>
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+        <GlanceTile label="Active budgets" value={counts.total} />
+        <GlanceTile label="On pace" value={counts.on_pace} color="var(--color-pace-on)" />
+        <GlanceTile label="Behind" value={counts.behind} color="var(--color-pace-behind)" />
+        <GlanceTile label="Ahead" value={counts.ahead} color="var(--color-pace-ahead)" />
+        <GlanceTile label="Over / exhausting" value={counts.over} color="var(--color-pace-over)" />
+        <GlanceTile label="Not started" value={counts.not_started} color="var(--color-pace-idle)" />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search a person or plan…"
+          className="input w-64 max-w-full"
+          aria-label="Search projections"
+        />
+        <span className="text-sm text-[var(--color-text-soft)]">
+          Showing <span className="tnum font-semibold text-[var(--color-ink)]">{visible.length}</span> of{" "}
+          <span className="tnum">{rows.length}</span>
+        </span>
+        <span className="ml-auto text-xs text-[var(--color-text-soft)]">Sorted so the budgets that need action rise to the top. Click a row for the full calculation.</span>
+      </div>
+
+      <div className="scroll-thin max-h-[64vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
+        <table className="w-full border-collapse text-sm">
+          <thead className="sticky top-0 z-10">
+            <tr>
+              <SortHead k="name">Person</SortHead>
+              <SortHead k="plan">Plan</SortHead>
+              <SortHead k="renews">Renews</SortHead>
+              <th className="whitespace-nowrap border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 text-left font-semibold" style={{ minWidth: 150 }}>
+                Pace <span className="font-normal text-[var(--color-text-soft)]">(used vs. time)</span>
+              </th>
+              <SortHead k="used" align="right">% used</SortHead>
+              <SortHead k="left" align="right">Hrs left</SortHead>
+              <SortHead k="status">Status</SortHead>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((r) => {
+              const left = hrsLeft(r);
+              return (
+                <tr
+                  key={r.id}
+                  onClick={() => onOpen(r.id)}
+                  className="cursor-pointer border-b border-[var(--color-rule)] hover:bg-[var(--color-primary-tint)]"
+                  title="Open the step-by-step calculation"
+                >
+                  <td className="px-3 py-2 font-medium text-[var(--color-ink)]">{r.individualName}</td>
+                  <td className="px-3 py-2 text-[var(--color-ink-soft)]">{r.label}</td>
+                  <td className="tnum px-3 py-2 text-[var(--color-ink-soft)]">{r.renewalDate ?? "—"}</td>
+                  <td className="px-3 py-2"><GlancePace row={r} /></td>
+                  <td className="tnum px-3 py-2 text-right">{r.analytics?.utilizationPercent != null ? `${Math.round(usedPct(r))}%` : "—"}</td>
+                  <td className="tnum px-3 py-2 text-right">{left === null ? "—" : formatHours(r.analytics!.remainingHours)}</td>
+                  <td className="px-3 py-2"><UtilizationBadge status={statusOf(r)} /></td>
+                </tr>
+              );
+            })}
+            {visible.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
+                  {rows.length === 0 ? "No projections yet." : "No one matches your search."}
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------- component */
 
 export default function CalculationsGrid({
@@ -84,6 +294,7 @@ export default function CalculationsGrid({
   canManage: boolean;
 }) {
   const router = useRouter();
+  const [view, setView] = useState<"glance" | "full">("glance");
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [editing, setEditing] = useState<{ rowId: string; colKey: string } | null>(null);
   const [active, setActive] = useState<{ row: number; col: number } | null>(null);
@@ -163,10 +374,10 @@ export default function CalculationsGrid({
           </Link>
         ),
       },
-      editable({ key: "label", label: "Line", kind: "text", accessor: (r) => r.label, patch: (v) => ({ label: v }) }),
+      editable({ key: "label", label: "Plan", kind: "text", accessor: (r) => r.label, patch: (v) => ({ label: v }) }),
       editable({ key: "renewalDate", label: "Renewal date", kind: "date", frozen: true, accessor: (r) => r.renewalDate, patch: (v) => ({ renewalDate: v || null }) }),
-      editable({ key: "cut1Percent", label: "1st cut %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut1Percent), patch: (v) => ({ cut1Percent: v }) }),
-      editable({ key: "cut2Percent", label: "2nd cut %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut2Percent), patch: (v) => ({ cut2Percent: v }) }),
+      editable({ key: "cut1Percent", label: "Deduction 1 %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut1Percent), patch: (v) => ({ cut1Percent: v }) }),
+      editable({ key: "cut2Percent", label: "Deduction 2 %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut2Percent), patch: (v) => ({ cut2Percent: v }) }),
       editable({ key: "clockAdjustment", label: "Clock", kind: "money", accessor: (r) => r.clockAdjustment, patch: (v) => ({ clockAdjustment: v }) }),
       editable({ key: "otherAdjustment", label: "Other adj.", kind: "money", accessor: (r) => r.otherAdjustment, patch: (v) => ({ otherAdjustment: v }) }),
     ];
@@ -187,7 +398,7 @@ export default function CalculationsGrid({
       { key: "monthlyGross", label: "Monthly gross", kind: "computed", accessor: (r) => r.monthlyGross },
       { key: "grossNet", label: "Gross net", kind: "computed", accessor: (r) => r.grossNet },
       { key: "net", label: "Net", kind: "computed", accessor: (r) => r.net },
-      editable({ key: "afterAll", label: "After All", kind: "money", accessor: (r) => r.afterAll, patch: (v) => ({ afterAll: v === "" ? null : v }) }),
+      editable({ key: "afterAll", label: "Final amount", kind: "money", accessor: (r) => r.afterAll, patch: (v) => ({ afterAll: v === "" ? null : v }) }),
       editable({ key: "account", label: "Account", kind: "text", accessor: (r) => r.account, patch: (v) => ({ account: v || null }) }),
     ];
 
@@ -195,16 +406,16 @@ export default function CalculationsGrid({
     // workbook↔system parity check. Appended when "Show analysis" is on.
     const analytics: ColumnDef<StrategyGridRow>[] = showAnalytics
       ? [
-          { key: "a_actualHours", label: "Actual hrs", kind: "hours", accessor: (r) => r.analytics?.actualHours ?? null },
-          { key: "a_actualInternal", label: "Actual $", kind: "computed", accessor: (r) => r.analytics?.actualInternal ?? null },
-          { key: "a_scheduledHours", label: "Scheduled hrs", kind: "hours", accessor: (r) => r.analytics?.scheduledHours ?? null },
+          { key: "a_actualHours", label: "Billed hrs", kind: "hours", accessor: (r) => r.analytics?.actualHours ?? null },
+          { key: "a_actualInternal", label: "Billed $", kind: "computed", accessor: (r) => r.analytics?.actualInternal ?? null },
+          { key: "a_scheduledHours", label: "Planned hrs", kind: "hours", accessor: (r) => r.analytics?.scheduledHours ?? null },
           { key: "a_remainingHours", label: "Remaining hrs", kind: "hours", accessor: (r) => r.analytics?.remainingHours ?? null },
-          { key: "a_utilization", label: "Utilization", kind: "percent", exportType: "text", accessor: (r) => pct100(r.analytics?.utilizationPercent) },
-          { key: "a_projected", label: "Projected exhaustion", kind: "date", accessor: (r) => r.analytics?.projectedExhaustion ?? null },
-          { key: "a_workbook", label: "Workbook (After All)", kind: "computed", accessor: (r) => r.analytics?.workbookValue ?? null },
-          { key: "a_system", label: "System (Net)", kind: "computed", accessor: (r) => r.analytics?.systemValue ?? null },
-          { key: "a_diff", label: "Δ (wb − sys)", kind: "computed", accessor: (r) => r.analytics?.difference ?? null },
-          { key: "a_flags", label: "Flags", kind: "text", accessor: (r) => (r.analytics?.warnings.length ? r.analytics.warnings.join(", ") : null) },
+          { key: "a_utilization", label: "% used", kind: "percent", exportType: "text", accessor: (r) => pct100(r.analytics?.utilizationPercent) },
+          { key: "a_projected", label: "Runs out ~", kind: "date", accessor: (r) => r.analytics?.projectedExhaustion ?? null },
+          { key: "a_workbook", label: "Spreadsheet final", kind: "computed", accessor: (r) => r.analytics?.workbookValue ?? null },
+          { key: "a_system", label: "System final", kind: "computed", accessor: (r) => r.analytics?.systemValue ?? null },
+          { key: "a_diff", label: "Diff vs. spreadsheet", kind: "computed", accessor: (r) => r.analytics?.difference ?? null },
+          { key: "a_flags", label: "Needs a look", kind: "text", accessor: (r) => (r.analytics?.warnings.length ? r.analytics.warnings.join(", ") : null) },
         ]
       : [];
 
@@ -433,6 +644,32 @@ export default function CalculationsGrid({
 
   return (
     <div className="space-y-3">
+      {/* Glance ⇄ Full sheet. Glance is the default: the whole portfolio at a
+          glance, risk-first. Full sheet is the complete editable grid with every
+          column, inline editing and copy/paste — nothing is lost, only ranked. */}
+      <div className="inline-flex rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-0.5 text-sm">
+        <button
+          type="button"
+          onClick={() => setView("glance")}
+          aria-pressed={view === "glance"}
+          className={`rounded-md px-3 py-1.5 font-medium transition-colors ${view === "glance" ? "bg-[var(--color-primary)] text-white" : "text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}
+        >
+          Glance
+        </button>
+        <button
+          type="button"
+          onClick={() => setView("full")}
+          aria-pressed={view === "full"}
+          className={`rounded-md px-3 py-1.5 font-medium transition-colors ${view === "full" ? "bg-[var(--color-primary)] text-white" : "text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}
+        >
+          Full sheet
+        </button>
+      </div>
+
+      {view === "glance" ? (
+        <GlanceView rows={rows} onOpen={setDrawerId} />
+      ) : (
+      <>
       {/* shared toolbar: search, result count, reset, saved views, export + our extras */}
       <Toolbar
         grid={grid}
@@ -453,7 +690,7 @@ export default function CalculationsGrid({
             {canManage && (
               <span className="ml-auto inline-flex items-center gap-1">
                 <select value={addFor} onChange={(e) => setAddFor(e.target.value)} className="rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1.5">
-                  <option value="">Add strategy for…</option>
+                  <option value="">Add a plan for…</option>
                   {individuals.map((i) => (
                     <option key={i.id} value={i.id}>{i.name}</option>
                   ))}
@@ -572,12 +809,14 @@ export default function CalculationsGrid({
             ))}
             {grid.sorted.length === 0 && (
               <tr>
-                <td colSpan={grid.visibleColumns.length + 1} className="px-3 py-10 text-center text-[var(--color-text-soft)]">No strategies match the current filters.</td>
+                <td colSpan={grid.visibleColumns.length + 1} className="px-3 py-10 text-center text-[var(--color-text-soft)]">No plans match the current filters.</td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
+      </>
+      )}
 
       {drawerId && <ExplainDrawer strategyId={drawerId} row={rows.find((r) => r.id === drawerId)} canManage={canManage} onClose={() => setDrawerId(null)} />}
     </div>

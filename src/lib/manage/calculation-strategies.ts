@@ -7,7 +7,7 @@ import {
   derivePeriodFromRenewal,
   type StrategyResult,
 } from "@/lib/business/calculation-strategy";
-import { calculatePeriodElapsed } from "@/lib/business/utilization";
+import { calculatePeriodElapsed, classifyUtilization, type UtilizationStatus } from "@/lib/business/utilization";
 import { calculateForecast } from "@/lib/business/forecast";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
 
@@ -74,6 +74,10 @@ export interface StrategyAnalytics {
   systemValue: string; // the system's step-by-step Net
   difference: string | null; // workbook − system
   warnings: string[];
+  /** Canonical pace status (billed hours vs. time elapsed) — the row's one glance. */
+  status: UtilizationStatus;
+  /** Fraction (0–1) of the budget period elapsed, for the pace-bar notch. */
+  timeElapsedPercent: string | null;
 }
 
 interface RateScheduleRow {
@@ -329,18 +333,29 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
     const util = planned.greaterThan(0) ? actualH.dividedBy(planned) : null;
     const committed = planned.greaterThan(0) ? actualH.plus(schedH).dividedBy(planned) : null;
 
+    // The budget period elapsed once, reused for the forecast, the pace-bar
+    // notch and the canonical status. Best-effort: a malformed period yields no
+    // pacing rather than an error.
+    let elapsed: ReturnType<typeof calculatePeriodElapsed> | null = null;
+    if (row.periodStart && row.periodEnd) {
+      try {
+        elapsed = calculatePeriodElapsed({ startDate: row.periodStart, endDate: row.periodEnd });
+      } catch {
+        elapsed = null;
+      }
+    }
+
     // Forecast projected exhaustion. Pass the REAL billed-transaction count so a
     // strategy projection obeys the same 28-day / 3-observation guardrails that
     // forecast.ts enforces everywhere else — no forced minimum, no fabrication.
     let projectedExhaustion: string | null = null;
-    if (row.periodStart && row.periodEnd && planned.greaterThan(0) && actualH.greaterThan(0)) {
+    if (elapsed && planned.greaterThan(0) && actualH.greaterThan(0)) {
       try {
-        const elapsed = calculatePeriodElapsed({ startDate: row.periodStart, endDate: row.periodEnd });
         const f = calculateForecast({
           authorizedHours: toHours(planned),
           usedHours: toHours(actualH),
           elapsed,
-          periodStartDate: row.periodStart,
+          periodStartDate: row.periodStart!,
           observationCount: observations,
         });
         if (f.available) projectedExhaustion = f.estimatedExhaustionDate;
@@ -348,6 +363,11 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
         /* forecast is best-effort */
       }
     }
+
+    // The one-glance status: classify billed pace against time elapsed. Without a
+    // real period or plan there is nothing to pace, so the row reads "not started".
+    const status: UtilizationStatus =
+      elapsed && planned.greaterThan(0) ? classifyUtilization(util ?? dec(0), elapsed) : "not_started";
 
     const warnings: string[] = [];
     if (committed && committed.greaterThan(1)) warnings.push("over-budget");
@@ -372,6 +392,8 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
       systemValue,
       difference,
       warnings,
+      status,
+      timeElapsedPercent: elapsed ? elapsed.timeElapsedPercent : null,
     };
   }
 }
