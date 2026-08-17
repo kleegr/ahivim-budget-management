@@ -41,10 +41,17 @@ const STATUS_SEVERITY: Record<string, number> = {
   not_started: 0,
 };
 
-export default async function IndividualDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function IndividualDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const user = await requireUser("viewer");
   const canEdit = user.role !== "viewer";
   const { id } = await params;
+  const initialTab = typeof (await searchParams).tab === "string" ? ((await searchParams).tab as string) : undefined;
   if (!isUuid(id)) notFound();
 
   const result = await withDb(async (pool) => {
@@ -727,8 +734,15 @@ export default async function IndividualDetailPage({ params }: { params: Promise
     <>
       <PageHeader
         eyebrow="Individual"
-        title={individual.legalName || individual.displayName}
-        description={individual.preferredName ? `Known as “${individual.preferredName}”` : "No preferred name on file."}
+        title={individual.displayName}
+        description={
+          [
+            individual.preferredName ? `Known as “${individual.preferredName}”` : null,
+            individual.legalName && individual.legalName !== individual.displayName ? `Legal name: ${individual.legalName}` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ") || "No preferred or legal name on file."
+        }
         action={
           canEdit ? (
             <div className="flex flex-wrap gap-2">
@@ -759,7 +773,25 @@ export default async function IndividualDetailPage({ params }: { params: Promise
         {individual.externalRef ? <span className="text-[var(--color-ink-faint)]">Ref: {individual.externalRef}</span> : null}
       </div>
 
-      <TabPanels panels={panels} />
+      {/* Compact hero: the "are they OK?" answer, before any tab. */}
+      {report && headlineStatus ? (
+        <div className="card mb-5 flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:gap-5">
+          <div className="flex items-center gap-2">
+            <UtilizationBadge status={headlineStatus} />
+            <span className="text-sm text-[var(--color-ink-soft)]">
+              {totalPctUsed ? `${Math.round(pctUsedNum)}% of approved hours used` : "No approved hours to pace yet"}
+              {" · "}
+              {formatHours(totalRemaining)} h left
+              {report.budgetPeriod ? ` · renews ${report.budgetPeriod.endDate}` : ""}
+            </span>
+          </div>
+          <div className="min-w-0 flex-1 sm:max-w-sm">
+            <ProgressBar percent={pctUsedNum} tone={overviewTone} target={elapsedNum} showValue={false} label="Approved hours used vs. time elapsed" />
+          </div>
+        </div>
+      ) : null}
+
+      <TabPanels panels={panels} initialId={initialTab} paramKey="tab" />
 
       <p className="mt-6 text-xs text-[var(--color-ink-faint)]">
         <Badge value="valid" label="Note" /> Hours shown are allocation hours. On a group session every participant is credited the full session hours; the money is what divides.
