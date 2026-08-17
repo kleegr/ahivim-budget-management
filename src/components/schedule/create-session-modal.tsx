@@ -257,7 +257,7 @@ export default function CreateSessionModal({
 
           {preview && preview.forecast.length > 0 ? (
             <div className="rounded-lg border border-[var(--color-rule)] p-3">
-              <p className="eyebrow">Forecast against authorisation</p>
+              <p className="eyebrow">Forecast against authorization</p>
               <div className="mt-2 space-y-2">
                 {preview.forecast.map((f) => (
                   <div key={f.individualId} className="text-xs">
@@ -266,7 +266,7 @@ export default function CreateSessionModal({
                       <dt className="text-[var(--color-ink-faint)]">Actual billed</dt><dd className="tnum text-right">{f.actualHours} h</dd>
                       <dt className="text-[var(--color-ink-faint)]">Scheduled (not billed)</dt><dd className="tnum text-right">{f.scheduledHours} h</dd>
                       <dt className="text-[var(--color-ink-faint)]">This session</dt><dd className="tnum text-right">+{f.thisHours} h</dd>
-                      <dt className="text-[var(--color-ink-faint)]">Authorised</dt><dd className="tnum text-right">{f.authorizedHours ?? "—"}{f.authorizedHours ? " h" : ""}</dd>
+                      <dt className="text-[var(--color-ink-faint)]">Authorized</dt><dd className="tnum text-right">{f.authorizedHours ?? "—"}{f.authorizedHours ? " h" : ""}</dd>
                       <dt className="font-medium">Remaining after</dt>
                       <dd className={`tnum text-right font-medium ${f.remainingAfterHours !== null && Number(f.remainingAfterHours) < 0 ? "text-[var(--color-pace-over)]" : ""}`}>
                         {f.remainingAfterHours ?? "—"}{f.remainingAfterHours ? " h" : ""}
@@ -285,7 +285,7 @@ export default function CreateSessionModal({
 
 /**
  * Prominent, colour-coded read-out of the preview's budget impact: is the
- * authorisation valid, are there enough remaining hours, is there a conflict —
+ * authorization valid, are there enough remaining hours, is there a conflict —
  * and what each individual would have left after this session. Surfaces only
  * what the preview endpoint already returned; no money maths here.
  */
@@ -301,13 +301,13 @@ function BudgetImpact({ preview, isGroup }: { preview: SessionPreview; isGroup: 
   const tone: "over" | "warn" | "ok" = over ? "over" : flagged ? "warn" : "ok";
   const color =
     tone === "over" ? "var(--color-pace-over)" : tone === "warn" ? "var(--color-pace-near)" : "var(--color-pace-on)";
-  const heading = tone === "over" ? "Over authorisation" : tone === "warn" ? "Review before saving" : "Clear to schedule";
+  const heading = tone === "over" ? "Over authorization" : tone === "warn" ? "Review before saving" : "Clear to schedule";
   const sub =
     tone === "over"
-      ? "This schedule exceeds the remaining authorised hours for at least one individual."
+      ? "This schedule exceeds the remaining authorized hours for at least one individual."
       : tone === "warn"
         ? "You can still save with a reason, but check the flags below first."
-        : "Authorisation valid, hours available, and no conflicts detected.";
+        : "Authorization valid, hours available, and no conflicts detected.";
 
   return (
     <div className="rounded-lg border p-3" role="status" style={{ borderColor: color, background: `color-mix(in srgb, ${color} 8%, transparent)` }}>
@@ -328,7 +328,7 @@ function BudgetImpact({ preview, isGroup }: { preview: SessionPreview; isGroup: 
                 <div key={f.individualId} className="flex items-baseline justify-between gap-2">
                   <span className="truncate text-xs text-[var(--color-ink-soft)]">{isGroup ? f.individualName : "Remaining hours"}</span>
                   <span className="tnum text-sm font-semibold" style={{ color: neg ? "var(--color-pace-over)" : undefined }}>
-                    {rem === null ? "no authorisation on file" : `${formatHours(rem)} h`}
+                    {rem === null ? "no authorization on file" : `${formatHours(rem)} h`}
                   </span>
                 </div>
               );
@@ -337,7 +337,7 @@ function BudgetImpact({ preview, isGroup }: { preview: SessionPreview; isGroup: 
         </div>
       ) : null}
 
-      {cats.budget.length > 0 ? <WarnList color="var(--color-pace-over)" title="Authorisation / budget" items={cats.budget} /> : null}
+      {cats.budget.length > 0 ? <WarnList color="var(--color-pace-over)" title="Authorization / budget" items={cats.budget} /> : null}
       {cats.conflict.length > 0 ? <WarnList color="var(--color-pace-near)" title="Conflicts" items={cats.conflict} /> : null}
       {cats.other.length > 0 ? <WarnList color="var(--color-pace-near)" title="Other flags" items={cats.other} /> : null}
     </div>
