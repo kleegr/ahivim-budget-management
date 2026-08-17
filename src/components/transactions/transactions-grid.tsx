@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { formatMoney, formatHours } from "@/lib/money";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
@@ -10,6 +10,7 @@ import { Toolbar } from "@/components/data-grid/toolbar";
 import { FilterBar } from "@/components/data-grid/filter-bar";
 import { formatCell } from "@/components/data-grid/engine";
 import { isNumericKind, type ColumnDef } from "@/components/data-grid/types";
+import PeriodControl, { type PeriodRange } from "@/components/period-control";
 
 /* ------------------------------------------------------------------ config */
 
@@ -70,13 +71,13 @@ const COLUMNS: ColumnDef<GridTransaction>[] = [
   { key: "checkNumber", label: "Check #", kind: "text", width: 90, accessor: (r) => r.checkNumber },
   { key: "hours", label: "Hours", kind: "hours", width: 80, accessor: (r) => r.hours },
   { key: "rate", label: "Rate", kind: "money", width: 80, hidden: true, accessor: (r) => r.rate },
-  { key: "gross", label: "Gross amount", kind: "money", width: 120, accessor: (r) => r.gross },
-  { key: "internalAmount", label: "Internal amount", kind: "money", width: 130, accessor: (r) => r.internalAmount },
-  { key: "agencyAdditional", label: "Agency additional", kind: "money", width: 140, accessor: (r) => r.agencyAdditional },
+  { key: "gross", label: "Agency total", kind: "money", width: 120, accessor: (r) => r.gross },
+  { key: "internalAmount", label: "Employee amount", kind: "money", width: 130, accessor: (r) => r.internalAmount },
+  { key: "agencyAdditional", label: "Agency markup", kind: "money", width: 140, accessor: (r) => r.agencyAdditional },
   { key: "totalNetPay", label: "Total net pay", kind: "money", width: 120, accessor: (r) => r.totalNetPay },
   { key: "periodBegin", label: "Period begin", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodBegin },
   { key: "periodEnd", label: "Period end", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodEnd },
-  { key: "paymentRecipient", label: "Payment recipient", kind: "badge", width: 150, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => r.paymentRecipient },
+  { key: "paymentRecipient", label: "Paid to", kind: "badge", width: 150, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => r.paymentRecipient },
   { key: "matchStatus", label: "Match status", kind: "badge", width: 120, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => r.matchStatus },
   { key: "groupStatus", label: "Group status", kind: "badge", width: 120, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => (r.isGroup ? "Group" : "Individual") },
 ];
@@ -118,6 +119,14 @@ export default function TransactionsGrid({
   const { visibleColumns, sorted, widths } = grid;
 
   const [selected, setSelected] = useState<GridTransaction | null>(null);
+  const [showMore, setShowMore] = useState(false);
+
+  // The persistent period control drives the check-date filter (and the URL).
+  const setFilter = grid.setFilter;
+  const applyPeriod = useCallback(
+    (r: PeriodRange) => setFilter("checkDate", r ? { from: r.from, to: r.to } : null),
+    [setFilter],
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -183,6 +192,7 @@ export default function TransactionsGrid({
 
   return (
     <div className="space-y-3">
+      <PeriodControl onChange={applyPeriod} paramKey="period" />
       <Toolbar
         grid={grid}
         searchPlaceholder="Search transactions…"
@@ -194,18 +204,33 @@ export default function TransactionsGrid({
 
       <FilterBar grid={grid} />
 
-      {/* filtered subtotals (SUBTOTAL-style: recompute on the visible filter) */}
+      {/* Filtered totals: three you read first, the rest a click away. All
+          recompute live on the visible filter, matching exactly what you see. */}
       {totals ? (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-          <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Filtered gross</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.gross)}</div></div>
-          <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Internal / employee</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div>
-          <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency additional</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div>
-          <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Net pay (per check)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.netPerCheck)}</div></div>
-          <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Hours</div><div className="text-lg font-semibold tabular-nums">{formatHours(totals.hours)}</div></div>
-          <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Transactions</div><div className="text-lg font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
-          <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Checks</div><div className="text-lg font-semibold tabular-nums">{totals.checks.toLocaleString()}</div></div>
-          <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Individuals</div><div className="text-lg font-semibold tabular-nums">{totals.individuals.toLocaleString()}</div></div>
-          <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Employees</div><div className="text-lg font-semibold tabular-nums">{totals.employees.toLocaleString()}</div></div>
+        <div className="space-y-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency total (billed)</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.gross)}</div></div>
+            <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee amount</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div>
+            <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Hours</div><div className="text-xl font-semibold tabular-nums">{formatHours(totals.hours)}</div></div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowMore((v) => !v)}
+            className="text-xs font-medium text-[var(--color-primary)] hover:underline"
+            aria-expanded={showMore}
+          >
+            {showMore ? "Hide extra totals" : "More totals"}
+          </button>
+          {showMore ? (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency markup</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div>
+              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Net pay (per check)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.netPerCheck)}</div></div>
+              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Transactions</div><div className="text-lg font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
+              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Checks</div><div className="text-lg font-semibold tabular-nums">{totals.checks.toLocaleString()}</div></div>
+              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Individuals</div><div className="text-lg font-semibold tabular-nums">{totals.individuals.toLocaleString()}</div></div>
+              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Employees</div><div className="text-lg font-semibold tabular-nums">{totals.employees.toLocaleString()}</div></div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -361,12 +386,12 @@ function DetailDrawer({
         {line("Pay to", row.payTo ?? "—")}
         {line("Hours", row.hours ? formatHours(row.hours) : "—")}
         {line("Rate", row.rate ? formatMoney(row.rate) : "—")}
-        {line("Gross amount", row.gross ? formatMoney(row.gross) : "—")}
-        {line("Internal amount", row.internalAmount ? formatMoney(row.internalAmount) : "—")}
-        {line("Agency additional", row.agencyAdditional ? formatMoney(row.agencyAdditional) : "—")}
+        {line("Agency total", row.gross ? formatMoney(row.gross) : "—")}
+        {line("Employee amount", row.internalAmount ? formatMoney(row.internalAmount) : "—")}
+        {line("Agency markup", row.agencyAdditional ? formatMoney(row.agencyAdditional) : "—")}
         {line("Total net pay", row.totalNetPay ? formatMoney(row.totalNetPay) : "—")}
         {line("Period", `${row.periodBegin ?? "—"} → ${row.periodEnd ?? "—"}`)}
-        {line("Payment recipient", RECIPIENT_LABEL[row.paymentRecipient ?? ""] ?? row.paymentRecipient ?? "—")}
+        {line("Paid to", RECIPIENT_LABEL[row.paymentRecipient ?? ""] ?? row.paymentRecipient ?? "—")}
         {line("Match status", row.matchStatus ?? "—")}
         {line("Group", row.isGroup ? "Group service" : "Individual")}
 
