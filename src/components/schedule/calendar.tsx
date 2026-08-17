@@ -93,7 +93,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
     void load();
   }, [load]);
 
-  // Utilisation strip: load the authorised/used/scheduled/remaining picture for
+  // Utilization strip: load the authorized/used/scheduled/remaining picture for
   // the individual currently in focus. Only meaningful for a single individual.
   useEffect(() => {
     const individualId = filters.individualId;
@@ -199,7 +199,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
         ) : null}
       </div>
 
-      {/* Utilisation strip: budget headroom for the individual in focus. */}
+      {/* Utilization strip: budget headroom for the individual in focus. */}
       {filters.individualId ? (
         <UtilizationStrip summary={summary} loading={summaryLoading} />
       ) : null}
@@ -386,14 +386,14 @@ function DayList({
 }
 
 /* ===========================================================================
- * Utilisation strip: at-a-glance budget headroom for the individual in focus,
- * so a planner sees whether the authorisation will be used before it renews.
+ * Utilization strip: at-a-glance budget headroom for the individual in focus,
+ * so a planner sees whether the authorization will be used before it renews.
  * ========================================================================= */
 function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSummary | null; loading: boolean }) {
   if (loading && !summary) {
     return (
       <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-ink-faint)]">
-        Loading utilisation…
+        Loading utilization…
       </div>
     );
   }
@@ -403,7 +403,7 @@ function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSu
     return (
       <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-3 text-sm">
         <span className="font-medium">{summary.individualName}</span>{" "}
-        <span className="text-[var(--color-ink-faint)]">has no active authorisation, so utilisation cannot be shown. Add a budget period and authorisation to plan against a budget.</span>
+        <span className="text-[var(--color-ink-faint)]">has no active authorization, so utilization cannot be shown. Add a budget period and authorization to plan against a budget.</span>
       </div>
     );
   }
@@ -416,7 +416,7 @@ function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSu
   const barTone: "good" | "warn" | "danger" = overBudget ? "danger" : usagePctNum >= 90 ? "warn" : "good";
   const bigTone: "good" | "warn" | "danger" = overBudget ? "danger" : committedPctNum >= 100 ? "warn" : "good";
 
-  // Pace to fully utilise the remaining, unscheduled hours before the period ends.
+  // Pace to fully utilize the remaining, unscheduled hours before the period ends.
   const days = summary.daysRemaining;
   const weeksLeft = days !== null && days > 0 ? days / 7 : null;
   const requiredWeekly = weeksLeft && remaining.gt(0) ? remaining.dividedBy(weeksLeft) : null;
@@ -425,7 +425,7 @@ function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSu
     <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="eyebrow">Budget utilisation</p>
+          <p className="eyebrow">Budget utilization</p>
           <p className="display text-sm font-medium">
             {summary.individualName}
             {summary.period ? <span className="ml-2 text-xs font-normal text-[var(--color-ink-faint)]">{summary.period.label} · {summary.period.startDate} → {summary.period.endDate}</span> : null}
@@ -435,14 +435,14 @@ function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSu
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <BigStat label="Authorised" value={`${formatHours(summary.authorizedHours)} h`} hint="this budget period" />
-        <BigStat label="Used" value={`${formatHours(summary.usedHours)} h`} tone={bigTone} hint={`${formatPercent(summary.usagePercent)} of authorised`} />
+        <BigStat label="Authorized" value={`${formatHours(summary.authorizedHours)} h`} hint="this budget period" />
+        <BigStat label="Used" value={`${formatHours(summary.usedHours)} h`} tone={bigTone} hint={`${formatPercent(summary.usagePercent)} of authorized`} />
         <BigStat label="Scheduled" value={`${formatHours(summary.scheduledHours)} h`} tone={dec(summary.scheduledHours).isZero() ? "muted" : "info"} hint="pending, not yet billed" />
         <BigStat
           label="Unscheduled remaining"
           value={`${formatHours(summary.remainingAfterHours)} h`}
           tone={overBudget ? "danger" : "good"}
-          hint={overBudget ? "over authorisation" : "still available to plan"}
+          hint={overBudget ? "over authorization" : "still available to plan"}
         />
       </div>
 
@@ -451,9 +451,9 @@ function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSu
         <p className="mt-2 text-xs text-[var(--color-ink-faint)]">
           The marker is how far the budget period has elapsed. {formatPercent(summary.committedPercent)} committed once scheduled work is counted.
           {overBudget
-            ? ` Scheduling exceeds the authorisation by ${formatHours(remaining.abs())} h — reduce or reallocate.`
+            ? ` Scheduling exceeds the authorization by ${formatHours(remaining.abs())} h — reduce or reallocate.`
             : requiredWeekly
-              ? ` ${formatHours(summary.remainingAfterHours)} h remain unscheduled with ${days} day${days === 1 ? "" : "s"} left — about ${formatHours(requiredWeekly)} h/week to fully utilise.`
+              ? ` ${formatHours(summary.remainingAfterHours)} h remain unscheduled with ${days} day${days === 1 ? "" : "s"} left — about ${formatHours(requiredWeekly)} h/week to fully utilize.`
               : days !== null && days <= 0
                 ? " The budget period has ended."
                 : ` ${formatHours(summary.remainingAfterHours)} h remain unscheduled.`}
@@ -475,7 +475,7 @@ function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSu
                   <PaceBar usagePercent={p.usagePercent} timeElapsedPercent={summary.timeElapsedPercent} color={pColor} />
                 </div>
                 <p className="mt-1 text-[11px] text-[var(--color-ink-faint)]">
-                  {formatHours(p.usedHours)} used · {formatHours(p.scheduledHours)} scheduled · {formatHours(p.authorizedHours ?? "0")} authorised
+                  {formatHours(p.usedHours)} used · {formatHours(p.scheduledHours)} scheduled · {formatHours(p.authorizedHours ?? "0")} authorized
                 </p>
               </div>
             );
