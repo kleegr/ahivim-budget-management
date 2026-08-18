@@ -964,7 +964,7 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
             <div className="mt-4 space-y-1.5 border-t border-[var(--color-rule)] pt-3">
               <div className="eyebrow text-[var(--color-text-soft)]">Open</div>
               {row && <Link href={`/individuals/${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Individual profile →</Link>}
-              {row && <Link href={`/transactions`} className="block text-[var(--color-primary)] hover:underline">Billed transactions →</Link>}
+              {row && <Link href={`/transactions?individualId=${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Billed transactions →</Link>}
               <Link href={`/schedule`} className="block text-[var(--color-primary)] hover:underline">Schedule →</Link>
             </div>
 
