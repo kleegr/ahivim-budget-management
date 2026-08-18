@@ -56,7 +56,9 @@ export function filterActive<Row>(col: ColumnDef<Row>, f?: ColumnFilter): boolea
   if (!f) return false;
   if (isNumericKind(col.kind)) return (f.min ?? "") !== "" || (f.max ?? "") !== "";
   if (isDateKind(col.kind)) return Boolean(f.from || f.to);
-  return (f.selected?.length ?? 0) > 0 || Boolean(f.contains);
+  // A `selected` array that is *present* is an active filter — even when empty,
+  // which means "show none" (Google-Sheets "Clear all"). Absent selected = all.
+  return f.selected !== undefined || Boolean(f.contains);
 }
 
 export function passesFilter<Row>(col: ColumnDef<Row>, r: Row, f?: ColumnFilter): boolean {
@@ -78,7 +80,8 @@ export function passesFilter<Row>(col: ColumnDef<Row>, r: Row, f?: ColumnFilter)
     return true;
   }
   const raw = rawValue(col, r);
-  if (f.selected && f.selected.length > 0 && !f.selected.includes(raw)) return false;
+  // `selected` present (even empty) constrains to exactly that set; absent = all.
+  if (f.selected !== undefined && !f.selected.includes(raw)) return false;
   if (f.contains && !raw.toLowerCase().includes(f.contains.toLowerCase())) return false;
   return true;
 }
@@ -192,8 +195,9 @@ export function filterChips<Row>(cols: ColumnDef<Row>[], filters: FilterState): 
       chips.push({ key: col.key, label });
     } else {
       const parts: string[] = [];
-      if (f.selected && f.selected.length > 0) {
-        parts.push(f.selected.length <= 3 ? f.selected.map((v) => v || "(blank)").join(", ") : `${f.selected.length} selected`);
+      if (f.selected !== undefined) {
+        if (f.selected.length === 0) parts.push("none");
+        else parts.push(f.selected.length <= 3 ? f.selected.map((v) => v || "(blank)").join(", ") : `${f.selected.length} selected`);
       }
       if (f.contains) parts.push(`“${f.contains}”`);
       chips.push({ key: col.key, label: `${col.label}: ${parts.join(" · ")}` });

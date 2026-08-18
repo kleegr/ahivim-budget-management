@@ -31,6 +31,10 @@ export interface UseGridOptions<Row, Totals> {
   initialSort?: SortState;
   initialHidden?: string[];
   initialWidths?: Record<string, number>;
+  /** Seed the filter state (e.g. from URL search params, for deep-linked drill-through). */
+  initialFilters?: FilterState;
+  /** Seed the free-text search box. */
+  initialSearch?: string;
   searchKeys?: string[];
   computeTotals?: (filtered: Row[]) => Totals;
   serializeHidden?: boolean;
@@ -92,9 +96,9 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
     [o.searchKeys, o.columns],
   );
 
-  const [filters, setFilters] = useState<FilterState>({});
+  const [filters, setFilters] = useState<FilterState>(() => ({ ...(o.initialFilters ?? {}) }));
   const [sort, setSort] = useState<SortState>(initialSort);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(o.initialSearch ?? "");
   const [hidden, setHidden] = useState<Set<string>>(() => new Set(o.initialHidden ?? []));
   const [widths, setWidths] = useState<Record<string, number>>(() => ({ ...(o.initialWidths ?? {}) }));
   const [views, setViews] = useState<SavedView[]>([]);
