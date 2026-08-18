@@ -13,6 +13,12 @@ export default async function RootPage() {
   const result = await withDb((pool) => getSetting<string>(pool, "default_landing"));
   const choice = result.ok ? result.data : null;
   const dest =
-    choice === "transactions" ? "/transactions" : choice === "calculations" ? "/calculations" : "/dashboard";
+    choice === "transactions"
+      ? "/transactions"
+      : choice === "individuals"
+        ? "/individuals"
+        : choice === "calculations"
+          ? "/calculations"
+          : "/dashboard";
   redirect(dest);
 }

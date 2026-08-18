@@ -14,9 +14,9 @@ import Link from "next/link";
 const KEY = "ahivim.welcomed.v1";
 
 const STEPS: { n: number; title: string; label: string; href: string; hint: string }[] = [
-  { n: 1, title: "Record what happened", label: "Transactions", href: "/transactions", hint: "every billed payroll row" },
-  { n: 2, title: "Watch the budgets", label: "Projections", href: "/calculations", hint: "who's on pace, who's over" },
-  { n: 3, title: "Look someone up", label: "People", href: "/people", hint: "individuals & employees" },
+  { n: 1, title: "Record what happened", label: "Transactions", href: "/transactions", hint: "every billed payroll row — the source of truth" },
+  { n: 2, title: "Watch the budgets", label: "Individuals", href: "/individuals", hint: "who's on pace, who's over, what's left" },
+  { n: 3, title: "Check the money", label: "Financial", href: "/calculations", hint: "rates, cuts and the net per account" },
   { n: 4, title: "Clear what needs a decision", label: "Review", href: "/review", hint: "the inbox to zero" },
 ];
 
