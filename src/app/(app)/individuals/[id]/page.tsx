@@ -6,6 +6,7 @@ import { getIndividualReport } from "@/lib/data/queries";
 import { isUuid, listPrograms, listEmployees } from "@/lib/data/app-queries";
 import { getIndividual } from "@/lib/manage/individuals";
 import { listAuthorizationsForIndividual } from "@/lib/manage/authorizations";
+import { listStrategies } from "@/lib/manage/calculation-strategies";
 import { listAssignments } from "@/lib/manage/assignments";
 import { listAliases } from "@/lib/manage/aliases";
 import { scheduledByProgramForIndividual } from "@/lib/data/schedule-queries";
@@ -16,8 +17,33 @@ import { BigStat, ProgressBar, UtilizationBadge, type UtilizationStatus } from "
 import { TabPanels, type TabPanel } from "@/components/ui-client";
 import { CreateButton, ActionButton, Field, TextAreaField, SelectField } from "@/components/manage/client";
 import { STATUS_LABELS } from "@/lib/business/utilization";
+import type { ForecastResult } from "@/lib/business/forecast";
 import { dec, formatHours, formatMoney, formatPercent } from "@/lib/money";
 import { txLink } from "@/lib/nav/tx-link";
+
+/**
+ * Turn a program forecast into one plain sentence a coordinator can act on: is
+ * this budget on pace to run out early, or to leave hours unused by renewal, and
+ * what weekly pace lands it exactly on the authorization?
+ */
+function forecastNarrative(f: ForecastResult | null, renewalDate: string | null): string {
+  if (f === null) return "No forecast yet: this program has no budget period to project across.";
+  if (!f.available) return f.message;
+  const avg = formatHours(f.averageWeeklyUsage);
+  const req = formatHours(f.requiredWeeklyUsage);
+  const renewal = renewalDate ? `renewal on ${renewalDate}` : "renewal";
+  const left = dec(f.projectedRemainingHours);
+  if (f.projectedToExhaustEarly && f.estimatedExhaustionDate) {
+    return `On pace to run out around ${f.estimatedExhaustionDate} — before ${renewal} — at ${avg}/week. Staying under ${req}/week keeps it to the end.`;
+  }
+  if (left.greaterThan(1)) {
+    return `At ${avg}/week, on pace to leave ${formatHours(left)} unused by ${renewal}. Using it all means averaging ${req}/week over the time left.`;
+  }
+  if (left.lessThan(-1)) {
+    return `At ${avg}/week, on pace to go ${formatHours(left.abs())} over by ${renewal}. Averaging ${req}/week lands it on the authorization.`;
+  }
+  return `On pace to finish right around ${renewal} at ${avg}/week.`;
+}
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Individual — Ahivim Budget Management" };
@@ -58,7 +84,7 @@ export default async function IndividualDetailPage({
   const result = await withDb(async (pool) => {
     const individual = await getIndividual(pool, id);
     if (!individual) return null;
-    const [report, authz, assignments, aliasesAll, programs, employees, scheduledByProgram] = await Promise.all([
+    const [report, authz, assignments, aliasesAll, programs, employees, scheduledByProgram, strategies] = await Promise.all([
       getIndividualReport(pool, id),
       listAuthorizationsForIndividual(pool, id),
       listAssignments(pool, { individualId: id, includeInactive: true }),
@@ -66,6 +92,7 @@ export default async function IndividualDetailPage({
       listPrograms(pool),
       listEmployees(pool),
       scheduledByProgramForIndividual(pool, id),
+      listStrategies(pool, { individualId: id, withAnalytics: true }),
     ]);
     return {
       individual,
@@ -77,6 +104,7 @@ export default async function IndividualDetailPage({
       programs,
       employees,
       scheduledByProgram,
+      strategies: strategies.rows,
     };
   });
 
@@ -90,7 +118,8 @@ export default async function IndividualDetailPage({
   }
   if (!result.data) notFound();
 
-  const { individual, report, periods, authorizations, assignments, aliases, programs, employees, scheduledByProgram } = result.data;
+  const { individual, report, periods, authorizations, assignments, aliases, programs, employees, scheduledByProgram, strategies } = result.data;
+  const strategy = strategies[0] ?? null; // the individual's active financial plan (usually one)
 
   const programOptions = programs.map((p) => ({ value: p.id, label: `${p.code} — ${p.name}` }));
   const periodOptions = periods.map((p) => ({
@@ -337,11 +366,7 @@ export default async function IndividualDetailPage({
                       <PaceBar usagePercent={u.usagePercent} timeElapsedPercent={report?.elapsed?.timeElapsedPercent ?? "0"} color={STATUS_COLOR[u.status]} />
                     </div>
                     <p className="mt-2 text-xs text-[var(--color-ink-faint)]">
-                      {program.forecast === null
-                        ? "No forecast: this program has no budget period to project across."
-                        : program.forecast.available
-                          ? `Projected exhaustion ${program.forecast.estimatedExhaustionDate ?? "beyond the period end"} at ${formatHours(program.forecast.averageWeeklyUsage)} h/week (${program.forecast.observationCount} observations).`
-                          : `Forecast unavailable: ${program.forecast.message}`}
+                      {forecastNarrative(program.forecast, report?.budgetPeriod?.endDate ?? null)}
                     </p>
                   </div>
                 );
@@ -588,30 +613,77 @@ export default async function IndividualDetailPage({
   );
 
   /* ------------------------------------------------------------------ */
-  /* Rates panel                                                        */
+  /* Financial panel (the money model: rates → gross → cuts → net)       */
   /* ------------------------------------------------------------------ */
-  const ratesPanel = (
-    <Card
-      title="Program rates"
-      description="The internal rate applied to each active authorization. Rates are effective-dated; changing a future rate never rewrites historical billing."
-    >
-      {activeAuths.length === 0 ? (
-        <EmptyState title="No rates to show">
-          <p>Rates appear here once this individual has an active authorization. Add one in the Budget tab.</p>
-        </EmptyState>
+  const pctOf = (fraction: string) => `${dec(fraction).times(100).toDecimalPlaces(2)}%`;
+  const line = (label: string, value: React.ReactNode, opts?: { strong?: boolean; sub?: string; tone?: string }) => (
+    <div className="flex items-baseline justify-between gap-4 border-b border-[var(--color-rule)] py-1.5 last:border-0">
+      <div>
+        <span className={opts?.strong ? "font-semibold" : ""}>{label}</span>
+        {opts?.sub ? <span className="ml-2 text-xs text-[var(--color-ink-faint)]">{opts.sub}</span> : null}
+      </div>
+      <span className={`tnum ${opts?.strong ? "text-base font-semibold" : ""}`} style={opts?.tone ? { color: opts.tone } : undefined}>{value}</span>
+    </div>
+  );
+  const financialPanel = (
+    <>
+      {strategy ? (
+        <Card
+          title="Financial plan"
+          description="The money model from the Calculations workbook: authorized hours valued at the internal rate, divided to a month, then the two sequential cuts and any adjustments — ending at the net paid to the account. Separate from Budget (which tracks hours used); connected through this individual."
+          action={<ButtonLink href={`/calculations?individualId=${id}`} variant="secondary">Open in Financial grid →</ButtonLink>}
+        >
+          <div className="px-5 py-4 text-sm">
+            {line("Yearly gross", <Money value={strategy.yearlyGross} />, { sub: "authorized hours × internal rate" })}
+            {line("Monthly gross", <Money value={strategy.monthlyGross} />, { sub: `÷ ${dec(strategy.monthDivisor).toDecimalPlaces(2)} months` })}
+            {line(`First cut (${pctOf(strategy.cut1Percent)})`, <span className="text-[var(--color-danger)]">− <Money value={dec(strategy.monthlyGross).times(dec(strategy.cut1Percent)).toString()} /></span>)}
+            {line(`Second cut (${pctOf(strategy.cut2Percent)})`, <span className="text-[var(--color-danger)]">− <Money value={dec(strategy.monthlyGross).minus(dec(strategy.monthlyGross).times(dec(strategy.cut1Percent))).times(dec(strategy.cut2Percent)).toString()} /></span>, { sub: "taken from the balance after the first cut" })}
+            {line("Gross net", <Money value={strategy.grossNet} />, { strong: true })}
+            {dec(strategy.clockAdjustment).isZero() ? null : line("Clock adjustment", <Money value={strategy.clockAdjustment} />)}
+            {dec(strategy.otherAdjustment).isZero() ? null : line("Other adjustment", <Money value={strategy.otherAdjustment} />)}
+            {line("Net (system)", <Money value={strategy.net} />, { strong: true })}
+            {strategy.afterAll ? line("Final — “After all”", <Money value={strategy.afterAll} />, { strong: true, sub: strategy.analytics?.difference && !dec(strategy.analytics.difference).isZero() ? `workbook figure · ${formatMoney(strategy.analytics.difference)} vs system` : "workbook figure" }) : null}
+            {strategy.account ? line("Account", strategy.account) : null}
+          </div>
+          {strategy.analytics ? (
+            <div className="border-t border-[var(--color-rule)] px-5 py-3 text-xs text-[var(--color-ink-soft)]">
+              Billed to date this period: <span className="tnum font-medium">{formatMoney(strategy.analytics.actualInternal)}</span> internal across{" "}
+              <span className="tnum font-medium">{formatHours(strategy.analytics.actualHours)}</span> billed hours — reconciles to{" "}
+              <Link className="text-[var(--color-primary)] hover:underline" href={txLink({ individualId: id })}>this individual&rsquo;s transactions</Link>.
+            </div>
+          ) : null}
+        </Card>
       ) : (
-        <Table head={<><Th>Program</Th><Th numeric>Internal rate</Th><Th numeric>Authorized hours</Th><Th numeric>Authorized value</Th></>}>
-          {activeAuths.map((a) => (
-            <Tr key={a.id}>
-              <Td>{a.programName}<p className="text-xs text-[var(--color-ink-faint)]">{a.programCode}</p></Td>
-              <Td numeric><Money value={a.internalRate} /></Td>
-              <Td numeric><Hours value={a.authorizedHours} /></Td>
-              <Td numeric><Money value={dec(a.authorizedHours).times(dec(a.internalRate)).toString()} /></Td>
-            </Tr>
-          ))}
-        </Table>
+        <Card title="Financial plan">
+          <EmptyState title="No financial plan on file">
+            <p>The money model (internal rate, cuts, adjustments, net) appears here once this individual has a plan in the Financial workbook.{canEdit ? " Create one in the Financial grid." : ""}</p>
+          </EmptyState>
+        </Card>
       )}
-    </Card>
+
+      <Card
+        title="Program rates"
+        className="mt-6"
+        description="The internal rate applied to each active authorization. Rates are effective-dated; changing a future rate never rewrites historical billing."
+      >
+        {activeAuths.length === 0 ? (
+          <EmptyState title="No rates to show">
+            <p>Rates appear here once this individual has an active authorization. Add one in the Budget tab.</p>
+          </EmptyState>
+        ) : (
+          <Table head={<><Th>Program</Th><Th numeric>Internal rate</Th><Th numeric>Authorized hours</Th><Th numeric>Authorized value</Th></>}>
+            {activeAuths.map((a) => (
+              <Tr key={a.id}>
+                <Td>{a.programName}<p className="text-xs text-[var(--color-ink-faint)]">{a.programCode}</p></Td>
+                <Td numeric><Money value={a.internalRate} /></Td>
+                <Td numeric><Hours value={a.authorizedHours} /></Td>
+                <Td numeric><Money value={dec(a.authorizedHours).times(dec(a.internalRate)).toString()} /></Td>
+              </Tr>
+            ))}
+          </Table>
+        )}
+      </Card>
+    </>
   );
 
   /* ------------------------------------------------------------------ */
@@ -742,7 +814,7 @@ export default async function IndividualDetailPage({
     { id: "overview", label: "Overview", content: overviewPanel },
     { id: "projections", label: "Budget", badge: reportPrograms.length || undefined, content: projectionsPanel },
     { id: "transactions", label: "Transactions", badge: report?.usageByProgram.length || undefined, content: transactionsPanel },
-    { id: "rates", label: "Rates", content: ratesPanel },
+    { id: "rates", label: "Financial", content: financialPanel },
     { id: "people", label: "People", badge: assignments.length || undefined, content: peoplePanel },
     { id: "planning", label: "Planning", badge: scheduledEntries.length || undefined, content: planningPanel },
   ];
