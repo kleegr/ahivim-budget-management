@@ -523,7 +523,9 @@ export interface TransactionRow {
   periodBegin: string | null;
   periodEnd: string | null;
   individual: string | null;
+  individualId: string | null;
   employee: string | null;
+  employeeId: string | null;
   program: string | null;
   hours: string | null;
   rate: string | null;
@@ -587,7 +589,9 @@ export async function listTransactions(
       period_begin: string | null;
       period_end: string | null;
       individual: string | null;
+      individual_id: string | null;
       employee: string | null;
+      employee_id: string | null;
       program: string | null;
       hours: string | null;
       rate: string | null;
@@ -601,7 +605,9 @@ export async function listTransactions(
       `SELECT t.id, t.check_number, t.check_date::text AS check_date,
               t.period_begin::text AS period_begin, t.period_end::text AS period_end,
               COALESCE(i.display_name, t.individual_raw) AS individual,
+              t.individual_id,
               COALESCE(e.display_name, t.employee_raw)   AS employee,
+              t.employee_id,
               COALESCE(p.name, t.program_raw)            AS program,
               t.imported_hours::text  AS hours,
               t.imported_rate::text   AS rate,
@@ -635,7 +641,9 @@ export async function listTransactions(
       periodBegin: r.period_begin,
       periodEnd: r.period_end,
       individual: r.individual,
+      individualId: r.individual_id,
       employee: r.employee,
+      employeeId: r.employee_id,
       program: r.program,
       hours: r.hours,
       rate: r.rate,
