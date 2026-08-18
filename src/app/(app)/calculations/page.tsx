@@ -6,13 +6,14 @@ import { PageHeader, ErrorPanel } from "@/components/ui";
 import CalculationsGrid from "@/components/calculations/calculations-grid";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Projections — Ahivim Budget Management" };
+export const metadata = { title: "Financial — Ahivim Budget Management" };
 
 /**
- * Projections. The grid itself opens on a risk-first "Glance" view (status
- * tiles + a pace bar and badge on every row) and a "Full sheet" toggle for the
- * complete editable grid, so the page no longer needs a separate summary band
- * above it — that was the same information twice.
+ * Financial (the Calculations workbook). This is the money side — internal
+ * rates, the two sequential cuts, adjustments and the net "after all" figure per
+ * account — kept deliberately distinct from Budget (authorized hours vs billed),
+ * which lives on each individual. The grid opens on a risk-first "Glance" view
+ * and a "Full sheet" toggle for the complete editable grid.
  */
 export default async function ProjectionsPage() {
   const user = await requireUser("viewer");
@@ -30,9 +31,9 @@ export default async function ProjectionsPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Projections"
-        title="Projections"
-        description="Every person's budget on one screen. The Glance view sorts the ones that need action to the top; switch to the Full sheet to edit hours and cuts inline, with every figure explained step by step."
+        eyebrow="Financial · the money side"
+        title="Financial"
+        description="The Calculations workbook: internal rates, the first and second cuts, adjustments, and each account's net “after all” figure. This is the money model — distinct from Budget (authorized vs billed hours), which lives on each individual. Glance sorts the accounts that need action to the top; Full sheet edits hours and cuts inline, every figure explained."
       />
 
       {!result.ok ? (

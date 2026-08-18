@@ -139,7 +139,7 @@ export default async function DashboardPage({
       count: review.overAuthorization,
       hint: review.overAuthorization ? "People past their approved hours" : "No one is over their approved hours",
       tone: "danger" as const,
-      href: "/calculations",
+      href: "/reports/utilization-outliers",
     },
     {
       key: "expiring",
@@ -228,7 +228,8 @@ export default async function DashboardPage({
         <h2 id="numbers-heading" className="eyebrow mb-2">The numbers</h2>
         <p className="mb-2 text-xs text-[var(--color-ink-faint)]">
           Three parallel money figures live side by side — the agency total (what the funder pays),
-          the employee amount (what workers earned), and the difference between them (agency markup).
+          the employee/internal amount (what workers earned), and the agency difference retained between them.
+          Each links into the ledger, where the totals match.
         </p>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <TileLink href="/transactions">
@@ -239,10 +240,10 @@ export default async function DashboardPage({
           </TileLink>
           {m.agencyAdditional.available ? (
             <TileLink href="/reports/agency-earnings">
-              <StatTile label="Agency markup" value={formatMoney(m.agencyAdditional.amount)} hint="Billed less employee amount" />
+              <StatTile label="Agency difference" value={formatMoney(m.agencyAdditional.amount)} hint="Agency total less employee amount" />
             </TileLink>
           ) : (
-            <TileLink href="/reports/agency-earnings"><StatTile label="Agency markup" unavailable="Not recorded on the imports on file." /></TileLink>
+            <TileLink href="/reports/agency-earnings"><StatTile label="Agency difference" unavailable="Not recorded on the imports on file." /></TileLink>
           )}
           {m.employeePayable.available ? (
             <TileLink href="/reports/employee-payable">
@@ -255,7 +256,7 @@ export default async function DashboardPage({
             <StatTile label="Planned (not yet billed)" value={formatMoney(scheduled.internal)} hint={`${scheduled.sessions.toLocaleString()} pending · ${formatHours(scheduled.hours)} h`} />
           </TileLink>
           <TileLink href="/calculations">
-            <StatTile label="Budget plans" value={result.data.strategies.toLocaleString()} hint="Active projection lines" />
+            <StatTile label="Financial plans" value={result.data.strategies.toLocaleString()} hint="Active accounts in the Financial workbook" />
           </TileLink>
         </div>
       </section>
@@ -265,9 +266,9 @@ export default async function DashboardPage({
         <h2 id="jump-heading" className="eyebrow mb-2">Jump to a workspace</h2>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <Shortcut href="/transactions" title="Transactions" sub="What was billed" />
-          <Shortcut href="/calculations" title="Projections" sub="Budgets & pacing" />
-          <Shortcut href="/people" title="People" sub="Individuals & employees" />
-          <Shortcut href="/schedule" title="Schedule" sub="Plan sessions" />
+          <Shortcut href="/individuals" title="Individuals" sub="Budgets & usage" />
+          <Shortcut href="/employees" title="Employees" sub="Activity from the ledger" />
+          <Shortcut href="/calculations" title="Financial" sub="Rates, cuts & net" />
         </div>
       </section>
 

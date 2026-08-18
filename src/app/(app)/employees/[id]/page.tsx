@@ -12,6 +12,7 @@ import {
   getEmployeeSchedule,
 } from "@/lib/data/employee-queries";
 import { listSeriesForEmployee } from "@/lib/data/schedule-queries";
+import { txLink } from "@/lib/nav/tx-link";
 import { getEmployee } from "@/lib/manage/employees";
 import { listAssignments } from "@/lib/manage/assignments";
 import { listIndividualsManaged } from "@/lib/manage/individuals";
@@ -149,10 +150,10 @@ export default async function EmployeeDetailPage({
               hint="Time present — a group session counts once"
             />
             <BigStat
-              label="Allocation hours"
+              label="Billed hours"
               value={`${formatHours(report.allocationHours)} h`}
               tone="info"
-              hint="Sum of each individual's entitlement"
+              hint="Ledger hours — reconciles to Transactions"
             />
             <BigStat
               label="Individuals served"
@@ -246,29 +247,30 @@ export default async function EmployeeDetailPage({
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <p className="max-w-prose text-sm text-[var(--color-ink-soft)]">
           What was actually billed for this employee, summarised by program. Physical hours count each session
-          once; allocation hours sum every served individual&rsquo;s entitlement. Open the ledger to filter every row.
+          once; billed hours are the ledger hours and reconcile to Transactions. Click a program to open its rows.
         </p>
-        <ButtonLink href={`/transactions`} variant="secondary">Open Transactions</ButtonLink>
+        <ButtonLink href={txLink({ employeeId: id })} variant="secondary">Open all billed rows →</ButtonLink>
       </div>
 
       {usageByProgram.length > 0 ? (
-        <Card title="Billed by program" description="Delivered hours and money from the committed ledger">
+        <Card title="Billed by program" description="Physical time present vs. billed hours and money. Billed figures match the ledger.">
           <Table
             head={
               <>
                 <Th>Program</Th>
                 <Th numeric>Physical h</Th>
-                <Th numeric>Allocation h</Th>
+                <Th numeric>Billed h</Th>
                 <Th numeric>Transactions</Th>
                 <Th numeric>Agency total</Th>
                 <Th numeric>Internal</Th>
+                <Th>Open</Th>
               </>
             }
           >
             {usageByProgram.map((row) => (
               <Tr key={row.programCode}>
                 <Td>
-                  {row.programName}
+                  <Link className="font-medium text-[var(--color-primary)] underline-offset-2 hover:underline" href={txLink({ employeeId: id, program: row.programName })}>{row.programName}</Link>
                   <p className="text-xs text-[var(--color-ink-faint)]">{row.programCode}</p>
                 </Td>
                 <Td numeric><Hours value={row.physicalHours} /></Td>
@@ -276,6 +278,7 @@ export default async function EmployeeDetailPage({
                 <Td numeric className="tnum">{row.transactionCount}</Td>
                 <Td numeric><Money value={row.agencyGross} /></Td>
                 <Td numeric><Money value={row.internalAmount} /></Td>
+                <Td><Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ employeeId: id, program: row.programName })}>rows →</Link></Td>
               </Tr>
             ))}
           </Table>
@@ -287,8 +290,8 @@ export default async function EmployeeDetailPage({
       <div className="mt-6">
         <Card
           title="Recent transactions"
-          description="Most recent 25 rows for this employee"
-          action={<ButtonLink href={`/transactions`}>Full ledger</ButtonLink>}
+          description="Most recent 25 rows for this employee. Open the full, filterable ledger for all of them."
+          action={<ButtonLink href={txLink({ employeeId: id })}>Full ledger →</ButtonLink>}
         >
           {recent.rows.length === 0 ? (
             <EmptyState title="No transactions recorded" />
@@ -300,10 +303,14 @@ export default async function EmployeeDetailPage({
               {recent.rows.map((t) => (
                 <Tr key={t.id}>
                   <Td>
-                    <Plain value={t.checkNumber} />
+                    {t.checkNumber ? (
+                      <Link className="font-medium text-[var(--color-primary)] hover:underline" href={txLink({ employeeId: id, checkNumber: t.checkNumber })}><Plain value={t.checkNumber} /></Link>
+                    ) : (
+                      <Plain value={t.checkNumber} />
+                    )}
                     <p className="text-xs text-[var(--color-ink-faint)]"><Plain value={t.checkDate} /></p>
                   </Td>
-                  <Td><Plain value={t.individual} /></Td>
+                  <Td>{t.individualId ? <Link className="text-[var(--color-primary)] hover:underline" href={`/individuals/${t.individualId}`}><Plain value={t.individual} /></Link> : <Plain value={t.individual} />}</Td>
                   <Td><Plain value={t.program} /></Td>
                   <Td numeric><Hours value={t.hours} /></Td>
                   <Td numeric><Money value={t.rate} /></Td>
@@ -325,7 +332,7 @@ export default async function EmployeeDetailPage({
     <>
       <Card
         title="Individuals served"
-        description="From the billed ledger. Allocation hours are each individual's entitlement drawn down by this employee."
+        description="Who this employee actually billed for, from the ledger. Billed hours and money reconcile to Transactions."
       >
         {individualsServed.length === 0 ? (
           <EmptyState title="No individuals served yet">
@@ -334,7 +341,7 @@ export default async function EmployeeDetailPage({
         ) : (
           <Table
             caption="Individuals this employee has served"
-            head={<><Th>Individual</Th><Th numeric>Allocation h</Th><Th numeric>Transactions</Th><Th numeric>Agency total</Th><Th numeric>Internal</Th></>}
+            head={<><Th>Individual</Th><Th numeric>Billed h</Th><Th numeric>Transactions</Th><Th numeric>Agency total</Th><Th numeric>Internal</Th><Th>Open</Th></>}
           >
             {individualsServed.map((row) => (
               <Tr key={row.id}>
@@ -347,6 +354,7 @@ export default async function EmployeeDetailPage({
                 <Td numeric className="tnum">{row.transactionCount}</Td>
                 <Td numeric><Money value={row.agencyGross} /></Td>
                 <Td numeric><Money value={row.internalAmount} /></Td>
+                <Td><Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ employeeId: id, individualId: row.id })}>rows →</Link></Td>
               </Tr>
             ))}
           </Table>

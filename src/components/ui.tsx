@@ -48,15 +48,18 @@ export function StatTile({
   hint,
   unavailable,
   tone = "neutral",
+  href,
 }: {
   label: string;
   value?: string;
   hint?: string;
   unavailable?: string;
   tone?: "neutral" | "warn" | "alert" | "good";
+  /** When set, the whole tile is a link (e.g. into the pre-filtered ledger). */
+  href?: string;
 }) {
-  return (
-    <div className="card px-4 py-3.5 transition hover:shadow-md">
+  const body = (
+    <>
       <p className="eyebrow">{label}</p>
       {unavailable ? (
         <>
@@ -71,8 +74,16 @@ export function StatTile({
           {hint ? <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{hint}</p> : null}
         </>
       )}
-    </div>
+    </>
   );
+  if (href) {
+    return (
+      <Link href={href} className="card block px-4 py-3.5 transition hover:border-[var(--color-primary)] hover:shadow-md">
+        {body}
+      </Link>
+    );
+  }
+  return <div className="card px-4 py-3.5 transition hover:shadow-md">{body}</div>;
 }
 
 export function Money({ value }: { value: string | null | undefined }) {

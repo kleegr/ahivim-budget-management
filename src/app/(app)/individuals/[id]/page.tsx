@@ -17,6 +17,7 @@ import { TabPanels, type TabPanel } from "@/components/ui-client";
 import { CreateButton, ActionButton, Field, TextAreaField, SelectField } from "@/components/manage/client";
 import { STATUS_LABELS } from "@/lib/business/utilization";
 import { dec, formatHours, formatMoney, formatPercent } from "@/lib/money";
+import { txLink } from "@/lib/nav/tx-link";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Individual — Ahivim Budget Management" };
@@ -190,7 +191,7 @@ export default async function IndividualDetailPage({
                 : `This budget period’s ${nearestBoundary.kind} is in ${nearestBoundary.days} day${nearestBoundary.days === 1 ? "" : "s"} (${nearestBoundary.date}).`}
           </p>
           <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
-            Review the authorizations in Projections and, if services are continuing, create the next budget period.
+            Review the authorizations in the Budget tab and, if services are continuing, create the next budget period.
           </p>
         </div>
       ) : null}
@@ -238,9 +239,9 @@ export default async function IndividualDetailPage({
             </p>
           </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <StatTile label="Agency total" value={formatMoney(report.totals.agencyGross)} />
-            <StatTile label="Employee amount" value={formatMoney(report.totals.internalAmount)} />
-            <StatTile label="Hours used" value={`${formatHours(report.totals.usedHours)} h`} hint="From service allocations" />
+            <StatTile label="Agency total" value={formatMoney(report.totals.agencyGross)} hint="All billed · click to see rows" href={txLink({ individualId: id })} />
+            <StatTile label="Employee amount" value={formatMoney(report.totals.internalAmount)} hint="Internal · click to see rows" href={txLink({ individualId: id })} />
+            <StatTile label="Hours used" value={`${formatHours(report.totals.usedHours)} h`} hint="Billed hours · matches Transactions" href={txLink({ individualId: id })} />
             <StatTile
               label="Group sessions"
               value={report.groupSessions.toLocaleString()}
@@ -251,7 +252,7 @@ export default async function IndividualDetailPage({
         </>
       ) : (
         <EmptyState title="No authorization entered yet">
-          <p>Utilization and remaining hours can only be shown once a budget period and authorization exist. Add them in the Projections tab.</p>
+          <p>Utilization and remaining hours can only be shown once a budget period and authorization exist. Add them in the Budget tab.</p>
         </EmptyState>
       )}
 
@@ -295,7 +296,18 @@ export default async function IndividualDetailPage({
                 return (
                   <div key={program.programCode} className="px-5 py-4">
                     <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <p className="text-sm font-medium">{program.programName}</p>
+                      <p className="text-sm font-medium">
+                        {report?.budgetPeriod ? (
+                          <Link
+                            className="text-[var(--color-primary)] underline-offset-2 hover:underline"
+                            href={txLink({ individualId: id, program: program.programName, pbFrom: report.budgetPeriod.startDate, pbTo: report.budgetPeriod.endDate })}
+                          >
+                            {program.programName}
+                          </Link>
+                        ) : (
+                          program.programName
+                        )}
+                      </p>
                       <span className="text-sm" style={{ color: STATUS_COLOR[u.status] }}>
                         {STATUS_LABELS[u.status]} · {formatPercent(u.usagePercent)} used
                       </span>
@@ -353,7 +365,7 @@ export default async function IndividualDetailPage({
   const projectionsPanel = (
     <>
       <div className="mb-4 flex justify-end">
-        <ButtonLink href={`/calculations?individualId=${id}`} variant="secondary">Open in Projections grid</ButtonLink>
+        <ButtonLink href={`/calculations?individualId=${id}`} variant="secondary">Open financial plan →</ButtonLink>
       </div>
       <Card
         title="Authorization panel"
@@ -549,18 +561,22 @@ export default async function IndividualDetailPage({
   const transactionsPanel = (
     <>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm text-[var(--color-ink-soft)]">What was actually billed for this individual, summarised by program. Open the full ledger to filter every transaction.</p>
-        <ButtonLink href="/transactions" variant="secondary">Open Transactions</ButtonLink>
+        <p className="text-sm text-[var(--color-ink-soft)]">What was actually billed for this individual, summarised by program. Every number links to the exact rows behind it, where the totals will match.</p>
+        <ButtonLink href={txLink({ individualId: id })} variant="secondary">Open all billed rows →</ButtonLink>
       </div>
       {report && report.usageByProgram.length > 0 ? (
-        <Card title="Usage by program" description="Delivered hours and money from the billed ledger">
-          <Table head={<><Th>Program</Th><Th numeric>Hours</Th><Th numeric>Agency total</Th><Th numeric>Internal</Th></>}>
+        <Card title="Usage by program" description="Billed hours and money, straight from the ledger. Click a program to open its rows.">
+          <Table head={<><Th>Program</Th><Th numeric>Hours</Th><Th numeric>Agency total</Th><Th numeric>Internal</Th><Th>Open</Th></>}>
             {report.usageByProgram.map((row) => (
               <Tr key={row.programCode}>
-                <Td>{row.programName}<p className="text-xs text-[var(--color-ink-faint)]">{row.transactionCount} transactions</p></Td>
+                <Td>
+                  <Link className="font-medium text-[var(--color-primary)] underline-offset-2 hover:underline" href={txLink({ individualId: id, program: row.programName })}>{row.programName}</Link>
+                  <p className="text-xs text-[var(--color-ink-faint)]">{row.transactionCount} transactions</p>
+                </Td>
                 <Td numeric><Hours value={row.usedHours} /></Td>
                 <Td numeric><Money value={row.agencyGross} /></Td>
                 <Td numeric><Money value={row.internalAmount} /></Td>
+                <Td><Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ individualId: id, program: row.programName })}>rows →</Link></Td>
               </Tr>
             ))}
           </Table>
@@ -581,7 +597,7 @@ export default async function IndividualDetailPage({
     >
       {activeAuths.length === 0 ? (
         <EmptyState title="No rates to show">
-          <p>Rates appear here once this individual has an active authorization. Add one in the Projections tab.</p>
+          <p>Rates appear here once this individual has an active authorization. Add one in the Budget tab.</p>
         </EmptyState>
       ) : (
         <Table head={<><Th>Program</Th><Th numeric>Internal rate</Th><Th numeric>Authorized hours</Th><Th numeric>Authorized value</Th></>}>
@@ -658,15 +674,16 @@ export default async function IndividualDetailPage({
 
       {report ? (
         <div className="mt-6">
-          <Card title="Employees serving this individual" description="From the billed ledger">
+          <Card title="Employees serving this individual" description="Who actually billed for this individual, from the ledger. Hours reconcile to Transactions.">
             {report.employeesServing.length === 0 ? (
               <EmptyState title="No employees recorded" />
             ) : (
-              <Table head={<><Th>Employee</Th><Th numeric>Hours</Th></>}>
+              <Table head={<><Th>Employee</Th><Th numeric>Hours</Th><Th>Open</Th></>}>
                 {report.employeesServing.map((e) => (
                   <Tr key={e.id}>
                     <Td><Link className="font-medium text-[var(--color-primary)] underline-offset-2 hover:underline" href={`/employees/${e.id}`}>{e.displayName}</Link></Td>
                     <Td numeric><Hours value={e.hours} /></Td>
+                    <Td><Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ individualId: id, employeeId: e.id })}>rows →</Link></Td>
                   </Tr>
                 ))}
               </Table>
@@ -723,7 +740,7 @@ export default async function IndividualDetailPage({
 
   const panels: TabPanel[] = [
     { id: "overview", label: "Overview", content: overviewPanel },
-    { id: "projections", label: "Projections", badge: reportPrograms.length || undefined, content: projectionsPanel },
+    { id: "projections", label: "Budget", badge: reportPrograms.length || undefined, content: projectionsPanel },
     { id: "transactions", label: "Transactions", badge: report?.usageByProgram.length || undefined, content: transactionsPanel },
     { id: "rates", label: "Rates", content: ratesPanel },
     { id: "people", label: "People", badge: assignments.length || undefined, content: peoplePanel },
@@ -794,7 +811,7 @@ export default async function IndividualDetailPage({
       <TabPanels panels={panels} initialId={initialTab} paramKey="tab" />
 
       <p className="mt-6 text-xs text-[var(--color-ink-faint)]">
-        <Badge value="valid" label="Note" /> Hours shown are allocation hours. On a group session every participant is credited the full session hours; the money is what divides.
+        <Badge value="valid" label="Note" /> Billed hours come straight from the ledger (each row&rsquo;s hours), so every figure here matches the Transactions grid. On a group session each participant is credited the full session hours; the money is what divides.
       </p>
     </>
   );

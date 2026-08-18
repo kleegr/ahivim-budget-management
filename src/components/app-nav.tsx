@@ -231,8 +231,9 @@ function NavLinks({
   reviewCount: number;
 }) {
   const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
-  const projectionsActive = isActive("/calculations") || isActive("/projections");
-  const peopleActive = isActive("/people") || isActive("/individuals") || isActive("/employees");
+  const financialActive = isActive("/calculations") || isActive("/projections");
+  const individualsActive = isActive("/individuals") || isActive("/people");
+  const employeesActive = isActive("/employees");
   const homeActive = isActive("/home") || isActive("/dashboard");
 
   return (
@@ -252,41 +253,59 @@ function NavLinks({
         </ul>
       </div>
 
-      {/* The three daily workspaces */}
+      {/* The daily workspaces — the ledger and the two people views it feeds */}
       <div>
         <p className="eyebrow px-2 pb-1.5">Workspaces</p>
         <div className="space-y-2">
           <PrimaryTile
             href="/transactions"
             label="Transactions"
-            sub="What was actually billed"
+            sub="What was actually billed — the source of truth"
             icon={<TransactionsIcon />}
             active={isActive("/transactions")}
             onNavigate={onNavigate}
           />
           <PrimaryTile
-            href="/calculations"
-            label="Projections"
-            sub="Budgets, pacing & what's left"
-            icon={<ProjectionsIcon />}
-            active={projectionsActive}
+            href="/individuals"
+            label="Individuals"
+            sub="Budgets, usage & people, per individual"
+            icon={<PeopleIcon />}
+            active={individualsActive}
             onNavigate={onNavigate}
           />
           <PrimaryTile
-            href="/people"
-            label="People"
-            sub="Individuals & employees"
+            href="/employees"
+            label="Employees"
+            sub="Each worker's activity, from the ledger"
             icon={<PeopleIcon />}
-            active={peopleActive}
+            active={employeesActive}
             onNavigate={onNavigate}
           />
         </div>
       </div>
 
-      {/* Overview: everything you sometimes need */}
+      {/* Analysis: budgets planning, money and everything you sometimes need */}
       <div>
-        <p className="eyebrow px-2 pb-1.5">Overview</p>
+        <p className="eyebrow px-2 pb-1.5">Analysis</p>
         <ul className="space-y-0.5">
+          <li>
+            <QuietLink
+              href="/calculations"
+              label="Financial"
+              icon={<ProjectionsIcon />}
+              active={financialActive}
+              onNavigate={onNavigate}
+            />
+          </li>
+          <li>
+            <QuietLink
+              href="/reports"
+              label="Reports"
+              icon={<ReportsIcon />}
+              active={isActive("/reports")}
+              onNavigate={onNavigate}
+            />
+          </li>
           <li>
             <QuietLink
               href="/schedule"
@@ -304,15 +323,6 @@ function NavLinks({
               active={isActive("/review")}
               onNavigate={onNavigate}
               count={reviewCount}
-            />
-          </li>
-          <li>
-            <QuietLink
-              href="/reports"
-              label="Reports"
-              icon={<ReportsIcon />}
-              active={isActive("/reports")}
-              onNavigate={onNavigate}
             />
           </li>
         </ul>
