@@ -114,7 +114,7 @@ export const REQUIRED_AHIVIM_FIELDS: AhivimField[] = [
 export function normalizeHeader(value: unknown): string {
   return String(value ?? "")
     .toLowerCase()
-    .replace(/[\u2010-\u2015]/g, "-")
+    .replace(/[‐-―]/g, "-")
     .replace(/[^a-z0-9 #-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -139,23 +139,32 @@ const dateText = z
     message: "Expected an ISO date (YYYY-MM-DD)",
   });
 
+/**
+ * Only the five fields that actually define a billable transaction are strict:
+ * hours, rate, amount, program and individual. Everything else is metadata. A
+ * bad value in an optional column (a stray character in Total Net Pay, an
+ * unparseable secondary date) must NEVER discard an otherwise-valid transaction
+ * — that quietly understated the ledger. `.catch("")` blanks the offending
+ * optional value and keeps the row; the raw text is still preserved on the
+ * import row for audit.
+ */
 export const ahivimRowSchema = z.object({
-  payTo: z.string().trim().max(200).default(""),
-  checkDate: dateText.default(""),
-  checkNumber: z.string().trim().max(50).default(""),
-  code: z.string().trim().max(50).default(""),
+  payTo: z.string().trim().max(200).catch(""),
+  checkDate: dateText.catch(""),
+  checkNumber: z.string().trim().max(50).catch(""),
+  code: z.string().trim().max(50).catch(""),
   hours: numericText,
   rate: numericText,
   amount: numericText,
-  totalNetPay: numericText.default(""),
-  periodBegin: dateText.default(""),
-  periodEnd: dateText.default(""),
+  totalNetPay: numericText.catch(""),
+  periodBegin: dateText.catch(""),
+  periodEnd: dateText.catch(""),
   programDescription: z.string().trim().min(1, "Program description is required").max(200),
   individual: z.string().trim().min(1, "Individual is required").max(200),
-  employee: z.string().trim().max(200).default(""),
-  nonContractHeader: z.string().trim().max(200).default(""),
-  calculatedInternalAmount: numericText.default(""),
-  dedupNetPayFormula: z.string().trim().max(500).default(""),
+  employee: z.string().trim().max(200).catch(""),
+  nonContractHeader: z.string().trim().max(200).catch(""),
+  calculatedInternalAmount: numericText.catch(""),
+  dedupNetPayFormula: z.string().trim().max(500).catch(""),
 });
 
 export type AhivimRow = z.infer<typeof ahivimRowSchema>;

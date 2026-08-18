@@ -105,17 +105,29 @@ describe("group rows are scaled by ratio, never rebuilt from hours x internal ra
     expect(naive).not.toBe(663);
   });
 
-  it("retains a row already priced off the internal rate instead of double-converting", () => {
-    // A combined rate of 51 is 3 x $17 -- already internal. 51/19 is not a
-    // whole multiple, so no conversion may be applied.
-    const r = calculateInternalAmount({
+  it("converts every agency row by the flat program ratio, whatever the row's own rate", () => {
+    // VERIFIED against the source ledger: 100% of Excellent-Staffing rows in a
+    // convertible program carry the program ratio (0.84 or 0.894737); NONE stay
+    // at 1.0. The row's own rate never gates the conversion — rows priced at 15,
+    // 18, 20, 22 … all convert. (The earlier "retain 51/19" rule left ~$53.6k of
+    // non-standard-rate rows unconverted and overstated the internal total.)
+    const nonStandard = calculateInternalAmount({
+      payTo: "Excellent Staffing",
+      importedAmount: "453.40",
+      rowRate: "20", // not a whole multiple of the $25 agency rate — still converts
+      ...COM_HAB,
+    });
+    expect(nonStandard.rule).toBe("agency_rate_converted");
+    expect(nonStandard.internalAmount).toBe("380.8560"); // 453.40 * 21 / 25
+
+    const fiftyOne = calculateInternalAmount({
       payTo: "Excellent Staffing",
       importedAmount: "663",
       rowRate: "51",
       ...NINETEEN,
     });
-    expect(r.rule).toBe("retain_imported");
-    expect(r.internalAmount).toBe("663.0000");
+    expect(fiftyOne.rule).toBe("agency_rate_converted");
+    expect(fiftyOne.internalAmount).toBe("593.2105"); // 663 * 17 / 19
   });
 });
 

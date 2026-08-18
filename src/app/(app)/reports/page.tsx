@@ -51,7 +51,7 @@ export default async function ReportsPage() {
       <PageHeader
         eyebrow="Analysis"
         title="Reports"
-        description="Pick a report to filter it on screen and export the exact figures to CSV or Excel. Every money column stays separate — agency total, employee amount, agency markup and employee payment are never merged."
+        description="Pick a report to filter it on screen and export the exact figures to CSV or Excel. Every money column stays separate — agency total, employee amount, agency difference and employee payment are never merged."
       />
 
       <div className="space-y-8">

@@ -19,19 +19,22 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // The Review inbox rolls up every "needs a human" category into one number.
   // Failing quietly is the right choice: a broken count must never break the
   // whole layout — the user still has to be able to navigate.
+  // The badge counts DECISIONS a person must make — a name that is ambiguous, a
+  // possible duplicate person to merge, an alias to approve, an unmapped program,
+  // or an import that did not reconcile. Monitoring metrics that need no decision
+  // (rate exceptions, possible-duplicate rows that already imported, group-session
+  // grouping, over-budget individuals) are shown on their own screens, not counted
+  // here — so the badge means "there is something for you to resolve", not noise.
   let reviewCount = 0;
   const counts = await withDb((pool) => exceptionCounts(pool));
   if (counts.ok) {
     const c = counts.data;
     reviewCount =
-      c.rateExceptions +
       c.unmatchedNames +
+      c.duplicateIndividuals +
       c.pendingAliases +
-      c.duplicateCandidates +
-      c.groupReviewIssues +
-      c.reconciliationDifferences +
-      c.overAuthorization +
-      c.unknownPrograms;
+      c.unknownPrograms +
+      c.reconciliationDifferences;
   }
 
   return (

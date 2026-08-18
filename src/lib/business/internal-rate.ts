@@ -103,32 +103,35 @@ export function calculateInternalAmount(input: InternalAmountInput): InternalAmo
   const agencyRate = tryDec(input.agencyRate);
   const internalRate = tryDec(input.internalRate);
 
-  // 3/4. Agency payee with a configured conversion pair -> convert, but ONLY
-  // when the row is actually priced off the agency rate.
+  // 3/4. Agency payee in a program with a configured agency/internal pair ->
+  // ALWAYS convert by the flat ratio internalRate/agencyRate.
   //
-  // The conversion is a RATIO applied to the amount, not a rebuild from
-  // hours x internal rate. That distinction matters for group rows: a
-  // three-person Day Hab row carries a combined rate of 3 x $19 = $57, and its
-  // internal amount is 3 x $17 = $51 per hour. Scaling by 17/19 produces that
-  // automatically; rebuilding from the $17 base rate would silently drop the
-  // other two group members' share.
+  // VERIFIED against the source ledger: 100% of Excellent-Staffing rows in
+  // Com Hab / Respite / Day Hab / Supplemental Group Day Hab carry exactly the
+  // 0.84 (21/25) or 0.894737 (17/19) ratio of column P to column G — NONE stay
+  // at 1.0. The workbook applies the conversion off the PROGRAM and PAYEE alone;
+  // the row's own rate never gates it (rows are priced at 15, 18, 20, 22, 25 …
+  // and all convert). Conditioning conversion on the row rate being a whole
+  // multiple of the agency rate silently left ~$53.6k of non-standard-rate rows
+  // unconverted and overstated the internal total.
+  //
+  // It is a RATIO on the AMOUNT, not a rebuild from hours x internal rate, so a
+  // group row's combined amount (e.g. 3 x $19 = $57/hr) scales correctly on its
+  // own — the other members' share is never dropped.
   if (agencyRate && internalRate && !agencyRate.isZero() && !internalRate.isZero()) {
-    const rowRate = tryDec(input.rowRate);
-    const multiple = rowRate && !rowRate.isZero() ? isIntegerMultiple(rowRate, agencyRate) : true;
-
-    if (multiple) {
-      const converted = imported.times(internalRate).dividedBy(agencyRate);
-      return {
-        internalAmount: toMoney(converted),
-        rule: "agency_rate_converted",
-        appliedInternalRate: toMoney(internalRate),
-        appliedAgencyRate: toMoney(agencyRate),
-        conversionFactor: internalRate.dividedBy(agencyRate).toFixed(8),
-      };
-    }
+    const converted = imported.times(internalRate).dividedBy(agencyRate);
+    return {
+      internalAmount: toMoney(converted),
+      rule: "agency_rate_converted",
+      appliedInternalRate: toMoney(internalRate),
+      appliedAgencyRate: toMoney(agencyRate),
+      conversionFactor: internalRate.dividedBy(agencyRate).toFixed(8),
+    };
   }
 
-  // 5. Agency payee but no conversion applies -> keep what was imported.
+  // 5. Agency payee but the program has no configured conversion pair (e.g. a
+  //    self-hire program) -> keep what was imported, matching the workbook's
+  //    "else -> G" branch.
   return {
     internalAmount: toMoney(imported),
     rule: "retain_imported",
