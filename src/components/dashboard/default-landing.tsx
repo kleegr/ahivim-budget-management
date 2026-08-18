@@ -35,7 +35,8 @@ export default function DefaultLanding({ current }: { current: string }) {
       >
         <option value="dashboard">Home</option>
         <option value="transactions">Transactions</option>
-        <option value="calculations">Projections</option>
+        <option value="individuals">Individuals</option>
+        <option value="calculations">Financial</option>
       </select>
       {saved && <span className="text-xs text-[var(--color-text-soft)]">Saved</span>}
     </label>

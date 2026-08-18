@@ -23,6 +23,9 @@ export type IndividualBudget = {
   renews: string | null; // YYYY-MM-DD
   hoursLeft: number | null;
   plans: number;
+  daysToRenewal: number | null;
+  expired: boolean;
+  mustUseWeekly: number | null;
 };
 
 export type IndividualRow = {
@@ -33,7 +36,30 @@ export type IndividualRow = {
   archived: boolean;
   programs: string[];
   budget: IndividualBudget | null;
+  hasBilling: boolean;
 };
+
+const fmtHrs = (h: number | null) =>
+  h === null ? "—" : `${Math.round(h).toLocaleString()} h`;
+
+function RenewChip({ b }: { b: IndividualBudget }) {
+  if (b.renews === null) return null;
+  const d = b.daysToRenewal;
+  if (d === null) return <span className="tnum text-[var(--color-ink-soft)]">{b.renews}</span>;
+  const soon = d >= 0 && d <= 60;
+  const cls = b.expired
+    ? "text-[var(--color-danger)]"
+    : soon
+      ? "text-[var(--color-warn)]"
+      : "text-[var(--color-ink-soft)]";
+  const note = b.expired ? "expired" : d <= 60 ? `in ${d}d` : null;
+  return (
+    <span className={`tnum ${cls}`}>
+      {b.renews}
+      {note ? <span className="ml-1 text-[0.7rem] font-medium">· {note}</span> : null}
+    </span>
+  );
+}
 
 const SEVERITY: Record<UtilizationStatus, number> = {
   over_authorization: 0,
@@ -45,7 +71,7 @@ const SEVERITY: Record<UtilizationStatus, number> = {
   not_started: 6,
 };
 
-type SortKey = "name" | "programs" | "health" | "used" | "renews" | "status";
+type SortKey = "name" | "programs" | "health" | "used" | "left" | "renews" | "status";
 
 function PaceBar({ budget }: { budget: IndividualBudget }) {
   const used = Math.max(0, Math.min(100, budget.usedPct ?? 0));
@@ -101,6 +127,9 @@ export default function IndividualsList({ rows, canEdit }: { rows: IndividualRow
           break;
         case "used":
           d = (a.budget?.usedPct ?? -1) - (b.budget?.usedPct ?? -1);
+          break;
+        case "left":
+          d = (a.budget?.hoursLeft ?? -1) - (b.budget?.hoursLeft ?? -1);
           break;
         case "renews":
           d = (a.budget?.renews ?? "9999").localeCompare(b.budget?.renews ?? "9999");
@@ -158,6 +187,7 @@ export default function IndividualsList({ rows, canEdit }: { rows: IndividualRow
                 Budget health
               </th>
               <Head k="used" align="right">% used</Head>
+              <Head k="left" align="right">Hours left</Head>
               <Head k="renews">Renews</Head>
               <Head k="status">Status</Head>
               {canEdit ? <th className="border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 text-left font-semibold">Actions</th> : null}
@@ -174,12 +204,27 @@ export default function IndividualsList({ rows, canEdit }: { rows: IndividualRow
                 </td>
                 <td className="px-3 py-2 text-[var(--color-ink-soft)]">{r.programs.length ? r.programs.join(", ") : <span className="text-[var(--color-ink-faint)]">—</span>}</td>
                 <td className="px-3 py-2">
-                  {r.budget ? <PaceBar budget={r.budget} /> : <span className="text-xs text-[var(--color-ink-faint)]">No active budget</span>}
+                  {r.budget ? (
+                    <PaceBar budget={r.budget} />
+                  ) : r.hasBilling ? (
+                    <span className="text-xs font-medium text-[var(--color-warn)]">Billing, no budget on file</span>
+                  ) : (
+                    <span className="text-xs text-[var(--color-ink-faint)]">No active budget</span>
+                  )}
                 </td>
                 <td className="tnum px-3 py-2 text-right">
                   {r.budget && r.budget.usedPct !== null ? `${Math.round(r.budget.usedPct)}%` : <span className="text-[var(--color-ink-faint)]">—</span>}
                 </td>
-                <td className="tnum px-3 py-2 text-[var(--color-ink-soft)]">{r.budget?.renews ?? <span className="text-[var(--color-ink-faint)]">—</span>}</td>
+                <td className="tnum px-3 py-2 text-right">
+                  {r.budget && r.budget.hoursLeft !== null ? (
+                    <span title={r.budget.mustUseWeekly && r.budget.mustUseWeekly > 0 ? `Use ~${Math.round(r.budget.mustUseWeekly)} h/week to finish by renewal` : undefined}>
+                      {fmtHrs(r.budget.hoursLeft)}
+                    </span>
+                  ) : (
+                    <span className="text-[var(--color-ink-faint)]">—</span>
+                  )}
+                </td>
+                <td className="tnum px-3 py-2 text-[var(--color-ink-soft)]">{r.budget ? <RenewChip b={r.budget} /> : <span className="text-[var(--color-ink-faint)]">—</span>}</td>
                 <td className="px-3 py-2">
                   {r.budget ? <UtilizationBadge status={r.budget.status} /> : <Badge value={r.status} />}
                 </td>
@@ -196,7 +241,7 @@ export default function IndividualsList({ rows, canEdit }: { rows: IndividualRow
             ))}
             {visible.length === 0 ? (
               <tr>
-                <td colSpan={canEdit ? 7 : 6} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
+                <td colSpan={canEdit ? 8 : 7} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
                   {rows.length === 0 ? "No individuals yet — they appear here once a workbook is committed." : "No one matches your search."}
                 </td>
               </tr>

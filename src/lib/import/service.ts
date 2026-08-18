@@ -10,6 +10,7 @@ import {
 } from "./pipeline";
 import { parseWorkbook } from "@/lib/excel/parse-workbook";
 import { currentRatesByProgram } from "@/lib/data/queries";
+import { scanMatches } from "@/lib/manage/individual-merge";
 import type { StagingResult } from "./stage";
 
 /**
@@ -279,6 +280,18 @@ export async function commit(
     result.importedFileId,
     JSON.stringify(slimSheetSummary(file.payload)),
   ]);
+
+  // Self-heal duplicates. A person spelled one way in the Calculations tab and
+  // another in the ledger (Markowitz/Markovitz, Fleishman/Fleischman) is now
+  // committed under both spellings; the scanner auto-merges the confident
+  // single-letter typos and queues anything less certain on the Matches screen,
+  // so budgets, financials and the ledger converge on one record. Non-fatal: the
+  // rows are already committed if this step fails.
+  try {
+    await scanMatches(pool, committedByUserId);
+  } catch {
+    /* the ledger is committed; any remaining duplicates can be merged manually */
+  }
 
   return { ok: true, result };
 }

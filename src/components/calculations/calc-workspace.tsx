@@ -452,7 +452,7 @@ export default function CalcWorkspace({
                     />
                     <StatTile label="Employee amount" value={formatMoney(result.internalAmount)} />
                     <StatTile
-                      label="Agency markup"
+                      label="Agency difference"
                       value={result.agencyAdditional ? formatMoney(result.agencyAdditional) : undefined}
                       unavailable={result.agencyAdditional ? undefined : "No agency uplift."}
                     />

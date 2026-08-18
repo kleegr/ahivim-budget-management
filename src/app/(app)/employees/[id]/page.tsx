@@ -196,7 +196,7 @@ export default async function EmployeeDetailPage({
               hint="Excellent Staffing pays the employee"
             />
             <StatTile
-              label="Agency markup"
+              label="Agency difference"
               value={formatMoney(payment.agencyAdditional)}
               hint="Agency total above the internal amount"
             />

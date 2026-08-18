@@ -14,11 +14,10 @@ type Item = { label: string; href: string; hint?: string; keywords?: string };
 
 const ITEMS: Item[] = [
   { label: "Home", href: "/home", hint: "What needs you today", keywords: "dashboard start" },
-  { label: "Transactions", href: "/transactions", hint: "What was billed", keywords: "ledger billed payroll" },
-  { label: "Projections", href: "/calculations", hint: "Budgets, pacing & what's left", keywords: "calculations budget plan pace" },
-  { label: "People", href: "/people", hint: "Individuals & employees" },
-  { label: "Individuals", href: "/individuals", hint: "People we serve", keywords: "clients participants budget health" },
-  { label: "Employees", href: "/employees", hint: "People who deliver services", keywords: "staff workers" },
+  { label: "Transactions", href: "/transactions", hint: "What was billed — the source of truth", keywords: "ledger billed payroll" },
+  { label: "Individuals", href: "/individuals", hint: "Budgets, usage & people", keywords: "clients participants budget health board" },
+  { label: "Employees", href: "/employees", hint: "Activity from the ledger", keywords: "staff workers people" },
+  { label: "Financial", href: "/calculations", hint: "Rates, cuts & net", keywords: "calculations money plan cuts projections" },
   { label: "Schedule", href: "/schedule", hint: "Plan sessions on a calendar", keywords: "calendar sessions" },
   { label: "Review", href: "/review", hint: "Clear the inbox", keywords: "exceptions matches aliases reconciliation names rates" },
   { label: "Reports", href: "/reports", hint: "Export & analysis" },

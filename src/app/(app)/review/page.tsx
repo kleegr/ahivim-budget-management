@@ -74,22 +74,14 @@ export default async function ReviewPage() {
   }
 
   const c = result.data;
-  const total =
-    c.rateExceptions +
-    c.unmatchedNames +
-    c.pendingAliases +
-    c.duplicateCandidates +
-    c.groupReviewIssues +
-    c.reconciliationDifferences +
-    c.overAuthorization +
-    c.unknownPrograms;
 
-  const sections: Section[] = [
+  // Decisions: a person must act, and until they do something is unresolved.
+  const decisions: Section[] = [
     {
       key: "names",
       question: "Unknown or misspelled names",
       detail:
-        "The import saw a name it doesn't recognize, or a near-duplicate spelling. Approve the spelling once and the system will match it automatically from then on.",
+        "A name the import couldn't resolve on its own — ambiguous, or an alias waiting to be approved. Approve it once and the system matches it automatically from then on.",
       href: "/aliases",
       count: c.unmatchedNames + c.pendingAliases,
       tone: "warn",
@@ -98,60 +90,76 @@ export default async function ReviewPage() {
       key: "duplicates",
       question: "Possible duplicate people",
       detail:
-        "Two records that look like the same person. Merging them lines up their transactions and budgets under one identity.",
+        "Two records that look like the same person spelled differently. Merging lines up their transactions, budget and financial plan under one identity.",
       href: "/matches",
-      count: c.duplicateCandidates,
-      tone: "warn",
-    },
-    {
-      key: "rates",
-      question: "Unexpected rates",
-      detail:
-        "A billed rate that doesn't sit on the configured schedule for that program. Accept it as a one-off or fix the rate.",
-      href: "/exceptions",
-      count: c.rateExceptions,
+      count: c.duplicateIndividuals,
       tone: "warn",
     },
     {
       key: "programs",
       question: "Unknown programs",
       detail:
-        "An import row referenced a program code the system doesn't know. Point it at the right program to include the row.",
+        "An import row referenced a program the system doesn't know, so it was held out of the ledger. Map it to the right program to include the row.",
       href: "/exceptions",
       count: c.unknownPrograms,
       tone: "warn",
     },
     {
+      key: "reconcile",
+      question: "Sheet doesn't agree with the system",
+      detail:
+        "An import batch flagged a difference between the workbook control totals and the system totals. Look and decide which is right.",
+      href: "/reconciliation",
+      count: c.reconciliationDifferences,
+      tone: "info",
+    },
+  ];
+
+  // Worth watching: informational. Nothing is excluded from totals and no decision
+  // is required to keep the ledger correct — these are signals, not a to-do list.
+  const monitoring: Section[] = [
+    {
+      key: "rates",
+      question: "Unexpected rates",
+      detail:
+        "A billed rate that doesn't sit on the configured schedule for that program. The row is imported and counted at its real rate; review only if the schedule looks wrong.",
+      href: "/exceptions",
+      count: c.rateExceptions,
+      tone: "info",
+    },
+    {
       key: "groups",
       question: "Group sessions to confirm",
       detail:
-        "The system spotted rows that may be one shared group session. Confirming folds them into a single session with a shared physical-hours count.",
-      href: "/exceptions",
+        "Rows that may be one shared group session. Every row is already billed to its own individual; confirming only folds them into a single physical session for scheduling.",
+      href: "/reconciliation/groups",
       count: c.groupReviewIssues,
       tone: "info",
     },
     {
-      key: "reconcile",
-      question: "Sheet doesn't agree with the system",
+      key: "duprows",
+      question: "Possible duplicate rows",
       detail:
-        "A recent import batch flagged a difference between the workbook totals and the system totals. Someone needs to look and decide which is right.",
-      href: "/reconciliation",
-      count: c.reconciliationDifferences,
+        "Two ledger rows share every detail. Both were imported and counted (the sheet counts them too); open them only to confirm they aren't an accidental double-entry.",
+      href: "/exceptions",
+      count: c.duplicateCandidates,
       tone: "info",
     },
     {
       key: "over",
       question: "Over authorization",
       detail:
-        "One or more budgets have used more hours than were approved. Adjust the authorization, or accept the overage on record.",
-      href: "/exceptions",
+        "One or more budgets have billed more hours than were approved this period. Adjust the authorization or accept the overage.",
+      href: "/reports/utilization-outliers",
       count: c.overAuthorization,
       tone: "danger",
     },
   ];
 
-  const empty = sections.filter((s) => s.count === 0);
-  const active = sections.filter((s) => s.count > 0);
+  const total = decisions.reduce((s, x) => s + x.count, 0);
+  const empty = decisions.filter((s) => s.count === 0);
+  const active = decisions.filter((s) => s.count > 0);
+  const watching = monitoring.filter((s) => s.count > 0);
 
   return (
     <>
@@ -240,6 +248,32 @@ export default async function ReviewPage() {
           ) : null}
         </>
       )}
+
+      {watching.length > 0 ? (
+        <div className="mt-10">
+          <p className="eyebrow mb-1">Worth watching</p>
+          <p className="mb-3 max-w-prose text-sm text-[var(--color-ink-soft)]">
+            Signals, not a to-do list. Nothing here is excluded from any total, and no decision is
+            required to keep the ledger correct — these are here so nothing surprising stays hidden.
+          </p>
+          <div className="space-y-3">
+            {watching.map((s) => {
+              const t = toneClasses(s.tone);
+              return (
+                <Link key={s.key} href={s.href} className={`card block border-l-4 ${t.edge} px-5 py-4 transition hover:shadow-md`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-[0.95rem] font-semibold text-[var(--color-ink)]">{s.question}</p>
+                      <p className="mt-1 text-sm text-[var(--color-ink-soft)]">{s.detail}</p>
+                    </div>
+                    <p className={`tnum text-2xl font-semibold leading-none ${t.count}`}>{s.count.toLocaleString()}</p>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

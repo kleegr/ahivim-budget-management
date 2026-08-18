@@ -432,6 +432,9 @@ export interface IndividualBudgetSummary {
   renews: string | null; // period end / renewal date
   hoursLeft: number | null; // authorized − billed
   plans: number; // active authorizations in the period
+  daysToRenewal: number | null; // renews − today (negative = expired)
+  expired: boolean; // the period end is in the past
+  mustUseWeekly: number | null; // hours to use per week to finish by renewal
 }
 
 export interface IndividualBudgetBoardRow {
@@ -442,6 +445,8 @@ export interface IndividualBudgetBoardRow {
   archived: boolean;
   programs: string[];
   budget: IndividualBudgetSummary | null;
+  /** Has committed transactions — used to flag "billing but no budget on file". */
+  hasBilling: boolean;
 }
 
 const BUDGET_SEVERITY: Record<UtilizationStatus, number> = {
@@ -477,6 +482,7 @@ export async function listIndividualBudgetBoard(
     program_name: string | null;
     authorized_hours: string | null;
     billed_hours: string | null;
+    has_billing: boolean;
   }>(
     `SELECT i.id, i.display_name, i.preferred_name, i.status,
             i.archived_at::text AS archived_at,
@@ -485,7 +491,8 @@ export async function listIndividualBudgetBoard(
             l.renewal_date::text AS renewal_date,
             p.name              AS program_name,
             b.authorized_hours::text AS authorized_hours,
-            COALESCE(bill.hrs, 0)::text AS billed_hours
+            COALESCE(bill.hrs, 0)::text AS billed_hours,
+            EXISTS (SELECT 1 FROM payroll_transactions t WHERE t.individual_id = i.id) AS has_billing
        FROM individuals i
        LEFT JOIN LATERAL (
          SELECT bp.id, bp.start_date, bp.end_date, bp.renewal_date
@@ -518,8 +525,10 @@ export async function listIndividualBudgetBoard(
     period: { start: string; end: string; renewal: string | null } | null;
     programs: Set<string>;
     auths: { code: string; authorized: string; billed: string }[];
+    hasBilling: boolean;
   };
   const byId = new Map<string, Acc>();
+  const today = asOf.toISOString().slice(0, 10);
   for (const r of rows) {
     let acc = byId.get(r.id);
     if (!acc) {
@@ -532,6 +541,7 @@ export async function listIndividualBudgetBoard(
         period: r.start_date && r.end_date ? { start: r.start_date, end: r.end_date, renewal: r.renewal_date } : null,
         programs: new Set<string>(),
         auths: [],
+        hasBilling: r.has_billing === true,
       };
       byId.set(r.id, acc);
     }
@@ -559,13 +569,21 @@ export async function listIndividualBudgetBoard(
         if (BUDGET_SEVERITY[st] < BUDGET_SEVERITY[worst]) worst = st;
       }
       const usedPct = totalAuth.isZero() ? null : totalBilled.dividedBy(totalAuth).times(100).toNumber();
+      const renews = acc.period.renewal ?? acc.period.end;
+      const dayMs = 24 * 60 * 60 * 1000;
+      const daysToRenewal = Math.round((Date.parse(`${renews}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / dayMs);
+      const hoursLeft = totalAuth.minus(totalBilled).toNumber();
+      const weeksLeft = daysToRenewal > 0 ? daysToRenewal / 7 : 0;
       budget = {
         status: worst,
         usedPct,
         elapsedPct: dec(elapsed.timeElapsedPercent).times(100).toNumber(),
-        renews: acc.period.renewal ?? acc.period.end,
-        hoursLeft: totalAuth.minus(totalBilled).toNumber(),
+        renews,
+        hoursLeft,
         plans: acc.auths.length,
+        daysToRenewal,
+        expired: daysToRenewal < 0,
+        mustUseWeekly: weeksLeft > 0 && hoursLeft > 0 ? hoursLeft / weeksLeft : null,
       };
     }
     out.push({
@@ -576,6 +594,7 @@ export async function listIndividualBudgetBoard(
       archived: acc.archived,
       programs: [...acc.programs].sort(),
       budget,
+      hasBilling: acc.hasBilling,
     });
   }
   return out;
@@ -665,6 +684,7 @@ export async function getEmployeeReport(
 export interface ExceptionCounts {
   unknownPrograms: number;
   unmatchedNames: number;
+  duplicateIndividuals: number;
   pendingAliases: number;
   rateExceptions: number;
   duplicateCandidates: number;
@@ -678,7 +698,9 @@ export async function exceptionCounts(pool: PgLikePool): Promise<ExceptionCounts
     `SELECT
        (SELECT count(*) FROM import_warnings WHERE category = 'unknown_program')::text          AS unknown_programs,
        (SELECT count(*) FROM import_warnings
-         WHERE category IN ('unmatched_individual','unmatched_employee','ambiguous_name'))::text AS unmatched_names,
+         WHERE category IN ('unmatched_individual','unmatched_employee','ambiguous_name')
+           AND severity IN ('warning','error'))::text                                          AS unmatched_names,
+       (SELECT count(*) FROM individual_match_reviews WHERE status = 'pending')::text          AS duplicate_individuals,
        ((SELECT count(*) FROM individual_aliases WHERE status = 'pending')
         + (SELECT count(*) FROM employee_aliases WHERE status = 'pending'))::text               AS pending_aliases,
        (SELECT count(*) FROM rate_exceptions WHERE resolution = 'open')::text                   AS rate_exceptions,
@@ -702,6 +724,7 @@ export async function exceptionCounts(pool: PgLikePool): Promise<ExceptionCounts
   return {
     unknownPrograms: Number(r.unknown_programs ?? 0),
     unmatchedNames: Number(r.unmatched_names ?? 0),
+    duplicateIndividuals: Number(r.duplicate_individuals ?? 0),
     pendingAliases: Number(r.pending_aliases ?? 0),
     rateExceptions: Number(r.rate_exceptions ?? 0),
     duplicateCandidates: Number(r.duplicate_candidates ?? 0),
