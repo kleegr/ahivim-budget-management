@@ -79,7 +79,7 @@ export function AgencyInternalDonut({
   const gross = dec(internal).plus(dec(additional)).toString();
   const slices: DonutSlice[] = [
     { label: "Employee amount", value: internal, display: formatMoney(internal), color: CHART_COLORS.primary },
-    { label: "Agency markup", value: additional, display: formatMoney(additional), color: CHART_COLORS.accent },
+    { label: "Agency difference", value: additional, display: formatMoney(additional), color: CHART_COLORS.accent },
   ];
   return (
     <Donut
