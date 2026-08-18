@@ -112,7 +112,8 @@ export async function getEmployeePaymentSummary(
 export interface EmployeeIndividualRow {
   id: string;
   displayName: string;
-  /** The individual's entitlement hours delivered by this employee. */
+  /** Billed hours (imported_hours) this employee logged for this individual;
+   *  reconciles to the Transactions grid filtered to both. */
   allocationHours: string;
   transactionCount: number;
   agencyGross: string;
@@ -140,15 +141,12 @@ export async function getEmployeeIndividuals(
   }>(
     `SELECT i.id,
             i.display_name,
-            COALESCE(sum(a.allocation_hours), 0)::text           AS allocation_hours,
+            COALESCE(sum(t.imported_hours), 0)::text             AS allocation_hours,
             count(DISTINCT t.id)::text                           AS transaction_count,
             COALESCE(sum(t.imported_amount), 0)::text            AS agency_gross,
             COALESCE(sum(t.calculated_internal_amount), 0)::text AS internal_amount
        FROM payroll_transactions t
        JOIN individuals i ON i.id = t.individual_id
-       LEFT JOIN service_allocations a
-              ON a.payroll_transaction_id = t.id
-             AND a.individual_id = t.individual_id
       WHERE t.employee_id = $1
       GROUP BY i.id, i.display_name
       ORDER BY i.display_name`,
@@ -173,7 +171,7 @@ export interface EmployeeProgramRow {
   programName: string;
   /** Time present on this program (service sessions, counted once each). */
   physicalHours: string;
-  /** Sum of served individuals' entitlement hours on this program. */
+  /** Billed hours (imported_hours) on this program; reconciles to the grid. */
   allocationHours: string;
   transactionCount: number;
   agencyGross: string;
@@ -205,15 +203,12 @@ export async function getEmployeeUsageByProgram(
             (SELECT COALESCE(sum(s.physical_hours), 0)
                FROM service_sessions s
               WHERE s.employee_id = $1 AND s.program_id = p.id)::text AS physical_hours,
-            COALESCE(sum(a.allocation_hours), 0)::text                AS allocation_hours,
+            COALESCE(sum(t.imported_hours), 0)::text                  AS allocation_hours,
             count(DISTINCT t.id)::text                                AS transaction_count,
             COALESCE(sum(t.imported_amount), 0)::text                 AS agency_gross,
             COALESCE(sum(t.calculated_internal_amount), 0)::text      AS internal_amount
        FROM payroll_transactions t
        JOIN programs p ON p.id = t.program_id
-       LEFT JOIN service_allocations a
-              ON a.payroll_transaction_id = t.id
-             AND a.individual_id = t.individual_id
       WHERE t.employee_id = $1
       GROUP BY p.id, p.code, p.name
       ORDER BY p.name`,

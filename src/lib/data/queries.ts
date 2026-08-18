@@ -4,8 +4,10 @@ import type { RateConfig } from "@/lib/import/stage";
 import {
   calculatePeriodElapsed,
   calculateProgramUtilization,
+  classifyUtilization,
   type ProgramUtilizationResult,
   type PeriodElapsed,
+  type UtilizationStatus,
 } from "@/lib/business/utilization";
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
@@ -178,9 +180,10 @@ export interface ProgramUsageRow {
   programCode: string;
   programName: string;
   /**
-   * Allocation hours - what the INDIVIDUAL consumed. On a group session each
-   * member consumes the full physical hours, so this is never the employee's
-   * hours divided by the group size.
+   * Billed hours for this individual, summed from payroll_transactions.imported_hours
+   * so the figure matches the Transactions grid exactly. Each source row already
+   * names one individual and carries that individual's full hours (a group session
+   * appears as one row per member), so this credits each member correctly.
    */
   usedHours: string;
   transactionCount: number;
@@ -246,27 +249,50 @@ export async function getIndividualReport(
     ? calculatePeriodElapsed({ startDate: period.start_date, endDate: period.end_date }, asOf)
     : null;
 
+  // Billed activity comes straight from payroll_transactions.imported_hours and
+  // imported_amount, so every figure here reconciles exactly to the Transactions
+  // grid filtered to this individual (and, for a group row, still credits the one
+  // individual named on that row its full hours). Two sums are returned per
+  // program: all-time actual activity, and the amount that falls inside the
+  // current budget period window — the window the authorization is measured
+  // against, matching the workbook's SUMIFS over Period Begin.
+  const periodStart = period?.start_date ?? null;
+  const periodEnd = period?.end_date ?? null;
   const { rows: usage } = await pool.query<{
     program_code: string;
     program_name: string;
     used_hours: string;
+    used_hours_period: string;
     transaction_count: string;
     agency_gross: string;
+    agency_gross_period: string;
     internal_amount: string;
+    internal_amount_period: string;
   }>(
     `SELECT p.code AS program_code,
             p.name AS program_name,
-            coalesce(sum(a.allocation_hours), 0)::text           AS used_hours,
+            coalesce(sum(t.imported_hours), 0)::text             AS used_hours,
+            coalesce(sum(t.imported_hours) FILTER (
+              WHERE $2::date IS NULL
+                 OR (t.period_begin >= $2::date AND t.period_begin <= $3::date)), 0)::text
+                                                                 AS used_hours_period,
             count(DISTINCT t.id)::text                           AS transaction_count,
             coalesce(sum(t.imported_amount), 0)::text            AS agency_gross,
-            coalesce(sum(t.calculated_internal_amount), 0)::text AS internal_amount
+            coalesce(sum(t.imported_amount) FILTER (
+              WHERE $2::date IS NULL
+                 OR (t.period_begin >= $2::date AND t.period_begin <= $3::date)), 0)::text
+                                                                 AS agency_gross_period,
+            coalesce(sum(t.calculated_internal_amount), 0)::text AS internal_amount,
+            coalesce(sum(t.calculated_internal_amount) FILTER (
+              WHERE $2::date IS NULL
+                 OR (t.period_begin >= $2::date AND t.period_begin <= $3::date)), 0)::text
+                                                                 AS internal_amount_period
        FROM payroll_transactions t
        JOIN programs p ON p.id = t.program_id
-       LEFT JOIN service_allocations a ON a.payroll_transaction_id = t.id
       WHERE t.individual_id = $1
       GROUP BY p.code, p.name
       ORDER BY p.name`,
-    [individualId],
+    [individualId, periodStart, periodEnd],
   );
 
   const usageByProgram: ProgramUsageRow[] = usage.map((u) => ({
@@ -278,6 +304,13 @@ export async function getIndividualReport(
     internalAmount: toMoney(u.internal_amount),
   }));
   const usageByCode = new Map(usageByProgram.map((u) => [u.programCode, u]));
+  // Period-scoped billed hours/dollars, keyed by program, drive budget utilization.
+  const periodByCode = new Map(
+    usage.map((u) => [
+      u.program_code,
+      { usedHours: toHours(u.used_hours_period), agencyGross: toMoney(u.agency_gross_period) },
+    ]),
+  );
 
   const { rows: auths } = await pool.query<{
     program_code: string;
@@ -297,7 +330,8 @@ export async function getIndividualReport(
   );
 
   const programs = auths.map((a) => {
-    const used = usageByCode.get(a.program_code);
+    const used = periodByCode.get(a.program_code);
+    const observations = usageByCode.get(a.program_code)?.transactionCount ?? 0;
     const utilization = calculateProgramUtilization(
       {
         authorizedHours: a.authorized_hours,
@@ -319,7 +353,7 @@ export async function getIndividualReport(
               usedHours: used?.usedHours ?? "0",
               elapsed,
               periodStartDate: period.start_date,
-              observationCount: used?.transactionCount ?? 0,
+              observationCount: observations,
             })
           : null,
     };
@@ -330,10 +364,9 @@ export async function getIndividualReport(
     display_name: string;
     hours: string;
   }>(
-    `SELECT e.id, e.display_name, coalesce(sum(a.allocation_hours), 0)::text AS hours
+    `SELECT e.id, e.display_name, coalesce(sum(t.imported_hours), 0)::text AS hours
        FROM payroll_transactions t
        JOIN employees e ON e.id = t.employee_id
-       LEFT JOIN service_allocations a ON a.payroll_transaction_id = t.id
       WHERE t.individual_id = $1
       GROUP BY e.id
       ORDER BY e.display_name`,
@@ -389,6 +422,166 @@ export async function getIndividualReport(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Individuals budget board (the register list)                               */
+/* -------------------------------------------------------------------------- */
+
+export interface IndividualBudgetSummary {
+  status: UtilizationStatus;
+  usedPct: number | null; // 0–100, total billed ÷ total authorized (period-scoped)
+  elapsedPct: number | null; // 0–100
+  renews: string | null; // period end / renewal date
+  hoursLeft: number | null; // authorized − billed
+  plans: number; // active authorizations in the period
+}
+
+export interface IndividualBudgetBoardRow {
+  id: string;
+  name: string;
+  preferredName: string | null;
+  status: string;
+  archived: boolean;
+  programs: string[];
+  budget: IndividualBudgetSummary | null;
+}
+
+const BUDGET_SEVERITY: Record<UtilizationStatus, number> = {
+  over_authorization: 0,
+  fully_used: 1,
+  near_exhaustion: 2,
+  behind_pace: 3,
+  ahead_of_pace: 4,
+  on_pace: 5,
+  not_started: 6,
+};
+
+/**
+ * The Individuals register, as a budget board. Health, % used, remaining and
+ * renewal come from the SAME engine the detail page uses: authorized hours from
+ * budget_authorizations, billed hours from payroll_transactions.imported_hours
+ * within the current period (windowed on Period Begin). So the badge here and the
+ * badge on the detail page can never disagree, and both reconcile to the ledger.
+ */
+export async function listIndividualBudgetBoard(
+  pool: PgLikePool,
+  asOf: Date = new Date(),
+): Promise<IndividualBudgetBoardRow[]> {
+  const { rows } = await pool.query<{
+    id: string;
+    display_name: string;
+    preferred_name: string | null;
+    status: string;
+    archived_at: string | null;
+    start_date: string | null;
+    end_date: string | null;
+    renewal_date: string | null;
+    program_name: string | null;
+    authorized_hours: string | null;
+    billed_hours: string | null;
+  }>(
+    `SELECT i.id, i.display_name, i.preferred_name, i.status,
+            i.archived_at::text AS archived_at,
+            l.start_date::text  AS start_date,
+            l.end_date::text    AS end_date,
+            l.renewal_date::text AS renewal_date,
+            p.name              AS program_name,
+            b.authorized_hours::text AS authorized_hours,
+            COALESCE(bill.hrs, 0)::text AS billed_hours
+       FROM individuals i
+       LEFT JOIN LATERAL (
+         SELECT bp.id, bp.start_date, bp.end_date, bp.renewal_date
+           FROM budget_periods bp
+          WHERE bp.individual_id = i.id
+          ORDER BY bp.start_date DESC
+          LIMIT 1
+       ) l ON true
+       LEFT JOIN budget_authorizations b
+              ON b.budget_period_id = l.id AND b.status = 'active'
+       LEFT JOIN programs p ON p.id = b.program_id
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(sum(t.imported_hours), 0) AS hrs
+           FROM payroll_transactions t
+          WHERE t.individual_id = i.id
+            AND t.program_id = b.program_id
+            AND t.period_begin >= l.start_date
+            AND t.period_begin <= l.end_date
+       ) bill ON b.id IS NOT NULL
+      WHERE i.merged_into_id IS NULL
+      ORDER BY i.display_name`,
+  );
+
+  type Acc = {
+    id: string;
+    name: string;
+    preferredName: string | null;
+    status: string;
+    archived: boolean;
+    period: { start: string; end: string; renewal: string | null } | null;
+    programs: Set<string>;
+    auths: { code: string; authorized: string; billed: string }[];
+  };
+  const byId = new Map<string, Acc>();
+  for (const r of rows) {
+    let acc = byId.get(r.id);
+    if (!acc) {
+      acc = {
+        id: r.id,
+        name: r.display_name,
+        preferredName: r.preferred_name,
+        status: r.status,
+        archived: r.status === "archived" || r.archived_at !== null,
+        period: r.start_date && r.end_date ? { start: r.start_date, end: r.end_date, renewal: r.renewal_date } : null,
+        programs: new Set<string>(),
+        auths: [],
+      };
+      byId.set(r.id, acc);
+    }
+    if (r.program_name && r.authorized_hours !== null) {
+      acc.programs.add(r.program_name);
+      acc.auths.push({ code: r.program_name, authorized: r.authorized_hours, billed: r.billed_hours ?? "0" });
+    }
+  }
+
+  const out: IndividualBudgetBoardRow[] = [];
+  for (const acc of byId.values()) {
+    let budget: IndividualBudgetSummary | null = null;
+    if (acc.period && acc.auths.length > 0) {
+      const elapsed = calculatePeriodElapsed({ startDate: acc.period.start, endDate: acc.period.end }, asOf);
+      let totalAuth = dec(0);
+      let totalBilled = dec(0);
+      let worst: UtilizationStatus = "not_started";
+      for (const a of acc.auths) {
+        const auth = dec(a.authorized);
+        const billed = dec(a.billed);
+        totalAuth = totalAuth.plus(auth);
+        totalBilled = totalBilled.plus(billed);
+        const usage = auth.isZero() ? dec(0) : billed.dividedBy(auth);
+        const st = classifyUtilization(usage, elapsed);
+        if (BUDGET_SEVERITY[st] < BUDGET_SEVERITY[worst]) worst = st;
+      }
+      const usedPct = totalAuth.isZero() ? null : totalBilled.dividedBy(totalAuth).times(100).toNumber();
+      budget = {
+        status: worst,
+        usedPct,
+        elapsedPct: dec(elapsed.timeElapsedPercent).times(100).toNumber(),
+        renews: acc.period.renewal ?? acc.period.end,
+        hoursLeft: totalAuth.minus(totalBilled).toNumber(),
+        plans: acc.auths.length,
+      };
+    }
+    out.push({
+      id: acc.id,
+      name: acc.name,
+      preferredName: acc.preferredName,
+      status: acc.status,
+      archived: acc.archived,
+      programs: [...acc.programs].sort(),
+      budget,
+    });
+  }
+  return out;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Employees                                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -396,7 +589,8 @@ export interface EmployeeReport {
   employee: { id: string; displayName: string };
   /** Hours the employee was actually present. Group sessions counted ONCE. */
   physicalHours: string;
-  /** Sum of every individual's entitlement. Exceeds physical hours on groups. */
+  /** Billed hours (sum of imported_hours across the ledger); reconciles to the
+   *  Transactions grid filtered to this employee. Exceeds physical on groups. */
   allocationHours: string;
   individualsServed: number;
   programs: string[];
@@ -426,10 +620,8 @@ export async function getEmployeeReport(
     `SELECT
        (SELECT coalesce(sum(s.physical_hours), 0)
           FROM service_sessions s WHERE s.employee_id = $1)::text          AS physical_hours,
-       (SELECT coalesce(sum(a.allocation_hours), 0)
-          FROM service_allocations a
-          JOIN service_sessions s ON s.id = a.service_session_id
-         WHERE s.employee_id = $1)::text                                   AS allocation_hours,
+       (SELECT coalesce(sum(t.imported_hours), 0)
+          FROM payroll_transactions t WHERE t.employee_id = $1)::text       AS allocation_hours,
        (SELECT count(DISTINCT t.individual_id)
           FROM payroll_transactions t WHERE t.employee_id = $1)::text      AS individuals_served,
        (SELECT count(*) FROM service_sessions s
