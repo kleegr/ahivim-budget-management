@@ -121,15 +121,14 @@ export default async function DashboardPage({
   const scheduled = result.data.scheduled;
   const review = result.data.review;
 
+  // Decisions a person must make (see layout.tsx for the rationale) — not the
+  // monitoring metrics, which have their own tiles below.
   const reviewTotal =
-    review.rateExceptions +
     review.unmatchedNames +
+    review.duplicateIndividuals +
     review.pendingAliases +
-    review.duplicateCandidates +
-    review.groupReviewIssues +
-    review.reconciliationDifferences +
-    review.overAuthorization +
-    review.unknownPrograms;
+    review.unknownPrograms +
+    review.reconciliationDifferences;
 
   // The four attention tiles that lead the page.
   const attention = [
