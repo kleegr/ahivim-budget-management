@@ -73,7 +73,7 @@ const COLUMNS: ColumnDef<GridTransaction>[] = [
   { key: "rate", label: "Rate", kind: "money", width: 80, hidden: true, accessor: (r) => r.rate },
   { key: "gross", label: "Agency total", kind: "money", width: 120, accessor: (r) => r.gross },
   { key: "internalAmount", label: "Employee amount", kind: "money", width: 130, accessor: (r) => r.internalAmount },
-  { key: "agencyAdditional", label: "Agency markup", kind: "money", width: 140, accessor: (r) => r.agencyAdditional },
+  { key: "agencyAdditional", label: "Agency difference", kind: "money", width: 140, accessor: (r) => r.agencyAdditional },
   { key: "totalNetPay", label: "Total net pay", kind: "money", width: 120, accessor: (r) => r.totalNetPay },
   { key: "periodBegin", label: "Period begin", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodBegin },
   { key: "periodEnd", label: "Period end", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodEnd },
@@ -408,7 +408,7 @@ function DetailDrawer({
         {line("Rate", row.rate ? formatMoney(row.rate) : "—")}
         {line("Agency total", row.gross ? formatMoney(row.gross) : "—")}
         {line("Employee amount", row.internalAmount ? formatMoney(row.internalAmount) : "—")}
-        {line("Agency markup", row.agencyAdditional ? formatMoney(row.agencyAdditional) : "—")}
+        {line("Agency difference", row.agencyAdditional ? formatMoney(row.agencyAdditional) : "—")}
         {line("Total net pay", row.totalNetPay ? formatMoney(row.totalNetPay) : "—")}
         {line("Period", `${row.periodBegin ?? "—"} → ${row.periodEnd ?? "—"}`)}
         {line("Paid to", RECIPIENT_LABEL[row.paymentRecipient ?? ""] ?? row.paymentRecipient ?? "—")}
@@ -419,7 +419,7 @@ function DetailDrawer({
           <div className="eyebrow text-[var(--color-text-soft)]">Open</div>
           {row.individualId && <Link href={`/individuals/${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Individual profile →</Link>}
           {row.employeeId && <Link href={`/employees/${row.employeeId}`} className="block text-[var(--color-primary)] hover:underline">Employee: {row.employee} →</Link>}
-          {row.individualId && <Link href={`/calculations?individualId=${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Projections / budget plan →</Link>}
+          {row.individualId && <Link href={`/calculations?individualId=${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Financial plan →</Link>}
           {row.checkNumber && <button type="button" onClick={() => onFilterCheck(row.checkNumber as string)} className="block text-left text-[var(--color-primary)] hover:underline">Show all rows on check {row.checkNumber} →</button>}
           {row.sourceFileId && <Link href={`/imports/${row.sourceFileId}`} className="block text-[var(--color-primary)] hover:underline">Import batch →</Link>}
           {row.serviceSessionId && <Link href={`/reconciliation`} className="block text-[var(--color-primary)] hover:underline">Reconciliation record →</Link>}
