@@ -9,7 +9,7 @@ import { useGrid } from "@/components/data-grid/use-grid";
 import { Toolbar } from "@/components/data-grid/toolbar";
 import { FilterBar } from "@/components/data-grid/filter-bar";
 import { formatCell } from "@/components/data-grid/engine";
-import { isNumericKind, type ColumnDef } from "@/components/data-grid/types";
+import { isNumericKind, type ColumnDef, type FilterState } from "@/components/data-grid/types";
 import PeriodControl, { type PeriodRange } from "@/components/period-control";
 
 /* ------------------------------------------------------------------ config */
@@ -98,18 +98,28 @@ const colWidth = (widths: Record<string, number>, c: ColumnDef<GridTransaction>)
 export default function TransactionsGrid({
   rows,
   canManage,
+  initialFilters,
+  contextLabel,
 }: {
   rows: GridTransaction[];
   canManage: boolean;
+  initialFilters?: FilterState;
+  contextLabel?: string | null;
 }) {
+  // Reveal any column that arrives pre-filtered (e.g. a budget drill-through seeds
+  // the service-period window), so the user can see exactly what is constraining the view.
+  const seededKeys = initialFilters ? Object.keys(initialFilters) : [];
+  const initialHidden = INITIAL_HIDDEN.filter((k) => !seededKeys.includes(k));
+
   const grid = useGrid<GridTransaction, GridTotals>({
     rows,
     columns: COLUMNS,
     gridKey: "transactions",
     canManage,
     initialSort: [{ key: "checkDate", dir: "desc" }],
-    initialHidden: INITIAL_HIDDEN,
+    initialHidden,
     initialWidths: INITIAL_WIDTHS,
+    initialFilters,
     searchKeys: SEARCH_KEYS,
     computeTotals: computeGridTotals,
     serializeHidden: true,
@@ -192,6 +202,16 @@ export default function TransactionsGrid({
 
   return (
     <div className="space-y-3">
+      {contextLabel ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--color-primary)] bg-[var(--color-primary-tint)] px-3 py-2 text-sm">
+          <span className="text-[var(--color-ink)]">
+            Showing rows for <span className="font-semibold">{contextLabel}</span>. The totals below are exactly these rows.
+          </span>
+          <Link href="/transactions" className="font-medium text-[var(--color-primary)] hover:underline">
+            Show all transactions →
+          </Link>
+        </div>
+      ) : null}
       <PeriodControl onChange={applyPeriod} paramKey="period" />
       <Toolbar
         grid={grid}
@@ -208,9 +228,10 @@ export default function TransactionsGrid({
           recompute live on the visible filter, matching exactly what you see. */}
       {totals ? (
         <div className="space-y-2">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency total (billed)</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.gross)}</div></div>
-            <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee amount</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div>
+            <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee / internal</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div>
+            <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency difference</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div>
             <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Hours</div><div className="text-xl font-semibold tabular-nums">{formatHours(totals.hours)}</div></div>
           </div>
           <button
@@ -222,8 +243,7 @@ export default function TransactionsGrid({
             {showMore ? "Hide extra totals" : "More totals"}
           </button>
           {showMore ? (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency markup</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Net pay (per check)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.netPerCheck)}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Transactions</div><div className="text-lg font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Checks</div><div className="text-lg font-semibold tabular-nums">{totals.checks.toLocaleString()}</div></div>
