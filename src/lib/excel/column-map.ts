@@ -114,7 +114,7 @@ export const REQUIRED_AHIVIM_FIELDS: AhivimField[] = [
 export function normalizeHeader(value: unknown): string {
   return String(value ?? "")
     .toLowerCase()
-    .replace(/[‐-―]/g, "-")
+    .replace(/[\\u2010-\\u2015]/g, "-")
     .replace(/[^a-z0-9 #-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
