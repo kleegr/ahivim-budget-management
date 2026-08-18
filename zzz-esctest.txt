@@ -1,2 +1,1 @@
-A:x‐z
-B:end
+B:[‐]end
