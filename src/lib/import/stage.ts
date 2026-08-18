@@ -13,7 +13,11 @@ import {
   type GroupCandidateRow,
   type GroupDetectionResult,
 } from "@/lib/business/group-allocation";
-import { classifyDuplicate, type TransactionIdentity } from "@/lib/business/fingerprint";
+import {
+  transactionFingerprint,
+  transactionNaturalKey,
+  type TransactionIdentity,
+} from "@/lib/business/fingerprint";
 
 /**
  * STAGING
@@ -126,10 +130,13 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
   const unmatchedIndividualNames = new Set<string>();
   const unmatchedEmployeeNames = new Set<string>();
 
-  // Fingerprints seen within THIS file, so a workbook that repeats a row
-  // internally is caught too.
-  const seenFingerprints = new Set<string>(ctx.knownFingerprints);
-  const seenNaturalKeys = new Set<string>(ctx.knownNaturalKeys);
+  // Fingerprints/keys seen EARLIER IN THIS FILE (starts empty). Kept separate from
+  // ctx.knownFingerprints (already in the ledger from a PRIOR import): a row that
+  // matches a prior commit is a re-import and is skipped, but a row identical to
+  // an earlier line in the SAME file is a distinct source line the workbook counts
+  // — it is imported and counted, only flagged.
+  const fileFingerprints = new Set<string>();
+  const fileNaturalKeys = new Set<string>();
 
   let agencyGross = dec(0);
   let internalTotal = dec(0);
@@ -198,11 +205,13 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
       const looksLikeSomeoneElse = individual.suggestions.length > 0;
       rowWarnings.push({
         category: "unmatched_individual",
-        severity: looksLikeSomeoneElse ? "warning" : "info",
+        // Not actionable at the row level — the row commits either way. The
+        // Matches screen reconciles a possible duplicate at the person level.
+        severity: "info",
         sourceRowNumber: row.sourceRowNumber,
         message: looksLikeSomeoneElse
-          ? `Individual resembles an existing record and was not matched automatically. ${individual.reason}`
-          : `New individual; will be created on commit. ${individual.reason}`,
+          ? `Committed to a new record; possibly the same person as ${individual.suggestions[0]?.displayName ?? "an existing record"} — the Matches screen offers a one-click merge.`
+          : `New individual; created on commit. ${individual.reason}`,
         details: {
           suggestionCount: individual.suggestions.length,
           suggestions: individual.suggestions.map((s) => s.displayName),
@@ -226,11 +235,12 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
       const looksLikeSomeoneElse = employee.suggestions.length > 0;
       rowWarnings.push({
         category: "unmatched_employee",
-        severity: looksLikeSomeoneElse ? "warning" : "info",
+        // Employees never hold a row; a possible duplicate is an audit note only.
+        severity: "info",
         sourceRowNumber: row.sourceRowNumber,
         message: looksLikeSomeoneElse
-          ? `Employee resembles an existing record and was not matched automatically. ${employee.reason}`
-          : `New employee; will be created on commit. ${employee.reason}`,
+          ? `Committed to a new record; possibly the same worker as ${employee.suggestions[0]?.displayName ?? "an existing record"}.`
+          : `New employee; created on commit. ${employee.reason}`,
         details: {
           suggestionCount: employee.suggestions.length,
           suggestions: employee.suggestions.map((s) => s.displayName),
@@ -324,20 +334,46 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
       rate: p.rate,
       amount: p.amount,
     };
-    const duplicate = classifyDuplicate(identity, {
-      fingerprints: seenFingerprints,
-      naturalKeys: seenNaturalKeys,
-    });
-    if (duplicate.status === "possible") {
+    const fingerprint = transactionFingerprint(identity);
+    const naturalKey = transactionNaturalKey(identity);
+    let dupStatus: "new" | "possible" | "confirmed";
+    let dupReason: string;
+    if (ctx.knownFingerprints.has(fingerprint)) {
+      // Already in the ledger from a prior import — a genuine re-import; skip it.
+      dupStatus = "confirmed";
+      dupReason = "An identical transaction is already in the ledger from a prior import.";
+    } else if (fileFingerprints.has(fingerprint)) {
+      // Exact repeat of an earlier line in THIS file. The workbook lists it as its
+      // own line and its own control totals count it, so it is a distinct, real
+      // transaction: imported and counted, flagged only so an accidental double
+      // entry can be caught — never silently dropped.
+      dupStatus = "possible";
+      dupReason =
+        "Identical to an earlier row in the same file. Both are imported and counted — " +
+        "confirm it is not an accidental double entry.";
+    } else if (ctx.knownNaturalKeys.has(naturalKey) || fileNaturalKeys.has(naturalKey)) {
+      // Same check, employee, individual, program and pay period as another row but
+      // a different hours/rate/amount — usually a correction. Imported and flagged.
+      dupStatus = "possible";
+      dupReason =
+        "Same check, employee, individual, program and pay period as another row, but a " +
+        "different hours, rate or amount — likely a correction. Both are imported.";
+    } else {
+      dupStatus = "new";
+      dupReason = "Not previously imported.";
+    }
+    if (dupStatus === "possible") {
       rowWarnings.push({
         category: "possible_duplicate",
-        severity: "warning",
+        // Informational: the row IS imported and counted; this only invites a look.
+        severity: "info",
         sourceRowNumber: row.sourceRowNumber,
-        message: duplicate.reason,
+        message: dupReason,
       });
     }
-    seenFingerprints.add(duplicate.fingerprint);
-    seenNaturalKeys.add(duplicate.naturalKey);
+    fileFingerprints.add(fingerprint);
+    fileNaturalKeys.add(naturalKey);
+    const duplicate = { status: dupStatus, fingerprint, naturalKey, reason: dupReason };
 
     // --- group candidate ---------------------------------------------------
     if (individual.matchedId || individual.normalizedName) {
@@ -376,20 +412,20 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
     // first workbook. What genuinely needs a person's decision is a name that
     // is ambiguous, blank, or close enough to an existing record to be a
     // misspelling of it — because merging or not merging changes the figures.
-    const individualNeedsDecision =
-      individual.outcome === "ambiguous" ||
-      individual.normalizedName === "" ||
-      (individual.outcome === "unmatched" && individual.suggestions.length > 0);
-    const employeeNeedsDecision =
-      employee !== null &&
-      (employee.outcome === "ambiguous" ||
-        (employee.outcome === "unmatched" && employee.suggestions.length > 0));
+    // A row is HELD only when it genuinely cannot be attributed: an ambiguous
+    // name (two canonical people share it — recorded as an error-severity warning
+    // above), a blank individual, or an unknown program. A NEAR-MISS — a name
+    // that merely resembles an existing record — is a real, countable
+    // transaction. It is committed to its own record and the possible duplicate
+    // is reconciled afterwards by the Matches scanner (confident single-letter
+    // typos auto-merge; the rest queue for a one-click merge). Excluding these
+    // understated every budget and total; the source sheet counts every row.
+    const individualUnattributable = individual.normalizedName === "";
 
     let status: StagedRowStatus;
     if (duplicate.status === "confirmed") status = "duplicate";
     else if (rowWarnings.some((w) => w.severity === "error")) status = "needs_review";
-    else if (!program.matched || individualNeedsDecision || employeeNeedsDecision)
-      status = "needs_review";
+    else if (!program.matched || individualUnattributable) status = "needs_review";
     else status = "valid";
 
     staged.push({
