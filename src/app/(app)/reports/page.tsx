@@ -68,7 +68,7 @@ export default async function ReportsPage() {
                 return (
                   <div
                     key={key}
-                    className="flex flex-col justify-between rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-4"
+                    className="card-interactive flex flex-col justify-between rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-4"
                   >
                     <div>
                       <Link href={`/reports/${key}`} className="display text-base font-medium hover:underline">
