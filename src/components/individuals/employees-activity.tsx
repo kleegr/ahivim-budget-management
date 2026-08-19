@@ -1,17 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
-import { formatHours, formatMoney } from "@/lib/money";
+import { dec, formatHours, formatMoney } from "@/lib/money";
 import { txLink } from "@/lib/nav/tx-link";
 import type { PeriodEmployee } from "@/lib/data/queries";
 
 /**
- * Employees working with this individual, this budget year. Each row is a
- * dropdown (collapsed by default); opening it reveals that employee's own
- * transactions for this person — the same rows you'd get from the ledger, inline
- * — so you never have to leave the page. The "rows →" link still opens the full
- * Transactions grid pre-filtered to this employee, this person, this period.
+ * Employees working with this individual, THIS budget year only (the rows are
+ * already windowed to the period). Each row is a dropdown; opening it reveals a
+ * mini transactions view for that employee — filter by program with a click and
+ * the totals underneath update live, just like the Transactions grid, without
+ * leaving the page. "rows →" still opens the full grid pre-filtered.
  */
 export default function EmployeesActivity({
   individualId,
@@ -67,39 +67,105 @@ export default function EmployeesActivity({
               </Link>
             </div>
 
-            {isOpen ? (
-              <div className="bg-[var(--color-surface-muted)] px-5 pb-3 pt-1">
-                {e.transactions.length === 0 ? (
-                  <p className="py-2 text-xs text-[var(--color-ink-faint)]">No itemized rows in this period.</p>
-                ) : (
-                  <table className="w-full border-collapse text-xs">
-                    <thead>
-                      <tr className="text-left text-[var(--color-text-soft)]">
-                        <th className="py-1.5 pr-3 font-medium">Pay period</th>
-                        <th className="px-2 py-1.5 font-medium">Program</th>
-                        <th className="px-2 py-1.5 text-right font-medium">Hours</th>
-                        <th className="px-2 py-1.5 text-right font-medium">Billed $</th>
-                        <th className="py-1.5 pl-2 text-right font-medium">Company $</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {e.transactions.map((t) => (
-                        <tr key={t.id} className="border-t border-[var(--color-rule)]">
-                          <td className="tnum py-1.5 pr-3 text-[var(--color-ink-soft)]">{t.periodBegin}</td>
-                          <td className="px-2 py-1.5">{t.programName}</td>
-                          <td className="tnum px-2 py-1.5 text-right">{formatHours(t.hours)}</td>
-                          <td className="tnum px-2 py-1.5 text-right">{formatMoney(t.agency)}</td>
-                          <td className="tnum py-1.5 pl-2 text-right text-[var(--color-ink-soft)]">{formatMoney(t.internal)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            ) : null}
+            {isOpen ? <EmployeePanel employee={e} /> : null}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** The expandable per-employee snippet: a program filter + itemized rows + live totals. */
+function EmployeePanel({ employee }: { employee: PeriodEmployee }) {
+  const programs = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of employee.transactions) set.add(t.programName);
+    return [...set].sort();
+  }, [employee.transactions]);
+
+  const [active, setActive] = useState<Set<string> | null>(null); // null = all programs
+  const isOn = (p: string) => active === null || active.has(p);
+  const toggleProgram = (p: string) =>
+    setActive((prev) => {
+      const base = prev ?? new Set(programs);
+      const next = new Set(base);
+      if (next.has(p)) next.delete(p);
+      else next.add(p);
+      // Back to "all" when everything is on again — keeps the chips visually clean.
+      return next.size === programs.length ? null : next;
+    });
+
+  const rows = employee.transactions.filter((t) => isOn(t.programName));
+  const totals = rows.reduce(
+    (acc, t) => ({
+      hours: acc.hours.plus(dec(t.hours)),
+      agency: acc.agency.plus(dec(t.agency)),
+      internal: acc.internal.plus(dec(t.internal)),
+    }),
+    { hours: dec(0), agency: dec(0), internal: dec(0) },
+  );
+
+  return (
+    <div className="bg-[var(--color-surface-muted)] px-5 pb-3 pt-2">
+      {programs.length > 1 ? (
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-[0.7rem] font-medium uppercase tracking-wide text-[var(--color-text-soft)]">Program</span>
+          {programs.map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => toggleProgram(p)}
+              aria-pressed={isOn(p)}
+              className={`rounded-full px-2 py-0.5 text-xs font-medium transition-colors ${
+                isOn(p)
+                  ? "bg-[var(--color-primary)] text-white"
+                  : "bg-[var(--color-surface-strong)] text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"
+              }`}
+            >
+              {p}
+            </button>
+          ))}
+          {active !== null ? (
+            <button type="button" onClick={() => setActive(null)} className="ml-1 text-[0.7rem] text-[var(--color-ink-faint)] underline underline-offset-2">
+              all
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {rows.length === 0 ? (
+        <p className="py-2 text-xs text-[var(--color-ink-faint)]">No rows for the chosen program.</p>
+      ) : (
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr className="text-left text-[var(--color-text-soft)]">
+              <th className="py-1.5 pr-3 font-medium">Pay period</th>
+              <th className="px-2 py-1.5 font-medium">Program</th>
+              <th className="px-2 py-1.5 text-right font-medium">Hours</th>
+              <th className="px-2 py-1.5 text-right font-medium">Billed $</th>
+              <th className="py-1.5 pl-2 text-right font-medium">Company $</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((t) => (
+              <tr key={t.id} className="border-t border-[var(--color-rule)]">
+                <td className="tnum py-1.5 pr-3 text-[var(--color-ink-soft)]">{t.periodBegin}</td>
+                <td className="px-2 py-1.5">{t.programName}</td>
+                <td className="tnum px-2 py-1.5 text-right">{formatHours(t.hours)}</td>
+                <td className="tnum px-2 py-1.5 text-right">{formatMoney(t.agency)}</td>
+                <td className="tnum py-1.5 pl-2 text-right text-[var(--color-ink-soft)]">{formatMoney(t.internal)}</td>
+              </tr>
+            ))}
+            <tr className="border-t-2 border-[var(--color-rule-strong)] font-semibold">
+              <td className="py-1.5 pr-3">Total</td>
+              <td className="px-2 py-1.5 text-[var(--color-ink-faint)]">{rows.length} {rows.length === 1 ? "row" : "rows"}</td>
+              <td className="tnum px-2 py-1.5 text-right">{formatHours(totals.hours.toString())}</td>
+              <td className="tnum px-2 py-1.5 text-right">{formatMoney(totals.agency.toString())}</td>
+              <td className="tnum py-1.5 pl-2 text-right">{formatMoney(totals.internal.toString())}</td>
+            </tr>
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
