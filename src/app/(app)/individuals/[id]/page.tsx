@@ -2,9 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
-import { getIndividualReport, getIndividualBudgetView, type BudgetLine } from "@/lib/data/queries";
+import { getIndividualReport, getIndividualBudgetView } from "@/lib/data/queries";
 import { BUDGET_STATUS_PRESENT, type BudgetLineStatus } from "@/lib/business/budget-status";
-import { isUuid, listEmployees, listPrograms } from "@/lib/data/app-queries";
+import { isUuid } from "@/lib/data/app-queries";
 import { getIndividual } from "@/lib/manage/individuals";
 import { listStrategies } from "@/lib/manage/calculation-strategies";
 import { listAssignments } from "@/lib/manage/assignments";
@@ -14,6 +14,7 @@ import {
   Card, Table, Th, Td, Tr, Money, Hours, ErrorPanel, PageHeader, ButtonLink,
 } from "@/components/ui";
 import { CreateButton, ActionButton, Field, TextAreaField } from "@/components/manage/client";
+import BudgetEditor, { type BudgetEditorLine } from "@/components/individuals/budget-editor";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import { txLink } from "@/lib/nav/tx-link";
 
@@ -51,12 +52,12 @@ function BudgetBar({ usagePercent, elapsedPercent, color }: { usagePercent: numb
   );
 }
 
-function renewLine(daysToRenewal: number | null, renewalDate: string | null): string {
-  if (!renewalDate) return "No renewal date on file";
-  if (daysToRenewal === null) return `Renews ${renewalDate}`;
-  if (daysToRenewal < 0) return `Renewal was ${Math.abs(daysToRenewal)} day${Math.abs(daysToRenewal) === 1 ? "" : "s"} ago (${renewalDate})`;
-  if (daysToRenewal === 0) return `Renews today (${renewalDate})`;
-  return `Renews in ${daysToRenewal} day${daysToRenewal === 1 ? "" : "s"} (${renewalDate})`;
+function renewLine(active: boolean, daysToRenewal: number | null, effectiveRenewal: string | null): string {
+  if (!effectiveRenewal) return "No renewal date on file";
+  if (!active) return `Inactive · renewal frozen at ${effectiveRenewal}`;
+  if (daysToRenewal === null) return `Renews ${effectiveRenewal}`;
+  if (daysToRenewal <= 0) return `Renews today (${effectiveRenewal})`;
+  return `Renews in ${daysToRenewal} day${daysToRenewal === 1 ? "" : "s"} (${effectiveRenewal})`;
 }
 
 export default async function IndividualDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -68,23 +69,21 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   const result = await withDb(async (pool) => {
     const individual = await getIndividual(pool, id);
     if (!individual) return null;
-    const [budget, report, strategies, assignments, aliasesAll, scheduledByProgram, programs, employees] = await Promise.all([
+    const [budget, report, strategies, assignments, aliasesAll, scheduledByProgram] = await Promise.all([
       getIndividualBudgetView(pool, id),
       getIndividualReport(pool, id),
       listStrategies(pool, { individualId: id, withAnalytics: true }),
       listAssignments(pool, { individualId: id, includeInactive: true }),
       listAliases(pool, { kind: "individual" }),
       scheduledByProgramForIndividual(pool, id),
-      listPrograms(pool),
-      listEmployees(pool),
     ]);
     return {
       individual, budget, report,
       strategy: strategies.rows[0] ?? null,
+      programs: strategies.programs, // program list with default per-hour rates, for the editor
       assignments: assignments.filter((a) => a.status === "active"),
       aliases: aliasesAll.filter((a) => a.canonicalId === id),
       scheduled: Object.entries(scheduledByProgram),
-      programs, employees,
     };
   });
 
@@ -98,9 +97,19 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   }
   if (!result.data) notFound();
 
-  const { individual, budget, report, strategy, assignments, aliases, scheduled } = result.data;
+  const { individual, budget, report, strategy, programs, assignments, aliases, scheduled } = result.data;
   const t = budget.totals;
   const headline = budget.headline ? BUDGET_STATUS_PRESENT[budget.headline] : null;
+
+  const editorLines: BudgetEditorLine[] = budget.lines.map((l) => ({
+    programId: l.programId,
+    programName: l.programName,
+    perHour: l.perHour,
+    authorizedHours: l.authorizedHours,
+    usedHours: l.usedHours,
+    inPlan: l.inPlan,
+  }));
+  const editorPrograms = programs.map((p) => ({ id: p.id, code: p.code, name: p.name, defaultRate: p.internalRate }));
 
   /* ---- manager actions in the header ---- */
   const headerActions = canEdit ? (
@@ -147,7 +156,7 @@ export default async function IndividualDetailPage({ params }: { params: Promise
                 <span className="tnum font-medium" style={{ color: dec(t.remainingHours).isNegative() ? "var(--color-pace-over)" : "var(--color-ink)" }}>
                   {formatHours(t.remainingHours)} h {dec(t.remainingHours).isNegative() ? "over" : "left"}
                 </span>
-                {" · "}{renewLine(budget.daysToRenewal, budget.renewalDate)}
+                {" · "}{renewLine(budget.active, budget.daysToRenewal, budget.effectiveRenewal)}
               </p>
             </div>
             {headline ? <StatusPill status={budget.headline!} /> : null}
@@ -162,29 +171,28 @@ export default async function IndividualDetailPage({ params }: { params: Promise
       ) : (
         <section className="card mb-6 px-5 py-5">
           <p className="eyebrow">Budget</p>
-          <p className="mt-1 text-lg font-semibold">No budget plan on file yet</p>
+          <p className="mt-1 text-lg font-semibold">No budget set yet</p>
           <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
-            Once this person has authorized hours in the Financial plan, this is where you&rsquo;ll see used vs. left for every program.
+            {canEdit
+              ? "Add this person's programs, hours and renewal date in the budget below — it's all editable right here."
+              : "Once this person has a budget, this is where you'll see used vs. left for every program."}
             {budget.money.txCount > 0 ? ` They already have ${budget.money.txCount.toLocaleString()} billed transactions on file.` : ""}
           </p>
-          {canEdit ? <div className="mt-3"><ButtonLink href={`/calculations?individualId=${id}`} variant="primary">Set up the plan →</ButtonLink></div> : null}
         </section>
       )}
 
-      {/* ---- Budget by program: the heart of the page ---- */}
-      {budget.lines.length > 0 ? (
-        <Card
-          title="Budget by program"
-          description="Authorized hours from the plan, used hours from the real transactions, and what's left — for this renewal year. Click any program to see the rows behind it."
-          action={canEdit ? <ButtonLink href={`/calculations?individualId=${id}`} variant="secondary">Edit plan →</ButtonLink> : undefined}
-          className="mb-6"
-        >
-          <div className="divide-y divide-[var(--color-rule)]">
-            {budget.lines.map((line) => (
-              <BudgetProgramRow key={line.programId} id={id} line={line} elapsedPercent={budget.timeElapsedPercent} periodStart={budget.periodStart} periodEnd={budget.periodEnd} />
-            ))}
-          </div>
-        </Card>
+      {/* ---- Budget by program — editable inline, shaped like the rollover sheet ---- */}
+      {budget.lines.length > 0 || canEdit ? (
+        <BudgetEditor
+          individualId={id}
+          strategyId={budget.strategyId}
+          active={budget.active}
+          renewalDate={budget.renewalDate}
+          effectiveRenewal={budget.effectiveRenewal}
+          lines={editorLines}
+          programs={editorPrograms}
+          canEdit={canEdit}
+        />
       ) : null}
 
       {/* ---- Money billed this period ---- */}
@@ -203,8 +211,8 @@ export default async function IndividualDetailPage({ params }: { params: Promise
       {strategy ? (
         <Card
           title="Financial plan"
-          description="How this account's money is worked out: authorized hours valued at the internal rate, taken to a month, then the two cuts and any adjustments — ending at the net."
-          action={canEdit ? <ButtonLink href={`/calculations?individualId=${id}`} variant="secondary">Open in Financial →</ButtonLink> : undefined}
+          description="How this account's money is worked out: the budget above valued at the per-hour rate, taken to a month, then the two cuts and any adjustments — ending at the net."
+          action={canEdit ? <ButtonLink href={`/calculations?individualId=${id}`} variant="secondary">Adjust cuts →</ButtonLink> : undefined}
           className="mb-6"
         >
           <div className="px-5 py-4 text-sm">
@@ -242,44 +250,6 @@ function MoneyTile({ label, value, plain }: { label: string; value: string; plai
     <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface-muted)] px-3 py-2.5">
       <p className="eyebrow text-[var(--color-text-soft)]">{label}</p>
       <p className={`mt-1 text-xl font-semibold ${plain ? "" : "tnum"}`}>{value}</p>
-    </div>
-  );
-}
-
-function BudgetProgramRow({
-  id, line, elapsedPercent, periodStart, periodEnd,
-}: {
-  id: string; line: BudgetLine; elapsedPercent: number | null; periodStart: string | null; periodEnd: string | null;
-}) {
-  const s = BUDGET_STATUS_PRESENT[line.status];
-  const remaining = dec(line.remainingHours);
-  const href = txLink({ individualId: id, program: line.programName, pbFrom: periodStart ?? undefined, pbTo: periodEnd ?? undefined });
-  return (
-    <div className="px-5 py-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <Link href={href} className="text-sm font-semibold text-[var(--color-primary)] underline-offset-2 hover:underline">
-          {line.programName}
-        </Link>
-        <StatusPill status={line.status} />
-      </div>
-      <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
-        {line.inPlan ? (
-          <>
-            <span>Used <span className="tnum font-semibold">{formatHours(line.usedHours)}</span> of <span className="tnum">{formatHours(line.authorizedHours)}</span> h</span>
-            <span style={{ color: remaining.isNegative() ? "var(--color-pace-over)" : "var(--color-ink-soft)" }}>
-              <span className="tnum font-medium">{formatHours(line.remainingHours)}</span> h {remaining.isNegative() ? "over" : "left"}
-            </span>
-          </>
-        ) : (
-          <span>Billed <span className="tnum font-semibold">{formatHours(line.usedHours)}</span> h — this program isn&rsquo;t in the plan</span>
-        )}
-        {line.txCount > 0 ? <span className="text-[var(--color-ink-faint)]">{line.txCount} transaction{line.txCount === 1 ? "" : "s"} · {formatMoney(line.agencyBilled)} agency</span> : null}
-      </div>
-      {line.inPlan ? (
-        <div className="mt-2 max-w-xl">
-          <BudgetBar usagePercent={line.usagePercent} elapsedPercent={elapsedPercent} color={s.color} />
-        </div>
-      ) : null}
     </div>
   );
 }
