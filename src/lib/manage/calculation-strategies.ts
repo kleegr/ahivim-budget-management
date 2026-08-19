@@ -323,9 +323,18 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
                      t.internal_rate_applied * t.imported_hours, 0)),0)::text AS internal,
             count(*)::text AS observations
        FROM payroll_transactions t
+       JOIN programs pr ON pr.id = t.program_id
        LEFT JOIN win w ON w.individual_id = t.individual_id
       WHERE t.individual_id = ANY($4::uuid[]) AND t.program_id IS NOT NULL
-        AND (w.individual_id IS NULL OR (t.period_begin >= w.start_date AND t.period_begin <= w.end_date))
+        AND (
+          -- Day Hab / Supplemental always bill on the calendar year …
+          (pr.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
+             AND t.period_begin >= make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int, 1, 1)
+             AND t.period_begin <  make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int + 1, 1, 1))
+          -- … everything else uses the individual's own renewal window.
+          OR (pr.code NOT IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
+             AND (w.individual_id IS NULL OR (t.period_begin >= w.start_date AND t.period_begin <= w.end_date)))
+        )
       GROUP BY t.individual_id, t.program_id`,
     [winIds, winStarts, winEnds, individualIds],
   );

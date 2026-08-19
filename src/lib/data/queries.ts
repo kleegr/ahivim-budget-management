@@ -11,7 +11,7 @@ import {
 } from "@/lib/business/utilization";
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
-import { derivePeriodFromRenewal, currentBudgetPeriod } from "@/lib/business/calculation-strategy";
+import { derivePeriodFromRenewal, currentBudgetPeriod, programBudgetPeriod, isCalendarYearProgram } from "@/lib/business/calculation-strategy";
 import {
   type BudgetLineStatus,
   BUDGET_STATUS_RANK,
@@ -520,8 +520,14 @@ export async function listIndividualBudgetBoard(
            FROM payroll_transactions t
           WHERE t.individual_id = i.id
             AND t.program_id = l.program_id
-            AND t.period_begin >= (pl.period_end - interval '1 year')
-            AND t.period_begin <= pl.period_end
+            -- Day Hab / Supplemental always use the calendar year; everything
+            -- else uses the individual's own renewal window.
+            AND t.period_begin >= (CASE WHEN pr.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
+                                        THEN make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int, 1, 1)
+                                        ELSE (pl.period_end - interval '1 year')::date END)
+            AND t.period_begin <= (CASE WHEN pr.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
+                                        THEN make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int + 1, 1, 1)
+                                        ELSE pl.period_end END)
        ) b ON l.id IS NOT NULL
       WHERE i.merged_into_id IS NULL
       ORDER BY i.display_name`,
@@ -796,6 +802,9 @@ export interface BudgetLine {
   internalBilled: string;
   txCount: number;
   inPlan: boolean;
+  effectiveRenewal: string | null; // this PROGRAM's renewal (Jan 1 for Day Hab / Supplemental)
+  daysToRenewal: number | null; // days to this program's renewal
+  calendarYear: boolean; // true when the program runs the Jan→Jan calendar year
 }
 
 export interface IndividualBudgetView {
@@ -811,6 +820,7 @@ export interface IndividualBudgetView {
   timeElapsedPercent: number | null; // 0..100, for the pace marker
   lines: BudgetLine[];
   totals: { authorizedHours: string; usedHours: string; remainingHours: string; usagePercent: number | null };
+  perMonthToFinish: string | null; // Σ per-program (remaining ÷ months to that program's renewal)
   money: { agencyBilled: string; internalBilled: string; txCount: number };
   headline: BudgetLineStatus | null; // worst line, for the one-glance answer
 }
@@ -866,48 +876,73 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
   // internal per-hour. Some programs (self-hire) have no agency rate configured.
   const agencyRateByProgram = new Map(rateRows.map((r) => [r.program_id, r.agency_rate]));
 
-  // Billed inside the current period, per program (the real "used").
-  const billedRows =
-    period.start && period.end
-      ? (
-          await pool.query<{ program_id: string; program_name: string; program_code: string; hours: string; agency: string; internal: string; cnt: number }>(
-            `SELECT t.program_id, p.name AS program_name, p.code AS program_code,
-                    sum(t.imported_hours)::text AS hours,
-                    sum(t.imported_amount)::text AS agency,
-                    sum(COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
-                             t.internal_rate_applied * t.imported_hours, 0))::text AS internal,
-                    count(*)::int AS cnt
-               FROM payroll_transactions t
-               JOIN programs p ON p.id = t.program_id
-              WHERE t.individual_id = $1 AND t.program_id IS NOT NULL
-                AND t.period_begin >= $2 AND t.period_begin <= $3
-              GROUP BY t.program_id, p.name, p.code`,
-            [individualId, period.start, period.end],
-          )
-        ).rows
-      : [];
+  // Billed "used", per program, each windowed to ITS OWN budget year. Most
+  // programs use the individual's renewal window ($2/$3); Day Hab and Supplemental
+  // always use the calendar year (Jan 1 → Jan 1), so their used/left never mixes
+  // with the person's own renewal. When the individual has no renewal window at
+  // all, only the calendar-year programs still resolve (the rest are excluded).
+  const billedRows = (
+    await pool.query<{ program_id: string; program_name: string; program_code: string; hours: string; agency: string; internal: string; cnt: number }>(
+      `WITH scoped AS (
+         SELECT t.program_id, p.name AS program_name, p.code AS program_code,
+                t.imported_hours, t.imported_amount, t.period_begin,
+                COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
+                         t.internal_rate_applied * t.imported_hours, 0) AS internal_amt,
+                CASE WHEN p.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
+                     THEN make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int, 1, 1)
+                     ELSE $2::date END AS win_start,
+                CASE WHEN p.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
+                     THEN make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int + 1, 1, 1)
+                     ELSE $3::date END AS win_end
+           FROM payroll_transactions t
+           JOIN programs p ON p.id = t.program_id
+          WHERE t.individual_id = $1 AND t.program_id IS NOT NULL
+       )
+       SELECT program_id, program_name, program_code,
+              sum(imported_hours)::text  AS hours,
+              sum(imported_amount)::text AS agency,
+              sum(internal_amt)::text    AS internal,
+              count(*)::int              AS cnt
+         FROM scoped
+        WHERE win_start IS NOT NULL AND period_begin >= win_start AND period_begin <= win_end
+        GROUP BY program_id, program_name, program_code`,
+      [individualId, period.start, period.end],
+    )
+  ).rows;
 
   const billedByProgram = new Map(billedRows.map((r) => [r.program_id, r]));
   const authByProgram = new Map(authRows.map((r) => [r.program_id, r]));
   const allProgramIds = new Set<string>([...authByProgram.keys(), ...billedByProgram.keys()]);
 
+  const dayMs = 24 * 60 * 60 * 1000;
+  const nowD = new Date();
+  const todayUtc = Date.UTC(nowD.getUTCFullYear(), nowD.getUTCMonth(), nowD.getUTCDate());
+  const daysTo = (d: string | null) => (d ? Math.round((Date.parse(`${d}T00:00:00Z`) - todayUtc) / dayMs) : null);
+
   let totAuth = dec(0), totUsed = dec(0), totAgency = dec(0), totInternal = dec(0), totTx = 0;
+  let perMonthTotal = dec(0), anyPerMonth = false;
   let headline: BudgetLineStatus | null = null;
   const lines: BudgetLine[] = [];
   for (const pid of allProgramIds) {
     const a = authByProgram.get(pid);
     const b = billedByProgram.get(pid);
+    const code = a?.program_code ?? b?.program_code ?? "";
     const authorized = dec(a?.authorized_hours ?? 0);
     const used = dec(b?.hours ?? 0);
     const remaining = authorized.minus(used);
     const status = budgetLineStatus(authorized, used);
     const usagePercent = authorized.greaterThan(0) ? used.dividedBy(authorized).toNumber() : null;
+    // This program's own budget year (Day Hab / Supplemental = calendar year).
+    const lp = programBudgetPeriod(code, renewalDate, active);
+    const lineDays = daysTo(lp.effectiveRenewal);
+    const lineMonths = lineDays !== null && lineDays > 0 ? lineDays / 30.4375 : null;
     // Budget totals reflect the PLAN only, so "used of authorized" matches the
     // per-program table. Money counts every billed row in the period.
     if (a) {
       totAuth = totAuth.plus(authorized);
       totUsed = totUsed.plus(used);
       if (headline === null || BUDGET_STATUS_RANK[status] > BUDGET_STATUS_RANK[headline]) headline = status;
+      if (lineMonths && remaining.greaterThan(0)) { perMonthTotal = perMonthTotal.plus(remaining.dividedBy(lineMonths)); anyPerMonth = true; }
     }
     totAgency = totAgency.plus(dec(b?.agency ?? 0));
     totInternal = totInternal.plus(dec(b?.internal ?? 0));
@@ -917,7 +952,7 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
     lines.push({
       programId: pid,
       programName: a?.program_name ?? b?.program_name ?? "Unknown program",
-      programCode: a?.program_code ?? b?.program_code ?? "",
+      programCode: code,
       authorizedHours: toHours(authorized),
       perHour: toMoney(dec(perHour)),
       perHourAgency: agencyRate === null ? null : toMoney(dec(agencyRate)),
@@ -929,6 +964,9 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
       internalBilled: toMoney(dec(b?.internal ?? 0)),
       txCount: b?.cnt ?? 0,
       inPlan: !!a,
+      effectiveRenewal: lp.effectiveRenewal,
+      daysToRenewal: lineDays,
+      calendarYear: isCalendarYearProgram(code),
     });
   }
   // Planned lines first (biggest authorization first), then billed-not-planned.
@@ -942,12 +980,9 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
   let expired = false;
   let timeElapsedPercent: number | null = null;
   if (effectiveRenewal) {
-    const dayMs = 24 * 60 * 60 * 1000;
-    const today = new Date();
-    const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
-    daysToRenewal = Math.round((Date.parse(`${effectiveRenewal}T00:00:00Z`) - todayUtc) / dayMs);
+    daysToRenewal = daysTo(effectiveRenewal);
     // Active accounts always roll forward, so "expired" only applies to inactive ones.
-    expired = !active && daysToRenewal < 0;
+    expired = !active && (daysToRenewal ?? 0) < 0;
     if (period.start && period.end) {
       const start = Date.parse(`${period.start}T00:00:00Z`);
       const end = Date.parse(`${period.end}T00:00:00Z`);
@@ -973,6 +1008,7 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
       remainingHours: toHours(totAuth.minus(totUsed)),
       usagePercent: totAuth.greaterThan(0) ? totUsed.dividedBy(totAuth).toNumber() : null,
     },
+    perMonthToFinish: anyPerMonth ? toHours(perMonthTotal) : null,
     money: { agencyBilled: toMoney(totAgency), internalBilled: toMoney(totInternal), txCount: totTx },
     headline,
   };

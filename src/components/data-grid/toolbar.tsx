@@ -66,17 +66,40 @@ export function Toolbar<Row, T>({
           {colsOpen ? (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setColsOpen(false)} aria-hidden />
-              <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-2 shadow-lg">
-                <div className="scroll-thin max-h-64 space-y-0.5 overflow-auto">
-                  {grid.columns.map((c) => (
-                    <label key={c.key} className="flex items-center gap-2 rounded px-1 py-0.5 text-sm hover:bg-[var(--color-surface-strong)]">
-                      <input type="checkbox" checked={!grid.hidden.has(c.key)} onChange={() => grid.toggleHidden(c.key)} />
-                      <span className="flex-1 truncate">{c.label}</span>
-                    </label>
+              <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-2 shadow-lg">
+                <p className="mb-1 px-1 text-[0.7rem] font-medium uppercase tracking-wide text-[var(--color-text-soft)]">Show, hide &amp; reorder</p>
+                <div className="scroll-thin max-h-72 space-y-0.5 overflow-auto">
+                  {grid.orderedColumns.map((c, i) => (
+                    <div key={c.key} className="group flex items-center gap-1 rounded px-1 py-0.5 text-sm hover:bg-[var(--color-surface-strong)]">
+                      <label className="flex flex-1 items-center gap-2 truncate">
+                        <input type="checkbox" checked={!grid.hidden.has(c.key)} onChange={() => grid.toggleHidden(c.key)} />
+                        <span className="flex-1 truncate">{c.label || "—"}</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => grid.moveColumn(c.key, -1)}
+                        disabled={i === 0}
+                        title="Move up (earlier)"
+                        aria-label={`Move ${c.label} earlier`}
+                        className="rounded px-1 text-[var(--color-ink-faint)] hover:text-[var(--color-ink)] disabled:opacity-30"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => grid.moveColumn(c.key, 1)}
+                        disabled={i === grid.orderedColumns.length - 1}
+                        title="Move down (later)"
+                        aria-label={`Move ${c.label} later`}
+                        className="rounded px-1 text-[var(--color-ink-faint)] hover:text-[var(--color-ink)] disabled:opacity-30"
+                      >
+                        ▼
+                      </button>
+                    </div>
                   ))}
                 </div>
                 <button type="button" className="mt-1 w-full text-xs text-[var(--color-ink-faint)] underline underline-offset-2" onClick={grid.resetHidden}>
-                  Reset columns
+                  Reset visible columns
                 </button>
               </div>
             </>
