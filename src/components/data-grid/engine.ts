@@ -7,6 +7,7 @@ import {
   type SortState,
   type ValueCount,
   type FilterChip,
+  type DateGroup,
   isNumericKind,
   isDateKind,
   defaultExportType,
@@ -26,6 +27,31 @@ export function rawValue<Row>(col: ColumnDef<Row>, r: Row): string {
 export function numValue<Row>(col: ColumnDef<Row>, r: Row): number | null {
   const d = tryDec(col.accessor(r));
   return d === null ? null : d.toNumber();
+}
+
+/** Bucket an ISO date ("YYYY-MM-DD") to the chosen granularity for value lists. */
+export function dateBucket(iso: string, group: DateGroup): string {
+  if (!iso) return "";
+  if (group === "year") return iso.slice(0, 4);
+  if (group === "month") return iso.slice(0, 7);
+  return iso.slice(0, 10);
+}
+
+/**
+ * The canonical value a checkbox filter matches on, per column kind:
+ *   text/badge -> the raw string
+ *   number     -> a canonical numeric string ("21.0000" and "21" collapse)
+ *   date       -> the bucket at `dateGroup` ("2026", "2026-08", "2026-08-18")
+ * Both the value list and row matching go through this, so they always agree.
+ */
+export function filterKey<Row>(col: ColumnDef<Row>, r: Row, dateGroup?: DateGroup): string {
+  const raw = rawValue(col, r);
+  if (isDateKind(col.kind)) return dateBucket(raw, dateGroup ?? "day");
+  if (isNumericKind(col.kind)) {
+    const d = tryDec(raw);
+    return d === null ? raw : d.toString();
+  }
+  return raw;
 }
 
 export function formatCell<Row>(col: ColumnDef<Row>, r: Row): string {
@@ -54,35 +80,39 @@ export function formatCell<Row>(col: ColumnDef<Row>, r: Row): string {
 
 export function filterActive<Row>(col: ColumnDef<Row>, f?: ColumnFilter): boolean {
   if (!f) return false;
+  // A `selected` array that is *present* is an active filter for ANY column —
+  // even when empty, which means "show none" (Google-Sheets "Clear all").
+  if (f.selected !== undefined) return true;
   if (isNumericKind(col.kind)) return (f.min ?? "") !== "" || (f.max ?? "") !== "";
   if (isDateKind(col.kind)) return Boolean(f.from || f.to);
-  // A `selected` array that is *present* is an active filter — even when empty,
-  // which means "show none" (Google-Sheets "Clear all"). Absent selected = all.
-  return f.selected !== undefined || Boolean(f.contains);
+  return Boolean(f.contains);
 }
 
 export function passesFilter<Row>(col: ColumnDef<Row>, r: Row, f?: ColumnFilter): boolean {
   if (!f) return true;
+  // Checkbox value-set selection now applies to every column kind. A present
+  // `selected` (even empty) constrains to exactly that set of buckets/values.
+  if (f.selected !== undefined) {
+    const key = filterKey(col, r, f.dateGroup);
+    if (!f.selected.includes(key)) return false;
+  }
+  // Range / substring constraints AND on top of the value selection.
   if (isNumericKind(col.kind)) {
     const hasMin = (f.min ?? "") !== "";
     const hasMax = (f.max ?? "") !== "";
-    if (!hasMin && !hasMax) return true;
-    const v = numValue(col, r);
-    if (v === null) return false;
-    if (hasMin && v < Number(f.min)) return false;
-    if (hasMax && v > Number(f.max)) return false;
-    return true;
-  }
-  if (isDateKind(col.kind)) {
+    if (hasMin || hasMax) {
+      const v = numValue(col, r);
+      if (v === null) return false;
+      if (hasMin && v < Number(f.min)) return false;
+      if (hasMax && v > Number(f.max)) return false;
+    }
+  } else if (isDateKind(col.kind)) {
     const raw = rawValue(col, r);
     if (f.from && raw < f.from) return false;
     if (f.to && raw > f.to) return false;
-    return true;
+  } else if (f.contains) {
+    if (!rawValue(col, r).toLowerCase().includes(f.contains.toLowerCase())) return false;
   }
-  const raw = rawValue(col, r);
-  // `selected` present (even empty) constrains to exactly that set; absent = all.
-  if (f.selected !== undefined && !f.selected.includes(raw)) return false;
-  if (f.contains && !raw.toLowerCase().includes(f.contains.toLowerCase())) return false;
   return true;
 }
 
@@ -159,12 +189,22 @@ export function valueCountsFor<Row>(
   const col = cols.find((c) => c.key === key);
   if (!col) return [];
   const base = applyFilters(rows, cols, filters, search, searchKeys, key);
+  const dateGroup = filters[key]?.dateGroup;
   const tally = new Map<string, number>();
   for (const r of base) {
-    const v = rawValue(col, r);
+    const v = filterKey(col, r, dateGroup);
     tally.set(v, (tally.get(v) ?? 0) + 1);
   }
-  return [...tally.entries()].sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+  const entries = [...tally.entries()];
+  if (isDateKind(col.kind)) {
+    // Newest first — the useful default for a date value list.
+    entries.sort((a, b) => (a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0));
+  } else if (isNumericKind(col.kind)) {
+    entries.sort((a, b) => (Number(a[0]) || 0) - (Number(b[0]) || 0));
+  } else {
+    entries.sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+  }
+  return entries;
 }
 
 /** 3-state single-column cycle (asc → desc → none); shift adds/updates a level. */
@@ -185,23 +225,27 @@ export function filterChips<Row>(cols: ColumnDef<Row>[], filters: FilterState): 
   for (const col of cols) {
     const f = filters[col.key];
     if (!filterActive(col, f) || !f) continue;
+    const parts: string[] = [];
+    // The value selection reads the same for every kind.
+    if (f.selected !== undefined) {
+      if (f.selected.length === 0) parts.push("none");
+      else if (f.selected.length <= 3) parts.push(f.selected.map((v) => v || "(blank)").join(", "));
+      else parts.push(`${f.selected.length} selected`);
+    }
     if (isNumericKind(col.kind)) {
       const min = (f.min ?? "") !== "";
       const max = (f.max ?? "") !== "";
-      const label = min && max ? `${col.label}: ${f.min}–${f.max}` : min ? `${col.label} ≥ ${f.min}` : `${col.label} ≤ ${f.max}`;
-      chips.push({ key: col.key, label });
+      if (min && max) parts.push(`${f.min}–${f.max}`);
+      else if (min) parts.push(`≥ ${f.min}`);
+      else if (max) parts.push(`≤ ${f.max}`);
     } else if (isDateKind(col.kind)) {
-      const label = f.from && f.to ? `${col.label}: ${f.from} → ${f.to}` : f.from ? `${col.label} ≥ ${f.from}` : `${col.label} ≤ ${f.to}`;
-      chips.push({ key: col.key, label });
-    } else {
-      const parts: string[] = [];
-      if (f.selected !== undefined) {
-        if (f.selected.length === 0) parts.push("none");
-        else parts.push(f.selected.length <= 3 ? f.selected.map((v) => v || "(blank)").join(", ") : `${f.selected.length} selected`);
-      }
-      if (f.contains) parts.push(`“${f.contains}”`);
-      chips.push({ key: col.key, label: `${col.label}: ${parts.join(" · ")}` });
+      if (f.from && f.to) parts.push(`${f.from} → ${f.to}`);
+      else if (f.from) parts.push(`≥ ${f.from}`);
+      else if (f.to) parts.push(`≤ ${f.to}`);
+    } else if (f.contains) {
+      parts.push(`“${f.contains}”`);
     }
+    chips.push({ key: col.key, label: `${col.label}: ${parts.join(" · ") || "all"}` });
   }
   return chips;
 }
