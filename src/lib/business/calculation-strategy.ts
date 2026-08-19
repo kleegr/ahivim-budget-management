@@ -194,3 +194,32 @@ export function currentBudgetPeriod(
   while (at(endYear) <= today) endYear++;
   return { start: at(endYear - 1), end: at(endYear), effectiveRenewal: at(endYear), rolled: endYear !== baseYear };
 }
+
+/**
+ * Programs whose budget year is ALWAYS the calendar year (January 1 → January 1),
+ * regardless of the individual's own renewal date. Day Hab and Supplemental Group
+ * Day Hab are billed on a January–January cycle by rule, so every used / left /
+ * pace calculation for them must use the calendar window — never the individual's
+ * renewal. This one set is the source of truth; both the read model and the SQL
+ * board reference it (the SQL mirrors the same codes).
+ */
+export const CALENDAR_YEAR_PROGRAM_CODES: ReadonlySet<string> = new Set(["DAY_HAB", "SUPP_GROUP_DAY_HAB"]);
+
+export function isCalendarYearProgram(code: string | null | undefined): boolean {
+  return !!code && CALENDAR_YEAR_PROGRAM_CODES.has(code);
+}
+
+/**
+ * The budget period for ONE program line. Day Hab / Supplemental always use the
+ * current calendar year (they never expire and never follow the person's renewal);
+ * every other program follows the individual's own renewal via currentBudgetPeriod.
+ */
+export function programBudgetPeriod(
+  code: string | null | undefined,
+  individualRenewal: string | null,
+  active: boolean,
+  asOf?: string,
+): { start: string | null; end: string | null; effectiveRenewal: string | null; rolled: boolean } {
+  if (isCalendarYearProgram(code)) return currentBudgetPeriod("2000-01-01", true, asOf); // the current Jan→Jan year
+  return currentBudgetPeriod(individualRenewal, active, asOf);
+}
