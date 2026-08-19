@@ -50,7 +50,7 @@ export default async function IndividualsPage() {
           </EmptyState>
         </Card>
       ) : (
-        <IndividualsList rows={result.data as IndividualRow[]} canEdit={canEdit} />
+        <IndividualsList rows={result.data as IndividualRow[]} />
       )}
     </>
   );
