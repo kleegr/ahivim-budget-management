@@ -3,8 +3,6 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { type UtilizationStatus } from "@/components/ui-viz";
-import { Badge } from "@/components/ui";
-import { ActionButton } from "@/components/manage/client";
 import { BUDGET_STATUS_PRESENT, BUDGET_STATUS_RANK, type BudgetLineStatus } from "@/lib/business/budget-status";
 
 /**
@@ -97,14 +95,14 @@ function PaceBar({ budget }: { budget: IndividualBudget }) {
   );
 }
 
-export default function IndividualsList({ rows, canEdit }: { rows: IndividualRow[]; canEdit: boolean }) {
+export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
   const [q, setQ] = useState("");
-  const [showArchived, setShowArchived] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "health", dir: "asc" });
 
   const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    let list = rows.filter((r) => (showArchived ? true : !r.archived));
+    let list = rows.filter((r) => (showInactive ? true : r.status === "active"));
     if (needle) {
       list = list.filter(
         (r) =>
@@ -141,9 +139,9 @@ export default function IndividualsList({ rows, canEdit }: { rows: IndividualRow
       return sort.dir === "asc" ? d : -d;
     };
     return list.slice().sort(cmp);
-  }, [rows, q, showArchived, sort]);
+  }, [rows, q, showInactive, sort]);
 
-  const archivedCount = useMemo(() => rows.filter((r) => r.archived).length, [rows]);
+  const inactiveCount = useMemo(() => rows.filter((r) => r.status !== "active").length, [rows]);
 
   const toggle = (key: SortKey) =>
     setSort((p) => (p.key === key ? { key, dir: p.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "used" ? "desc" : "asc" }));
@@ -167,10 +165,10 @@ export default function IndividualsList({ rows, canEdit }: { rows: IndividualRow
           className="input w-64 max-w-full"
           aria-label="Search individuals"
         />
-        {archivedCount > 0 ? (
+        {inactiveCount > 0 ? (
           <label className="flex items-center gap-2 text-sm text-[var(--color-ink-soft)]">
-            <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
-            Show archived ({archivedCount})
+            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+            Show inactive ({inactiveCount})
           </label>
         ) : null}
         <span className="ml-auto text-sm text-[var(--color-text-soft)]">
@@ -192,7 +190,6 @@ export default function IndividualsList({ rows, canEdit }: { rows: IndividualRow
               <Head k="left" align="right">Hours left</Head>
               <Head k="renews">Renews</Head>
               <Head k="status">Status</Head>
-              {canEdit ? <th className="border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 text-left font-semibold">Actions</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -228,22 +225,22 @@ export default function IndividualsList({ rows, canEdit }: { rows: IndividualRow
                 </td>
                 <td className="tnum px-3 py-2 text-[var(--color-ink-soft)]">{r.budget ? <RenewChip b={r.budget} /> : <span className="text-[var(--color-ink-faint)]">—</span>}</td>
                 <td className="px-3 py-2">
-                  {r.budget ? <StatusPill status={r.budget.plainStatus} /> : <Badge value={r.status} />}
+                  {r.status !== "active" ? (
+                    <span className="badge" style={{ background: "var(--color-surface-strong)", color: "var(--color-ink-soft)" }}>
+                      <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-ink-faint)]" />
+                      Inactive
+                    </span>
+                  ) : r.budget ? (
+                    <StatusPill status={r.budget.plainStatus} />
+                  ) : (
+                    <span className="text-[var(--color-ink-faint)]">—</span>
+                  )}
                 </td>
-                {canEdit ? (
-                  <td className="whitespace-nowrap px-3 py-2">
-                    {r.archived ? (
-                      <ActionButton label="Restore" endpoint={`/api/individuals/${r.id}`} body={{ action: "restore" }} withReason />
-                    ) : (
-                      <ActionButton label="Archive" endpoint={`/api/individuals/${r.id}`} body={{ action: "archive" }} withReason />
-                    )}
-                  </td>
-                ) : null}
               </tr>
             ))}
             {visible.length === 0 ? (
               <tr>
-                <td colSpan={canEdit ? 8 : 7} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
+                <td colSpan={7} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
                   {rows.length === 0 ? "No individuals yet — they appear here once a workbook is committed." : "No one matches your search."}
                 </td>
               </tr>
@@ -251,19 +248,6 @@ export default function IndividualsList({ rows, canEdit }: { rows: IndividualRow
           </tbody>
         </table>
       </div>
-      {r_lifecycleNote(rows)}
     </div>
-  );
-}
-
-/** A quiet footnote when some people carry a non-active lifecycle status. */
-function r_lifecycleNote(rows: IndividualRow[]) {
-  const nonActive = rows.filter((r) => !r.archived && r.status !== "active").length;
-  if (nonActive === 0) return null;
-  return (
-    <p className="text-xs text-[var(--color-ink-faint)]">
-      A budget status is shown for people with an active plan; the grey badge is the person&rsquo;s account status
-      (inactive / discharged) when there is no active budget.
-    </p>
   );
 }
