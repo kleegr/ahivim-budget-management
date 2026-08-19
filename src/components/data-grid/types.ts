@@ -102,6 +102,7 @@ export interface GridViewConfig {
   search: string;
   hidden?: string[];
   widths?: Record<string, number>;
+  order?: string[]; // column display order (keys)
 }
 
 export interface FilterChip {
