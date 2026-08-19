@@ -2,9 +2,10 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { UtilizationBadge, utilizationColor, type UtilizationStatus } from "@/components/ui-viz";
+import { type UtilizationStatus } from "@/components/ui-viz";
 import { Badge } from "@/components/ui";
 import { ActionButton } from "@/components/manage/client";
+import { BUDGET_STATUS_PRESENT, BUDGET_STATUS_RANK, type BudgetLineStatus } from "@/lib/business/budget-status";
 
 /**
  * The Individuals register, redesigned as a fast client grid that previews the
@@ -18,6 +19,7 @@ import { ActionButton } from "@/components/manage/client";
 
 export type IndividualBudget = {
   status: UtilizationStatus;
+  plainStatus: BudgetLineStatus; // plain words shown to the user (matches the profile)
   usedPct: number | null; // 0–100
   elapsedPct: number | null; // 0–100, for the pace-bar notch
   renews: string | null; // YYYY-MM-DD
@@ -61,21 +63,21 @@ function RenewChip({ b }: { b: IndividualBudget }) {
   );
 }
 
-const SEVERITY: Record<UtilizationStatus, number> = {
-  over_authorization: 0,
-  fully_used: 1,
-  near_exhaustion: 2,
-  behind_pace: 3,
-  ahead_of_pace: 4,
-  on_pace: 5,
-  not_started: 6,
-};
-
 type SortKey = "name" | "programs" | "health" | "used" | "left" | "renews" | "status";
+
+function StatusPill({ status }: { status: BudgetLineStatus }) {
+  const s = BUDGET_STATUS_PRESENT[status];
+  return (
+    <span className="badge" style={{ background: s.tint, color: s.color }}>
+      <span className="h-1.5 w-1.5 rounded-full" style={{ background: s.color }} />
+      {s.label}
+    </span>
+  );
+}
 
 function PaceBar({ budget }: { budget: IndividualBudget }) {
   const used = Math.max(0, Math.min(100, budget.usedPct ?? 0));
-  const color = utilizationColor(budget.status);
+  const color = BUDGET_STATUS_PRESENT[budget.plainStatus].color;
   return (
     <div
       className="pace-track"
@@ -111,7 +113,7 @@ export default function IndividualsList({ rows, canEdit }: { rows: IndividualRow
           r.programs.some((p) => p.toLowerCase().includes(needle)),
       );
     }
-    const healthRank = (r: IndividualRow) => (r.budget ? SEVERITY[r.budget.status] : 99);
+    const healthRank = (r: IndividualRow) => (r.budget ? 9 - BUDGET_STATUS_RANK[r.budget.plainStatus] : 99);
     const cmp = (a: IndividualRow, b: IndividualRow): number => {
       let d = 0;
       switch (sort.key) {
@@ -226,7 +228,7 @@ export default function IndividualsList({ rows, canEdit }: { rows: IndividualRow
                 </td>
                 <td className="tnum px-3 py-2 text-[var(--color-ink-soft)]">{r.budget ? <RenewChip b={r.budget} /> : <span className="text-[var(--color-ink-faint)]">—</span>}</td>
                 <td className="px-3 py-2">
-                  {r.budget ? <UtilizationBadge status={r.budget.status} /> : <Badge value={r.status} />}
+                  {r.budget ? <StatusPill status={r.budget.plainStatus} /> : <Badge value={r.status} />}
                 </td>
                 {canEdit ? (
                   <td className="whitespace-nowrap px-3 py-2">
@@ -260,8 +262,8 @@ function r_lifecycleNote(rows: IndividualRow[]) {
   if (nonActive === 0) return null;
   return (
     <p className="text-xs text-[var(--color-ink-faint)]">
-      Budget status (pace) is shown for people with an active plan; the grey badge is the person&rsquo;s lifecycle status
-      (inactive / discharged) when there is no active budget to pace.
+      A budget status is shown for people with an active plan; the grey badge is the person&rsquo;s account status
+      (inactive / discharged) when there is no active budget.
     </p>
   );
 }

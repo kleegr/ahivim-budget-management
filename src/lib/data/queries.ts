@@ -11,6 +11,12 @@ import {
 } from "@/lib/business/utilization";
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
+import { derivePeriodFromRenewal } from "@/lib/business/calculation-strategy";
+import {
+  type BudgetLineStatus,
+  BUDGET_STATUS_RANK,
+  budgetStatusFromHours,
+} from "@/lib/business/budget-status";
 
 /**
  * READ MODEL
@@ -426,12 +432,13 @@ export async function getIndividualReport(
 /* -------------------------------------------------------------------------- */
 
 export interface IndividualBudgetSummary {
-  status: UtilizationStatus;
+  status: UtilizationStatus; // pace vocabulary (kept for the pace bar colour)
+  plainStatus: BudgetLineStatus; // plain amount vocabulary, matches the profile
   usedPct: number | null; // 0–100, total billed ÷ total authorized (period-scoped)
   elapsedPct: number | null; // 0–100
   renews: string | null; // period end / renewal date
   hoursLeft: number | null; // authorized − billed
-  plans: number; // active authorizations in the period
+  plans: number; // programs in the plan
   daysToRenewal: number | null; // renews − today (negative = expired)
   expired: boolean; // the period end is in the past
   mustUseWeekly: number | null; // hours to use per week to finish by renewal
@@ -461,10 +468,11 @@ const BUDGET_SEVERITY: Record<UtilizationStatus, number> = {
 
 /**
  * The Individuals register, as a budget board. Health, % used, remaining and
- * renewal come from the SAME engine the detail page uses: authorized hours from
- * budget_authorizations, billed hours from payroll_transactions.imported_hours
- * within the current period (windowed on Period Begin). So the badge here and the
- * badge on the detail page can never disagree, and both reconcile to the ledger.
+ * renewal come from the SAME plan the profile and the Financial page use:
+ * authorized hours from the Calculations-tab plan (calculation_strategy_lines),
+ * billed hours from payroll_transactions.imported_hours inside the current
+ * renewal year (renewal − 12 months → renewal). One source, so the list here can
+ * never disagree with a person's own page, and both reconcile to the ledger.
  */
 export async function listIndividualBudgetBoard(
   pool: PgLikePool,
@@ -476,42 +484,41 @@ export async function listIndividualBudgetBoard(
     preferred_name: string | null;
     status: string;
     archived_at: string | null;
-    start_date: string | null;
-    end_date: string | null;
     renewal_date: string | null;
     program_name: string | null;
     authorized_hours: string | null;
     billed_hours: string | null;
     has_billing: boolean;
   }>(
-    `SELECT i.id, i.display_name, i.preferred_name, i.status,
+    `WITH plan AS (
+       SELECT DISTINCT ON (cs.individual_id)
+              cs.individual_id, cs.id AS strategy_id,
+              to_char(cs.renewal_date, 'YYYY-MM-DD')  AS renewal_date,
+              (cs.renewal_date - interval '1 year')::date AS period_start,
+              cs.renewal_date                          AS period_end
+         FROM calculation_strategies cs
+        WHERE cs.status = 'active' AND cs.renewal_date IS NOT NULL
+        ORDER BY cs.individual_id, cs.created_at
+     )
+     SELECT i.id, i.display_name, i.preferred_name, i.status,
             i.archived_at::text AS archived_at,
-            l.start_date::text  AS start_date,
-            l.end_date::text    AS end_date,
-            l.renewal_date::text AS renewal_date,
-            p.name              AS program_name,
-            b.authorized_hours::text AS authorized_hours,
-            COALESCE(bill.hrs, 0)::text AS billed_hours,
+            pl.renewal_date,
+            pr.name                  AS program_name,
+            l.authorized_hours::text AS authorized_hours,
+            COALESCE(b.hrs, 0)::text AS billed_hours,
             EXISTS (SELECT 1 FROM payroll_transactions t WHERE t.individual_id = i.id) AS has_billing
        FROM individuals i
-       LEFT JOIN LATERAL (
-         SELECT bp.id, bp.start_date, bp.end_date, bp.renewal_date
-           FROM budget_periods bp
-          WHERE bp.individual_id = i.id
-          ORDER BY bp.start_date DESC
-          LIMIT 1
-       ) l ON true
-       LEFT JOIN budget_authorizations b
-              ON b.budget_period_id = l.id AND b.status = 'active'
-       LEFT JOIN programs p ON p.id = b.program_id
+       LEFT JOIN plan pl ON pl.individual_id = i.id
+       LEFT JOIN calculation_strategy_lines l ON l.strategy_id = pl.strategy_id
+       LEFT JOIN programs pr ON pr.id = l.program_id
        LEFT JOIN LATERAL (
          SELECT COALESCE(sum(t.imported_hours), 0) AS hrs
            FROM payroll_transactions t
           WHERE t.individual_id = i.id
-            AND t.program_id = b.program_id
-            AND t.period_begin >= l.start_date
-            AND t.period_begin <= l.end_date
-       ) bill ON b.id IS NOT NULL
+            AND t.program_id = l.program_id
+            AND t.period_begin >= pl.period_start
+            AND t.period_begin <= pl.period_end
+       ) b ON l.id IS NOT NULL
       WHERE i.merged_into_id IS NULL
       ORDER BY i.display_name`,
   );
@@ -522,9 +529,9 @@ export async function listIndividualBudgetBoard(
     preferredName: string | null;
     status: string;
     archived: boolean;
-    period: { start: string; end: string; renewal: string | null } | null;
+    renewal: string | null;
     programs: Set<string>;
-    auths: { code: string; authorized: string; billed: string }[];
+    auths: { authorized: string; billed: string }[];
     hasBilling: boolean;
   };
   const byId = new Map<string, Acc>();
@@ -538,7 +545,7 @@ export async function listIndividualBudgetBoard(
         preferredName: r.preferred_name,
         status: r.status,
         archived: r.status === "archived" || r.archived_at !== null,
-        period: r.start_date && r.end_date ? { start: r.start_date, end: r.end_date, renewal: r.renewal_date } : null,
+        renewal: r.renewal_date,
         programs: new Set<string>(),
         auths: [],
         hasBilling: r.has_billing === true,
@@ -547,15 +554,17 @@ export async function listIndividualBudgetBoard(
     }
     if (r.program_name && r.authorized_hours !== null) {
       acc.programs.add(r.program_name);
-      acc.auths.push({ code: r.program_name, authorized: r.authorized_hours, billed: r.billed_hours ?? "0" });
+      acc.auths.push({ authorized: r.authorized_hours, billed: r.billed_hours ?? "0" });
     }
   }
 
   const out: IndividualBudgetBoardRow[] = [];
   for (const acc of byId.values()) {
     let budget: IndividualBudgetSummary | null = null;
-    if (acc.period && acc.auths.length > 0) {
-      const elapsed = calculatePeriodElapsed({ startDate: acc.period.start, endDate: acc.period.end }, asOf);
+    const period = derivePeriodFromRenewal(acc.renewal);
+    if (acc.renewal && acc.auths.length > 0) {
+      const elapsed =
+        period.start && period.end ? calculatePeriodElapsed({ startDate: period.start, endDate: period.end }, asOf) : null;
       let totalAuth = dec(0);
       let totalBilled = dec(0);
       let worst: UtilizationStatus = "not_started";
@@ -564,21 +573,23 @@ export async function listIndividualBudgetBoard(
         const billed = dec(a.billed);
         totalAuth = totalAuth.plus(auth);
         totalBilled = totalBilled.plus(billed);
-        const usage = auth.isZero() ? dec(0) : billed.dividedBy(auth);
-        const st = classifyUtilization(usage, elapsed);
-        if (BUDGET_SEVERITY[st] < BUDGET_SEVERITY[worst]) worst = st;
+        if (elapsed) {
+          const usage = auth.isZero() ? dec(0) : billed.dividedBy(auth);
+          const st = classifyUtilization(usage, elapsed);
+          if (BUDGET_SEVERITY[st] < BUDGET_SEVERITY[worst]) worst = st;
+        }
       }
       const usedPct = totalAuth.isZero() ? null : totalBilled.dividedBy(totalAuth).times(100).toNumber();
-      const renews = acc.period.renewal ?? acc.period.end;
       const dayMs = 24 * 60 * 60 * 1000;
-      const daysToRenewal = Math.round((Date.parse(`${renews}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / dayMs);
+      const daysToRenewal = Math.round((Date.parse(`${acc.renewal}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / dayMs);
       const hoursLeft = totalAuth.minus(totalBilled).toNumber();
       const weeksLeft = daysToRenewal > 0 ? daysToRenewal / 7 : 0;
       budget = {
         status: worst,
+        plainStatus: budgetStatusFromHours(totalAuth.toNumber(), totalBilled.toNumber()),
         usedPct,
-        elapsedPct: dec(elapsed.timeElapsedPercent).times(100).toNumber(),
-        renews,
+        elapsedPct: elapsed ? dec(elapsed.timeElapsedPercent).times(100).toNumber() : null,
+        renews: acc.renewal,
         hoursLeft,
         plans: acc.auths.length,
         daysToRenewal,
@@ -751,5 +762,176 @@ function notStartedElapsed(): PeriodElapsed {
     timeElapsedPercent: "0.000000",
     hasStarted: false,
     hasEnded: false,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Individual budget — ONE plain-language view of "where are we up to".        */
+/*                                                                            */
+/* This is the single source the individual profile leads with. Authorized   */
+/* hours come from the Calculations-tab plan (calculation_strategy_lines);    */
+/* used hours are the real billed transactions inside the current 12-month    */
+/* period; remaining and status fall straight out of the two. Financial and   */
+/* the Individuals board read the same plan, so nothing can disagree.         */
+/* -------------------------------------------------------------------------- */
+
+export type { BudgetLineStatus };
+
+export interface BudgetLine {
+  programId: string;
+  programName: string;
+  programCode: string;
+  authorizedHours: string; // from the plan; "0" for billed-but-not-planned
+  usedHours: string; // billed inside the period
+  remainingHours: string; // authorized − used
+  usagePercent: number | null; // 0..>1
+  status: BudgetLineStatus;
+  agencyBilled: string; // $ billed this period for this program
+  internalBilled: string;
+  txCount: number;
+  inPlan: boolean;
+}
+
+export interface IndividualBudgetView {
+  hasPlan: boolean;
+  renewalDate: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  daysToRenewal: number | null;
+  expired: boolean;
+  timeElapsedPercent: number | null; // 0..100, for the pace marker
+  lines: BudgetLine[];
+  totals: { authorizedHours: string; usedHours: string; remainingHours: string; usagePercent: number | null };
+  money: { agencyBilled: string; internalBilled: string; txCount: number };
+  headline: BudgetLineStatus | null; // worst line, for the one-glance answer
+}
+
+const budgetLineStatus = (authorized: ReturnType<typeof dec>, used: ReturnType<typeof dec>): BudgetLineStatus =>
+  budgetStatusFromHours(authorized.toNumber(), used.toNumber());
+
+export async function getIndividualBudgetView(pool: PgLikePool, individualId: string): Promise<IndividualBudgetView> {
+  // The individual's active plan (usually one) and its renewal date.
+  const planRes = await pool.query<{ id: string; renewal_date: string | null }>(
+    `SELECT id, to_char(renewal_date, 'YYYY-MM-DD') AS renewal_date
+       FROM calculation_strategies
+      WHERE individual_id = $1 AND status = 'active'
+      ORDER BY created_at
+      LIMIT 1`,
+    [individualId],
+  );
+  const plan = planRes.rows[0] ?? null;
+  const renewalDate = plan?.renewal_date ?? null;
+  const period = derivePeriodFromRenewal(renewalDate);
+
+  // Authorized hours per program from the plan.
+  const authRows = plan
+    ? (
+        await pool.query<{ program_id: string; program_name: string; program_code: string; authorized_hours: string }>(
+          `SELECT l.program_id, p.name AS program_name, p.code AS program_code, l.authorized_hours::text AS authorized_hours
+             FROM calculation_strategy_lines l
+             JOIN programs p ON p.id = l.program_id
+            WHERE l.strategy_id = $1`,
+          [plan.id],
+        )
+      ).rows
+    : [];
+
+  // Billed inside the current period, per program (the real "used").
+  const billedRows =
+    period.start && period.end
+      ? (
+          await pool.query<{ program_id: string; program_name: string; program_code: string; hours: string; agency: string; internal: string; cnt: number }>(
+            `SELECT t.program_id, p.name AS program_name, p.code AS program_code,
+                    sum(t.imported_hours)::text AS hours,
+                    sum(t.imported_amount)::text AS agency,
+                    sum(COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
+                             t.internal_rate_applied * t.imported_hours, 0))::text AS internal,
+                    count(*)::int AS cnt
+               FROM payroll_transactions t
+               JOIN programs p ON p.id = t.program_id
+              WHERE t.individual_id = $1 AND t.program_id IS NOT NULL
+                AND t.period_begin >= $2 AND t.period_begin <= $3
+              GROUP BY t.program_id, p.name, p.code`,
+            [individualId, period.start, period.end],
+          )
+        ).rows
+      : [];
+
+  const billedByProgram = new Map(billedRows.map((r) => [r.program_id, r]));
+  const authByProgram = new Map(authRows.map((r) => [r.program_id, r]));
+  const allProgramIds = new Set<string>([...authByProgram.keys(), ...billedByProgram.keys()]);
+
+  let totAuth = dec(0), totUsed = dec(0), totAgency = dec(0), totInternal = dec(0), totTx = 0;
+  let headline: BudgetLineStatus | null = null;
+  const lines: BudgetLine[] = [];
+  for (const pid of allProgramIds) {
+    const a = authByProgram.get(pid);
+    const b = billedByProgram.get(pid);
+    const authorized = dec(a?.authorized_hours ?? 0);
+    const used = dec(b?.hours ?? 0);
+    const remaining = authorized.minus(used);
+    const status = budgetLineStatus(authorized, used);
+    const usagePercent = authorized.greaterThan(0) ? used.dividedBy(authorized).toNumber() : null;
+    totAuth = totAuth.plus(authorized);
+    totUsed = totUsed.plus(used);
+    totAgency = totAgency.plus(dec(b?.agency ?? 0));
+    totInternal = totInternal.plus(dec(b?.internal ?? 0));
+    totTx += b?.cnt ?? 0;
+    if (headline === null || BUDGET_STATUS_RANK[status] > BUDGET_STATUS_RANK[headline]) headline = status;
+    lines.push({
+      programId: pid,
+      programName: a?.program_name ?? b?.program_name ?? "Unknown program",
+      programCode: a?.program_code ?? b?.program_code ?? "",
+      authorizedHours: toHours(authorized),
+      usedHours: toHours(used),
+      remainingHours: toHours(remaining),
+      usagePercent,
+      status,
+      agencyBilled: toMoney(dec(b?.agency ?? 0)),
+      internalBilled: toMoney(dec(b?.internal ?? 0)),
+      txCount: b?.cnt ?? 0,
+      inPlan: !!a,
+    });
+  }
+  // Planned lines first (biggest authorization first), then billed-not-planned.
+  lines.sort((x, y) => {
+    if (x.inPlan !== y.inPlan) return x.inPlan ? -1 : 1;
+    return dec(y.authorizedHours).minus(dec(x.authorizedHours)).toNumber();
+  });
+
+  // Days to renewal and how far the period has elapsed (for the pace marker).
+  let daysToRenewal: number | null = null;
+  let expired = false;
+  let timeElapsedPercent: number | null = null;
+  if (renewalDate) {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const today = new Date();
+    const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+    daysToRenewal = Math.round((Date.parse(`${renewalDate}T00:00:00Z`) - todayUtc) / dayMs);
+    expired = daysToRenewal < 0;
+    if (period.start && period.end) {
+      const start = Date.parse(`${period.start}T00:00:00Z`);
+      const end = Date.parse(`${period.end}T00:00:00Z`);
+      if (end > start) timeElapsedPercent = Math.max(0, Math.min(100, ((todayUtc - start) / (end - start)) * 100));
+    }
+  }
+
+  return {
+    hasPlan: !!plan && authRows.length > 0,
+    renewalDate,
+    periodStart: period.start,
+    periodEnd: period.end,
+    daysToRenewal,
+    expired,
+    timeElapsedPercent,
+    lines,
+    totals: {
+      authorizedHours: toHours(totAuth),
+      usedHours: toHours(totUsed),
+      remainingHours: toHours(totAuth.minus(totUsed)),
+      usagePercent: totAuth.greaterThan(0) ? totUsed.dividedBy(totAuth).toNumber() : null,
+    },
+    money: { agencyBilled: toMoney(totAgency), internalBilled: toMoney(totInternal), txCount: totTx },
+    headline,
   };
 }
