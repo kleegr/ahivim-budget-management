@@ -120,9 +120,23 @@ export default function BudgetEditor({
   const addable = programs.filter((p) => !inPlanIds.has(p.id));
 
   const rowTotal = (r: Row) => dec(r.perHour || 0).times(dec(r.hours || 0));
+  const rowUsedDollars = (r: Row) => dec(r.perHour || 0).times(dec(r.used || 0));
   const grandTotal = rows.reduce((s, r) => s.plus(rowTotal(r)), dec(0));
   const totalAuthorized = rows.reduce((s, r) => s.plus(dec(r.hours || 0)), dec(0));
   const totalUsed = rows.reduce((s, r) => s.plus(dec(r.used || 0)), dec(0));
+  // Dollar totals — hours can't be summed across programs (each is priced
+  // differently), so the total row talks money, per the sheet's intent.
+  const totalUsedDollars = rows.reduce((s, r) => s.plus(rowUsedDollars(r)), dec(0));
+  const totalLeftDollars = grandTotal.minus(totalUsedDollars);
+  const perMonthDollars = months && totalLeftDollars.greaterThan(0) ? totalLeftDollars.dividedBy(months) : null;
+
+  // Over/under budget, counted PER PROGRAM (never netted — one program can be
+  // over while another is under, and both matter).
+  const statusCounts = rows.reduce<Partial<Record<BudgetLineStatus, number>>>((m, r) => {
+    const s = budgetStatusFromHours(Number(r.hours || 0), Number(r.used || 0));
+    m[s] = (m[s] ?? 0) + 1;
+    return m;
+  }, {});
 
   const setRow = (pid: string, patch: Partial<Row>) => setRows((rs) => rs.map((r) => (r.programId === pid ? { ...r, ...patch } : r)));
   const removeRow = (pid: string) => setRows((rs) => rs.filter((r) => r.programId !== pid));
@@ -214,6 +228,18 @@ export default function BudgetEditor({
               The plan for this renewal year. Renews {effectiveRenewal ?? "—"}
               {activeInitial ? "" : " · account inactive (renewal is not auto-rolling)"}.
             </p>
+            {rows.length > 0 ? (
+              <div className="mt-1.5 flex flex-wrap gap-1.5" title="Counted per program — one program can be over while another is under.">
+                {(["over", "almost", "on_track", "unused"] as BudgetLineStatus[])
+                  .filter((s) => statusCounts[s])
+                  .map((s) => (
+                    <span key={s} className="badge" style={{ background: BUDGET_STATUS_PRESENT[s].tint, color: BUDGET_STATUS_PRESENT[s].color }}>
+                      <span className="h-1.5 w-1.5 rounded-full" style={{ background: BUDGET_STATUS_PRESENT[s].color }} />
+                      {statusCounts[s]} {BUDGET_STATUS_PRESENT[s].label.toLowerCase()}
+                    </span>
+                  ))}
+              </div>
+            ) : null}
           </div>
           <div className="flex items-center gap-2">
             {canEdit ? (
@@ -277,24 +303,25 @@ export default function BudgetEditor({
                   );
                 })}
                 <tr className="border-t-2 border-[var(--color-rule-strong)] font-semibold">
-                  <td className="px-5 py-2">Total</td>
+                  <td className="px-5 py-2">Total <span className="text-xs font-normal text-[var(--color-ink-faint)]">(in $)</span></td>
                   <td></td>
-                  <td className="tnum px-3 py-2 text-right">{formatHours(totalAuthorized.toString())}</td>
+                  <td className="tnum px-3 py-2 text-right text-xs font-normal text-[var(--color-ink-faint)]">{formatHours(totalAuthorized.toString())} h</td>
                   <td className="tnum px-3 py-2 text-right">{formatMoney(grandTotal.toString())}</td>
-                  <td className="tnum px-3 py-2 text-right">{formatHours(totalUsed.toString())}</td>
-                  <td className="tnum px-3 py-2 text-right">{formatHours(totalAuthorized.minus(totalUsed).toString())}</td>
-                  <td className="tnum px-3 py-2 text-right">{perMonth(totalAuthorized.minus(totalUsed)) ? `${formatHours(perMonth(totalAuthorized.minus(totalUsed))!.toString())}/mo` : "—"}</td>
+                  <td className="tnum px-3 py-2 text-right">{formatMoney(totalUsedDollars.toString())}</td>
+                  <td className="tnum px-3 py-2 text-right" style={{ color: totalLeftDollars.isNegative() ? "var(--color-pace-over)" : undefined }}>{formatMoney(totalLeftDollars.toString())}</td>
+                  <td className="tnum px-3 py-2 text-right">{perMonthDollars ? `${formatMoney(perMonthDollars.toString())}/mo` : "—"}</td>
                   <td></td>
                 </tr>
               </tbody>
             </table>
           </div>
         )}
-        {canEdit && billedNotInPlan.length > 0 ? (
-          <p className="border-t border-[var(--color-rule)] px-5 py-2.5 text-xs text-[var(--color-ink-faint)]">
-            Billed this year but not in the plan: {billedNotInPlan.map((l) => `${l.programName} (${formatHours(l.usedHours)} h)`).join(", ")}. Edit the budget to add them.
-          </p>
-        ) : null}
+        <p className="border-t border-[var(--color-rule)] px-5 py-2 text-xs text-[var(--color-ink-faint)]">
+          Each program is shown in hours; the total is in dollars because hours aren&rsquo;t comparable across programs (each bills at a different rate).
+          {canEdit && billedNotInPlan.length > 0
+            ? ` Billed this year but not in the plan: ${billedNotInPlan.map((l) => `${l.programName} (${formatHours(l.usedHours)} h)`).join(", ")}. Edit the budget to add them.`
+            : ""}
+        </p>
       </div>
     );
   }
