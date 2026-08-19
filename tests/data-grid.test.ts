@@ -12,6 +12,8 @@ import {
   exportColumns,
   exportRows,
   anyFilterActive,
+  dateBucket,
+  filterKey,
 } from "@/components/data-grid/engine";
 
 interface Row {
@@ -135,5 +137,99 @@ describe("data-grid engine", () => {
     expect(ec[2]).toEqual({ key: "gross", header: "Gross", type: "money" });
     const er = exportRows(cols, [rows[0]]);
     expect(er[0]).toEqual({ name: "Aaron", program: "Respite", gross: "100.00", date: "2025-01-01" });
+  });
+});
+
+/* ---- Google-Sheets-style value selection for dates and numbers ---- */
+
+interface DRow {
+  date: string;
+  rate: string;
+}
+const dcols: ColumnDef<DRow>[] = [
+  { key: "date", label: "Check date", kind: "date", accessor: (r) => r.date },
+  { key: "rate", label: "Rate", kind: "money", accessor: (r) => r.rate },
+];
+const drows: DRow[] = [
+  { date: "2025-06-15", rate: "21" },
+  { date: "2025-12-31", rate: "25.0000" },
+  { date: "2026-01-10", rate: "21" },
+  { date: "2026-08-18", rate: "17" },
+  { date: "2026-08-02", rate: "25" },
+];
+
+describe("date & number value pickers", () => {
+  it("buckets ISO dates by day/month/year", () => {
+    expect(dateBucket("2026-08-18", "day")).toBe("2026-08-18");
+    expect(dateBucket("2026-08-18", "month")).toBe("2026-08");
+    expect(dateBucket("2026-08-18", "year")).toBe("2026");
+    expect(dateBucket("", "year")).toBe("");
+  });
+
+  it("filterKey canonicalizes numbers and buckets dates", () => {
+    expect(filterKey(dcols[1], drows[1])).toBe("25"); // "25.0000" -> "25"
+    expect(filterKey(dcols[0], drows[3], "month")).toBe("2026-08");
+    expect(filterKey(dcols[0], drows[3], "year")).toBe("2026");
+  });
+
+  it("selecting a year keeps every date in that year", () => {
+    const f = { date: { selected: ["2026"], dateGroup: "year" as const } };
+    const out = applyFilters(drows, dcols, f, "", []);
+    expect(out.map((r) => r.date)).toEqual(["2026-01-10", "2026-08-18", "2026-08-02"]);
+  });
+
+  it("deselecting a year (selecting the others) drops it", () => {
+    // "select 2025, deselect 2026" -> only 2025 rows remain
+    const f = { date: { selected: ["2025"], dateGroup: "year" as const } };
+    const out = applyFilters(drows, dcols, f, "", []);
+    expect(out.map((r) => r.date)).toEqual(["2025-06-15", "2025-12-31"]);
+  });
+
+  it("selecting a month keeps only that month", () => {
+    const f = { date: { selected: ["2026-08"], dateGroup: "month" as const } };
+    const out = applyFilters(drows, dcols, f, "", []);
+    expect(out.map((r) => r.date)).toEqual(["2026-08-18", "2026-08-02"]);
+  });
+
+  it("number value selection matches canonical values regardless of trailing zeros", () => {
+    const f = { rate: { selected: ["25"] } };
+    const out = applyFilters(drows, dcols, f, "", []);
+    expect(out.map((r) => r.date)).toEqual(["2025-12-31", "2026-08-02"]);
+  });
+
+  it("selected value-set AND range both apply to a number column", () => {
+    // pick rates {21,25} then also require >= 22 -> only 25 survives
+    const f = { rate: { selected: ["21", "25"], min: "22" } };
+    const out = applyFilters(drows, dcols, f, "", []);
+    expect(out.map((r) => r.rate)).toEqual(["25.0000", "25"]);
+  });
+
+  it("value counts bucket dates by the column's dateGroup, newest first", () => {
+    const counts = valueCountsFor(dcols, drows, { date: { dateGroup: "year" } }, "", [], "date");
+    expect(counts).toEqual([
+      ["2026", 3],
+      ["2025", 2],
+    ]);
+  });
+
+  it("value counts collapse number trailing zeros, ascending", () => {
+    const counts = valueCountsFor(dcols, drows, {}, "", [], "rate");
+    expect(counts).toEqual([
+      ["17", 1],
+      ["21", 2],
+      ["25", 2],
+    ]);
+  });
+
+  it("filterActive treats a present selection as active for dates and numbers", () => {
+    expect(filterActive(dcols[0], { selected: ["2026"], dateGroup: "year" })).toBe(true);
+    expect(filterActive(dcols[0], { selected: [] })).toBe(true); // empty = show none
+    expect(filterActive(dcols[1], { selected: ["21"] })).toBe(true);
+    expect(filterActive(dcols[0], {})).toBe(false);
+  });
+
+  it("chips summarize a date value selection", () => {
+    const chips = filterChips(dcols, { date: { selected: ["2026"], dateGroup: "year" } });
+    expect(chips[0].label).toContain("2026");
   });
 });

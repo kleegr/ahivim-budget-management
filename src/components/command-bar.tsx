@@ -87,14 +87,14 @@ export default function CommandBar() {
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-start justify-center bg-black/30 p-4 pt-[12vh]"
+      className="overlay-in fixed inset-0 z-[60] flex items-start justify-center bg-black/30 p-4 pt-[12vh] backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-label="Command menu"
       onClick={close}
     >
       <div
-        className="w-full max-w-lg overflow-hidden rounded-xl border border-[var(--color-rule-strong)] bg-[var(--color-surface)] shadow-2xl"
+        className="pop-in w-full max-w-lg origin-top overflow-hidden rounded-xl border border-[var(--color-rule-strong)] bg-[var(--color-surface)] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <input
