@@ -160,3 +160,37 @@ export function derivePeriodFromRenewal(renewalDate: string | null): {
   const start = `${year - 1}-${m[2]}-${m[3]}`;
   return { start, end: `${m[1]}-${m[2]}-${m[3]}` };
 }
+
+/**
+ * The budget year we are CURRENTLY inside, given a renewal date that repeats
+ * every year. A renewal is the first day of a new 12-month budget, so the
+ * current period is [effectiveRenewal − 12 months, effectiveRenewal].
+ *
+ * For an ACTIVE account the renewal auto-rolls forward: we pick the first
+ * anniversary strictly after today, so a stored date in the past
+ * (e.g. 2026-02-01) automatically becomes 2027-02-01 — the account never reads
+ * "expired", it just moves to the next year, exactly like the paper rollover.
+ *
+ * For an INACTIVE account nothing rolls: the stored date is used as-is (so an
+ * inactive person can legitimately show a past, expired period).
+ */
+export function currentBudgetPeriod(
+  renewalDate: string | null,
+  active: boolean,
+  asOf?: string,
+): { start: string | null; end: string | null; effectiveRenewal: string | null; rolled: boolean } {
+  if (!renewalDate) return { start: null, end: null, effectiveRenewal: null, rolled: false };
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(renewalDate);
+  if (!m) return { start: null, end: renewalDate, effectiveRenewal: renewalDate, rolled: false };
+  const baseYear = Number(m[1]);
+  const monthDay = `${m[2]}-${m[3]}`;
+  const at = (y: number) => `${String(y).padStart(4, "0")}-${monthDay}`;
+  if (!active) {
+    return { start: at(baseYear - 1), end: at(baseYear), effectiveRenewal: at(baseYear), rolled: false };
+  }
+  const today = (asOf ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
+  let endYear = baseYear;
+  // Smallest anniversary strictly after today (renewal day itself opens the new year).
+  while (at(endYear) <= today) endYear++;
+  return { start: at(endYear - 1), end: at(endYear), effectiveRenewal: at(endYear), rolled: endYear !== baseYear };
+}
