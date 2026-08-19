@@ -15,6 +15,10 @@ import {
 } from "@/components/ui";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
 import BudgetEditor, { type BudgetEditorLine } from "@/components/individuals/budget-editor";
+import BilledByMonth from "@/components/individuals/billed-by-month";
+import EmployeesActivity from "@/components/individuals/employees-activity";
+import FinancialPlan from "@/components/individuals/financial-plan";
+import MergePanel from "@/components/individuals/merge-panel";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import { txLink } from "@/lib/nav/tx-link";
 
@@ -70,15 +74,12 @@ export default async function IndividualDetailPage({ params }: { params: Promise
     const individual = await getIndividual(pool, id);
     if (!individual) return null;
     const budget = await getIndividualBudgetView(pool, id);
-    // The monthly bars measure budget pace, so they count only the programs the
-    // plan authorizes — matching the hero's used/authorized and the ÷12 target.
-    const planProgramIds = budget.lines.filter((l) => l.inPlan).map((l) => l.programId);
     const [strategies, assignments, aliasesAll, scheduledByProgram, activity] = await Promise.all([
       listStrategies(pool, { individualId: id, withAnalytics: true }),
       listAssignments(pool, { individualId: id, includeInactive: true }),
       listAliases(pool, { kind: "individual" }),
       scheduledByProgramForIndividual(pool, id),
-      getIndividualPeriodActivity(pool, id, budget.periodStart, budget.periodEnd, planProgramIds),
+      getIndividualPeriodActivity(pool, id, budget.periodStart, budget.periodEnd),
     ]);
     return {
       individual, budget, activity,
@@ -207,73 +208,71 @@ export default async function IndividualDetailPage({ params }: { params: Promise
 
       {/* ---- Money billed this period (this budget year only) ---- */}
       {budget.money.txCount > 0 ? (
-        <Card title="Money billed this period" description="This budget year only — not the whole history." className="mb-6"
+        <Card title="Money billed this period" description="This budget year only — not the whole history. Agency is what was invoiced; company is the internal amount." className="mb-6"
           action={<ButtonLink href={txLink({ individualId: id, pbFrom: budget.periodStart ?? undefined, pbTo: budget.periodEnd ?? undefined })} variant="secondary">See these rows →</ButtonLink>}>
           <div className="grid gap-3 px-5 py-4 sm:grid-cols-3">
             <MoneyTile label="Agency total (billed)" value={formatMoney(budget.money.agencyBilled)} />
-            <MoneyTile label="Employee amount" value={formatMoney(budget.money.internalBilled)} />
+            <MoneyTile label="Company (internal)" value={formatMoney(budget.money.internalBilled)} />
             <MoneyTile label="Transactions" value={budget.money.txCount.toLocaleString()} plain />
           </div>
         </Card>
       ) : null}
 
-      {/* ---- Billed this period, by month: plan vs actual ---- */}
-      {budget.hasPlan && budget.periodStart && activity.byMonth.length > 0 ? (
+      {/* ---- Billed by month, itemized by program ---- */}
+      {budget.periodStart && activity.programsBilled.length > 0 ? (
         <Card
           title="Billed by month"
-          description="Hours billed each month on the budgeted program(s) this renewal year, against the even monthly target (authorized ÷ 12). See where you're ahead or behind."
+          description="What was billed each month this renewal year, itemized by program. Hours are per program; the month totals are in dollars — Billed (agency, invoiced) and Company (internal) — because hours don't add up across programs."
           className="mb-6"
         >
-          <MonthlyBilling periodStart={budget.periodStart} byMonth={activity.byMonth} authorizedTotal={t.authorizedHours} />
+          <BilledByMonth periodStart={budget.periodStart} byProgramMonth={activity.byProgramMonth} programsBilled={activity.programsBilled} />
         </Card>
       ) : null}
 
-      {/* ---- Employees working with this individual, this period, auto-filtered ---- */}
+      {/* ---- Employees working with this individual — expandable to their rows ---- */}
       {activity.byEmployee.length > 0 ? (
         <Card
           title="Employees working with this individual"
-          description="Who did the work this budget year. Click a name to open that person's rows for this individual."
+          description="Who did the work this budget year. Open a row to see that employee's transactions inline; “rows →” opens the full grid, filtered to this person and period."
           className="mb-6"
           action={<ButtonLink href={txLink({ individualId: id, pbFrom: budget.periodStart ?? undefined, pbTo: budget.periodEnd ?? undefined })} variant="secondary">All rows →</ButtonLink>}
         >
-          <Table head={<><Th>Employee</Th><Th numeric>Hours</Th><Th numeric>Agency total</Th><Th numeric>Transactions</Th><Th>Open</Th></>}>
-            {activity.byEmployee.map((e) => (
-              <Tr key={e.id ?? e.name}>
-                <Td>
-                  {e.id ? (
-                    <Link className="font-medium text-[var(--color-primary)] hover:underline" href={`/employees/${e.id}`}>{e.name}</Link>
-                  ) : (
-                    e.name
-                  )}
-                </Td>
-                <Td numeric><Hours value={e.hours} /></Td>
-                <Td numeric><Money value={e.agency} /></Td>
-                <Td numeric className="tnum">{e.txCount}</Td>
-                <Td>
-                  <Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ individualId: id, employeeId: e.id ?? undefined, pbFrom: budget.periodStart ?? undefined, pbTo: budget.periodEnd ?? undefined })}>rows →</Link>
-                </Td>
-              </Tr>
-            ))}
-          </Table>
+          <EmployeesActivity individualId={id} periodStart={budget.periodStart} periodEnd={budget.periodEnd} employees={activity.byEmployee} />
         </Card>
       ) : null}
 
-      {/* ---- Financial plan (the cuts → net money model), only if present ---- */}
-      {strategy ? (
+      {/* ---- Connect transactions billed under another name (manager+) ---- */}
+      {canEdit ? (
         <Card
-          title="Financial plan"
-          description="How this account's money is worked out: the budget above valued at the per-hour rate, taken to a month, then the two cuts and any adjustments — ending at the net."
-          action={canEdit ? <ButtonLink href={`/calculations?individualId=${id}`} variant="secondary">Adjust cuts →</ButtonLink> : undefined}
+          title="Connect records"
+          description={
+            budget.money.txCount === 0
+              ? "This person has no billed activity in this budget year. If their work came in under a different name, connect that record so its transactions roll up here."
+              : "Billed under more than one name? Fold another record into this person so all of their transactions live together."
+          }
           className="mb-6"
         >
-          <div className="px-5 py-4 text-sm">
-            <FinLine label="Yearly gross" value={<Money value={strategy.yearlyGross} />} sub="authorized hours × internal rate" />
-            <FinLine label="Monthly gross" value={<Money value={strategy.monthlyGross} />} sub={`÷ ${dec(strategy.monthDivisor).toDecimalPlaces(2)} months`} />
-            <FinLine label={`First cut (${pct(strategy.cut1Percent)})`} value={<span className="text-[var(--color-danger)]">− <Money value={dec(strategy.monthlyGross).times(dec(strategy.cut1Percent)).toString()} /></span>} />
-            <FinLine label={`Second cut (${pct(strategy.cut2Percent)})`} value={<span className="text-[var(--color-danger)]">− <Money value={dec(strategy.monthlyGross).minus(dec(strategy.monthlyGross).times(dec(strategy.cut1Percent))).times(dec(strategy.cut2Percent)).toString()} /></span>} sub="from the balance after the first cut" />
-            <FinLine label="Net per month" value={<Money value={strategy.net} />} strong />
-            {strategy.afterAll ? <FinLine label="Final (“after all”)" value={<Money value={strategy.afterAll} />} strong sub="the workbook's final figure" /> : null}
+          <div className="px-5 py-4">
+            <MergePanel individualId={id} individualName={individual.displayName} />
           </div>
+        </Card>
+      ) : null}
+
+      {/* ---- Financial plan: projected vs. actual, both currencies ---- */}
+      {strategy && budget.hasPlan ? (
+        <Card
+          title="Financial plan"
+          description="Projected vs. actual. The plan is the budget priced out through the two cuts and doesn't move; the actual values the hours billed so far at the same rates — so you can see how much you're off and what's left to bill, in both the agency and company currencies."
+          className="mb-6"
+        >
+          <FinancialPlan
+            individualId={id}
+            lines={budget.lines}
+            strategy={strategy}
+            timeElapsedPercent={budget.timeElapsedPercent}
+            monthsToRenewal={monthsToRenewal}
+            canManage={canEdit}
+          />
         </Card>
       ) : null}
 
@@ -299,70 +298,6 @@ function MoneyTile({ label, value, plain }: { label: string; value: string; plai
     <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface-muted)] px-3 py-2.5">
       <p className="eyebrow text-[var(--color-text-soft)]">{label}</p>
       <p className={`mt-1 text-xl font-semibold ${plain ? "" : "tnum"}`}>{value}</p>
-    </div>
-  );
-}
-
-const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-/** Plan vs. actual by month: each bar is hours billed that month; the notch is
-    the even monthly target (authorized ÷ 12), so ahead/behind reads at a glance. */
-function MonthlyBilling({ periodStart, byMonth, authorizedTotal }: { periodStart: string; byMonth: { month: string; hours: string }[]; authorizedTotal: string }) {
-  const target = dec(authorizedTotal).dividedBy(12);
-  const targetNum = target.toNumber();
-  const billedMap = new Map(byMonth.map((m) => [m.month, dec(m.hours).toNumber()]));
-  const [sy, sm] = periodStart.slice(0, 7).split("-").map(Number);
-  const now = new Date();
-  const todayYm = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-  const cells: { ym: string; label: string; billed: number; future: boolean }[] = [];
-  for (let i = 0; i < 12; i++) {
-    const idx = (sm as number) - 1 + i;
-    const y = (sy as number) + Math.floor(idx / 12);
-    const mo = idx % 12;
-    const ym = `${y}-${String(mo + 1).padStart(2, "0")}`;
-    cells.push({ ym, label: `${MONTHS_SHORT[mo]} '${String(y).slice(2)}`, billed: billedMap.get(ym) ?? 0, future: ym > todayYm });
-  }
-  const scale = Math.max(targetNum * 1.6, ...cells.map((c) => c.billed), 1);
-  return (
-    <div className="px-5 py-4">
-      <p className="mb-3 text-xs text-[var(--color-ink-faint)]">
-        Even monthly target: <span className="tnum font-medium text-[var(--color-ink-soft)]">{formatHours(target.toString())} h/month</span>. The notch is the target; green means that month met it, amber is below, grey is upcoming.
-      </p>
-      <div className="space-y-1.5">
-        {cells.map((c) => {
-          const fill = Math.max(0, Math.min(100, (c.billed / scale) * 100));
-          const notch = Math.max(0, Math.min(100, (targetNum / scale) * 100));
-          const color = c.future ? "var(--color-pace-idle)" : c.billed >= targetNum ? "var(--color-pace-on)" : "var(--color-pace-ahead)";
-          return (
-            <div key={c.ym} className="flex items-center gap-3">
-              <span className="tnum w-14 shrink-0 text-xs text-[var(--color-ink-faint)]">{c.label}</span>
-              <div className="pace-track flex-1">
-                <div className="pace-fill" style={{ width: `${fill}%`, background: color }} />
-                <div className="pace-notch" style={{ left: `${notch}%` }} />
-              </div>
-              <span className="tnum w-24 shrink-0 text-right text-xs">
-                {c.future ? <span className="text-[var(--color-ink-faint)]">upcoming</span> : <><span className="font-medium">{formatHours(String(c.billed))}</span> h</>}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function pct(fraction: string): string {
-  return `${dec(fraction).times(100).toDecimalPlaces(2)}%`;
-}
-
-function FinLine({ label, value, sub, strong }: { label: string; value: React.ReactNode; sub?: string; strong?: boolean }) {
-  return (
-    <div className="flex items-baseline justify-between gap-4 border-b border-[var(--color-rule)] py-1.5 last:border-0">
-      <div>
-        <span className={strong ? "font-semibold" : ""}>{label}</span>
-        {sub ? <span className="ml-2 text-xs text-[var(--color-ink-faint)]">{sub}</span> : null}
-      </div>
-      <span className={`tnum ${strong ? "text-base font-semibold" : ""}`}>{value}</span>
     </div>
   );
 }
