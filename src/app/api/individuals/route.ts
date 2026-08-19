@@ -3,6 +3,7 @@ import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { listIndividualsManaged, createIndividual, type IndividualInput } from "@/lib/manage/individuals";
+import { createStrategy, updateStrategy } from "@/lib/manage/calculation-strategies";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +41,13 @@ export async function POST(request: NextRequest) {
   try {
     const pool = getPool();
     const result = await createIndividual(pool, body as unknown as IndividualInput, user.id, reason);
+    // Seed the budget plan with the renewal date so it's tied to the person from
+    // the start; programs and hours are then added on the profile.
+    const renewalDate = typeof body.renewalDate === "string" ? body.renewalDate.trim() : "";
+    if (result.ok && renewalDate) {
+      const strat = await createStrategy(pool, { individualId: result.data.id }, user.id);
+      if (strat.ok) await updateStrategy(pool, { id: strat.data.id, renewalDate }, user.id, "Set at creation");
+    }
     return resultResponse(result, 201);
   } catch (error) {
     return jsonError(redactError(error), 500);

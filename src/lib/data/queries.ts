@@ -11,7 +11,7 @@ import {
 } from "@/lib/business/utilization";
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
-import { derivePeriodFromRenewal } from "@/lib/business/calculation-strategy";
+import { derivePeriodFromRenewal, currentBudgetPeriod } from "@/lib/business/calculation-strategy";
 import {
   type BudgetLineStatus,
   BUDGET_STATUS_RANK,
@@ -493,16 +493,20 @@ export async function listIndividualBudgetBoard(
     `WITH plan AS (
        SELECT DISTINCT ON (cs.individual_id)
               cs.individual_id, cs.id AS strategy_id,
-              to_char(cs.renewal_date, 'YYYY-MM-DD')  AS renewal_date,
-              (cs.renewal_date - interval '1 year')::date AS period_start,
-              cs.renewal_date                          AS period_end
+              -- The renewal auto-rolls forward for ACTIVE accounts: the current
+              -- year ends on the first anniversary on/after today. Inactive
+              -- accounts keep the stored (possibly past) date.
+              (CASE WHEN i.status = 'active' AND cs.renewal_date <= CURRENT_DATE
+                    THEN (cs.renewal_date + make_interval(years => extract(year from age(CURRENT_DATE, cs.renewal_date))::int + 1))::date
+                    ELSE cs.renewal_date END) AS period_end
          FROM calculation_strategies cs
+         JOIN individuals i ON i.id = cs.individual_id
         WHERE cs.status = 'active' AND cs.renewal_date IS NOT NULL
         ORDER BY cs.individual_id, cs.created_at
      )
      SELECT i.id, i.display_name, i.preferred_name, i.status,
             i.archived_at::text AS archived_at,
-            pl.renewal_date,
+            to_char(pl.period_end, 'YYYY-MM-DD') AS renewal_date,
             pr.name                  AS program_name,
             l.authorized_hours::text AS authorized_hours,
             COALESCE(b.hrs, 0)::text AS billed_hours,
@@ -516,7 +520,7 @@ export async function listIndividualBudgetBoard(
            FROM payroll_transactions t
           WHERE t.individual_id = i.id
             AND t.program_id = l.program_id
-            AND t.period_begin >= pl.period_start
+            AND t.period_begin >= (pl.period_end - interval '1 year')
             AND t.period_begin <= pl.period_end
        ) b ON l.id IS NOT NULL
       WHERE i.merged_into_id IS NULL
@@ -782,6 +786,7 @@ export interface BudgetLine {
   programName: string;
   programCode: string;
   authorizedHours: string; // from the plan; "0" for billed-but-not-planned
+  perHour: string; // the plan's per-hour rate for this program (override or default)
   usedHours: string; // billed inside the period
   remainingHours: string; // authorized − used
   usagePercent: number | null; // 0..>1
@@ -794,7 +799,10 @@ export interface BudgetLine {
 
 export interface IndividualBudgetView {
   hasPlan: boolean;
-  renewalDate: string | null;
+  strategyId: string | null; // the plan to edit (null until one is created)
+  active: boolean; // account is active (renewal auto-rolls); inactive can read expired
+  renewalDate: string | null; // stored anniversary (what the editor edits)
+  effectiveRenewal: string | null; // rolled forward to the current year for active accounts
   periodStart: string | null;
   periodEnd: string | null;
   daysToRenewal: number | null;
@@ -810,6 +818,10 @@ const budgetLineStatus = (authorized: ReturnType<typeof dec>, used: ReturnType<t
   budgetStatusFromHours(authorized.toNumber(), used.toNumber());
 
 export async function getIndividualBudgetView(pool: PgLikePool, individualId: string): Promise<IndividualBudgetView> {
+  // The individual's account status decides whether the renewal auto-rolls.
+  const indRes = await pool.query<{ status: string }>(`SELECT status FROM individuals WHERE id = $1`, [individualId]);
+  const active = (indRes.rows[0]?.status ?? "active") === "active";
+
   // The individual's active plan (usually one) and its renewal date.
   const planRes = await pool.query<{ id: string; renewal_date: string | null }>(
     `SELECT id, to_char(renewal_date, 'YYYY-MM-DD') AS renewal_date
@@ -821,13 +833,16 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
   );
   const plan = planRes.rows[0] ?? null;
   const renewalDate = plan?.renewal_date ?? null;
-  const period = derivePeriodFromRenewal(renewalDate);
+  // Auto-rolls to the current year for active accounts; stays put for inactive.
+  const period = currentBudgetPeriod(renewalDate, active);
+  const effectiveRenewal = period.effectiveRenewal;
 
-  // Authorized hours per program from the plan.
+  // Authorized hours (and any per-hour rate override) per program from the plan.
   const authRows = plan
     ? (
-        await pool.query<{ program_id: string; program_name: string; program_code: string; authorized_hours: string }>(
-          `SELECT l.program_id, p.name AS program_name, p.code AS program_code, l.authorized_hours::text AS authorized_hours
+        await pool.query<{ program_id: string; program_name: string; program_code: string; authorized_hours: string; rate_override: string | null }>(
+          `SELECT l.program_id, p.name AS program_name, p.code AS program_code,
+                  l.authorized_hours::text AS authorized_hours, l.rate_override::text AS rate_override
              FROM calculation_strategy_lines l
              JOIN programs p ON p.id = l.program_id
             WHERE l.strategy_id = $1`,
@@ -835,6 +850,17 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
         )
       ).rows
     : [];
+
+  // The default per-hour rate per program (latest schedule), so a line with no
+  // override still shows the rate it will bill at.
+  const rateRows = (
+    await pool.query<{ program_id: string; internal_rate: string }>(
+      `SELECT DISTINCT ON (program_id) program_id, internal_rate::text AS internal_rate
+         FROM program_rate_schedules
+        ORDER BY program_id, effective_from DESC`,
+    )
+  ).rows;
+  const defaultRateByProgram = new Map(rateRows.map((r) => [r.program_id, r.internal_rate]));
 
   // Billed inside the current period, per program (the real "used").
   const billedRows =
@@ -872,17 +898,23 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
     const remaining = authorized.minus(used);
     const status = budgetLineStatus(authorized, used);
     const usagePercent = authorized.greaterThan(0) ? used.dividedBy(authorized).toNumber() : null;
-    totAuth = totAuth.plus(authorized);
-    totUsed = totUsed.plus(used);
+    // Budget totals reflect the PLAN only, so "used of authorized" matches the
+    // per-program table. Money counts every billed row in the period.
+    if (a) {
+      totAuth = totAuth.plus(authorized);
+      totUsed = totUsed.plus(used);
+      if (headline === null || BUDGET_STATUS_RANK[status] > BUDGET_STATUS_RANK[headline]) headline = status;
+    }
     totAgency = totAgency.plus(dec(b?.agency ?? 0));
     totInternal = totInternal.plus(dec(b?.internal ?? 0));
     totTx += b?.cnt ?? 0;
-    if (headline === null || BUDGET_STATUS_RANK[status] > BUDGET_STATUS_RANK[headline]) headline = status;
+    const perHour = a?.rate_override ?? defaultRateByProgram.get(pid) ?? "0";
     lines.push({
       programId: pid,
       programName: a?.program_name ?? b?.program_name ?? "Unknown program",
       programCode: a?.program_code ?? b?.program_code ?? "",
       authorizedHours: toHours(authorized),
+      perHour: toMoney(dec(perHour)),
       usedHours: toHours(used),
       remainingHours: toHours(remaining),
       usagePercent,
@@ -899,16 +931,17 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
     return dec(y.authorizedHours).minus(dec(x.authorizedHours)).toNumber();
   });
 
-  // Days to renewal and how far the period has elapsed (for the pace marker).
+  // Days to the (rolled) renewal and how far the current year has elapsed.
   let daysToRenewal: number | null = null;
   let expired = false;
   let timeElapsedPercent: number | null = null;
-  if (renewalDate) {
+  if (effectiveRenewal) {
     const dayMs = 24 * 60 * 60 * 1000;
     const today = new Date();
     const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
-    daysToRenewal = Math.round((Date.parse(`${renewalDate}T00:00:00Z`) - todayUtc) / dayMs);
-    expired = daysToRenewal < 0;
+    daysToRenewal = Math.round((Date.parse(`${effectiveRenewal}T00:00:00Z`) - todayUtc) / dayMs);
+    // Active accounts always roll forward, so "expired" only applies to inactive ones.
+    expired = !active && daysToRenewal < 0;
     if (period.start && period.end) {
       const start = Date.parse(`${period.start}T00:00:00Z`);
       const end = Date.parse(`${period.end}T00:00:00Z`);
@@ -918,7 +951,10 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
 
   return {
     hasPlan: !!plan && authRows.length > 0,
+    strategyId: plan?.id ?? null,
+    active,
     renewalDate,
+    effectiveRenewal,
     periodStart: period.start,
     periodEnd: period.end,
     daysToRenewal,

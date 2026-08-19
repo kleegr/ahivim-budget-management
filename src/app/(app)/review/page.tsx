@@ -196,7 +196,7 @@ export default async function ReviewPage() {
                 <Link
                   key={s.key}
                   href={s.href}
-                  className={`card block border-l-4 ${t.edge} px-5 py-4 transition hover:shadow-md`}
+                  className={`card card-interactive block border-l-4 ${t.edge} px-5 py-4`}
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
@@ -260,7 +260,7 @@ export default async function ReviewPage() {
             {watching.map((s) => {
               const t = toneClasses(s.tone);
               return (
-                <Link key={s.key} href={s.href} className={`card block border-l-4 ${t.edge} px-5 py-4 transition hover:shadow-md`}>
+                <Link key={s.key} href={s.href} className={`card card-interactive block border-l-4 ${t.edge} px-5 py-4`}>
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
                       <p className="text-[0.95rem] font-semibold text-[var(--color-ink)]">{s.question}</p>

@@ -13,6 +13,7 @@ function individualFields() {
   return (
     <>
       <Field label="Display name" name="displayName" required help="How this person is shown everywhere." />
+      <Field label="Renewal date" name="renewalDate" type="date" help="The budget's yearly renewal. It auto-rolls forward each year while the account is active. You can add programs and hours on the profile next." />
       <Field label="Legal name" name="legalName" help="Defaults to the display name if left blank." />
       <Field label="Preferred name" name="preferredName" />
       <Field label="External reference" name="externalRef" help="An agency or case number, if there is one." />

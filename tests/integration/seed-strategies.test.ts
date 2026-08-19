@@ -42,7 +42,14 @@ suite("seeded calculation strategies (migration 0007)", () => {
     const joel = rows.find((r) => r.individualName === "Joel Duestch")!;
     expect(Number(joel.yearlyGross)).toBeCloseTo(74645, 0); // 780×21 + 860×38 + 1075×17 + 430×17
     expect(Number(joel.net)).toBeCloseTo(3148.599, 0);
-    expect(joel.renewalDate).toBe("2025-03-01");
-    expect(joel.periodStart).toBe("2024-03-01"); // renewal − 12 months
+    expect(joel.renewalDate).toBe("2025-03-01"); // stored anchor is unchanged
+    // The budget window auto-rolls to the CURRENT year for an active account:
+    // it is a 12-month span ending on the rolled renewal, which is in the future.
+    const today = new Date().toISOString().slice(0, 10);
+    expect(joel.active).toBe(true);
+    expect(joel.periodEnd).toBe(joel.effectiveRenewal);
+    expect(joel.effectiveRenewal! > today).toBe(true);
+    expect(joel.periodStart!.slice(5)).toBe(joel.periodEnd!.slice(5)); // same month-day
+    expect(Number(joel.periodEnd!.slice(0, 4)) - Number(joel.periodStart!.slice(0, 4))).toBe(1);
   });
 });

@@ -78,9 +78,13 @@ suite("calculation strategies (real PostgreSQL)", () => {
     expect(Number(row.monthlyGross)).toBeCloseTo(6220.4167, 2); // ÷12
     expect(Number(row.grossNet)).toBeCloseTo(3448.599, 1); // after 23% then 28%
     expect(Number(row.net)).toBeCloseTo(3148.599, 1); // − 300 clock
-    // renewal-date-only: the 12-month period is derived
-    expect(row.periodStart).toBe("2024-03-01");
-    expect(row.periodEnd).toBe("2025-03-01");
+    // renewal-date-only: the 12-month period is derived and auto-rolls to the
+    // current year for an active account (ends on the rolled renewal, in future).
+    const today = new Date().toISOString().slice(0, 10);
+    expect(row.periodEnd).toBe(row.effectiveRenewal);
+    expect(row.effectiveRenewal! > today).toBe(true);
+    expect(row.periodStart!.slice(5)).toBe(row.periodEnd!.slice(5));
+    expect(Number(row.periodEnd!.slice(0, 4)) - Number(row.periodStart!.slice(0, 4))).toBe(1);
   });
 
   it("keeps a non-destructive revision snapshot on every edit", async () => {
