@@ -19,6 +19,7 @@ import BilledByMonth from "@/components/individuals/billed-by-month";
 import EmployeesActivity from "@/components/individuals/employees-activity";
 import FinancialPlan from "@/components/individuals/financial-plan";
 import MergePanel from "@/components/individuals/merge-panel";
+import AddPlanButton from "@/components/individuals/add-plan-button";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import { txLink } from "@/lib/nav/tx-link";
 
@@ -81,9 +82,19 @@ export default async function IndividualDetailPage({ params }: { params: Promise
       scheduledByProgramForIndividual(pool, id),
       getIndividualPeriodActivity(pool, id, budget.periodStart, budget.periodEnd),
     ]);
+    // The plan the main view describes (matches the budget board), plus any OTHER
+    // plans this individual has — each gets its own budget view so a second plan
+    // (different programs / different cuts) shows in full.
+    const activeStrategies = strategies.rows.filter((s) => s.status === "active");
+    const strategy = activeStrategies.find((s) => s.id === budget.strategyId) ?? activeStrategies[0] ?? null;
+    const others = activeStrategies.filter((s) => s.id !== (strategy?.id ?? budget.strategyId));
+    const otherPlans = await Promise.all(
+      others.map(async (s) => ({ strategy: s, budget: await getIndividualBudgetView(pool, id, s.id) })),
+    );
     return {
       individual, budget, activity,
-      strategy: strategies.rows[0] ?? null,
+      strategy,
+      otherPlans,
       programs: strategies.programs, // program list with default per-hour rates, for the editor
       assignments: assignments.filter((a) => a.status === "active"),
       aliases: aliasesAll.filter((a) => a.canonicalId === id),
@@ -101,7 +112,7 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   }
   if (!result.data) notFound();
 
-  const { individual, budget, activity, strategy, programs, assignments, aliases, scheduled } = result.data;
+  const { individual, budget, activity, strategy, otherPlans, programs, assignments, aliases, scheduled } = result.data;
   const t = budget.totals;
   const headline = budget.headline ? BUDGET_STATUS_PRESENT[budget.headline] : null;
 
@@ -265,15 +276,15 @@ export default async function IndividualDetailPage({ params }: { params: Promise
         </Card>
       ) : null}
 
-      {/* ---- Financial plan: projected vs. actual, both currencies ---- */}
+      {/* ---- Financial plan: projected vs. actual, both currencies, cuts inline ---- */}
       {strategy && budget.hasPlan ? (
         <Card
-          title="Financial plan"
+          title={otherPlans.length > 0 ? `Financial plan · ${strategy.label}` : "Financial plan"}
           description="Projected vs. actual. The plan is the budget priced out through the two cuts and doesn't move; the actual values the hours billed so far at the same rates — so you can see how much you're off and what's left to bill, in both the agency and company currencies."
           className="mb-6"
         >
           <FinancialPlan
-            individualId={id}
+            strategyId={strategy.id}
             lines={budget.lines}
             strategy={strategy}
             timeElapsedPercent={budget.timeElapsedPercent}
@@ -281,6 +292,47 @@ export default async function IndividualDetailPage({ params }: { params: Promise
             canManage={canEdit}
           />
         </Card>
+      ) : null}
+
+      {/* ---- Additional plans: some individuals have a second plan (different
+             programs, different cuts) — each shows its own budget + cuts in full. ---- */}
+      {otherPlans.map((op) => (
+        <div key={op.strategy.id} className="mb-6">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="rounded-full bg-[var(--color-primary-tint)] px-2.5 py-0.5 text-xs font-semibold text-[var(--color-primary)]">Plan · {op.strategy.label}</span>
+            <span className="text-xs text-[var(--color-ink-faint)]">a separate plan for this individual — its own programs and cuts</span>
+          </div>
+          <BudgetEditor
+            individualId={id}
+            strategyId={op.budget.strategyId}
+            active={op.budget.active}
+            renewalDate={op.budget.renewalDate}
+            effectiveRenewal={op.budget.effectiveRenewal}
+            periodStart={op.budget.periodStart}
+            periodEnd={op.budget.periodEnd}
+            lines={op.budget.lines.map((l) => ({ programId: l.programId, programName: l.programName, perHour: l.perHour, authorizedHours: l.authorizedHours, usedHours: l.usedHours, inPlan: l.inPlan, daysToRenewal: l.daysToRenewal, effectiveRenewal: l.effectiveRenewal, calendarYear: l.calendarYear }))}
+            programs={editorPrograms}
+            canEdit={canEdit}
+          />
+          {op.budget.hasPlan ? (
+            <Card title={`Financial plan · ${op.strategy.label}`} className="mt-0">
+              <FinancialPlan
+                strategyId={op.strategy.id}
+                lines={op.budget.lines}
+                strategy={op.strategy}
+                timeElapsedPercent={op.budget.timeElapsedPercent}
+                monthsToRenewal={op.budget.daysToRenewal !== null && op.budget.daysToRenewal > 0 ? op.budget.daysToRenewal / 30.4375 : null}
+                canManage={canEdit}
+              />
+            </Card>
+          ) : null}
+        </div>
+      ))}
+
+      {canEdit && strategy ? (
+        <div className="mb-6">
+          <AddPlanButton individualId={id} nextLabel={String(otherPlans.length + 2)} />
+        </div>
       ) : null}
 
       {/* ---- Everything else, folded away and only if it has content ---- */}
