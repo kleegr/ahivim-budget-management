@@ -4,7 +4,7 @@ import { recordChange } from "@/lib/manage/audit";
 import { dec, toMoney, toHours } from "@/lib/money";
 import {
   computeStrategy,
-  derivePeriodFromRenewal,
+  currentBudgetPeriod,
   type StrategyResult,
 } from "@/lib/business/calculation-strategy";
 import { calculatePeriodElapsed, classifyUtilization, type UtilizationStatus } from "@/lib/business/utilization";
@@ -33,9 +33,11 @@ export interface StrategyGridRow {
   individualId: string;
   individualName: string;
   label: string;
-  renewalDate: string | null;
-  periodStart: string | null;
-  periodEnd: string | null;
+  renewalDate: string | null; // the stored anniversary (what you edit)
+  effectiveRenewal: string | null; // rolled forward to the current year for active accounts
+  active: boolean; // the individual's account is active (auto-rolls its renewal)
+  periodStart: string | null; // current budget year start (rolled)
+  periodEnd: string | null; // current budget year end (rolled)
   monthDivisor: string;
   cut1Percent: string; // fraction (0.24)
   cut2Percent: string;
@@ -158,6 +160,7 @@ export async function listStrategies(
     id: string;
     individual_id: string;
     individual_name: string;
+    individual_status: string;
     label: string;
     renewal_date: string | null;
     month_divisor: string;
@@ -173,6 +176,7 @@ export async function listStrategies(
   }>(
     `SELECT s.id, s.individual_id,
             COALESCE(i.display_name, i.normalized_name) AS individual_name,
+            i.status AS individual_status,
             s.label,
             to_char(s.renewal_date, 'YYYY-MM-DD') AS renewal_date,
             s.month_divisor::text, s.cut1_percent::text, s.cut2_percent::text,
@@ -223,7 +227,8 @@ export async function listStrategies(
     const hours = hoursByStrategy.get(s.id) ?? {};
     const overrides = overrideByStrategy.get(s.id) ?? {};
     const overrideFroms = overrideFromByStrategy.get(s.id) ?? {};
-    const period = derivePeriodFromRenewal(s.renewal_date);
+    const active = s.individual_status === "active";
+    const period = currentBudgetPeriod(s.renewal_date, active);
     const strategyLines = Object.entries(hours).map(([programId, h]) => {
       const def = rateAsOf(schedules, programId, s.renewal_date);
       const { rate, isOverride } = effectiveLineRate({
@@ -256,6 +261,8 @@ export async function listStrategies(
       individualName: s.individual_name,
       label: s.label,
       renewalDate: s.renewal_date,
+      effectiveRenewal: period.effectiveRenewal,
+      active,
       periodStart: period.start,
       periodEnd: period.end,
       monthDivisor: s.month_divisor,
