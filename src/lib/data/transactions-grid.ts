@@ -47,6 +47,9 @@ export interface GridTransaction {
   matchStatus: string | null; // duplicate_status: new | possible | confirmed
   isGroup: boolean; // group status
   serviceSessionId: string | null; // reconciliation link (matched scheduled session)
+  isPaid: boolean; // operator-tracked payout status
+  paidAt: string | null; // when it was marked paid (YYYY-MM-DD)
+  paidNote: string | null; // optional free note kept with the paid flag
 }
 
 export async function listTransactionsForGrid(pool: PgLikePool): Promise<GridTransaction[]> {
@@ -77,6 +80,9 @@ export async function listTransactionsForGrid(pool: PgLikePool): Promise<GridTra
     match_status: string | null;
     is_group: boolean;
     service_session_id: string | null;
+    is_paid: boolean;
+    paid_at: string | null;
+    paid_note: string | null;
   }>(`
     SELECT
       t.id,
@@ -107,7 +113,10 @@ export async function listTransactionsForGrid(pool: PgLikePool): Promise<GridTra
       t.source_file_id,
       t.duplicate_status                                      AS match_status,
       t.is_group_service                                      AS is_group,
-      t.service_session_id
+      t.service_session_id,
+      t.is_paid,
+      to_char(t.paid_at, 'YYYY-MM-DD')                        AS paid_at,
+      t.paid_note
     FROM payroll_transactions t
     LEFT JOIN individuals i ON i.id = t.individual_id
     LEFT JOIN employees   e ON e.id = t.employee_id
@@ -142,5 +151,8 @@ export async function listTransactionsForGrid(pool: PgLikePool): Promise<GridTra
     matchStatus: r.match_status,
     isGroup: r.is_group,
     serviceSessionId: r.service_session_id,
+    isPaid: r.is_paid,
+    paidAt: r.paid_at,
+    paidNote: r.paid_note,
   }));
 }
