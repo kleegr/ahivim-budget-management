@@ -8,7 +8,7 @@ import { type ColumnDef, isNumericKind } from "@/components/data-grid/types";
 import { formatCell } from "@/components/data-grid/engine";
 import { useGrid } from "@/components/data-grid/use-grid";
 import { Toolbar } from "@/components/data-grid/toolbar";
-import { FilterBar } from "@/components/data-grid/filter-bar";
+import { FilterBar, HeaderFilter } from "@/components/data-grid/filter-bar";
 
 /**
  * A report table on top of the shared data-grid engine. The adapter turns the
@@ -160,20 +160,23 @@ export default function ReportGrid({
                     aria-sort={active ? (active.dir === "asc" ? "ascending" : "descending") : "none"}
                     className="border-b border-r border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-2 py-1.5 text-left align-bottom font-semibold whitespace-nowrap"
                   >
-                    <button
-                      type="button"
-                      className="flex w-full items-center gap-1 text-left hover:underline"
-                      title="Click to sort, Shift-click to add a sort level"
-                      onClick={(e) => grid.toggleSort(col.key, e.shiftKey)}
-                    >
-                      <span className="flex-1 truncate">{col.label}</span>
-                      {active ? (
-                        <span className="text-[10px] text-[var(--color-primary)]">
-                          {active.dir === "asc" ? "▲" : "▼"}
-                          {grid.sort.length > 1 ? idx + 1 : ""}
-                        </span>
-                      ) : null}
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        className="flex flex-1 items-center gap-1 truncate text-left hover:underline"
+                        title="Click to sort, Shift-click to add a sort level"
+                        onClick={(e) => grid.toggleSort(col.key, e.shiftKey)}
+                      >
+                        <span className="flex-1 truncate">{col.label}</span>
+                        {active ? (
+                          <span className="text-[10px] text-[var(--color-primary)]">
+                            {active.dir === "asc" ? "▲" : "▼"}
+                            {grid.sort.length > 1 ? idx + 1 : ""}
+                          </span>
+                        ) : null}
+                      </button>
+                      <HeaderFilter grid={grid} col={col} />
+                    </div>
                   </th>
                 );
               })}

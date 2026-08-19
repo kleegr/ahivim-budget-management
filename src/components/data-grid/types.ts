@@ -56,17 +56,28 @@ export interface ColumnDef<Row> {
   badgeLabels?: Record<string, string>;
 }
 
+/** Granularity of the value list for a date column (Google-Sheets style). */
+export type DateGroup = "day" | "month" | "year";
+
 export interface ColumnFilter {
-  /** Chosen text values; empty/undefined means all. */
+  /**
+   * Chosen values, checkbox-style — now for EVERY column kind, not just text.
+   * For a date column the values are buckets at `dateGroup` granularity
+   * ("2026", "2026-08" or "2026-08-18"); for a number column they are the
+   * canonical numeric strings. `undefined` means "all" (no constraint); an
+   * explicit array (even empty = "none") constrains to exactly that set.
+   */
   selected?: string[];
-  /** Case-insensitive substring. */
+  /** Case-insensitive substring (text columns). */
   contains?: string;
-  /** Inclusive numeric bounds. */
+  /** Inclusive numeric bounds (number columns), applied on top of `selected`. */
   min?: string;
   max?: string;
-  /** Inclusive ISO-date bounds (string compare). */
+  /** Inclusive ISO-date bounds (date columns), applied on top of `selected`. */
   from?: string;
   to?: string;
+  /** Bucket size for a date column's value list. Defaults to "day". */
+  dateGroup?: DateGroup;
 }
 
 export type FilterState = Record<string, ColumnFilter>;

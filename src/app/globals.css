@@ -61,7 +61,13 @@
 }
 
 html {
-  background: var(--color-paper);
+  /* A calm paper base with one soft branded glow in the corner — warmth
+     without noise. Fixed so it doesn't scroll away under long grids. */
+  background:
+    radial-gradient(1100px 560px at 108% -8%, var(--color-primary-tint) 0%, transparent 55%),
+    radial-gradient(900px 500px at -10% 110%, #eaf2f0 0%, transparent 60%),
+    var(--color-paper);
+  background-attachment: fixed;
 }
 
 body {
@@ -181,10 +187,39 @@ body {
 
 /* ---- Surfaces --------------------------------------------------------- */
 .card {
-  border-radius: 0.75rem;
+  border-radius: 0.875rem;
   border: 1px solid var(--color-rule);
   background: var(--color-surface);
   box-shadow: var(--shadow-card);
+}
+
+/* A card that responds to the pointer — for anything clickable (KPI tiles,
+   list rows presented as cards, quick-action panels). Lifts and warms its
+   border on hover so the whole surface feels alive and touchable. */
+.card-interactive {
+  transition: box-shadow 160ms ease, transform 160ms ease, border-color 160ms ease;
+  will-change: transform;
+}
+.card-interactive:hover {
+  transform: translateY(-2px);
+  border-color: var(--color-primary-soft);
+  box-shadow: var(--shadow-md);
+}
+.card-interactive:active {
+  transform: translateY(0);
+}
+
+/* A small status pill. Colour is passed in via CSS vars at the call site. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 9999px;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 
 /* Subtle custom scrollbars inside data regions */
@@ -239,10 +274,88 @@ body {
   border-top: 4px solid var(--color-ink);
 }
 
+/* ---- Motion: small, purposeful entrances ------------------------------ */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes drawer-in {
+  from {
+    opacity: 0.4;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* A popover/menu appearing at a trigger (filter funnels, drawers' pickers). */
+.pop-in {
+  animation: pop-in 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* A side sheet sliding in from the right (detail drawers). */
+.drawer-in {
+  animation: drawer-in 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* Content settling in on load (dashboard tiles, panels). */
+.fade-in-up {
+  animation: fade-in-up 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.overlay-in {
+  animation: overlay-in 160ms ease both;
+}
+
+/* A gentle attention pulse for a live badge/dot. */
+@keyframes soft-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+.soft-pulse {
+  animation: soft-pulse 2.2s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pace-fill,
-  .btn {
+  .btn,
+  .card-interactive {
     transition: none;
+  }
+  .pop-in,
+  .drawer-in,
+  .fade-in-up,
+  .overlay-in,
+  .soft-pulse {
+    animation: none;
   }
 }
 

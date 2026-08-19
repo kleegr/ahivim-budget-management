@@ -9,7 +9,7 @@ import { type ColumnDef, type GridFieldKind, isNumericKind } from "@/components/
 import { formatCell, rawValue } from "@/components/data-grid/engine";
 import { useGrid } from "@/components/data-grid/use-grid";
 import { Toolbar } from "@/components/data-grid/toolbar";
-import { FilterBar } from "@/components/data-grid/filter-bar";
+import { FilterBar, HeaderFilter } from "@/components/data-grid/filter-bar";
 import { UtilizationBadge, utilizationColor, type UtilizationStatus } from "@/components/ui-viz";
 
 /**
@@ -751,6 +751,7 @@ export default function CalculationsGrid({
                         {c.label}
                         {s && <span className="ml-1 text-[10px] text-[var(--color-primary)]">{s.dir === "asc" ? "▲" : "▼"}{grid.sort.length > 1 ? sortIdx + 1 : ""}</span>}
                       </button>
+                      <HeaderFilter grid={grid} col={c} />
                     </div>
                   </th>
                 );
@@ -889,7 +890,7 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
   };
 
   return (
-    <div className="fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-auto border-l border-[var(--color-rule-strong)] bg-white shadow-2xl">
+    <div className="drawer-in fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-auto border-l border-[var(--color-rule-strong)] bg-white shadow-2xl">
       <div className="flex items-center justify-between border-b border-[var(--color-rule)] px-4 py-3">
         <div>
           <div className="eyebrow text-[var(--color-text-soft)]">Calculation</div>

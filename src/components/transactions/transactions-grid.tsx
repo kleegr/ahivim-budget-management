@@ -7,7 +7,7 @@ import type { GridTransaction } from "@/lib/data/transactions-grid";
 import { computeGridTotals, type GridTotals } from "@/lib/business/transaction-totals";
 import { useGrid } from "@/components/data-grid/use-grid";
 import { Toolbar } from "@/components/data-grid/toolbar";
-import { FilterBar } from "@/components/data-grid/filter-bar";
+import { FilterBar, HeaderFilter } from "@/components/data-grid/filter-bar";
 import { formatCell } from "@/components/data-grid/engine";
 import { isNumericKind, type ColumnDef, type FilterState } from "@/components/data-grid/types";
 import PeriodControl, { type PeriodRange } from "@/components/period-control";
@@ -294,6 +294,7 @@ export default function TransactionsGrid({
                           </span>
                         )}
                       </button>
+                      <HeaderFilter grid={grid} col={c} />
                     </div>
                     <span
                       onMouseDown={(e) => {
@@ -391,7 +392,7 @@ function DetailDrawer({
     <div className="flex justify-between gap-4 py-1"><span className="text-[var(--color-text-soft)]">{label}</span><span className="text-right font-medium">{value}</span></div>
   );
   return (
-    <div className="fixed inset-y-0 right-0 z-50 w-full max-w-sm overflow-auto border-l border-[var(--color-rule-strong)] bg-white shadow-2xl">
+    <div className="drawer-in fixed inset-y-0 right-0 z-50 w-full max-w-sm overflow-auto border-l border-[var(--color-rule-strong)] bg-white shadow-2xl">
       <div className="flex items-center justify-between border-b border-[var(--color-rule)] px-4 py-3">
         <div>
           <div className="eyebrow text-[var(--color-text-soft)]">Transaction</div>

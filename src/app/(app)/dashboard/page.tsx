@@ -63,7 +63,7 @@ function AttentionTile({
   return (
     <Link
       href={href}
-      className={`card block border-l-4 ${s.edge} px-4 py-3.5 transition hover:shadow-md`}
+      className={`card card-interactive block border-l-4 ${s.edge} px-4 py-3.5`}
     >
       <p className="eyebrow">{label}</p>
       <p className={`tnum mt-1 text-2xl font-semibold leading-tight ${s.value}`}>
@@ -79,7 +79,7 @@ function Shortcut({ href, title, sub }: { href: string; title: string; sub: stri
   return (
     <Link
       href={href}
-      className="flex flex-col rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 transition hover:border-[var(--color-primary)] hover:bg-[var(--color-primary-tint)]"
+      className="card-interactive flex flex-col rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 hover:border-[var(--color-primary)] hover:bg-[var(--color-primary-tint)]"
     >
       <span className="text-sm font-semibold">{title}</span>
       <span className="text-xs text-[var(--color-ink-faint)]">{sub}</span>
@@ -192,7 +192,7 @@ export default async function DashboardPage({
       <FirstRunWelcome />
 
       {/* ---- Needs you: the answer to "did anything change?" ---- */}
-      <section aria-labelledby="needs-you-heading">
+      <section aria-labelledby="needs-you-heading" className="fade-in-up">
         <h2 id="needs-you-heading" className="eyebrow mb-2">Needs you</h2>
         {totalAttention === 0 ? (
           <div className="card flex items-center gap-3 border-l-4 border-l-[var(--color-success)] px-5 py-4">
@@ -223,7 +223,7 @@ export default async function DashboardPage({
       </section>
 
       {/* ---- The numbers: money at a glance ---- */}
-      <section aria-labelledby="numbers-heading" className="mt-8">
+      <section aria-labelledby="numbers-heading" className="mt-8 fade-in-up">
         <h2 id="numbers-heading" className="eyebrow mb-2">The numbers</h2>
         <p className="mb-2 text-xs text-[var(--color-ink-faint)]">
           Three parallel money figures live side by side — the agency total (what the funder pays),
@@ -261,7 +261,7 @@ export default async function DashboardPage({
       </section>
 
       {/* ---- Workspaces: a quiet strip, since the nav does the same job ---- */}
-      <section aria-labelledby="jump-heading" className="mt-8">
+      <section aria-labelledby="jump-heading" className="mt-8 fade-in-up">
         <h2 id="jump-heading" className="eyebrow mb-2">Jump to a workspace</h2>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <Shortcut href="/transactions" title="Transactions" sub="What was billed" />
