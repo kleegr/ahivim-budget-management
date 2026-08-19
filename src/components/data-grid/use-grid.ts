@@ -54,6 +54,8 @@ export interface UseGridResult<Row, Totals> {
 
   sort: SortState;
   toggleSort: (key: string, additive: boolean) => void;
+  /** Explicit single-level sort from a menu (ascending / descending / cleared). */
+  sortColumn: (key: string, dir: "asc" | "desc" | null) => void;
 
   search: string;
   setSearch: (v: string) => void;
@@ -145,6 +147,12 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
 
   const toggleSort = useCallback((key: string, additive: boolean) => {
     setSort((prev) => toggleSortState(prev, key, additive));
+  }, []);
+
+  // Deliberate sort chosen from a header menu — replaces the sort with a single
+  // level (or clears it). Unlike toggleSort, a header click never sorts by itself.
+  const sortColumn = useCallback((key: string, dir: "asc" | "desc" | null) => {
+    setSort(dir === null ? [] : [{ key, dir }]);
   }, []);
 
   const toggleHidden = useCallback((key: string) => {
@@ -308,6 +316,7 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
     clearFilters,
     sort,
     toggleSort,
+    sortColumn,
     search,
     setSearch,
     hidden,
