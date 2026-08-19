@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
-import { getIndividualReport, getIndividualBudgetView } from "@/lib/data/queries";
+import { getIndividualBudgetView, getIndividualPeriodActivity } from "@/lib/data/queries";
 import { BUDGET_STATUS_PRESENT, type BudgetLineStatus } from "@/lib/business/budget-status";
 import { isUuid } from "@/lib/data/app-queries";
 import { getIndividual } from "@/lib/manage/individuals";
@@ -13,7 +13,7 @@ import { scheduledByProgramForIndividual } from "@/lib/data/schedule-queries";
 import {
   Card, Table, Th, Td, Tr, Money, Hours, ErrorPanel, PageHeader, ButtonLink,
 } from "@/components/ui";
-import { CreateButton, ActionButton, Field, TextAreaField } from "@/components/manage/client";
+import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
 import BudgetEditor, { type BudgetEditorLine } from "@/components/individuals/budget-editor";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import { txLink } from "@/lib/nav/tx-link";
@@ -69,16 +69,19 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   const result = await withDb(async (pool) => {
     const individual = await getIndividual(pool, id);
     if (!individual) return null;
-    const [budget, report, strategies, assignments, aliasesAll, scheduledByProgram] = await Promise.all([
-      getIndividualBudgetView(pool, id),
-      getIndividualReport(pool, id),
+    const budget = await getIndividualBudgetView(pool, id);
+    // The monthly bars measure budget pace, so they count only the programs the
+    // plan authorizes — matching the hero's used/authorized and the ÷12 target.
+    const planProgramIds = budget.lines.filter((l) => l.inPlan).map((l) => l.programId);
+    const [strategies, assignments, aliasesAll, scheduledByProgram, activity] = await Promise.all([
       listStrategies(pool, { individualId: id, withAnalytics: true }),
       listAssignments(pool, { individualId: id, includeInactive: true }),
       listAliases(pool, { kind: "individual" }),
       scheduledByProgramForIndividual(pool, id),
+      getIndividualPeriodActivity(pool, id, budget.periodStart, budget.periodEnd, planProgramIds),
     ]);
     return {
-      individual, budget, report,
+      individual, budget, activity,
       strategy: strategies.rows[0] ?? null,
       programs: strategies.programs, // program list with default per-hour rates, for the editor
       assignments: assignments.filter((a) => a.status === "active"),
@@ -97,9 +100,14 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   }
   if (!result.data) notFound();
 
-  const { individual, budget, report, strategy, programs, assignments, aliases, scheduled } = result.data;
+  const { individual, budget, activity, strategy, programs, assignments, aliases, scheduled } = result.data;
   const t = budget.totals;
   const headline = budget.headline ? BUDGET_STATUS_PRESENT[budget.headline] : null;
+
+  // Months left until the (rolled) renewal, for "bill X h/month to finish".
+  const monthsToRenewal = budget.daysToRenewal !== null && budget.daysToRenewal > 0 ? budget.daysToRenewal / 30.4375 : null;
+  const remaining = dec(t.remainingHours);
+  const perMonthToFinish = monthsToRenewal && remaining.greaterThan(0) ? remaining.dividedBy(monthsToRenewal) : null;
 
   const editorLines: BudgetEditorLine[] = budget.lines.map((l) => ({
     programId: l.programId,
@@ -111,30 +119,24 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   }));
   const editorPrograms = programs.map((p) => ({ id: p.id, code: p.code, name: p.name, defaultRate: p.internalRate }));
 
-  /* ---- manager actions in the header ---- */
+  /* ---- header action: edit the person's name/notes. Active/inactive is a
+     switch inside the budget below, not an outside button. ---- */
   const headerActions = canEdit ? (
-    <div className="flex flex-wrap gap-2">
-      <CreateButton
-        label="Edit"
-        title="Edit individual"
-        endpoint={`/api/individuals/${id}`}
-        method="PATCH"
-        variant="secondary"
-        fields={
-          <>
-            <Field label="Display name" name="displayName" defaultValue={individual.displayName} required />
-            <Field label="Preferred name" name="preferredName" defaultValue={individual.preferredName} />
-            <Field label="Legal name" name="legalName" defaultValue={individual.legalName} />
-            <TextAreaField label="Notes" name="notes" defaultValue={individual.notes} />
-          </>
-        }
-      />
-      {individual.status === "active" ? (
-        <ActionButton label="Archive" endpoint={`/api/individuals/${id}`} body={{ action: "archive" }} withReason />
-      ) : (
-        <ActionButton label="Restore" endpoint={`/api/individuals/${id}`} body={{ action: "restore" }} withReason variant="primary" />
-      )}
-    </div>
+    <CreateButton
+      label="Edit name"
+      title="Edit individual"
+      endpoint={`/api/individuals/${id}`}
+      method="PATCH"
+      variant="secondary"
+      fields={
+        <>
+          <Field label="Display name" name="displayName" defaultValue={individual.displayName} required />
+          <Field label="Preferred name" name="preferredName" defaultValue={individual.preferredName} />
+          <Field label="Legal name" name="legalName" defaultValue={individual.legalName} />
+          <TextAreaField label="Notes" name="notes" defaultValue={individual.notes} />
+        </>
+      }
+    />
   ) : (
     <ButtonLink href="/individuals">All individuals</ButtonLink>
   );
@@ -158,6 +160,11 @@ export default async function IndividualDetailPage({ params }: { params: Promise
                 </span>
                 {" · "}{renewLine(budget.active, budget.daysToRenewal, budget.effectiveRenewal)}
               </p>
+              {perMonthToFinish ? (
+                <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
+                  To use it all by renewal, bill <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(perMonthToFinish.toString())} h/month</span> from now.
+                </p>
+              ) : null}
             </div>
             {headline ? <StatusPill status={budget.headline!} /> : null}
           </div>
@@ -189,21 +196,65 @@ export default async function IndividualDetailPage({ params }: { params: Promise
           active={budget.active}
           renewalDate={budget.renewalDate}
           effectiveRenewal={budget.effectiveRenewal}
+          monthsToRenewal={monthsToRenewal}
+          periodStart={budget.periodStart}
+          periodEnd={budget.periodEnd}
           lines={editorLines}
           programs={editorPrograms}
           canEdit={canEdit}
         />
       ) : null}
 
-      {/* ---- Money billed this period ---- */}
+      {/* ---- Money billed this period (this budget year only) ---- */}
       {budget.money.txCount > 0 ? (
-        <Card title="Money billed this period" description="From the same transactions above." className="mb-6"
-          action={<ButtonLink href={txLink({ individualId: id })} variant="secondary">See all rows →</ButtonLink>}>
+        <Card title="Money billed this period" description="This budget year only — not the whole history." className="mb-6"
+          action={<ButtonLink href={txLink({ individualId: id, pbFrom: budget.periodStart ?? undefined, pbTo: budget.periodEnd ?? undefined })} variant="secondary">See these rows →</ButtonLink>}>
           <div className="grid gap-3 px-5 py-4 sm:grid-cols-3">
             <MoneyTile label="Agency total (billed)" value={formatMoney(budget.money.agencyBilled)} />
             <MoneyTile label="Employee amount" value={formatMoney(budget.money.internalBilled)} />
             <MoneyTile label="Transactions" value={budget.money.txCount.toLocaleString()} plain />
           </div>
+        </Card>
+      ) : null}
+
+      {/* ---- Billed this period, by month: plan vs actual ---- */}
+      {budget.hasPlan && budget.periodStart && activity.byMonth.length > 0 ? (
+        <Card
+          title="Billed by month"
+          description="Hours billed each month on the budgeted program(s) this renewal year, against the even monthly target (authorized ÷ 12). See where you're ahead or behind."
+          className="mb-6"
+        >
+          <MonthlyBilling periodStart={budget.periodStart} byMonth={activity.byMonth} authorizedTotal={t.authorizedHours} />
+        </Card>
+      ) : null}
+
+      {/* ---- Employees working with this individual, this period, auto-filtered ---- */}
+      {activity.byEmployee.length > 0 ? (
+        <Card
+          title="Employees working with this individual"
+          description="Who did the work this budget year. Click a name to open that person's rows for this individual."
+          className="mb-6"
+          action={<ButtonLink href={txLink({ individualId: id, pbFrom: budget.periodStart ?? undefined, pbTo: budget.periodEnd ?? undefined })} variant="secondary">All rows →</ButtonLink>}
+        >
+          <Table head={<><Th>Employee</Th><Th numeric>Hours</Th><Th numeric>Agency total</Th><Th numeric>Transactions</Th><Th>Open</Th></>}>
+            {activity.byEmployee.map((e) => (
+              <Tr key={e.id ?? e.name}>
+                <Td>
+                  {e.id ? (
+                    <Link className="font-medium text-[var(--color-primary)] hover:underline" href={`/employees/${e.id}`}>{e.name}</Link>
+                  ) : (
+                    e.name
+                  )}
+                </Td>
+                <Td numeric><Hours value={e.hours} /></Td>
+                <Td numeric><Money value={e.agency} /></Td>
+                <Td numeric className="tnum">{e.txCount}</Td>
+                <Td>
+                  <Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ individualId: id, employeeId: e.id ?? undefined, pbFrom: budget.periodStart ?? undefined, pbTo: budget.periodEnd ?? undefined })}>rows →</Link>
+                </Td>
+              </Tr>
+            ))}
+          </Table>
         </Card>
       ) : null}
 
@@ -228,8 +279,6 @@ export default async function IndividualDetailPage({ params }: { params: Promise
 
       {/* ---- Everything else, folded away and only if it has content ---- */}
       <MoreDetails
-        id={id}
-        report={report}
         assignments={assignments}
         aliases={aliases}
         scheduled={scheduled}
@@ -254,6 +303,54 @@ function MoneyTile({ label, value, plain }: { label: string; value: string; plai
   );
 }
 
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Plan vs. actual by month: each bar is hours billed that month; the notch is
+    the even monthly target (authorized ÷ 12), so ahead/behind reads at a glance. */
+function MonthlyBilling({ periodStart, byMonth, authorizedTotal }: { periodStart: string; byMonth: { month: string; hours: string }[]; authorizedTotal: string }) {
+  const target = dec(authorizedTotal).dividedBy(12);
+  const targetNum = target.toNumber();
+  const billedMap = new Map(byMonth.map((m) => [m.month, dec(m.hours).toNumber()]));
+  const [sy, sm] = periodStart.slice(0, 7).split("-").map(Number);
+  const now = new Date();
+  const todayYm = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  const cells: { ym: string; label: string; billed: number; future: boolean }[] = [];
+  for (let i = 0; i < 12; i++) {
+    const idx = (sm as number) - 1 + i;
+    const y = (sy as number) + Math.floor(idx / 12);
+    const mo = idx % 12;
+    const ym = `${y}-${String(mo + 1).padStart(2, "0")}`;
+    cells.push({ ym, label: `${MONTHS_SHORT[mo]} '${String(y).slice(2)}`, billed: billedMap.get(ym) ?? 0, future: ym > todayYm });
+  }
+  const scale = Math.max(targetNum * 1.6, ...cells.map((c) => c.billed), 1);
+  return (
+    <div className="px-5 py-4">
+      <p className="mb-3 text-xs text-[var(--color-ink-faint)]">
+        Even monthly target: <span className="tnum font-medium text-[var(--color-ink-soft)]">{formatHours(target.toString())} h/month</span>. The notch is the target; green means that month met it, amber is below, grey is upcoming.
+      </p>
+      <div className="space-y-1.5">
+        {cells.map((c) => {
+          const fill = Math.max(0, Math.min(100, (c.billed / scale) * 100));
+          const notch = Math.max(0, Math.min(100, (targetNum / scale) * 100));
+          const color = c.future ? "var(--color-pace-idle)" : c.billed >= targetNum ? "var(--color-pace-on)" : "var(--color-pace-ahead)";
+          return (
+            <div key={c.ym} className="flex items-center gap-3">
+              <span className="tnum w-14 shrink-0 text-xs text-[var(--color-ink-faint)]">{c.label}</span>
+              <div className="pace-track flex-1">
+                <div className="pace-fill" style={{ width: `${fill}%`, background: color }} />
+                <div className="pace-notch" style={{ left: `${notch}%` }} />
+              </div>
+              <span className="tnum w-24 shrink-0 text-right text-xs">
+                {c.future ? <span className="text-[var(--color-ink-faint)]">upcoming</span> : <><span className="font-medium">{formatHours(String(c.billed))}</span> h</>}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function pct(fraction: string): string {
   return `${dec(fraction).times(100).toDecimalPlaces(2)}%`;
 }
@@ -272,37 +369,19 @@ function FinLine({ label, value, sub, strong }: { label: string; value: React.Re
 
 /* Everything advanced, collapsed by default and hidden entirely when empty. */
 function MoreDetails({
-  id, report, assignments, aliases, scheduled, notes,
+  assignments, aliases, scheduled, notes,
 }: {
-  id: string;
-  report: Awaited<ReturnType<typeof getIndividualReport>>;
   assignments: Awaited<ReturnType<typeof listAssignments>>;
   aliases: { id: string; importedName: string; status: string }[];
   scheduled: [string, { hours: string; internal: string }][];
   notes: string | null;
 }) {
-  const employeesServing = report?.employeesServing ?? [];
-  const hasAnything = employeesServing.length > 0 || assignments.length > 0 || scheduled.length > 0 || aliases.length > 0 || !!notes;
+  const hasAnything = assignments.length > 0 || scheduled.length > 0 || aliases.length > 0 || !!notes;
   if (!hasAnything) return null;
   return (
     <details className="card px-5 py-4">
       <summary className="cursor-pointer text-sm font-semibold text-[var(--color-ink)]">More details</summary>
       <div className="mt-4 space-y-6">
-        {employeesServing.length > 0 ? (
-          <div>
-            <p className="eyebrow mb-2">Who served this person</p>
-            <Table head={<><Th>Employee</Th><Th numeric>Hours</Th><Th>Open</Th></>}>
-              {employeesServing.map((e) => (
-                <Tr key={e.id}>
-                  <Td><Link className="font-medium text-[var(--color-primary)] hover:underline" href={`/employees/${e.id}`}>{e.displayName}</Link></Td>
-                  <Td numeric><Hours value={e.hours} /></Td>
-                  <Td><Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ individualId: id, employeeId: e.id })}>rows →</Link></Td>
-                </Tr>
-              ))}
-            </Table>
-          </div>
-        ) : null}
-
         {assignments.length > 0 ? (
           <div>
             <p className="eyebrow mb-2">Assigned employees</p>

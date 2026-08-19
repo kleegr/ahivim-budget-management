@@ -53,6 +53,9 @@ export default function BudgetEditor({
   active: activeInitial,
   renewalDate,
   effectiveRenewal,
+  monthsToRenewal,
+  periodStart,
+  periodEnd,
   lines,
   programs,
   canEdit,
@@ -62,6 +65,9 @@ export default function BudgetEditor({
   active: boolean;
   renewalDate: string | null;
   effectiveRenewal: string | null;
+  monthsToRenewal: number | null;
+  periodStart: string | null;
+  periodEnd: string | null;
   lines: BudgetEditorLine[];
   programs: Program[];
   canEdit: boolean;
@@ -83,7 +89,28 @@ export default function BudgetEditor({
   const [addSel, setAddSel] = useState<string>("");
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [savingActive, setSavingActive] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+
+  // "How many hours/month to bill to finish by renewal" for a remaining amount.
+  const months = monthsToRenewal && monthsToRenewal > 0 ? monthsToRenewal : null;
+  const perMonth = (left: ReturnType<typeof dec>) => (months && left.greaterThan(0) ? left.dividedBy(months) : null);
+
+  // A quick account-status switch that lives ON the profile (a setting inside
+  // the individual): active accounts auto-roll their renewal; inactive freeze.
+  const toggleActive = async () => {
+    setSavingActive(true);
+    try {
+      await fetch(`/api/individuals/${individualId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: activeInitial ? "deactivate" : "restore" }),
+      });
+      router.refresh();
+    } finally {
+      setSavingActive(false);
+    }
+  };
 
   // Programs billed this period but not in the plan — offer to add them.
   const billedNotInPlan = lines.filter((l) => !l.inPlan && dec(l.usedHours).greaterThan(0));
@@ -185,12 +212,30 @@ export default function BudgetEditor({
             <p className="font-semibold text-[var(--color-ink)]">Budget by program</p>
             <p className="text-xs text-[var(--color-ink-faint)]">
               The plan for this renewal year. Renews {effectiveRenewal ?? "—"}
-              {active ? "" : " · account inactive (renewal is not auto-rolling)"}.
+              {activeInitial ? "" : " · account inactive (renewal is not auto-rolling)"}.
             </p>
           </div>
-          {canEdit ? (
-            <button type="button" onClick={startEdit} className="btn btn-sm btn-secondary">Edit this budget</button>
-          ) : null}
+          <div className="flex items-center gap-2">
+            {canEdit ? (
+              <button
+                type="button"
+                onClick={toggleActive}
+                disabled={savingActive}
+                title={activeInitial ? "Active — renewal auto-rolls each year. Click to make inactive." : "Inactive — renewal is frozen. Click to make active."}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                  activeInitial ? "bg-[var(--color-success-soft)] text-[var(--color-success)]" : "bg-[var(--color-surface-strong)] text-[var(--color-ink-soft)]"
+                }`}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${activeInitial ? "bg-[var(--color-success)]" : "bg-[var(--color-ink-faint)]"}`} />
+                {savingActive ? "…" : activeInitial ? "Active" : "Inactive"}
+              </button>
+            ) : (
+              <span className="text-xs text-[var(--color-ink-faint)]">{activeInitial ? "Active" : "Inactive"}</span>
+            )}
+            {canEdit ? (
+              <button type="button" onClick={startEdit} className="btn btn-sm btn-secondary">Edit this budget</button>
+            ) : null}
+          </div>
         </div>
         {rows.length === 0 ? (
           <div className="px-5 py-6 text-sm text-[var(--color-ink-soft)]">
@@ -207,23 +252,26 @@ export default function BudgetEditor({
                   <th className="px-3 py-2 text-right font-medium">Total</th>
                   <th className="px-3 py-2 text-right font-medium">Used</th>
                   <th className="px-3 py-2 text-right font-medium">Left</th>
+                  <th className="px-3 py-2 text-right font-medium" title="Hours to bill each month to finish by renewal">Per month{months ? " to finish" : ""}</th>
                   <th className="px-5 py-2 font-medium">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => {
                   const left = dec(r.hours || 0).minus(dec(r.used || 0));
+                  const pm = perMonth(left);
                   const status = budgetStatusFromHours(Number(r.hours || 0), Number(r.used || 0));
                   return (
                     <tr key={r.programId} className="border-t border-[var(--color-rule)]">
                       <td className="px-5 py-2 font-medium">
-                        <Link className="text-[var(--color-primary)] hover:underline" href={txLink({ individualId, program: r.programName })}>{r.programName}</Link>
+                        <Link className="text-[var(--color-primary)] hover:underline" href={txLink({ individualId, program: r.programName, pbFrom: periodStart ?? undefined, pbTo: periodEnd ?? undefined })}>{r.programName}</Link>
                       </td>
                       <td className="tnum px-3 py-2 text-right">{formatMoney(r.perHour)}</td>
                       <td className="tnum px-3 py-2 text-right">{formatHours(r.hours)}</td>
                       <td className="tnum px-3 py-2 text-right font-medium">{formatMoney(rowTotal(r).toString())}</td>
                       <td className="tnum px-3 py-2 text-right">{formatHours(r.used)}</td>
                       <td className="tnum px-3 py-2 text-right" style={{ color: left.isNegative() ? "var(--color-pace-over)" : undefined }}>{formatHours(left.toString())}</td>
+                      <td className="tnum px-3 py-2 text-right text-[var(--color-ink-soft)]">{pm ? `${formatHours(pm.toString())}/mo` : "—"}</td>
                       <td className="px-5 py-2"><StatusPill status={status} /></td>
                     </tr>
                   );
@@ -235,6 +283,7 @@ export default function BudgetEditor({
                   <td className="tnum px-3 py-2 text-right">{formatMoney(grandTotal.toString())}</td>
                   <td className="tnum px-3 py-2 text-right">{formatHours(totalUsed.toString())}</td>
                   <td className="tnum px-3 py-2 text-right">{formatHours(totalAuthorized.minus(totalUsed).toString())}</td>
+                  <td className="tnum px-3 py-2 text-right">{perMonth(totalAuthorized.minus(totalUsed)) ? `${formatHours(perMonth(totalAuthorized.minus(totalUsed))!.toString())}/mo` : "—"}</td>
                   <td></td>
                 </tr>
               </tbody>

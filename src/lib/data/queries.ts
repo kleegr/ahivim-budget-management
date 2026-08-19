@@ -971,3 +971,79 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
     headline,
   };
 }
+
+/* -------------------------------------------------------------------------- */
+/* Individual period activity — this budget year's billing, on the profile.    */
+/*                                                                            */
+/* So a coordinator never has to leave the page to see "what was billed this  */
+/* period": one query breaks it down by month (for plan-vs-actual pacing) and  */
+/* one by employee (who did the work). Both windowed to the current 12-month   */
+/* budget period, never the whole history.                                     */
+/* -------------------------------------------------------------------------- */
+
+export interface PeriodMonth {
+  month: string; // YYYY-MM
+  hours: string;
+  agency: string;
+  internal: string;
+}
+export interface PeriodEmployee {
+  id: string | null;
+  name: string;
+  hours: string;
+  agency: string;
+  internal: string;
+  txCount: number;
+}
+export interface IndividualPeriodActivity {
+  byMonth: PeriodMonth[];
+  byEmployee: PeriodEmployee[];
+}
+
+export async function getIndividualPeriodActivity(
+  pool: PgLikePool,
+  individualId: string,
+  start: string | null,
+  end: string | null,
+  planProgramIds?: string[] | null,
+): Promise<IndividualPeriodActivity> {
+  if (!start || !end) return { byMonth: [], byEmployee: [] };
+  const internalExpr =
+    "COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount, t.internal_rate_applied * t.imported_hours, 0)";
+  // The monthly bars are compared against the budget's even monthly target
+  // (authorized ÷ 12), so they must count the SAME programs the budget authorizes
+  // — otherwise billed-but-not-planned programs inflate the bars above a target
+  // that never covered them. When a plan scope is given we filter to it; with no
+  // scope (no plan) we fall back to all of the individual's billed hours.
+  const scoped = Array.isArray(planProgramIds) && planProgramIds.length > 0;
+  const monthRes = await pool.query<{ month: string; hours: string; agency: string; internal: string }>(
+    `SELECT to_char(date_trunc('month', t.period_begin), 'YYYY-MM') AS month,
+            sum(t.imported_hours)::text  AS hours,
+            sum(t.imported_amount)::text AS agency,
+            sum(${internalExpr})::text   AS internal
+       FROM payroll_transactions t
+      WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
+        ${scoped ? "AND t.program_id = ANY($4::uuid[])" : ""}
+      GROUP BY 1
+      ORDER BY 1`,
+    scoped ? [individualId, start, end, planProgramIds] : [individualId, start, end],
+  );
+  const empRes = await pool.query<{ id: string | null; name: string; hours: string; agency: string; internal: string; tx: number }>(
+    `SELECT t.employee_id AS id,
+            COALESCE(e.display_name, t.employee_raw, 'Unknown') AS name,
+            sum(t.imported_hours)::text  AS hours,
+            sum(t.imported_amount)::text AS agency,
+            sum(${internalExpr})::text   AS internal,
+            count(*)::int                AS tx
+       FROM payroll_transactions t
+       LEFT JOIN employees e ON e.id = t.employee_id
+      WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
+      GROUP BY t.employee_id, e.display_name, t.employee_raw
+      ORDER BY sum(t.imported_hours) DESC`,
+    [individualId, start, end],
+  );
+  return {
+    byMonth: monthRes.rows.map((r) => ({ month: r.month, hours: r.hours, agency: r.agency, internal: r.internal })),
+    byEmployee: empRes.rows.map((r) => ({ id: r.id, name: r.name, hours: r.hours, agency: r.agency, internal: r.internal, txCount: r.tx })),
+  };
+}
