@@ -786,7 +786,8 @@ export interface BudgetLine {
   programName: string;
   programCode: string;
   authorizedHours: string; // from the plan; "0" for billed-but-not-planned
-  perHour: string; // the plan's per-hour rate for this program (override or default)
+  perHour: string; // the plan's per-hour rate for this program (override or default) — internal/company
+  perHourAgency: string | null; // the agency (billed-out) rate, when configured
   usedHours: string; // billed inside the period
   remainingHours: string; // authorized − used
   usagePercent: number | null; // 0..>1
@@ -854,13 +855,16 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
   // The default per-hour rate per program (latest schedule), so a line with no
   // override still shows the rate it will bill at.
   const rateRows = (
-    await pool.query<{ program_id: string; internal_rate: string }>(
-      `SELECT DISTINCT ON (program_id) program_id, internal_rate::text AS internal_rate
+    await pool.query<{ program_id: string; internal_rate: string; agency_rate: string | null }>(
+      `SELECT DISTINCT ON (program_id) program_id, internal_rate::text AS internal_rate, agency_rate::text AS agency_rate
          FROM program_rate_schedules
         ORDER BY program_id, effective_from DESC`,
     )
   ).rows;
   const defaultRateByProgram = new Map(rateRows.map((r) => [r.program_id, r.internal_rate]));
+  // The agency (billed-out) rate, for the agency-currency valuation alongside the
+  // internal per-hour. Some programs (self-hire) have no agency rate configured.
+  const agencyRateByProgram = new Map(rateRows.map((r) => [r.program_id, r.agency_rate]));
 
   // Billed inside the current period, per program (the real "used").
   const billedRows =
@@ -909,12 +913,14 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
     totInternal = totInternal.plus(dec(b?.internal ?? 0));
     totTx += b?.cnt ?? 0;
     const perHour = a?.rate_override ?? defaultRateByProgram.get(pid) ?? "0";
+    const agencyRate = agencyRateByProgram.get(pid) ?? null;
     lines.push({
       programId: pid,
       programName: a?.program_name ?? b?.program_name ?? "Unknown program",
       programCode: a?.program_code ?? b?.program_code ?? "",
       authorizedHours: toHours(authorized),
       perHour: toMoney(dec(perHour)),
+      perHourAgency: agencyRate === null ? null : toMoney(dec(agencyRate)),
       usedHours: toHours(used),
       remainingHours: toHours(remaining),
       usagePercent,
@@ -981,8 +987,30 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
 /* budget period, never the whole history.                                     */
 /* -------------------------------------------------------------------------- */
 
-export interface PeriodMonth {
+/** One program's billing in one month — the itemized cell of the by-month grid. */
+export interface PeriodProgramMonth {
   month: string; // YYYY-MM
+  programId: string | null;
+  programName: string;
+  programCode: string;
+  hours: string;
+  agency: string; // what was invoiced (imported_amount)
+  internal: string; // the company/internal amount
+}
+/** A distinct program billed in the period, for column ordering + a total row. */
+export interface PeriodProgram {
+  id: string | null;
+  name: string;
+  code: string;
+  hours: string;
+  agency: string;
+  internal: string;
+}
+/** One billed transaction, shown inline when an employee row is expanded. */
+export interface PeriodEmployeeTx {
+  id: string;
+  periodBegin: string; // YYYY-MM-DD
+  programName: string;
   hours: string;
   agency: string;
   internal: string;
@@ -994,56 +1022,122 @@ export interface PeriodEmployee {
   agency: string;
   internal: string;
   txCount: number;
+  transactions: PeriodEmployeeTx[];
 }
 export interface IndividualPeriodActivity {
-  byMonth: PeriodMonth[];
-  byEmployee: PeriodEmployee[];
+  byProgramMonth: PeriodProgramMonth[]; // every program billed, per month (itemized)
+  programsBilled: PeriodProgram[]; // distinct programs billed, most hours first
+  byEmployee: PeriodEmployee[]; // each with its own transactions for this person/period
 }
 
+/**
+ * The individual's billed activity inside their current budget year, itemized so
+ * the profile can show a real by-program-by-month breakdown (hours don't add up
+ * across programs, so the money is what totals) and an expandable per-employee
+ * ledger. Every figure is windowed to [start, end] — this renewal year only.
+ */
 export async function getIndividualPeriodActivity(
   pool: PgLikePool,
   individualId: string,
   start: string | null,
   end: string | null,
-  planProgramIds?: string[] | null,
 ): Promise<IndividualPeriodActivity> {
-  if (!start || !end) return { byMonth: [], byEmployee: [] };
+  if (!start || !end) return { byProgramMonth: [], programsBilled: [], byEmployee: [] };
   const internalExpr =
     "COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount, t.internal_rate_applied * t.imported_hours, 0)";
-  // The monthly bars are compared against the budget's even monthly target
-  // (authorized ÷ 12), so they must count the SAME programs the budget authorizes
-  // — otherwise billed-but-not-planned programs inflate the bars above a target
-  // that never covered them. When a plan scope is given we filter to it; with no
-  // scope (no plan) we fall back to all of the individual's billed hours.
-  const scoped = Array.isArray(planProgramIds) && planProgramIds.length > 0;
-  const monthRes = await pool.query<{ month: string; hours: string; agency: string; internal: string }>(
+
+  // Program × month, every program the person billed (not just the budgeted ones).
+  const pmRes = await pool.query<{ month: string; program_id: string | null; program_name: string; program_code: string; hours: string; agency: string; internal: string }>(
     `SELECT to_char(date_trunc('month', t.period_begin), 'YYYY-MM') AS month,
+            t.program_id,
+            COALESCE(p.name, t.program_raw, 'Unknown') AS program_name,
+            COALESCE(p.code, '')                       AS program_code,
             sum(t.imported_hours)::text  AS hours,
             sum(t.imported_amount)::text AS agency,
             sum(${internalExpr})::text   AS internal
        FROM payroll_transactions t
+       LEFT JOIN programs p ON p.id = t.program_id
       WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
-        ${scoped ? "AND t.program_id = ANY($4::uuid[])" : ""}
-      GROUP BY 1
+      GROUP BY 1, t.program_id, p.name, t.program_raw, p.code
       ORDER BY 1`,
-    scoped ? [individualId, start, end, planProgramIds] : [individualId, start, end],
+    [individualId, start, end],
   );
-  const empRes = await pool.query<{ id: string | null; name: string; hours: string; agency: string; internal: string; tx: number }>(
-    `SELECT t.employee_id AS id,
-            COALESCE(e.display_name, t.employee_raw, 'Unknown') AS name,
+
+  // Distinct programs billed, most hours first — the column order + totals row.
+  const progRes = await pool.query<{ id: string | null; name: string; code: string; hours: string; agency: string; internal: string }>(
+    `SELECT t.program_id AS id,
+            COALESCE(p.name, t.program_raw, 'Unknown') AS name,
+            COALESCE(p.code, '')                       AS code,
             sum(t.imported_hours)::text  AS hours,
             sum(t.imported_amount)::text AS agency,
-            sum(${internalExpr})::text   AS internal,
-            count(*)::int                AS tx
+            sum(${internalExpr})::text   AS internal
        FROM payroll_transactions t
-       LEFT JOIN employees e ON e.id = t.employee_id
+       LEFT JOIN programs p ON p.id = t.program_id
       WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
-      GROUP BY t.employee_id, e.display_name, t.employee_raw
+      GROUP BY t.program_id, p.name, t.program_raw, p.code
       ORDER BY sum(t.imported_hours) DESC`,
     [individualId, start, end],
   );
+
+  // Every transaction, so an employee row can expand to its own ledger inline.
+  const txRes = await pool.query<{ id: string; emp_id: string | null; emp_name: string; period_begin: string; program_name: string; hours: string; agency: string; internal: string }>(
+    `SELECT t.id::text AS id,
+            t.employee_id AS emp_id,
+            COALESCE(e.display_name, t.employee_raw, 'Unknown') AS emp_name,
+            to_char(t.period_begin, 'YYYY-MM-DD') AS period_begin,
+            COALESCE(p.name, t.program_raw, 'Unknown') AS program_name,
+            t.imported_hours::text  AS hours,
+            t.imported_amount::text AS agency,
+            (${internalExpr})::text AS internal
+       FROM payroll_transactions t
+       LEFT JOIN employees e ON e.id = t.employee_id
+       LEFT JOIN programs p ON p.id = t.program_id
+      WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
+      ORDER BY COALESCE(e.display_name, t.employee_raw, 'Unknown'), t.period_begin`,
+    [individualId, start, end],
+  );
+
+  const empMap = new Map<string, PeriodEmployee>();
+  for (const r of txRes.rows) {
+    const key = r.emp_id ?? `raw:${r.emp_name}`;
+    let emp = empMap.get(key);
+    if (!emp) {
+      emp = { id: r.emp_id, name: r.emp_name, hours: "0", agency: "0", internal: "0", txCount: 0, transactions: [] };
+      empMap.set(key, emp);
+    }
+    emp.transactions.push({
+      id: r.id,
+      periodBegin: r.period_begin,
+      programName: r.program_name,
+      hours: r.hours,
+      agency: r.agency,
+      internal: r.internal,
+    });
+    emp.txCount += 1;
+  }
+  const byEmployee = [...empMap.values()]
+    .map((e) => {
+      let h = dec(0), a = dec(0), i = dec(0);
+      for (const t of e.transactions) {
+        h = h.plus(dec(t.hours));
+        a = a.plus(dec(t.agency));
+        i = i.plus(dec(t.internal));
+      }
+      return { ...e, hours: toHours(h), agency: toMoney(a), internal: toMoney(i) };
+    })
+    .sort((x, y) => dec(y.hours).minus(dec(x.hours)).toNumber());
+
   return {
-    byMonth: monthRes.rows.map((r) => ({ month: r.month, hours: r.hours, agency: r.agency, internal: r.internal })),
-    byEmployee: empRes.rows.map((r) => ({ id: r.id, name: r.name, hours: r.hours, agency: r.agency, internal: r.internal, txCount: r.tx })),
+    byProgramMonth: pmRes.rows.map((r) => ({
+      month: r.month,
+      programId: r.program_id,
+      programName: r.program_name,
+      programCode: r.program_code,
+      hours: r.hours,
+      agency: r.agency,
+      internal: r.internal,
+    })),
+    programsBilled: progRes.rows.map((r) => ({ id: r.id, name: r.name, code: r.code, hours: r.hours, agency: r.agency, internal: r.internal })),
+    byEmployee,
   };
 }

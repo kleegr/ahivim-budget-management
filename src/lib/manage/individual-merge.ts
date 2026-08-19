@@ -2,6 +2,7 @@ import type { PgLikePool } from "@/lib/import/commit";
 import { ok, fail, type Result } from "@/lib/manage/errors";
 import { recordChange } from "@/lib/manage/audit";
 import { findMatchCandidates, type IndividualForMatch } from "@/lib/business/individual-matching";
+import { similarity } from "@/lib/business/name-matching";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -250,4 +251,74 @@ export async function decideMatchReview(
     [actorId, input.id],
   );
   return ok({ id: input.id });
+}
+
+export interface MergeCandidate {
+  id: string;
+  name: string;
+  txCount: number;
+  hasPlan: boolean;
+  billedAgency: string; // total agency billed, for context
+  similarity: number; // 0..1 name similarity to the target
+}
+
+/**
+ * Other individual records that could be the SAME person as `individualId` —
+ * used to connect a budgeted person to transactions that came in under a
+ * different name (a nickname, maiden name, or transliteration mints a separate
+ * individual row on import). Ranked by name similarity, then by how much billing
+ * they carry (the more they've billed, the more it matters to fold them in).
+ * A free-text `q` narrows by name so an operator can find a spelling the
+ * similarity score wouldn't surface on its own.
+ */
+export async function listMergeCandidates(
+  pool: PgLikePool,
+  individualId: string,
+  q?: string | null,
+): Promise<MergeCandidate[]> {
+  if (!UUID.test(individualId)) return [];
+  const target = await pool.query<{ normalized_name: string }>(
+    `SELECT normalized_name FROM individuals WHERE id = $1`,
+    [individualId],
+  );
+  const targetName = target.rows[0]?.normalized_name ?? "";
+  const search = q && q.trim() ? `%${q.trim()}%` : null;
+
+  const { rows } = await pool.query<{
+    id: string;
+    name: string;
+    normalized_name: string;
+    tx_count: number;
+    billed_agency: string;
+    has_plan: boolean;
+  }>(
+    `SELECT i.id,
+            COALESCE(i.display_name, i.normalized_name) AS name,
+            i.normalized_name,
+            (SELECT count(*) FROM payroll_transactions t WHERE t.individual_id = i.id)::int AS tx_count,
+            COALESCE((SELECT sum(t.imported_amount) FROM payroll_transactions t WHERE t.individual_id = i.id), 0)::text AS billed_agency,
+            EXISTS (SELECT 1 FROM calculation_strategies cs
+                     WHERE cs.individual_id = i.id AND cs.status = 'active' AND cs.renewal_date IS NOT NULL) AS has_plan
+       FROM individuals i
+      WHERE i.id <> $1
+        AND i.merged_into_id IS NULL
+        AND i.status <> 'archived'
+        AND ($2::text IS NULL OR i.display_name ILIKE $2 OR i.normalized_name ILIKE $2)
+      ORDER BY tx_count DESC
+      LIMIT 100`,
+    [individualId, search],
+  );
+
+  const scored = rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    txCount: r.tx_count,
+    hasPlan: r.has_plan,
+    billedAgency: r.billed_agency,
+    similarity: targetName ? similarity(targetName, r.normalized_name) : 0,
+  }));
+  // When searching, keep the operator's matches in billing order; otherwise lead
+  // with the most name-similar records (the likely same-person duplicates).
+  scored.sort((a, b) => (search ? b.txCount - a.txCount : b.similarity - a.similarity || b.txCount - a.txCount));
+  return scored.slice(0, 25);
 }
