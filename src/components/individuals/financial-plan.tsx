@@ -1,6 +1,6 @@
-import Link from "next/link";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import type { BudgetLine } from "@/lib/data/queries";
+import CutsEditor from "@/components/individuals/cuts-editor";
 
 /**
  * The financial plan, now projected-vs-actual. The PROJECTED side is the budget
@@ -18,22 +18,20 @@ type Strat = {
   monthDivisor: string;
   net: string; // projected net per month (internal), from the full calc incl. adjustments
   monthlyGross: string;
+  clockAdjustment: string;
+  otherAdjustment: string;
   afterAll: string | null;
 };
 
-function pct(fraction: string): string {
-  return `${dec(fraction).times(100).toDecimalPlaces(2)}%`;
-}
-
 export default function FinancialPlan({
-  individualId,
+  strategyId,
   lines,
   strategy,
   timeElapsedPercent,
   monthsToRenewal,
   canManage,
 }: {
-  individualId: string;
+  strategyId: string | null;
   lines: BudgetLine[];
   strategy: Strat;
   timeElapsedPercent: number | null;
@@ -129,33 +127,23 @@ export default function FinancialPlan({
         )}
       </p>
 
-      {/* How it's priced — the projected cuts model (fixed) + a realistic net */}
-      <div>
-        <div className="mb-1 flex items-center justify-between">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-soft)]">How the plan is priced (company)</p>
-          {canManage ? (
-            <Link href={`/calculations?individualId=${individualId}`} className="text-xs text-[var(--color-primary)] hover:underline">Adjust cuts →</Link>
-          ) : null}
-        </div>
-        <FinLine label="Yearly gross" value={money(annualInt)} sub="authorized hours × rate" />
-        <FinLine label={`First cut (${pct(strategy.cut1Percent)})`} value={`− ${money(dec(strategy.monthlyGross).times(dec(strategy.cut1Percent)))} /mo`} muted />
-        <FinLine label={`Second cut (${pct(strategy.cut2Percent)})`} value={`− ${money(dec(strategy.monthlyGross).minus(dec(strategy.monthlyGross).times(dec(strategy.cut1Percent))).times(dec(strategy.cut2Percent)))} /mo`} sub="on the balance after the first cut" muted />
-        <FinLine label="Projected net" value={`${money(projNet)} /mo`} sub={`≈ ${money(projAnnualNet)} for the year`} strong />
-        <FinLine label="Net at the current pace" value={`≈ ${money(realizedAnnualNet)} for the year`} sub={`if billing lands where it is now (${Math.round(realizedRatio.times(100).toNumber())}% of plan)`} />
-        {strategy.afterAll ? <FinLine label="Final (“after all”)" value={money(dec(strategy.afterAll))} sub="the workbook's final figure" strong /> : null}
-      </div>
-    </div>
-  );
-}
-
-function FinLine({ label, value, sub, strong, muted }: { label: string; value: React.ReactNode; sub?: string; strong?: boolean; muted?: boolean }) {
-  return (
-    <div className="flex items-baseline justify-between gap-4 border-b border-[var(--color-rule)] py-1.5 last:border-0">
-      <div>
-        <span className={strong ? "font-semibold" : ""}>{label}</span>
-        {sub ? <span className="ml-2 text-xs text-[var(--color-ink-faint)]">{sub}</span> : null}
-      </div>
-      <span className={`tnum ${strong ? "text-base font-semibold" : ""} ${muted ? "text-[var(--color-danger)]" : ""}`}>{value}</span>
+      {/* How it's priced — cuts editable inline, the same as the budget. The cuts
+          always apply to the budget (the plan), never to the transactions. */}
+      <CutsEditor
+        strategyId={strategyId}
+        yearlyGross={annualInt.toString()}
+        cut1Percent={strategy.cut1Percent}
+        cut2Percent={strategy.cut2Percent}
+        monthDivisor={strategy.monthDivisor}
+        clockAdjustment={strategy.clockAdjustment}
+        otherAdjustment={strategy.otherAdjustment}
+        afterAll={strategy.afterAll}
+        canManage={canManage}
+      />
+      <p className="text-xs text-[var(--color-ink-soft)]">
+        The cuts apply to the budget (the plan), not the transactions. If billing lands where it is now ({Math.round(realizedRatio.times(100).toNumber())}% of plan), the net would come to about{" "}
+        <span className="tnum font-medium text-[var(--color-ink)]">{money(realizedAnnualNet)}</span> for the year vs. the projected {money(projAnnualNet)}.
+      </p>
     </div>
   );
 }
