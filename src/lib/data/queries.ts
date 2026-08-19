@@ -828,19 +828,26 @@ export interface IndividualBudgetView {
 const budgetLineStatus = (authorized: ReturnType<typeof dec>, used: ReturnType<typeof dec>): BudgetLineStatus =>
   budgetStatusFromHours(authorized.toNumber(), used.toNumber());
 
-export async function getIndividualBudgetView(pool: PgLikePool, individualId: string): Promise<IndividualBudgetView> {
+export async function getIndividualBudgetView(pool: PgLikePool, individualId: string, strategyId?: string): Promise<IndividualBudgetView> {
   // The individual's account status decides whether the renewal auto-rolls.
   const indRes = await pool.query<{ status: string }>(`SELECT status FROM individuals WHERE id = $1`, [individualId]);
   const active = (indRes.rows[0]?.status ?? "active") === "active";
 
-  // The individual's active plan (usually one) and its renewal date.
+  // The plan whose budget we're viewing. Usually one; when an individual has
+  // several plans the caller passes an explicit strategyId, otherwise we take the
+  // earliest active plan as the primary.
   const planRes = await pool.query<{ id: string; renewal_date: string | null }>(
-    `SELECT id, to_char(renewal_date, 'YYYY-MM-DD') AS renewal_date
-       FROM calculation_strategies
-      WHERE individual_id = $1 AND status = 'active'
-      ORDER BY created_at
-      LIMIT 1`,
-    [individualId],
+    strategyId
+      ? `SELECT id, to_char(renewal_date, 'YYYY-MM-DD') AS renewal_date
+           FROM calculation_strategies
+          WHERE individual_id = $1 AND id = $2 AND status = 'active'
+          LIMIT 1`
+      : `SELECT id, to_char(renewal_date, 'YYYY-MM-DD') AS renewal_date
+           FROM calculation_strategies
+          WHERE individual_id = $1 AND status = 'active'
+          ORDER BY created_at
+          LIMIT 1`,
+    strategyId ? [individualId, strategyId] : [individualId],
   );
   const plan = planRes.rows[0] ?? null;
   const renewalDate = plan?.renewal_date ?? null;
