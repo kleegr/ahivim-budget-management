@@ -286,18 +286,41 @@ export async function listStrategies(
 async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]): Promise<void> {
   const individualIds = [...new Set(rows.map((r) => r.individualId))];
 
-  // Billed actuals per (individual, program) — the workbook rows are per-individual.
+  // Billed actuals per (individual, program), WINDOWED to each individual's
+  // current budget period — exactly like the Individuals budget board. Without
+  // the window this summed the entire ledger history (several years) against a
+  // single year's authorized hours, so the glance read 200–300% "used" and
+  // contradicted the Individuals page. One period window makes them agree.
   // `observations` is the real transaction count, used to gate the forecast.
+  const winByInd = new Map<string, { start: string; end: string }>();
+  for (const r of rows) {
+    if (r.periodStart && r.periodEnd && !winByInd.has(r.individualId)) {
+      winByInd.set(r.individualId, { start: r.periodStart, end: r.periodEnd });
+    }
+  }
+  const winIds = [...winByInd.keys()];
+  const winStarts = winIds.map((id) => winByInd.get(id)!.start);
+  const winEnds = winIds.map((id) => winByInd.get(id)!.end);
+  // Window an individual's billed rows to their current budget period when we
+  // know it; when a strategy has no period at all there is nothing to window to,
+  // so those individuals fall back to their full billed history (a LEFT JOIN
+  // that leaves the window null). This keeps paced budgets honest without
+  // zeroing out plans that simply have no dated period.
   const billed = await pool.query<{ individual_id: string; program_id: string; hours: string; internal: string; observations: string }>(
-    `SELECT individual_id, program_id,
-            COALESCE(sum(imported_hours),0)::text AS hours,
-            COALESCE(sum(COALESCE(calculated_internal_amount, spreadsheet_internal_amount,
-                     internal_rate_applied * imported_hours, 0)),0)::text AS internal,
+    `WITH win AS (
+       SELECT * FROM unnest($1::uuid[], $2::date[], $3::date[]) AS w(individual_id, start_date, end_date)
+     )
+     SELECT t.individual_id, t.program_id,
+            COALESCE(sum(t.imported_hours),0)::text AS hours,
+            COALESCE(sum(COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
+                     t.internal_rate_applied * t.imported_hours, 0)),0)::text AS internal,
             count(*)::text AS observations
-       FROM payroll_transactions
-      WHERE individual_id = ANY($1::uuid[]) AND program_id IS NOT NULL
-      GROUP BY individual_id, program_id`,
-    [individualIds],
+       FROM payroll_transactions t
+       LEFT JOIN win w ON w.individual_id = t.individual_id
+      WHERE t.individual_id = ANY($4::uuid[]) AND t.program_id IS NOT NULL
+        AND (w.individual_id IS NULL OR (t.period_begin >= w.start_date AND t.period_begin <= w.end_date))
+      GROUP BY t.individual_id, t.program_id`,
+    [winIds, winStarts, winEnds, individualIds],
   );
   // Pending scheduled per (individual, program).
   const scheduled = await pool.query<{ individual_id: string; program_id: string; hours: string; internal: string }>(
