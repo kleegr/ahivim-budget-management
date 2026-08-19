@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { dec, formatMoney, formatHours } from "@/lib/money";
 import { BUDGET_STATUS_PRESENT, budgetStatusFromHours, type BudgetLineStatus } from "@/lib/business/budget-status";
+import { isCalendarYearProgram } from "@/lib/business/calculation-strategy";
 import { txLink } from "@/lib/nav/tx-link";
 
 /**
@@ -23,11 +24,14 @@ export type BudgetEditorLine = {
   authorizedHours: string;
   usedHours: string;
   inPlan: boolean;
+  daysToRenewal: number | null;
+  effectiveRenewal: string | null;
+  calendarYear: boolean;
 };
 
 type Program = { id: string; code: string; name: string; defaultRate: string };
 
-type Row = { programId: string; programName: string; perHour: string; hours: string; used: string };
+type Row = { programId: string; programName: string; perHour: string; hours: string; used: string; daysToRenewal: number | null; effectiveRenewal: string | null; calendarYear: boolean };
 
 const clean = (s: string) => {
   try {
@@ -53,7 +57,6 @@ export default function BudgetEditor({
   active: activeInitial,
   renewalDate,
   effectiveRenewal,
-  monthsToRenewal,
   periodStart,
   periodEnd,
   lines,
@@ -65,7 +68,6 @@ export default function BudgetEditor({
   active: boolean;
   renewalDate: string | null;
   effectiveRenewal: string | null;
-  monthsToRenewal: number | null;
   periodStart: string | null;
   periodEnd: string | null;
   lines: BudgetEditorLine[];
@@ -79,7 +81,16 @@ export default function BudgetEditor({
     () =>
       lines
         .filter((l) => l.inPlan)
-        .map((l) => ({ programId: l.programId, programName: l.programName, perHour: clean(l.perHour), hours: clean(l.authorizedHours), used: l.usedHours })),
+        .map((l) => ({
+          programId: l.programId,
+          programName: l.programName,
+          perHour: clean(l.perHour),
+          hours: clean(l.authorizedHours),
+          used: l.usedHours,
+          daysToRenewal: l.daysToRenewal,
+          effectiveRenewal: l.effectiveRenewal,
+          calendarYear: l.calendarYear,
+        })),
     [lines],
   );
 
@@ -92,9 +103,20 @@ export default function BudgetEditor({
   const [savingActive, setSavingActive] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // "How many hours/month to bill to finish by renewal" for a remaining amount.
-  const months = monthsToRenewal && monthsToRenewal > 0 ? monthsToRenewal : null;
-  const perMonth = (left: ReturnType<typeof dec>) => (months && left.greaterThan(0) ? left.dividedBy(months) : null);
+  // "How many hours/month to bill to finish" — per PROGRAM, each toward its own
+  // renewal (Day Hab / Supplemental run the calendar year, so their months-left
+  // differ from the rest of the plan).
+  const rowMonths = (r: Row) => (r.daysToRenewal !== null && r.daysToRenewal > 0 ? r.daysToRenewal / 30.4375 : null);
+  const rowLeft = (r: Row) => dec(r.hours || 0).minus(dec(r.used || 0));
+  const perMonth = (r: Row) => {
+    const m = rowMonths(r);
+    const left = rowLeft(r);
+    return m && left.greaterThan(0) ? left.dividedBy(m) : null;
+  };
+  const perMonthDollarsRow = (r: Row) => {
+    const pm = perMonth(r);
+    return pm ? pm.times(dec(r.perHour || 0)) : null;
+  };
 
   // A quick account-status switch that lives ON the profile (a setting inside
   // the individual): active accounts auto-roll their renewal; inactive freeze.
@@ -128,7 +150,9 @@ export default function BudgetEditor({
   // differently), so the total row talks money, per the sheet's intent.
   const totalUsedDollars = rows.reduce((s, r) => s.plus(rowUsedDollars(r)), dec(0));
   const totalLeftDollars = grandTotal.minus(totalUsedDollars);
-  const perMonthDollars = months && totalLeftDollars.greaterThan(0) ? totalLeftDollars.dividedBy(months) : null;
+  // Per-month-to-finish in dollars, summed per program (each toward its own renewal).
+  const perMonthDollarsTotal = rows.reduce((s, r) => s.plus(perMonthDollarsRow(r) ?? dec(0)), dec(0));
+  const perMonthDollars = perMonthDollarsTotal.greaterThan(0) ? perMonthDollarsTotal : null;
 
   // Over/under budget, counted PER PROGRAM (never netted — one program can be
   // over while another is under, and both matter).
@@ -143,7 +167,7 @@ export default function BudgetEditor({
   const addProgram = (pid: string) => {
     const p = programs.find((x) => x.id === pid);
     if (!p) return;
-    setRows((rs) => [...rs, { programId: p.id, programName: p.name, perHour: defaultRate.get(p.id) ?? "0", hours: "", used: usedByProgram.get(p.id) ?? "0" }]);
+    setRows((rs) => [...rs, { programId: p.id, programName: p.name, perHour: defaultRate.get(p.id) ?? "0", hours: "", used: usedByProgram.get(p.id) ?? "0", daysToRenewal: null, effectiveRenewal: null, calendarYear: isCalendarYearProgram(p.code) }]);
     setAddSel("");
   };
 
@@ -278,26 +302,29 @@ export default function BudgetEditor({
                   <th className="px-3 py-2 text-right font-medium">Total</th>
                   <th className="px-3 py-2 text-right font-medium">Used</th>
                   <th className="px-3 py-2 text-right font-medium">Left</th>
-                  <th className="px-3 py-2 text-right font-medium" title="Hours to bill each month to finish by renewal">Per month{months ? " to finish" : ""}</th>
+                  <th className="px-3 py-2 text-right font-medium" title="Hours to bill each month to finish by this program's renewal">Per month to finish</th>
                   <th className="px-5 py-2 font-medium">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => {
                   const left = dec(r.hours || 0).minus(dec(r.used || 0));
-                  const pm = perMonth(left);
+                  const pm = perMonth(r);
                   const status = budgetStatusFromHours(Number(r.hours || 0), Number(r.used || 0));
                   return (
                     <tr key={r.programId} className="border-t border-[var(--color-rule)]">
                       <td className="px-5 py-2 font-medium">
                         <Link className="text-[var(--color-primary)] hover:underline" href={txLink({ individualId, program: r.programName, pbFrom: periodStart ?? undefined, pbTo: periodEnd ?? undefined })}>{r.programName}</Link>
+                        {r.calendarYear ? (
+                          <span className="ml-2 rounded bg-[var(--color-surface-strong)] px-1.5 py-0.5 text-[0.7rem] font-medium text-[var(--color-ink-soft)]" title="This program always runs the calendar year, Jan 1 → Jan 1.">Jan–Jan</span>
+                        ) : null}
                       </td>
                       <td className="tnum px-3 py-2 text-right">{formatMoney(r.perHour)}</td>
                       <td className="tnum px-3 py-2 text-right">{formatHours(r.hours)}</td>
                       <td className="tnum px-3 py-2 text-right font-medium">{formatMoney(rowTotal(r).toString())}</td>
                       <td className="tnum px-3 py-2 text-right">{formatHours(r.used)}</td>
                       <td className="tnum px-3 py-2 text-right" style={{ color: left.isNegative() ? "var(--color-pace-over)" : undefined }}>{formatHours(left.toString())}</td>
-                      <td className="tnum px-3 py-2 text-right text-[var(--color-ink-soft)]">{pm ? `${formatHours(pm.toString())}/mo` : "—"}</td>
+                      <td className="tnum px-3 py-2 text-right text-[var(--color-ink-soft)]" title={r.effectiveRenewal ? `Renews ${r.effectiveRenewal}` : undefined}>{pm ? `${formatHours(pm.toString())}/mo` : "—"}</td>
                       <td className="px-5 py-2"><StatusPill status={status} /></td>
                     </tr>
                   );
