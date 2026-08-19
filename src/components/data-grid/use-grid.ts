@@ -64,6 +64,11 @@ export interface UseGridResult<Row, Totals> {
   toggleHidden: (key: string) => void;
   resetHidden: () => void;
 
+  /** Columns in the user's chosen display order (all of them, hidden included). */
+  orderedColumns: ColumnDef<Row>[];
+  /** Move a column one slot earlier (-1) or later (+1) in the display order. */
+  moveColumn: (key: string, dir: -1 | 1) => void;
+
   widths: Record<string, number>;
   setWidth: (key: string, w: number) => void;
 
@@ -102,6 +107,7 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
   const [sort, setSort] = useState<SortState>(initialSort);
   const [search, setSearch] = useState(o.initialSearch ?? "");
   const [hidden, setHidden] = useState<Set<string>>(() => new Set(o.initialHidden ?? []));
+  const [order, setOrder] = useState<string[]>(() => o.columns.map((c) => c.key));
   const [widths, setWidths] = useState<Record<string, number>>(() => ({ ...(o.initialWidths ?? {}) }));
   const [views, setViews] = useState<SavedView[]>([]);
   const [busy, setBusy] = useState(false);
@@ -170,10 +176,35 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
     setWidths((prev) => ({ ...prev, [key]: w }));
   }, []);
 
+  const moveColumn = useCallback((key: string, dir: -1 | 1) => {
+    setOrder((prev) => {
+      const cur = prev.length ? [...prev] : o.columns.map((c) => c.key);
+      const i = cur.indexOf(key);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= cur.length) return cur;
+      [cur[i], cur[j]] = [cur[j], cur[i]];
+      return cur;
+    });
+  }, [o.columns]);
+
   const columns = o.columns;
   const rows = o.rows;
 
-  const visibleColumns = useMemo(() => columns.filter((c) => !hidden.has(c.key)), [columns, hidden]);
+  // Columns in the chosen display order; any column missing from `order`
+  // (e.g. added after a saved view) is appended in its original position.
+  const orderedColumns = useMemo(() => {
+    const byKey = new Map(columns.map((c) => [c.key, c]));
+    const seen = new Set<string>();
+    const out: ColumnDef<Row>[] = [];
+    for (const k of order) {
+      const c = byKey.get(k);
+      if (c && !seen.has(k)) { out.push(c); seen.add(k); }
+    }
+    for (const c of columns) if (!seen.has(c.key)) out.push(c);
+    return out;
+  }, [columns, order]);
+
+  const visibleColumns = useMemo(() => orderedColumns.filter((c) => !hidden.has(c.key)), [orderedColumns, hidden]);
 
   const filtered = useMemo(
     () => applyFilters(rows, columns, filters, search, searchKeys),
@@ -196,20 +227,23 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
 
   const currentConfig = useCallback((): GridViewConfig => {
     const cfg: GridViewConfig = { filters, sort, search };
-    if (o.serializeHidden) cfg.hidden = [...hidden];
+    if (o.serializeHidden) { cfg.hidden = [...hidden]; cfg.order = order; }
     if (o.serializeWidths) cfg.widths = widths;
     return cfg;
-  }, [filters, sort, search, hidden, widths, o.serializeHidden, o.serializeWidths]);
+  }, [filters, sort, search, hidden, order, widths, o.serializeHidden, o.serializeWidths]);
 
   const applyView = useCallback(
     (cfg: GridViewConfig) => {
       setFilters(cfg.filters ?? {});
       setSort(cfg.sort ?? []);
       setSearch(cfg.search ?? "");
-      if (o.serializeHidden) setHidden(new Set(cfg.hidden ?? []));
+      if (o.serializeHidden) {
+        setHidden(new Set(cfg.hidden ?? []));
+        setOrder(cfg.order ?? o.columns.map((c) => c.key));
+      }
       if (o.serializeWidths && cfg.widths) setWidths({ ...(o.initialWidths ?? {}), ...cfg.widths });
     },
-    [o.serializeHidden, o.serializeWidths, o.initialWidths],
+    [o.serializeHidden, o.serializeWidths, o.initialWidths, o.columns],
   );
 
   const saveView = useCallback(
@@ -322,6 +356,8 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
     hidden,
     toggleHidden,
     resetHidden,
+    orderedColumns,
+    moveColumn,
     widths,
     setWidth,
     filtered,
