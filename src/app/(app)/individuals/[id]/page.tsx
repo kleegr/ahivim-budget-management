@@ -105,10 +105,11 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   const t = budget.totals;
   const headline = budget.headline ? BUDGET_STATUS_PRESENT[budget.headline] : null;
 
-  // Months left until the (rolled) renewal, for "bill X h/month to finish".
+  // Months left until the (rolled) renewal, for the financial plan's remaining pace.
   const monthsToRenewal = budget.daysToRenewal !== null && budget.daysToRenewal > 0 ? budget.daysToRenewal / 30.4375 : null;
-  const remaining = dec(t.remainingHours);
-  const perMonthToFinish = monthsToRenewal && remaining.greaterThan(0) ? remaining.dividedBy(monthsToRenewal) : null;
+  // "bill X h/month to finish" — summed per program, each toward its OWN renewal
+  // (Day Hab / Supplemental on the calendar year), computed in the read model.
+  const perMonthToFinish = budget.perMonthToFinish ? dec(budget.perMonthToFinish) : null;
 
   const editorLines: BudgetEditorLine[] = budget.lines.map((l) => ({
     programId: l.programId,
@@ -117,6 +118,9 @@ export default async function IndividualDetailPage({ params }: { params: Promise
     authorizedHours: l.authorizedHours,
     usedHours: l.usedHours,
     inPlan: l.inPlan,
+    daysToRenewal: l.daysToRenewal,
+    effectiveRenewal: l.effectiveRenewal,
+    calendarYear: l.calendarYear,
   }));
   const editorPrograms = programs.map((p) => ({ id: p.id, code: p.code, name: p.name, defaultRate: p.internalRate }));
 
@@ -197,7 +201,6 @@ export default async function IndividualDetailPage({ params }: { params: Promise
           active={budget.active}
           renewalDate={budget.renewalDate}
           effectiveRenewal={budget.effectiveRenewal}
-          monthsToRenewal={monthsToRenewal}
           periodStart={budget.periodStart}
           periodEnd={budget.periodEnd}
           lines={editorLines}
@@ -222,7 +225,11 @@ export default async function IndividualDetailPage({ params }: { params: Promise
       {budget.periodStart && activity.programsBilled.length > 0 ? (
         <Card
           title="Billed by month"
-          description="What was billed each month this renewal year, itemized by program. Hours are per program; the month totals are in dollars — Billed (agency, invoiced) and Company (internal) — because hours don't add up across programs."
+          description={
+            budget.lines.some((l) => l.calendarYear)
+              ? "What was billed each month across this renewal year, itemized by program (month totals in dollars). Note: Day Hab and Supplemental run their own Jan–Jan budget year, so their monthly activity here can differ from their budget “used” above."
+              : "What was billed each month this renewal year, itemized by program. Hours are per program; the month totals are in dollars — Billed (agency, invoiced) and Company (internal) — because hours don't add up across programs."
+          }
           className="mb-6"
         >
           <BilledByMonth periodStart={budget.periodStart} byProgramMonth={activity.byProgramMonth} programsBilled={activity.programsBilled} />
