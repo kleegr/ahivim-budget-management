@@ -50,7 +50,8 @@ export type AhivimField =
   | "employee"
   | "nonContractHeader"
   | "calculatedInternalAmount"
-  | "dedupNetPayFormula";
+  | "dedupNetPayFormula"
+  | "paid";
 
 /** Verified positional map (1-indexed columns). */
 export const AHIVIM_POSITIONAL: Record<AhivimField, number> = {
@@ -70,6 +71,11 @@ export const AHIVIM_POSITIONAL: Record<AhivimField, number> = {
   nonContractHeader: 15, // O  Non contract
   calculatedInternalAmount: 16, // P  Amount (internal)
   dedupNetPayFormula: 19, // S  Total Net Pay (deduplicated)
+  // "Paid" is an OPTIONAL operator column that may not exist in the sheet. Its
+  // positional fallback points past the known 25 columns so, when there is no
+  // "Paid" header, it reads blank (never marks anything paid); when the header
+  // IS present it's matched by name wherever it sits.
+  paid: 26, // (optional) Paid / payment status
 };
 
 /**
@@ -101,6 +107,10 @@ export const AHIVIM_HEADER_ALIASES: Record<AhivimField, string[]> = {
   nonContractHeader: ["non contract", "non-contract", "noncontract"],
   calculatedInternalAmount: ["internal amount", "calculated internal amount", "internal"],
   dedupNetPayFormula: ["dedup net pay", "deduplicated net pay", "unique net pay"],
+  // Matched by EXACT normalized header, so it never collides with "paid cc2/cc3
+  // description" (which are the program and individual). Add a spelling here if
+  // the sheet's paid column is headed differently.
+  paid: ["paid", "paid?", "is paid", "paid status", "payment status", "payment", "paid date", "date paid", "paid on"],
 };
 
 export const REQUIRED_AHIVIM_FIELDS: AhivimField[] = [
@@ -165,7 +175,20 @@ export const ahivimRowSchema = z.object({
   nonContractHeader: z.string().trim().max(200).catch(""),
   calculatedInternalAmount: numericText.catch(""),
   dedupNetPayFormula: z.string().trim().max(500).catch(""),
+  paid: z.string().trim().max(50).catch(""),
 });
+
+/**
+ * Whether a transaction should count as PAID given the raw cell from the sheet's
+ * "Paid" column. Any non-empty value means paid — a date, "yes", "paid", "x", a
+ * check — EXCEPT a handful of explicit "not paid" spellings, so an operator can
+ * clear a mark by typing "no"/"unpaid" rather than deleting the cell.
+ */
+export function isPaidCell(value: string | null | undefined): boolean {
+  const v = String(value ?? "").trim().toLowerCase();
+  if (v === "") return false;
+  return !["no", "n", "false", "unpaid", "not paid", "0", "pending", "open", "-"].includes(v);
+}
 
 export type AhivimRow = z.infer<typeof ahivimRowSchema>;
 
