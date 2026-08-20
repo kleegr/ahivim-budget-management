@@ -77,7 +77,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
     const activeAssignments = assignments
       .filter((a) => a.status === "active")
       .filter((a) => canViewIndividual(scope, a.individualId));
-    return { employee, report, assignments: activeAssignments, recent, payment, individualsServed, usageByProgram, monthly, schedule };
+    return { employee, report, assignments: activeAssignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, canSeeMoney: scope.canSeeMoney };
   });
 
   if (!result.ok) {
@@ -90,7 +90,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
   }
   if (!result.data) notFound();
 
-  const { employee, report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule } = result.data;
+  const { employee, report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, canSeeMoney } = result.data;
   const attributionAvailable = payment.transactionCount === 0 || payment.attributedCount > 0;
 
   const headerActions = canEdit ? (
@@ -137,11 +137,13 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
             {report.programs.length ? `: ${report.programs.join(", ")}` : ""}
             {report.groupSessions > 0 ? ` · ${report.groupSessions.toLocaleString()} group sessions` : ""}
           </p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-3">
-            <MoneyTile label="Agency total (billed)" value={formatMoney(report.agencyGross)} sub="what the funder paid" />
-            <MoneyTile label="Employee earned" value={formatMoney(report.internalAmount)} sub="owed to this employee" />
-            <MoneyTile label="Agency difference" value={formatMoney(payment.agencyAdditional)} sub="agency total above the employee amount" />
-          </div>
+          {canSeeMoney ? (
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <MoneyTile label="Agency total (billed)" value={formatMoney(report.agencyGross)} sub="what the funder paid" />
+              <MoneyTile label="Employee earned" value={formatMoney(report.internalAmount)} sub="owed to this employee" />
+              <MoneyTile label="Agency difference" value={formatMoney(payment.agencyAdditional)} sub="agency total above the employee amount" />
+            </div>
+          ) : null}
         </section>
       ) : (
         <section className="card mb-6 px-5 py-5">
@@ -153,13 +155,13 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
       {/* ---- Who they served ---- */}
       {individualsServed.length > 0 ? (
         <Card title="People served" description="Everyone this employee billed for. Click a name to open their budget, or the rows to see the transactions." className="mb-6">
-          <Table head={<><Th>Person</Th><Th numeric>Billed hours</Th><Th numeric>Transactions</Th><Th numeric>Agency total</Th><Th>Open</Th></>}>
+          <Table head={<><Th>Person</Th><Th numeric>Billed hours</Th><Th numeric>Transactions</Th>{canSeeMoney ? <Th numeric>Agency total</Th> : null}<Th>Open</Th></>}>
             {individualsServed.map((row) => (
               <Tr key={row.id}>
                 <Td><Link className="font-medium text-[var(--color-primary)] underline-offset-2 hover:underline" href={`/individuals/${row.id}`}>{row.displayName}</Link></Td>
                 <Td numeric><Hours value={row.allocationHours} /></Td>
                 <Td numeric className="tnum">{row.transactionCount}</Td>
-                <Td numeric><Money value={row.agencyGross} /></Td>
+                {canSeeMoney ? <Td numeric><Money value={row.agencyGross} /></Td> : null}
                 <Td><Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ employeeId: id, individualId: row.id })}>rows →</Link></Td>
               </Tr>
             ))}
@@ -169,16 +171,16 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
 
       {/* ---- By program ---- */}
       {usageByProgram.length > 0 ? (
-        <Card title="Billed by program" description="Hours and money for each program, straight from the ledger." className="mb-6"
+        <Card title="Billed by program" description={canSeeMoney ? "Hours and money for each program, straight from the ledger." : "Hours for each program, straight from the ledger."} className="mb-6"
           action={<ButtonLink href={txLink({ employeeId: id })} variant="secondary">All rows →</ButtonLink>}>
-          <Table head={<><Th>Program</Th><Th numeric>Billed hours</Th><Th numeric>Transactions</Th><Th numeric>Agency total</Th><Th numeric>Employee amount</Th><Th>Open</Th></>}>
+          <Table head={<><Th>Program</Th><Th numeric>Billed hours</Th><Th numeric>Transactions</Th>{canSeeMoney ? <Th numeric>Agency total</Th> : null}{canSeeMoney ? <Th numeric>Employee amount</Th> : null}<Th>Open</Th></>}>
             {usageByProgram.map((row) => (
               <Tr key={row.programCode}>
                 <Td><Link className="font-medium text-[var(--color-primary)] underline-offset-2 hover:underline" href={txLink({ employeeId: id, program: row.programName })}>{row.programName}</Link></Td>
                 <Td numeric><Hours value={row.allocationHours} /></Td>
                 <Td numeric className="tnum">{row.transactionCount}</Td>
-                <Td numeric><Money value={row.agencyGross} /></Td>
-                <Td numeric><Money value={row.internalAmount} /></Td>
+                {canSeeMoney ? <Td numeric><Money value={row.agencyGross} /></Td> : null}
+                {canSeeMoney ? <Td numeric><Money value={row.internalAmount} /></Td> : null}
                 <Td><Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ employeeId: id, program: row.programName })}>rows →</Link></Td>
               </Tr>
             ))}
@@ -193,6 +195,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
         assignments={assignments}
         schedule={schedule}
         monthly={monthly}
+        canSeeMoney={canSeeMoney}
         attributionAvailable={attributionAvailable}
         rateExceptions={report?.rateExceptions ?? 0}
         physicalHours={report?.physicalHours ?? "0"}
@@ -206,13 +209,14 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
 /* ------------------------------------------------------------- collapsed */
 
 function MoreDetails({
-  id, recent, assignments, schedule, monthly, attributionAvailable, rateExceptions, physicalHours, billedHours, notes,
+  id, recent, assignments, schedule, monthly, canSeeMoney, attributionAvailable, rateExceptions, physicalHours, billedHours, notes,
 }: {
   id: string;
   recent: Awaited<ReturnType<typeof listTransactions>>;
   assignments: Awaited<ReturnType<typeof listAssignments>>;
   schedule: Awaited<ReturnType<typeof getEmployeeSchedule>>;
   monthly: Awaited<ReturnType<typeof getEmployeeMonthlyPayments>>;
+  canSeeMoney: boolean;
   attributionAvailable: boolean;
   rateExceptions: number;
   physicalHours: string;
@@ -239,13 +243,13 @@ function MoreDetails({
         {monthly.length > 0 ? (
           <div>
             <p className="eyebrow mb-2">Pay by month</p>
-            <Table head={<><Th>Month</Th><Th numeric>Agency total</Th><Th numeric>Employee amount</Th>{attributionAvailable ? <Th numeric>Paid directly</Th> : null}<Th numeric>Checks</Th></>}>
+            <Table head={<><Th>Month</Th>{canSeeMoney ? <Th numeric>Agency total</Th> : null}{canSeeMoney ? <Th numeric>Employee amount</Th> : null}{canSeeMoney && attributionAvailable ? <Th numeric>Paid directly</Th> : null}<Th numeric>Checks</Th></>}>
               {monthly.map((m) => (
                 <Tr key={m.month ?? "undated"}>
                   <Td><span className="tnum">{m.month ?? "Undated"}</span></Td>
-                  <Td numeric><Money value={m.agencyGross} /></Td>
-                  <Td numeric><Money value={m.internalAmount} /></Td>
-                  {attributionAvailable ? <Td numeric><Money value={m.paidToEmployee} /></Td> : null}
+                  {canSeeMoney ? <Td numeric><Money value={m.agencyGross} /></Td> : null}
+                  {canSeeMoney ? <Td numeric><Money value={m.internalAmount} /></Td> : null}
+                  {canSeeMoney && attributionAvailable ? <Td numeric><Money value={m.paidToEmployee} /></Td> : null}
                   <Td numeric className="tnum">{m.checkCount}</Td>
                 </Tr>
               ))}
@@ -282,14 +286,14 @@ function MoreDetails({
         {recent.rows.length > 0 ? (
           <div>
             <p className="eyebrow mb-2">Recent transactions</p>
-            <Table head={<><Th>Check</Th><Th>Person</Th><Th>Program</Th><Th numeric>Hours</Th><Th numeric>Amount</Th></>}>
+            <Table head={<><Th>Check</Th><Th>Person</Th><Th>Program</Th><Th numeric>Hours</Th>{canSeeMoney ? <Th numeric>Amount</Th> : null}</>}>
               {recent.rows.slice(0, 15).map((t) => (
                 <Tr key={t.id}>
                   <Td><span className="tnum">{t.checkNumber ?? "—"}</span><p className="text-xs text-[var(--color-ink-faint)]"><Plain value={t.checkDate} /></p></Td>
                   <Td>{t.individualId ? <Link className="text-[var(--color-primary)] hover:underline" href={`/individuals/${t.individualId}`}><Plain value={t.individual} /></Link> : <Plain value={t.individual} />}</Td>
                   <Td><Plain value={t.program} /></Td>
                   <Td numeric><Hours value={t.hours} /></Td>
-                  <Td numeric><Money value={t.amount} /></Td>
+                  {canSeeMoney ? <Td numeric><Money value={t.amount} /></Td> : null}
                 </Tr>
               ))}
             </Table>
