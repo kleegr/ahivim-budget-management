@@ -93,6 +93,13 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
   const { employee, report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, canSeeMoney } = result.data;
   const attributionAvailable = payment.transactionCount === 0 || payment.attributedCount > 0;
 
+  // A separate payout cut: a percentage of what this employee earned (the
+  // internal amount owed to them), paid to him separately. Stored as a fraction.
+  const cutFraction = dec(employee.payoutCutPercent || "0");
+  const cutPercentDisplay = cutFraction.times(100).toDecimalPlaces(2).toString();
+  const cutBase = report ? dec(report.internalAmount) : dec(0);
+  const cutAmount = cutBase.times(cutFraction);
+
   const headerActions = canEdit ? (
     <div className="flex flex-wrap gap-2">
       <CreateButton
@@ -104,6 +111,14 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
         fields={
           <>
             <Field label="Display name" name="displayName" defaultValue={employee.displayName} required />
+            <Field
+              label="Payout cut %"
+              name="payoutCutPercent"
+              type="number"
+              defaultValue={cutFraction.greaterThan(0) ? cutPercentDisplay : ""}
+              placeholder="e.g. 10"
+              help="A separate cut of what this employee earns, paid to him separately. 10 = 10%. Leave blank for none."
+            />
             <TextAreaField label="Notes" name="notes" defaultValue={employee.notes} />
           </>
         }
@@ -142,6 +157,18 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
               <MoneyTile label="Agency total (billed)" value={formatMoney(report.agencyGross)} sub="what the funder paid" />
               <MoneyTile label="Employee earned" value={formatMoney(report.internalAmount)} sub="owed to this employee" />
               <MoneyTile label="Agency difference" value={formatMoney(payment.agencyAdditional)} sub="agency total above the employee amount" />
+            </div>
+          ) : null}
+          {canSeeMoney && cutFraction.greaterThan(0) ? (
+            <div className="mt-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg border border-[var(--color-primary-soft)] bg-[var(--color-primary-tint)] px-4 py-3">
+              <div className="text-sm">
+                <span className="font-semibold text-[var(--color-ink)]">Payout cut ({cutPercentDisplay}%)</span>
+                <span className="ml-2 text-[var(--color-ink-soft)]">a separate cut of what this employee earned, paid to him separately</span>
+              </div>
+              <div className="text-right">
+                <span className="tnum text-xl font-semibold">{formatMoney(cutAmount)}</span>
+                <span className="ml-2 text-xs text-[var(--color-ink-faint)]">{cutPercentDisplay}% × {formatMoney(cutBase)} earned</span>
+              </div>
             </div>
           ) : null}
         </section>
