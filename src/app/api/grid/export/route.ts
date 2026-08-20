@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
 import { readJson, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import {
   buildXlsx,
@@ -35,6 +37,9 @@ export async function POST(request: NextRequest) {
   if (cross) return cross;
 
   try {
+    const scope = await resolveAccessScope(getPool(), user);
+    if (!scope.canSeeTransactions) return jsonError("No access to transactions", 403);
+
     const body = await readJson(request);
     const format = body.format === "xlsx" ? "xlsx" : "csv";
     const title = typeof body.title === "string" && body.title ? body.title : "Report";

@@ -13,8 +13,8 @@ export const maxDuration = 300;
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_request: NextRequest, { params }: Ctx) {
-  const user = await apiUser("viewer");
-  if (!user) return jsonError("Authentication required", 401);
+  const user = await apiUser("manager");
+  if (!user) return jsonError("Manager role required", 403);
 
   const { id } = await params;
   if (!isUuid(id)) return jsonError("Not found", 404);

@@ -225,11 +225,19 @@ function NavLinks({
   pathname,
   onNavigate,
   reviewCount,
+  role,
+  canSeeTransactions,
 }: {
   pathname: string;
   onNavigate?: () => void;
   reviewCount: number;
+  role: string;
+  canSeeTransactions: boolean;
 }) {
+  // A viewer sees only their people and (if permitted) the ledger; managers and
+  // admins see the analysis and admin drawers. Server-side guards enforce this
+  // regardless — hiding the links just keeps a scoped user from bumping into doors.
+  const isManager = role === "manager" || role === "admin";
   const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
   const financialActive = isActive("/calculations") || isActive("/projections");
   const individualsActive = isActive("/individuals") || isActive("/people");
@@ -238,33 +246,37 @@ function NavLinks({
 
   return (
     <nav aria-label="Primary" className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
-      {/* Home */}
-      <div>
-        <ul className="space-y-0.5">
-          <li>
-            <QuietLink
-              href="/home"
-              label="Home"
-              icon={<HomeIcon />}
-              active={homeActive}
-              onNavigate={onNavigate}
-            />
-          </li>
-        </ul>
-      </div>
+      {/* Home — the management overview, managers and admins only */}
+      {isManager ? (
+        <div>
+          <ul className="space-y-0.5">
+            <li>
+              <QuietLink
+                href="/home"
+                label="Home"
+                icon={<HomeIcon />}
+                active={homeActive}
+                onNavigate={onNavigate}
+              />
+            </li>
+          </ul>
+        </div>
+      ) : null}
 
       {/* The daily workspaces — the ledger and the two people views it feeds */}
       <div>
         <p className="eyebrow px-2 pb-1.5">Workspaces</p>
         <div className="space-y-2">
-          <PrimaryTile
-            href="/transactions"
-            label="Transactions"
-            sub="What was actually billed — the source of truth"
-            icon={<TransactionsIcon />}
-            active={isActive("/transactions")}
-            onNavigate={onNavigate}
-          />
+          {canSeeTransactions ? (
+            <PrimaryTile
+              href="/transactions"
+              label="Transactions"
+              sub="What was actually billed — the source of truth"
+              icon={<TransactionsIcon />}
+              active={isActive("/transactions")}
+              onNavigate={onNavigate}
+            />
+          ) : null}
           <PrimaryTile
             href="/individuals"
             label="Individuals"
@@ -284,60 +296,65 @@ function NavLinks({
         </div>
       </div>
 
-      {/* Analysis: budgets planning, money and everything you sometimes need */}
-      <div>
-        <p className="eyebrow px-2 pb-1.5">Analysis</p>
-        <ul className="space-y-0.5">
-          <li>
-            <QuietLink
-              href="/calculations"
-              label="Financial"
-              icon={<ProjectionsIcon />}
-              active={financialActive}
-              onNavigate={onNavigate}
-            />
-          </li>
-          <li>
-            <QuietLink
-              href="/reports"
-              label="Reports"
-              icon={<ReportsIcon />}
-              active={isActive("/reports")}
-              onNavigate={onNavigate}
-            />
-          </li>
-          <li>
-            <QuietLink
-              href="/schedule"
-              label="Schedule"
-              icon={<CalendarIcon />}
-              active={isActive("/schedule")}
-              onNavigate={onNavigate}
-            />
-          </li>
-          <li>
-            <QuietLink
-              href="/review"
-              label="Review"
-              icon={<InboxIcon />}
-              active={isActive("/review")}
-              onNavigate={onNavigate}
-              count={reviewCount}
-            />
-          </li>
-        </ul>
-      </div>
+      {/* Analysis: budgets planning, money and everything you sometimes need.
+          Manager+ only — a scoped viewer sees per-individual financials on the
+          individual page, not the portfolio-wide analysis screens. */}
+      {isManager ? (
+        <div>
+          <p className="eyebrow px-2 pb-1.5">Analysis</p>
+          <ul className="space-y-0.5">
+            <li>
+              <QuietLink
+                href="/calculations"
+                label="Financial"
+                icon={<ProjectionsIcon />}
+                active={financialActive}
+                onNavigate={onNavigate}
+              />
+            </li>
+            <li>
+              <QuietLink
+                href="/reports"
+                label="Reports"
+                icon={<ReportsIcon />}
+                active={isActive("/reports")}
+                onNavigate={onNavigate}
+              />
+            </li>
+            <li>
+              <QuietLink
+                href="/schedule"
+                label="Schedule"
+                icon={<CalendarIcon />}
+                active={isActive("/schedule")}
+                onNavigate={onNavigate}
+              />
+            </li>
+            <li>
+              <QuietLink
+                href="/review"
+                label="Review"
+                icon={<InboxIcon />}
+                active={isActive("/review")}
+                onNavigate={onNavigate}
+                count={reviewCount}
+              />
+            </li>
+          </ul>
+        </div>
+      ) : null}
 
-      {/* Admin — the drawer everyone rarely opens */}
+      {/* Admin — the drawer everyone rarely opens. A viewer only ever sees
+          Settings here (to change their own password); the ops tools are manager+. */}
       <div className="space-y-1.5 border-t border-[var(--color-rule)] pt-4">
-        <p className="eyebrow px-2 pb-1">Admin</p>
+        <p className="eyebrow px-2 pb-1">{isManager ? "Admin" : "Account"}</p>
         <ul className="space-y-0.5">
-          {ADMIN_ITEMS.map((item, i) => (
+          {ADMIN_ITEMS.filter((item) => item.href === "/settings" || isManager).map((item) => (
             <li key={item.href}>
               <QuietLink
                 href={item.href}
-                label={item.label}
-                icon={i === 0 ? <CogIcon /> : undefined}
+                label={item.href === "/settings" && !isManager ? "Settings & password" : item.label}
+                icon={item.href === "/settings" ? <CogIcon /> : undefined}
                 active={isActive(item.href)}
                 onNavigate={onNavigate}
               />
@@ -368,9 +385,11 @@ function UserFooter({ user }: { user: AuthenticatedUser }) {
 export default function AppNav({
   user,
   reviewCount = 0,
+  canSeeTransactions = true,
 }: {
   user: AuthenticatedUser;
   reviewCount?: number;
+  canSeeTransactions?: boolean;
 }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
@@ -434,7 +453,7 @@ export default function AppNav({
             ✕
           </button>
         </div>
-        <NavLinks pathname={pathname} onNavigate={() => setOpen(false)} reviewCount={reviewCount} />
+        <NavLinks pathname={pathname} onNavigate={() => setOpen(false)} reviewCount={reviewCount} role={user.role} canSeeTransactions={canSeeTransactions} />
         <UserFooter user={user} />
       </aside>
     </>

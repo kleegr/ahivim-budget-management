@@ -23,7 +23,7 @@ export default async function GroupReviewPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const user = await requireUser("viewer");
+  const user = await requireUser("manager");
   const canManage = user.role !== "viewer";
 
   const sp = await searchParams;
