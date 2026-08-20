@@ -9,8 +9,8 @@ export const dynamic = "force-dynamic";
 
 /** Suggest canonical matches for an imported name. Any signed-in role may read. */
 export async function GET(request: NextRequest) {
-  const user = await apiUser("viewer");
-  if (!user) return jsonError("Authentication required", 401);
+  const user = await apiUser("manager");
+  if (!user) return jsonError("Manager role required", 403);
 
   const url = new URL(request.url);
   const kind: AliasKind = url.searchParams.get("kind") === "employee" ? "employee" : "individual";

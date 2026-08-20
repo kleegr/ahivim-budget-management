@@ -107,11 +107,18 @@ export async function currentUser(): Promise<AuthenticatedUser | null> {
   };
 }
 
+/** The landing screen each role is allowed to see (viewers can't see the dashboard). */
+export function homePathForRole(role: string | undefined): string {
+  return roleAtLeast(role, "manager") ? "/dashboard" : "/individuals";
+}
+
 /** For pages: redirect to sign-in when not authenticated / under-privileged. */
 export async function requireUser(minimum: Role = "viewer"): Promise<AuthenticatedUser> {
   const user = await currentUser();
   if (!user) redirect("/signin");
-  if (!roleAtLeast(user.role, minimum)) redirect("/dashboard?denied=1");
+  // Send the under-privileged user to a screen their role CAN see, never back to a
+  // page they'll just be denied from again (which would loop).
+  if (!roleAtLeast(user.role, minimum)) redirect(`${homePathForRole(user.role)}?denied=1`);
   return user;
 }
 
