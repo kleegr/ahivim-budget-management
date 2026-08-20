@@ -11,6 +11,7 @@ import {
   getEmployeeUsageByProgram,
   getEmployeeMonthlyPayments,
   getEmployeeSchedule,
+  getEmployeeWithholding,
 } from "@/lib/data/employee-queries";
 import { txLink } from "@/lib/nav/tx-link";
 import { getEmployee } from "@/lib/manage/employees";
@@ -62,7 +63,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
     // shown about that employee is limited to the individuals they may see.
     const scope = await resolveAccessScope(pool, user);
     if (!canViewEmployee(scope, id)) return null;
-    const [report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule] = await Promise.all([
+    const [report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding] = await Promise.all([
       getEmployeeReport(pool, id, scope),
       listAssignments(pool, { employeeId: id, includeInactive: true }),
       listTransactions(pool, { employeeId: id, limit: 25, scope }),
@@ -73,11 +74,12 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
       // The schedule (a manager surface, and its upcoming list names individuals)
       // is not shown to viewers.
       canEdit ? getEmployeeSchedule(pool, id) : Promise.resolve(EMPTY_SCHEDULE),
+      getEmployeeWithholding(pool, id),
     ]);
     const activeAssignments = assignments
       .filter((a) => a.status === "active")
       .filter((a) => canViewIndividual(scope, a.individualId));
-    return { employee, report, assignments: activeAssignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, canSeeMoney: scope.canSeeMoney };
+    return { employee, report, assignments: activeAssignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, canSeeMoney: scope.canSeeMoney };
   });
 
   if (!result.ok) {
@@ -90,8 +92,9 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
   }
   if (!result.data) notFound();
 
-  const { employee, report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, canSeeMoney } = result.data;
+  const { employee, report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, canSeeMoney } = result.data;
   const attributionAvailable = payment.transactionCount === 0 || payment.attributedCount > 0;
+  const hasWithholding = dec(withholding.withheld).greaterThan(0);
 
   // A separate payout cut: a percentage of what this employee earned (the
   // internal amount owed to them), paid to him separately. Stored as a fraction.
@@ -168,6 +171,18 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
               <div className="text-right">
                 <span className="tnum text-xl font-semibold">{formatMoney(cutAmount)}</span>
                 <span className="ml-2 text-xs text-[var(--color-ink-faint)]">{cutPercentDisplay}% × {formatMoney(cutBase)} earned</span>
+              </div>
+            </div>
+          ) : null}
+          {canSeeMoney && hasWithholding ? (
+            <div className="mt-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface-muted)] px-4 py-3">
+              <div className="text-sm">
+                <span className="font-semibold text-[var(--color-ink)]">Taxes withheld</span>
+                <span className="ml-2 text-[var(--color-ink-soft)]">gross minus the net actually received on checks paid to this employee — kept separately</span>
+              </div>
+              <div className="text-right">
+                <span className="tnum text-xl font-semibold">{formatMoney(withholding.withheld)}</span>
+                <span className="ml-2 text-xs text-[var(--color-ink-faint)]">{formatMoney(withholding.gross)} gross − {formatMoney(withholding.net)} net · {withholding.checks} check{withholding.checks === 1 ? "" : "s"}</span>
               </div>
             </div>
           ) : null}

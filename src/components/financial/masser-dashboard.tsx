@@ -189,7 +189,7 @@ export default function MasserDashboard({ data, canManage }: { data: FinancialDa
         <Tile label="Employees made" value={formatMoney(totals.employees.toString())} color="var(--color-primary)" />
         <Tile label="Agency made" value={formatMoney(totals.agency.toString())} color="var(--color-success)" />
         <Tile label="Total billed" value={formatMoney(totals.total.toString())} />
-        <Tile label="Taxes (reserve)" value={formatMoney(totals.taxes.toString())} />
+        <Tile label="Taxes (withheld)" value={formatMoney(totals.taxes.toString())} />
         <Tile label="Masser (put away)" value={formatMoney(totals.masser.toString())} color="var(--color-warn)" />
       </div>
 
@@ -199,7 +199,7 @@ export default function MasserDashboard({ data, canManage }: { data: FinancialDa
 
       <p className="text-xs text-[var(--color-text-soft)]">
         <span className="font-medium text-[var(--color-ink-soft)]">Employees made</span> is the budget-rate value of the work; <span className="font-medium text-[var(--color-ink-soft)]">Agency made</span> is the billed-rate spread on top (e.g. $17 budget → $19 billed = $2). The two add up to the total billed.{" "}
-        <span className="font-medium text-[var(--color-ink-soft)]">Masser</span> is each plan&rsquo;s fixed set-aside (the &ldquo;after all&rdquo;); <span className="font-medium text-[var(--color-ink-soft)]">Taxes</span> is the plan&rsquo;s first cut applied to what the employees made.
+        <span className="font-medium text-[var(--color-ink-soft)]">Taxes</span> is the real withholding on checks paid to the employee — the paycheck&rsquo;s gross minus the net they actually received — kept separately (nothing to do with the plan&rsquo;s cuts). <span className="font-medium text-[var(--color-ink-soft)]">Masser</span> is each plan&rsquo;s fixed set-aside (the &ldquo;after all&rdquo;); people you only bill for have no plan, so no Masser.
         {canManage ? " Click a phone, account or note to edit it." : ""}
       </p>
 
@@ -230,7 +230,7 @@ export default function MasserDashboard({ data, canManage }: { data: FinancialDa
                       {r.individualName}
                     </Link>
                     {!r.active ? <span className="ml-1.5 rounded bg-[var(--color-surface-strong)] px-1 text-[10px] text-[var(--color-text-soft)]">inactive</span> : null}
-                    {r.strategyCount === 0 ? <span className="ml-1.5 rounded bg-[var(--color-warn-soft)] px-1 text-[10px] text-[var(--color-warn)]" title="No active plan — Masser and Taxes need a plan">no plan</span> : null}
+                    {r.strategyCount === 0 ? <span className="ml-1.5 rounded bg-[var(--color-surface-strong)] px-1 text-[10px] text-[var(--color-text-soft)]" title="Billing only — no budget/plan for this person, just the actual billing. This is expected.">billing only</span> : null}
                     {isSaving ? <span className="ml-1.5 text-[10px] text-[var(--color-text-soft)]">saving…</span> : null}
                   </td>
                   <EditableTextCell

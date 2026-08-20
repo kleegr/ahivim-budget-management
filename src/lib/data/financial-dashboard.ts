@@ -38,7 +38,6 @@ export interface FinancialDashboardRow {
   periodStart: string | null;
   periodEnd: string | null;
   masser: string | null; // Σ after_all; null when no plan sets one
-  cut1Fraction: string; // the primary plan's first-cut rate, for the tax reserve
   planYearlyGross: string; // Σ authorized × internal rate (the budget's own currency)
   planNetYearly: string; // Σ net per month × months
 
@@ -83,7 +82,6 @@ interface PlanAgg {
   periodEnd: string | null;
   masser: ReturnType<typeof dec>;
   hasMasser: boolean;
-  cut1Fraction: string;
   planYearlyGross: ReturnType<typeof dec>;
   planNetYearly: ReturnType<typeof dec>;
 }
@@ -129,7 +127,6 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
         periodEnd: s.periodEnd,
         masser: dec(s.afterAll ?? 0),
         hasMasser: s.afterAll != null,
-        cut1Fraction: s.cut1Percent ?? "0",
         planYearlyGross: dec(s.yearlyGross),
         planNetYearly: netYearly,
       });
@@ -162,23 +159,43 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
     `(w.start_date IS NULL OR (t.period_begin >= w.start_date AND t.period_begin <= w.end_date))`;
   const internalExpr =
     `COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount, t.internal_rate_applied * t.imported_hours, 0)`;
+  // Taxes = the ACTUAL withholding on a paycheck: the check's gross minus the
+  // net the employee really received (total_net_pay is per-check). It has nothing
+  // to do with the plan's cuts. The agency ("excellent_staffing") handles its own
+  // withholding (its checks show ~no gap), so we count the gap only on checks NOT
+  // paid to the agency, and spread each check's gap across its rows by gross share
+  // so it attributes cleanly to each individual.
+  const whExpr =
+    `CASE WHEN t.payment_recipient IS DISTINCT FROM 'excellent_staffing'
+            AND ct.cg > 0 AND ct.cn IS NOT NULL AND ct.cg > ct.cn
+          THEN (ct.cg - ct.cn) * COALESCE(t.imported_amount, 0) / ct.cg
+          ELSE 0 END`;
 
   const actualByInd = new Map<
     string,
     {
-      grossAll: string; internalAll: string; agencyAll: string; hoursAll: string; txAll: string;
-      grossPeriod: string; internalPeriod: string; agencyPeriod: string; hoursPeriod: string; txPeriod: string;
+      grossAll: string; internalAll: string; agencyAll: string; hoursAll: string; txAll: string; whAll: string;
+      grossPeriod: string; internalPeriod: string; agencyPeriod: string; hoursPeriod: string; txPeriod: string; whPeriod: string;
     }
   >();
 
   if (ids.length > 0) {
     const { rows: actuals } = await pool.query<{
       individual_id: string;
-      gross_all: string; internal_all: string; agency_all: string; hours_all: string; tx_all: string;
-      gross_period: string; internal_period: string; agency_period: string; hours_period: string; tx_period: string;
+      gross_all: string; internal_all: string; agency_all: string; hours_all: string; tx_all: string; wh_all: string;
+      gross_period: string; internal_period: string; agency_period: string; hours_period: string; tx_period: string; wh_period: string;
     }>(
       `WITH win AS (
          SELECT * FROM unnest($1::uuid[], $2::date[], $3::date[]) AS w(individual_id, start_date, end_date)
+       ),
+       check_tot AS (
+         SELECT check_number,
+                sum(COALESCE(imported_amount, 0)) AS cg,
+                max(total_net_pay)                AS cn
+           FROM payroll_transactions
+          WHERE check_number IS NOT NULL
+            AND payment_recipient IS DISTINCT FROM 'excellent_staffing'
+          GROUP BY check_number
        )
        SELECT t.individual_id,
               COALESCE(sum(t.imported_amount), 0)::text                          AS gross_all,
@@ -186,21 +203,24 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
               COALESCE(sum(t.agency_additional_amount), 0)::text                 AS agency_all,
               COALESCE(sum(t.imported_hours), 0)::text                           AS hours_all,
               count(*)::text                                                     AS tx_all,
+              COALESCE(sum(${whExpr}), 0)::text                                  AS wh_all,
               COALESCE(sum(t.imported_amount) FILTER (WHERE ${inWindow}), 0)::text        AS gross_period,
               COALESCE(sum(${internalExpr}) FILTER (WHERE ${inWindow}), 0)::text          AS internal_period,
               COALESCE(sum(t.agency_additional_amount) FILTER (WHERE ${inWindow}), 0)::text AS agency_period,
               COALESCE(sum(t.imported_hours) FILTER (WHERE ${inWindow}), 0)::text         AS hours_period,
-              count(*) FILTER (WHERE ${inWindow})::text                          AS tx_period
+              count(*) FILTER (WHERE ${inWindow})::text                          AS tx_period,
+              COALESCE(sum(${whExpr}) FILTER (WHERE ${inWindow}), 0)::text       AS wh_period
          FROM payroll_transactions t
          LEFT JOIN win w ON w.individual_id = t.individual_id
+         LEFT JOIN check_tot ct ON ct.check_number = t.check_number
         WHERE t.individual_id = ANY($4::uuid[])
         GROUP BY t.individual_id`,
       [winIds, winStarts, winEnds, ids],
     );
     for (const a of actuals) {
       actualByInd.set(a.individual_id, {
-        grossAll: a.gross_all, internalAll: a.internal_all, agencyAll: a.agency_all, hoursAll: a.hours_all, txAll: a.tx_all,
-        grossPeriod: a.gross_period, internalPeriod: a.internal_period, agencyPeriod: a.agency_period, hoursPeriod: a.hours_period, txPeriod: a.tx_period,
+        grossAll: a.gross_all, internalAll: a.internal_all, agencyAll: a.agency_all, hoursAll: a.hours_all, txAll: a.tx_all, whAll: a.wh_all,
+        grossPeriod: a.gross_period, internalPeriod: a.internal_period, agencyPeriod: a.agency_period, hoursPeriod: a.hours_period, txPeriod: a.tx_period, whPeriod: a.wh_period,
       });
     }
   }
@@ -215,12 +235,12 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
   const rows: FinancialDashboardRow[] = people.map((p) => {
     const plan = planByInd.get(p.id);
     const act = actualByInd.get(p.id);
-    const cut1 = dec(plan?.cut1Fraction ?? "0");
 
     const empAll = dec(act?.internalAll ?? 0);
     const empPeriod = dec(act?.internalPeriod ?? 0);
-    const taxesAll = empAll.times(cut1);
-    const taxesPeriod = empPeriod.times(cut1);
+    // Taxes = actual withholding (paycheck gross − net), not a plan figure.
+    const taxesAll = dec(act?.whAll ?? 0);
+    const taxesPeriod = dec(act?.whPeriod ?? 0);
     const masser = plan?.hasMasser ? plan.masser : null;
 
     accAllGross = accAllGross.plus(dec(act?.grossAll ?? 0));
@@ -245,7 +265,6 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
       periodStart: plan?.periodStart ?? null,
       periodEnd: plan?.periodEnd ?? null,
       masser: masser ? toMoney(masser) : null,
-      cut1Fraction: plan?.cut1Fraction ?? "0",
       planYearlyGross: toMoney(plan?.planYearlyGross ?? 0),
       planNetYearly: toMoney(plan?.planNetYearly ?? 0),
       billedGrossAll: toMoney(act?.grossAll ?? 0),

@@ -110,6 +110,58 @@ export async function getEmployeePaymentSummary(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Withholding kept separately (paycheck gross − net)                          */
+/* -------------------------------------------------------------------------- */
+
+export interface EmployeeWithholding {
+  /** Σ over this employee's non-agency checks of (check gross − net). */
+  withheld: string;
+  /** Gross and net that produced it, for context. */
+  gross: string;
+  net: string;
+  /** Number of checks that carried a real gross > net gap. */
+  checks: number;
+}
+
+/**
+ * What was withheld from this employee's own paychecks — the check's gross wages
+ * minus the net they actually received (total_net_pay is per check). This is the
+ * money the employee did NOT keep and that must be set aside separately; it is a
+ * real payroll fact, not derived from any plan cut. Checks routed through the
+ * agency ("excellent_staffing") are excluded — the agency withholds on its own.
+ * Computed per check (never double-counting the net across a check's rows).
+ */
+export async function getEmployeeWithholding(
+  pool: PgLikePool,
+  employeeId: string,
+): Promise<EmployeeWithholding> {
+  const empty: EmployeeWithholding = { withheld: toMoney(0), gross: toMoney(0), net: toMoney(0), checks: 0 };
+  if (!isUuid(employeeId)) return empty;
+  const { rows } = await pool.query<{ withheld: string; gross: string; net: string; checks: string }>(
+    `WITH ct AS (
+       SELECT check_number,
+              sum(COALESCE(imported_amount, 0)) AS cg,
+              max(total_net_pay)                AS cn
+         FROM payroll_transactions
+        WHERE employee_id = $1
+          AND check_number IS NOT NULL
+          AND payment_recipient IS DISTINCT FROM 'excellent_staffing'
+        GROUP BY check_number
+     )
+     SELECT COALESCE(sum(GREATEST(cg - cn, 0)), 0)::text                        AS withheld,
+            COALESCE(sum(cg) FILTER (WHERE cn IS NOT NULL AND cg > cn), 0)::text AS gross,
+            COALESCE(sum(cn) FILTER (WHERE cn IS NOT NULL AND cg > cn), 0)::text AS net,
+            count(*) FILTER (WHERE cn IS NOT NULL AND cg > cn)::text             AS checks
+       FROM ct
+      WHERE cn IS NOT NULL`,
+    [employeeId],
+  );
+  const r = rows[0];
+  if (!r) return empty;
+  return { withheld: toMoney(r.withheld), gross: toMoney(r.gross), net: toMoney(r.net), checks: Number(r.checks) };
+}
+
+/* -------------------------------------------------------------------------- */
 /* Individuals this employee has actually served (from the billed ledger)     */
 /* -------------------------------------------------------------------------- */
 
