@@ -58,7 +58,10 @@ export default function FinancialPlan({
   const remAg = annualAg.minus(actualAg);
 
   const remHours = sum((l) => dec(l.authorizedHours).minus(dec(l.usedHours)));
-  const months = monthsToRenewal && monthsToRenewal > 0 ? monthsToRenewal : null;
+  // Only express a MONTHLY pace when at least a month remains; under a month,
+  // dividing by a fraction inflates the rate above what's actually left, which
+  // reads as nonsense (the takeaway then just states the hours left to bill).
+  const months = monthsToRenewal && monthsToRenewal >= 1 ? monthsToRenewal : null;
   const perMoHours = months && remHours.greaterThan(0) ? remHours.dividedBy(months) : null;
   const perMoInt = months && remInt.greaterThan(0) ? remInt.dividedBy(months) : null;
   const perMoAg = months && remAg.greaterThan(0) ? remAg.dividedBy(months) : null;
