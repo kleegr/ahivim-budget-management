@@ -306,6 +306,198 @@ export async function setUserActive(
   return true;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Access scope (which individuals / employees / transactions a user may see)  */
+/* -------------------------------------------------------------------------- */
+
+const UUID_RE = /^[0-9a-f-]{36}$/i;
+
+export interface UserAccessConfig {
+  accessScope: "full" | "scoped";
+  seeAllIndividuals: boolean;
+  seeAllEmployees: boolean;
+  canSeeTransactions: boolean;
+  individualIds: string[];
+  employeeIds: string[];
+}
+
+export interface UserWithAccess extends UserRecord {
+  accessScope: "full" | "scoped";
+  seeAllIndividuals: boolean;
+  seeAllEmployees: boolean;
+  canSeeTransactions: boolean;
+  individualCount: number;
+  employeeCount: number;
+}
+
+/** Users plus a summary of each one's access, for the admin console. */
+export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAccess[]> {
+  const { rows } = await pool.query<
+    UserRow & {
+      access_scope: string;
+      see_all_individuals: boolean;
+      see_all_employees: boolean;
+      can_see_transactions: boolean;
+      individual_count: number;
+      employee_count: number;
+    }
+  >(
+    `SELECT u.id, u.email, u.display_name, u.password_hash, u.role, u.is_active,
+            u.last_login_at::text AS last_login_at, u.created_at::text AS created_at,
+            u.access_scope, u.see_all_individuals, u.see_all_employees, u.can_see_transactions,
+            (SELECT count(*) FROM user_individual_access a WHERE a.user_id = u.id)::int AS individual_count,
+            (SELECT count(*) FROM user_employee_access a WHERE a.user_id = u.id)::int AS employee_count
+       FROM users u
+      ORDER BY u.email`,
+  );
+  return rows.map((r) => ({
+    ...toUser(r),
+    accessScope: r.access_scope === "scoped" ? "scoped" : "full",
+    seeAllIndividuals: r.see_all_individuals === true,
+    seeAllEmployees: r.see_all_employees === true,
+    canSeeTransactions: r.can_see_transactions !== false,
+    individualCount: Number(r.individual_count ?? 0),
+    employeeCount: Number(r.employee_count ?? 0),
+  }));
+}
+
+/** The full access configuration for one user (for the edit form). */
+export async function getUserAccessConfig(
+  pool: PgLikePool,
+  userId: string,
+): Promise<UserAccessConfig | null> {
+  const { rows } = await pool.query<{
+    access_scope: string;
+    see_all_individuals: boolean;
+    see_all_employees: boolean;
+    can_see_transactions: boolean;
+  }>(
+    `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions
+       FROM users WHERE id = $1`,
+    [userId],
+  );
+  const u = rows[0];
+  if (!u) return null;
+  const individualIds = (
+    await pool.query<{ individual_id: string }>(
+      `SELECT individual_id FROM user_individual_access WHERE user_id = $1`,
+      [userId],
+    )
+  ).rows.map((r) => r.individual_id);
+  const employeeIds = (
+    await pool.query<{ employee_id: string }>(
+      `SELECT employee_id FROM user_employee_access WHERE user_id = $1`,
+      [userId],
+    )
+  ).rows.map((r) => r.employee_id);
+  return {
+    accessScope: u.access_scope === "scoped" ? "scoped" : "full",
+    seeAllIndividuals: u.see_all_individuals === true,
+    seeAllEmployees: u.see_all_employees === true,
+    canSeeTransactions: u.can_see_transactions !== false,
+    individualIds,
+    employeeIds,
+  };
+}
+
+/**
+ * Replace a user's access configuration. The column flags and the two grant
+ * tables are written together in one transaction so a scoped user is never left
+ * half-configured. Grants are cleared when the user is 'full' (they're ignored
+ * then anyway) to keep the tables tidy.
+ */
+export async function setUserAccessConfig(
+  pool: PgLikePool,
+  userId: string,
+  config: UserAccessConfig,
+  actorId: string | null,
+): Promise<boolean> {
+  const scope = config.accessScope === "scoped" ? "scoped" : "full";
+  const individualIds = (config.individualIds ?? []).filter((v) => UUID_RE.test(v));
+  const employeeIds = (config.employeeIds ?? []).filter((v) => UUID_RE.test(v));
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `UPDATE users
+          SET access_scope = $1,
+              see_all_individuals = $2,
+              see_all_employees = $3,
+              can_see_transactions = $4,
+              updated_at = now()
+        WHERE id = $5`,
+      [scope, config.seeAllIndividuals === true, config.seeAllEmployees === true, config.canSeeTransactions !== false, userId],
+    );
+    await client.query(`DELETE FROM user_individual_access WHERE user_id = $1`, [userId]);
+    await client.query(`DELETE FROM user_employee_access WHERE user_id = $1`, [userId]);
+    if (scope === "scoped") {
+      if (individualIds.length > 0) {
+        await client.query(
+          `INSERT INTO user_individual_access (user_id, individual_id)
+           SELECT $1, x FROM unnest($2::uuid[]) x
+           ON CONFLICT DO NOTHING`,
+          [userId, individualIds],
+        );
+      }
+      if (employeeIds.length > 0) {
+        await client.query(
+          `INSERT INTO user_employee_access (user_id, employee_id)
+           SELECT $1, x FROM unnest($2::uuid[]) x
+           ON CONFLICT DO NOTHING`,
+          [userId, employeeIds],
+        );
+      }
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  await writeAudit(pool, {
+    userId: actorId,
+    action: "user_access_changed",
+    entityType: "user",
+    entityId: userId,
+    metadata: {
+      scope,
+      seeAllIndividuals: config.seeAllIndividuals === true,
+      seeAllEmployees: config.seeAllEmployees === true,
+      canSeeTransactions: config.canSeeTransactions !== false,
+      individuals: individualIds.length,
+      employees: employeeIds.length,
+    },
+  });
+  return true;
+}
+
+/** Admin password reset — sets a new password without knowing the old one. */
+export async function setUserPassword(
+  pool: PgLikePool,
+  userId: string,
+  newPassword: string,
+  actorId: string | null,
+): Promise<{ ok: true } | { ok: false; reason: "too_short" | "not_found" }> {
+  if (newPassword.length < MIN_PASSWORD_LENGTH) return { ok: false, reason: "too_short" };
+  const user = await findUserById(pool, userId);
+  if (!user) return { ok: false, reason: "not_found" };
+  const passwordHash = await hashPassword(newPassword);
+  await pool.query(`UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, [
+    passwordHash,
+    userId,
+  ]);
+  await writeAudit(pool, {
+    userId: actorId,
+    action: "user_password_reset_by_admin",
+    entityType: "user",
+    entityId: userId,
+  });
+  return { ok: true };
+}
+
 /** Convenience wrappers for route handlers, which always use the real pool. */
 export const db = {
   authenticate: (email: string, password: string) => authenticate(getPool(), email, password),
