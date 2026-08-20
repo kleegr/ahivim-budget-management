@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Imports — Ahivim Budget Management" };
 
 export default async function ImportsPage() {
-  const user = await requireUser("viewer");
+  const user = await requireUser("manager");
   const result = await withDb((pool) => listImports(pool, 100));
 
   return (

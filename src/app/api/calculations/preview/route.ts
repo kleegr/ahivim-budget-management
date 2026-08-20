@@ -51,8 +51,8 @@ export async function POST(request: NextRequest) {
   const origin = sameOriginOrFail(request);
   if (origin) return origin;
 
-  const user = await apiUser("viewer");
-  if (!user) return jsonError("Authentication required", 401);
+  const user = await apiUser("manager");
+  if (!user) return jsonError("Manager role required", 403);
 
   const body = await readJson(request);
   try {
