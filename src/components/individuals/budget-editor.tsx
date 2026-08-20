@@ -120,6 +120,19 @@ export default function BudgetEditor({
     return pm ? pm.times(dec(r.perHour || 0)) : null;
   };
 
+  // "To finish" pace that stays sensible near renewal. Dividing the hours left by
+  // a FRACTION of a month inflates the rate above the hours left (66 h with 12
+  // days left is not "168/month"). So under a month, show the real hours over the
+  // real days ("66.4 h in 12d"); a month or more out, the monthly pace is fine.
+  const finishLabel = (left: ReturnType<typeof dec>, days: number | null): string => {
+    if (!left.greaterThan(0)) return "—";
+    if (days === null) return "—";
+    if (days <= 0) return "due now";
+    const months = days / 30.4375;
+    if (months >= 1) return `${formatHours(left.dividedBy(months).toString())}/mo`;
+    return `${formatHours(left.toString())} in ${days}d`;
+  };
+
   // A quick account-status switch that lives ON the profile (a setting inside
   // the individual): active accounts auto-roll their renewal; inactive freeze.
   const toggleActive = async () => {
@@ -152,13 +165,19 @@ export default function BudgetEditor({
   // differently), so the total row talks money, per the sheet's intent.
   const totalUsedDollars = rows.reduce((s, r) => s.plus(rowUsedDollars(r)), dec(0));
   const totalLeftDollars = grandTotal.minus(totalUsedDollars);
-  // Per-month-to-finish in dollars, summed per program (each toward its own renewal).
+  const totalLeftHours = totalAuthorized.minus(totalUsed);
+  // Per-month-to-finish, summed per program (each toward its own renewal). Capped
+  // at what's actually left: when a program renews in under a month the raw pace
+  // exceeds the hours/dollars left, which reads as nonsense — you'd bill the rest
+  // within days, not spread over a month.
   const perMonthDollarsTotal = rows.reduce((s, r) => s.plus(perMonthDollarsRow(r) ?? dec(0)), dec(0));
-  const perMonthDollars = perMonthDollarsTotal.greaterThan(0) ? perMonthDollarsTotal : null;
-  // Per-month-to-finish in HOURS (summed per program) — for hours-only viewers,
-  // who see the totals row in hours instead of dollars.
+  const perMonthDollars = perMonthDollarsTotal.greaterThan(0)
+    ? (totalLeftDollars.greaterThan(0) && perMonthDollarsTotal.greaterThan(totalLeftDollars) ? totalLeftDollars : perMonthDollarsTotal)
+    : null;
   const perMonthHoursTotal = rows.reduce((s, r) => s.plus(perMonth(r) ?? dec(0)), dec(0));
-  const perMonthHours = perMonthHoursTotal.greaterThan(0) ? perMonthHoursTotal : null;
+  const perMonthHours = perMonthHoursTotal.greaterThan(0)
+    ? (totalLeftHours.greaterThan(0) && perMonthHoursTotal.greaterThan(totalLeftHours) ? totalLeftHours : perMonthHoursTotal)
+    : null;
 
   // Over/under budget, counted PER PROGRAM (never netted — one program can be
   // over while another is under, and both matter).
@@ -308,14 +327,13 @@ export default function BudgetEditor({
                   {canSeeMoney ? <th className="px-3 py-2 text-right font-medium">Total</th> : null}
                   <th className="px-3 py-2 text-right font-medium">Used</th>
                   <th className="px-3 py-2 text-right font-medium">Left</th>
-                  <th className="px-3 py-2 text-right font-medium" title="Hours to bill each month to finish by this program's renewal">Per month to finish</th>
+                  <th className="px-3 py-2 text-right font-medium" title="What's left to bill to finish by this program's renewal — a monthly pace when a month or more remains, otherwise the hours left over the days left">To finish</th>
                   <th className="px-5 py-2 font-medium">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => {
                   const left = dec(r.hours || 0).minus(dec(r.used || 0));
-                  const pm = perMonth(r);
                   const status = budgetStatusFromHours(Number(r.hours || 0), Number(r.used || 0));
                   return (
                     <tr key={r.programId} className="border-t border-[var(--color-rule)]">
@@ -330,7 +348,7 @@ export default function BudgetEditor({
                       {canSeeMoney ? <td className="tnum px-3 py-2 text-right font-medium">{formatMoney(rowTotal(r).toString())}</td> : null}
                       <td className="tnum px-3 py-2 text-right">{formatHours(r.used)}</td>
                       <td className="tnum px-3 py-2 text-right" style={{ color: left.isNegative() ? "var(--color-pace-over)" : undefined }}>{formatHours(left.toString())}</td>
-                      <td className="tnum px-3 py-2 text-right text-[var(--color-ink-soft)]" title={r.effectiveRenewal ? `Renews ${r.effectiveRenewal}` : undefined}>{pm ? `${formatHours(pm.toString())}/mo` : "—"}</td>
+                      <td className="tnum px-3 py-2 text-right text-[var(--color-ink-soft)]" title={r.effectiveRenewal ? `Renews ${r.effectiveRenewal}` : undefined}>{finishLabel(left, r.daysToRenewal)}</td>
                       <td className="px-5 py-2"><StatusPill status={status} /></td>
                     </tr>
                   );
