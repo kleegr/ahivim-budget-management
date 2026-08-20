@@ -184,9 +184,13 @@ export default async function IndividualDetailPage({ params }: { params: Promise
                 </span>
                 {" · "}{renewLine(budget.active, budget.daysToRenewal, budget.effectiveRenewal)}
               </p>
-              {perMonthToFinish ? (
+              {perMonthToFinish && (budget.daysToRenewal === null || budget.daysToRenewal >= 30) ? (
                 <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
                   To use it all by renewal, bill <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(perMonthToFinish.toString())} h/month</span> from now.
+                </p>
+              ) : budget.daysToRenewal !== null && budget.daysToRenewal > 0 && budget.daysToRenewal < 30 && dec(t.remainingHours).greaterThan(0) ? (
+                <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
+                  <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(t.remainingHours)} h</span> left to bill in the {budget.daysToRenewal} days before it renews — see each program below.
                 </p>
               ) : null}
             </div>
