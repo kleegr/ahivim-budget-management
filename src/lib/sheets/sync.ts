@@ -7,6 +7,7 @@ import type { ParsedAhivimRow } from "@/lib/excel/parse-workbook";
 import { transactionNaturalKey, type TransactionIdentity } from "@/lib/business/fingerprint";
 import { recordChange } from "@/lib/manage/audit";
 import { parseSheetCsv } from "./parse-csv";
+import { isPaidCell } from "@/lib/excel/column-map";
 import { fetchSheetCsv, type CsvFetcher, SheetFetchError } from "./fetch";
 import { getSyncConfig, type SheetSyncConfig } from "./config";
 
@@ -483,6 +484,40 @@ export async function runSheetSync(
       );
     }
 
+    // Apply the sheet's "Paid" column onto the matched transactions. When a Paid
+    // column exists, the sheet is the source of truth: any value marks the row
+    // paid (stamping paid_at the first time), a "no"/blank in a present column
+    // clears it. When there is NO Paid column we never touch is_paid, so in-app
+    // marking is preserved. This runs for every present row (new or unchanged),
+    // so an "already paid" backlog in the sheet flows in on the next sync.
+    let paidMarked = 0;
+    if (parse.paidColumnFound) {
+      const paidIds: string[] = [];
+      const unpaidIds: string[] = [];
+      for (const [txnId, v] of trackByTxn) {
+        const parsed = parsedByRow.get(v.sourceRowNumber)?.parsed;
+        if (isPaidCell(parsed?.paid)) paidIds.push(txnId);
+        else unpaidIds.push(txnId);
+      }
+      for (let i = 0; i < paidIds.length; i += CHUNK) {
+        const r = await pool.query(
+          `UPDATE payroll_transactions
+              SET is_paid = true, paid_at = COALESCE(paid_at, now()), updated_at = now()
+            WHERE id = ANY($1::uuid[]) AND is_paid IS DISTINCT FROM true`,
+          [paidIds.slice(i, i + CHUNK)],
+        );
+        paidMarked += r.rowCount ?? 0;
+      }
+      for (let i = 0; i < unpaidIds.length; i += CHUNK) {
+        await pool.query(
+          `UPDATE payroll_transactions
+              SET is_paid = false, paid_at = NULL, updated_at = now()
+            WHERE id = ANY($1::uuid[]) AND is_paid IS DISTINCT FROM false`,
+          [unpaidIds.slice(i, i + CHUNK)],
+        );
+      }
+    }
+
     // A row that had been flagged missing/changed but is present-and-identical again
     // clears its flag and its open missing conflict.
     if (activeTxnIds.length > 0) {
@@ -607,6 +642,7 @@ export async function runSheetSync(
       (changedCount ? `, ${changedCount} changed flagged for review` : "") +
       (missingCount ? `, ${missingCount} missing flagged for review` : "") +
       (invalidCount ? `, ${invalidCount} could not be parsed` : "") +
+      (paidMarked ? `, ${paidMarked} newly marked paid from the sheet` : "") +
       ". " +
       staging.reconciliation.note;
 
