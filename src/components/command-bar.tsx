@@ -10,39 +10,53 @@ import { useRouter } from "next/navigation";
  * users: type where you want to go and press Enter.
  */
 
-type Item = { label: string; href: string; hint?: string; keywords?: string };
+// `manager` items are hidden from viewers; `tx` items need transaction access.
+type Item = { label: string; href: string; hint?: string; keywords?: string; manager?: boolean; tx?: boolean };
 
 const ITEMS: Item[] = [
-  { label: "Home", href: "/home", hint: "What needs you today", keywords: "dashboard start" },
-  { label: "Transactions", href: "/transactions", hint: "What was billed — the source of truth", keywords: "ledger billed payroll" },
+  { label: "Home", href: "/home", hint: "What needs you today", keywords: "dashboard start", manager: true },
+  { label: "Transactions", href: "/transactions", hint: "What was billed — the source of truth", keywords: "ledger billed payroll", tx: true },
   { label: "Individuals", href: "/individuals", hint: "Budgets, usage & people", keywords: "clients participants budget health board" },
   { label: "Employees", href: "/employees", hint: "Activity from the ledger", keywords: "staff workers people" },
-  { label: "Financial", href: "/calculations", hint: "Rates, cuts & net", keywords: "calculations money plan cuts projections" },
-  { label: "Schedule", href: "/schedule", hint: "Plan sessions on a calendar", keywords: "calendar sessions" },
-  { label: "Review", href: "/review", hint: "Clear the inbox", keywords: "exceptions matches aliases reconciliation names rates" },
-  { label: "Reports", href: "/reports", hint: "Export & analysis" },
-  { label: "Settings & data tools", href: "/settings", hint: "Admin", keywords: "admin sync imports" },
-  // The most-opened reports, reachable directly.
-  { label: "Report: Budget utilization", href: "/reports/budget-utilization", keywords: "pace off track behind" },
-  { label: "Report: Expiring authorizations", href: "/reports/expiring-authorizations", keywords: "renew lapse 60 days" },
-  { label: "Report: Utilization outliers", href: "/reports/utilization-outliers", keywords: "over budget behind" },
-  { label: "Report: Agency earnings", href: "/reports/agency-earnings", keywords: "money markup total" },
-  { label: "Report: Employee payable", href: "/reports/employee-payable", keywords: "owed pay" },
-  { label: "Report: Program totals", href: "/reports/program-totals", keywords: "money by program" },
+  { label: "Financial", href: "/calculations", hint: "Rates, cuts & net", keywords: "calculations money plan cuts projections", manager: true },
+  { label: "Schedule", href: "/schedule", hint: "Plan sessions on a calendar", keywords: "calendar sessions", manager: true },
+  { label: "Review", href: "/review", hint: "Clear the inbox", keywords: "exceptions matches aliases reconciliation names rates", manager: true },
+  { label: "Reports", href: "/reports", hint: "Export & analysis", manager: true },
+  { label: "Settings", href: "/settings", hint: "Your account", keywords: "admin sync imports password" },
+  // The most-opened reports, reachable directly (manager+).
+  { label: "Report: Budget utilization", href: "/reports/budget-utilization", keywords: "pace off track behind", manager: true },
+  { label: "Report: Expiring authorizations", href: "/reports/expiring-authorizations", keywords: "renew lapse 60 days", manager: true },
+  { label: "Report: Utilization outliers", href: "/reports/utilization-outliers", keywords: "over budget behind", manager: true },
+  { label: "Report: Agency earnings", href: "/reports/agency-earnings", keywords: "money markup total", manager: true },
+  { label: "Report: Employee payable", href: "/reports/employee-payable", keywords: "owed pay", manager: true },
+  { label: "Report: Program totals", href: "/reports/program-totals", keywords: "money by program", manager: true },
 ];
 
-export default function CommandBar() {
+export default function CommandBar({
+  role = "admin",
+  canSeeTransactions = true,
+}: {
+  role?: string;
+  canSeeTransactions?: boolean;
+} = {}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Only offer destinations this user can actually open.
+  const isManager = role === "manager" || role === "admin";
+  const available = useMemo(
+    () => ITEMS.filter((i) => (!i.manager || isManager) && (!i.tx || canSeeTransactions)),
+    [isManager, canSeeTransactions],
+  );
+
   const results = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    if (!needle) return ITEMS;
-    return ITEMS.filter((i) => `${i.label} ${i.hint ?? ""} ${i.keywords ?? ""}`.toLowerCase().includes(needle));
-  }, [q]);
+    if (!needle) return available;
+    return available.filter((i) => `${i.label} ${i.hint ?? ""} ${i.keywords ?? ""}`.toLowerCase().includes(needle));
+  }, [q, available]);
 
   const close = useCallback(() => {
     setOpen(false);

@@ -408,7 +408,7 @@ export default function AppNav({
         Skip to content
       </a>
 
-      <CommandBar />
+      <CommandBar role={user.role} canSeeTransactions={canSeeTransactions} />
 
       {/* Mobile top bar */}
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 md:hidden">

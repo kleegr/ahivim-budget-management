@@ -70,8 +70,9 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
       getEmployeeIndividuals(pool, id, scope),
       getEmployeeUsageByProgram(pool, id, scope),
       getEmployeeMonthlyPayments(pool, id, scope),
-      // The schedule's upcoming list names individuals; a scoped viewer doesn't get it.
-      scope.full ? getEmployeeSchedule(pool, id) : Promise.resolve(EMPTY_SCHEDULE),
+      // The schedule (a manager surface, and its upcoming list names individuals)
+      // is not shown to viewers.
+      canEdit ? getEmployeeSchedule(pool, id) : Promise.resolve(EMPTY_SCHEDULE),
     ]);
     const activeAssignments = assignments
       .filter((a) => a.status === "active")
