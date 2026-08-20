@@ -9,8 +9,8 @@ export const dynamic = "force-dynamic";
 
 /** List assignments, filterable by employee or individual. Any role may read. */
 export async function GET(request: NextRequest) {
-  const user = await apiUser("viewer");
-  if (!user) return jsonError("Authentication required", 401);
+  const user = await apiUser("manager");
+  if (!user) return jsonError("Manager role required", 403);
 
   const url = new URL(request.url);
   const employeeId = url.searchParams.get("employeeId") ?? undefined;

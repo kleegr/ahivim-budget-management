@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { listIndividualsManaged, createIndividual, type IndividualInput } from "@/lib/manage/individuals";
 import { createStrategy, updateStrategy } from "@/lib/manage/calculation-strategies";
@@ -20,7 +21,8 @@ export async function GET(request: NextRequest) {
 
   try {
     const pool = getPool();
-    const data = await listIndividualsManaged(pool, { status, search, includeArchived });
+    const scope = await resolveAccessScope(pool, user);
+    const data = await listIndividualsManaged(pool, { status, search, includeArchived, scope });
     return NextResponse.json({ ok: true, data });
   } catch (error) {
     return jsonError(redactError(error), 500);

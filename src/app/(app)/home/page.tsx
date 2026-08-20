@@ -1,14 +1,14 @@
 import { redirect } from "next/navigation";
+import { currentUser, homePathForRole } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
 
 /**
- * `/home` is the canonical landing route. The existing dashboard renderer at
- * `/dashboard` still holds all the summary data; a light redirect keeps the
- * URL friendly ("Home", not "Dashboard") without forking the render code.
- * The dashboard itself is being redesigned to lead with "what needs you" —
- * that lives in `/dashboard/page.tsx`.
+ * `/home` is the canonical landing route. Managers and admins land on the
+ * dashboard overview; a viewer (who can't see the portfolio dashboard) lands on
+ * their Individuals list instead. Keeps the URL friendly without forking render.
  */
-export default function HomePage() {
-  redirect("/dashboard");
+export default async function HomePage() {
+  const user = await currentUser();
+  redirect(homePathForRole(user?.role));
 }
