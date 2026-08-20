@@ -124,9 +124,9 @@ export const REQUIRED_AHIVIM_FIELDS: AhivimField[] = [
 export function normalizeHeader(value: unknown): string {
   return String(value ?? "")
     .toLowerCase()
-    .replace(/[‐-―]/g, "-")
+    .replace(/[\\u2010-\\u2015]/g, "-")
     .replace(/[^a-z0-9 #-]+/g, " ")
-    .replace(/\s+/g, " ")
+    .replace(/\\s+/g, " ")
     .trim();
 }
 
@@ -138,14 +138,14 @@ export function normalizeHeader(value: unknown): string {
 const numericText = z
   .string()
   .trim()
-  .refine((v) => v === "" || /^-?\$?[\d,]*\.?\d+$/.test(v.replace(/\s/g, "")), {
+  .refine((v) => v === "" || /^-?\\$?[\\d,]*\\.?\\d+$/.test(v.replace(/\\s/g, "")), {
     message: "Not a usable number",
   });
 
 const dateText = z
   .string()
   .trim()
-  .refine((v) => v === "" || /^\d{4}-\d{2}-\d{2}$/.test(v), {
+  .refine((v) => v === "" || /^\\d{4}-\\d{2}-\\d{2}$/.test(v), {
     message: "Expected an ISO date (YYYY-MM-DD)",
   });
 
