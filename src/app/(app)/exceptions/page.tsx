@@ -17,7 +17,7 @@ export default async function ExceptionsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireUser("viewer");
+  await requireUser("manager");
   const sp = await searchParams;
   const first = (k: string) => {
     const v = sp[k];

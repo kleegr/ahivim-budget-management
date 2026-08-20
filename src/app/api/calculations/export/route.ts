@@ -16,8 +16,8 @@ const FIELD_TYPES: ReadonlySet<ExportFieldType> = new Set(["text", "date", "mone
 
 /** Export the currently filtered Calculations view (what you see is what you export). */
 export async function POST(request: NextRequest) {
-  const user = await apiUser("viewer");
-  if (!user) return jsonError("Sign in to continue.", 401);
+  const user = await apiUser("manager");
+  if (!user) return jsonError("Manager role required", 403);
   const cross = sameOriginOrFail(request);
   if (cross) return cross;
   try {

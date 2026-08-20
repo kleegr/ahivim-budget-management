@@ -24,8 +24,8 @@ function defaultRange(): { from: string; to: string } {
 
 /** List planned sessions in a date range with optional view filters. Any role reads. */
 export async function GET(request: NextRequest) {
-  const user = await apiUser("viewer");
-  if (!user) return jsonError("Authentication required", 401);
+  const user = await apiUser("manager");
+  if (!user) return jsonError("Manager role required", 403);
 
   const sp = request.nextUrl.searchParams;
   const range = defaultRange();
