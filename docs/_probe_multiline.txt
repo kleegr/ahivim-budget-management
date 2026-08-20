@@ -1,0 +1,3 @@
+alpha line
+beta "quoted" and backslash \ here
+gamma end
