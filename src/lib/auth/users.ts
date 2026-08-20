@@ -317,6 +317,7 @@ export interface UserAccessConfig {
   seeAllIndividuals: boolean;
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
+  canSeeMoney: boolean;
   individualIds: string[];
   employeeIds: string[];
 }
@@ -326,6 +327,7 @@ export interface UserWithAccess extends UserRecord {
   seeAllIndividuals: boolean;
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
+  canSeeMoney: boolean;
   individualCount: number;
   employeeCount: number;
 }
@@ -338,13 +340,14 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
       see_all_individuals: boolean;
       see_all_employees: boolean;
       can_see_transactions: boolean;
+      can_see_money: boolean;
       individual_count: number;
       employee_count: number;
     }
   >(
     `SELECT u.id, u.email, u.display_name, u.password_hash, u.role, u.is_active,
             u.last_login_at::text AS last_login_at, u.created_at::text AS created_at,
-            u.access_scope, u.see_all_individuals, u.see_all_employees, u.can_see_transactions,
+            u.access_scope, u.see_all_individuals, u.see_all_employees, u.can_see_transactions, u.can_see_money,
             (SELECT count(*) FROM user_individual_access a WHERE a.user_id = u.id)::int AS individual_count,
             (SELECT count(*) FROM user_employee_access a WHERE a.user_id = u.id)::int AS employee_count
        FROM users u
@@ -356,6 +359,7 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
     seeAllIndividuals: r.see_all_individuals === true,
     seeAllEmployees: r.see_all_employees === true,
     canSeeTransactions: r.can_see_transactions !== false,
+    canSeeMoney: r.can_see_money !== false,
     individualCount: Number(r.individual_count ?? 0),
     employeeCount: Number(r.employee_count ?? 0),
   }));
@@ -371,8 +375,9 @@ export async function getUserAccessConfig(
     see_all_individuals: boolean;
     see_all_employees: boolean;
     can_see_transactions: boolean;
+    can_see_money: boolean;
   }>(
-    `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions
+    `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions, can_see_money
        FROM users WHERE id = $1`,
     [userId],
   );
@@ -395,6 +400,7 @@ export async function getUserAccessConfig(
     seeAllIndividuals: u.see_all_individuals === true,
     seeAllEmployees: u.see_all_employees === true,
     canSeeTransactions: u.can_see_transactions !== false,
+    canSeeMoney: u.can_see_money !== false,
     individualIds,
     employeeIds,
   };
@@ -425,9 +431,10 @@ export async function setUserAccessConfig(
               see_all_individuals = $2,
               see_all_employees = $3,
               can_see_transactions = $4,
+              can_see_money = $5,
               updated_at = now()
-        WHERE id = $5`,
-      [scope, config.seeAllIndividuals === true, config.seeAllEmployees === true, config.canSeeTransactions !== false, userId],
+        WHERE id = $6`,
+      [scope, config.seeAllIndividuals === true, config.seeAllEmployees === true, config.canSeeTransactions !== false, config.canSeeMoney !== false, userId],
     );
     await client.query(`DELETE FROM user_individual_access WHERE user_id = $1`, [userId]);
     await client.query(`DELETE FROM user_employee_access WHERE user_id = $1`, [userId]);
