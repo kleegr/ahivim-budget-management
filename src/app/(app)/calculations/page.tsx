@@ -40,7 +40,7 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
       <PageHeader
         eyebrow="Financial · the money side"
         title="Financial"
-        description="The Calculations workbook: internal rates, the first and second cuts, adjustments, and each account's net “after all” figure. This is the money model — distinct from Budget (authorized vs billed hours), which lives on each individual. Glance sorts the accounts that need action to the top; Full sheet edits hours and cuts inline, every figure explained."
+        description="The Calculations workbook: internal rates, the first and second cuts, adjustments, and each account's net and Masser (the fixed set-aside, formerly “after all”). This is the money model — distinct from Budget (authorized vs billed hours), which lives on each individual. Glance sorts the accounts that need action to the top; Full sheet edits hours and cuts inline, every figure explained."
       />
 
       {!result.ok ? (
