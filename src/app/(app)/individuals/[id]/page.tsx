@@ -99,6 +99,7 @@ export default async function IndividualDetailPage({ params }: { params: Promise
       individual, budget, activity,
       strategy,
       otherPlans,
+      canSeeMoney: scope.canSeeMoney,
       programs: strategies.programs, // program list with default per-hour rates, for the editor
       assignments: assignments.filter((a) => a.status === "active"),
       aliases: aliasesAll.filter((a) => a.canonicalId === id),
@@ -116,7 +117,7 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   }
   if (!result.data) notFound();
 
-  const { individual, budget, activity, strategy, otherPlans, programs, assignments, aliases, scheduled } = result.data;
+  const { individual, budget, activity, strategy, otherPlans, canSeeMoney, programs, assignments, aliases, scheduled } = result.data;
   const t = budget.totals;
   const headline = budget.headline ? BUDGET_STATUS_PRESENT[budget.headline] : null;
 
@@ -224,11 +225,12 @@ export default async function IndividualDetailPage({ params }: { params: Promise
           lines={editorLines}
           programs={editorPrograms}
           canEdit={canEdit}
+          canSeeMoney={canSeeMoney}
         />
       ) : null}
 
       {/* ---- Money billed this period (this budget year only) ---- */}
-      {budget.money.txCount > 0 ? (
+      {canSeeMoney && budget.money.txCount > 0 ? (
         <Card title="Money billed this period" description="This budget year only — not the whole history. Agency is what was invoiced; company is the internal amount." className="mb-6"
           action={<ButtonLink href={txLink({ individualId: id, pbFrom: budget.periodStart ?? undefined, pbTo: budget.periodEnd ?? undefined })} variant="secondary">See these rows →</ButtonLink>}>
           <div className="grid gap-3 px-5 py-4 sm:grid-cols-3">
@@ -244,13 +246,15 @@ export default async function IndividualDetailPage({ params }: { params: Promise
         <Card
           title="Billed by month"
           description={
-            budget.lines.some((l) => l.calendarYear)
+            !canSeeMoney
+              ? "What was billed each month this renewal year, itemized by program. Hours are shown per program."
+              : budget.lines.some((l) => l.calendarYear)
               ? "What was billed each month across this renewal year, itemized by program (month totals in dollars). Note: Day Hab and Supplemental run their own Jan–Jan budget year, so their monthly activity here can differ from their budget “used” above."
               : "What was billed each month this renewal year, itemized by program. Hours are per program; the month totals are in dollars — Billed (agency, invoiced) and Company (internal) — because hours don't add up across programs."
           }
           className="mb-6"
         >
-          <BilledByMonth periodStart={budget.periodStart} byProgramMonth={activity.byProgramMonth} programsBilled={activity.programsBilled} />
+          <BilledByMonth periodStart={budget.periodStart} byProgramMonth={activity.byProgramMonth} programsBilled={activity.programsBilled} canSeeMoney={canSeeMoney} />
         </Card>
       ) : null}
 
@@ -262,12 +266,12 @@ export default async function IndividualDetailPage({ params }: { params: Promise
           className="mb-6"
           action={<ButtonLink href={txLink({ individualId: id, pbFrom: budget.periodStart ?? undefined, pbTo: budget.periodEnd ?? undefined })} variant="secondary">All rows →</ButtonLink>}
         >
-          <EmployeesActivity individualId={id} periodStart={budget.periodStart} periodEnd={budget.periodEnd} employees={activity.byEmployee} />
+          <EmployeesActivity individualId={id} periodStart={budget.periodStart} periodEnd={budget.periodEnd} employees={activity.byEmployee} canSeeMoney={canSeeMoney} />
         </Card>
       ) : null}
 
       {/* ---- Financial plan: projected vs. actual, both currencies, cuts inline ---- */}
-      {strategy && budget.hasPlan ? (
+      {canSeeMoney && strategy && budget.hasPlan ? (
         <Card
           title={otherPlans.length > 0 ? `Financial plan · ${strategy.label}` : "Financial plan"}
           description="Projected vs. actual. The plan is the budget priced out through the two cuts and doesn't move; the actual values the hours billed so far at the same rates — so you can see how much you're off and what's left to bill, in both the agency and company currencies."
@@ -303,8 +307,9 @@ export default async function IndividualDetailPage({ params }: { params: Promise
             lines={op.budget.lines.map((l) => ({ programId: l.programId, programName: l.programName, perHour: l.perHour, authorizedHours: l.authorizedHours, usedHours: l.usedHours, inPlan: l.inPlan, daysToRenewal: l.daysToRenewal, effectiveRenewal: l.effectiveRenewal, calendarYear: l.calendarYear }))}
             programs={editorPrograms}
             canEdit={canEdit}
+            canSeeMoney={canSeeMoney}
           />
-          {op.budget.hasPlan ? (
+          {canSeeMoney && op.budget.hasPlan ? (
             <Card title={`Financial plan · ${op.strategy.label}`} className="mt-0">
               <FinancialPlan
                 strategyId={op.strategy.id}
@@ -330,6 +335,7 @@ export default async function IndividualDetailPage({ params }: { params: Promise
         assignments={assignments}
         aliases={aliases}
         scheduled={scheduled}
+        canSeeMoney={canSeeMoney}
         notes={individual.notes}
       />
 
@@ -353,11 +359,12 @@ function MoneyTile({ label, value, plain }: { label: string; value: string; plai
 
 /* Everything advanced, collapsed by default and hidden entirely when empty. */
 function MoreDetails({
-  assignments, aliases, scheduled, notes,
+  assignments, aliases, scheduled, canSeeMoney, notes,
 }: {
   assignments: Awaited<ReturnType<typeof listAssignments>>;
   aliases: { id: string; importedName: string; status: string }[];
   scheduled: [string, { hours: string; internal: string }][];
+  canSeeMoney: boolean;
   notes: string | null;
 }) {
   const hasAnything = assignments.length > 0 || scheduled.length > 0 || aliases.length > 0 || !!notes;
@@ -384,9 +391,9 @@ function MoreDetails({
         {scheduled.length > 0 ? (
           <div>
             <p className="eyebrow mb-2">Scheduled, not yet billed</p>
-            <Table head={<><Th>Program</Th><Th numeric>Hours</Th><Th numeric>Expected</Th></>}>
+            <Table head={<><Th>Program</Th><Th numeric>Hours</Th>{canSeeMoney ? <Th numeric>Expected</Th> : null}</>}>
               {scheduled.map(([code, sc]) => (
-                <Tr key={code}><Td>{code}</Td><Td numeric><Hours value={sc.hours} /></Td><Td numeric><Money value={sc.internal} /></Td></Tr>
+                <Tr key={code}><Td>{code}</Td><Td numeric><Hours value={sc.hours} /></Td>{canSeeMoney ? <Td numeric><Money value={sc.internal} /></Td> : null}</Tr>
               ))}
             </Table>
           </div>
