@@ -1502,7 +1502,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
     key: "cuts-monthly",
     title: "Cuts & monthly calculation",
     description:
-      "Every active calculation's waterfall — annual and monthly gross, both cuts, the clock adjustment, final gross and net, After All — beside the spreadsheet value and their difference.",
+      "Every active calculation's waterfall — annual and monthly gross, both cuts, the clock adjustment, final gross and net, Masser (the fixed set-aside) — beside the spreadsheet value and their difference.",
     filters: [{ key: "program", label: "Program", type: "text", placeholder: "Code or name" }],
     async run(pool, filters) {
       const rows = await cutsMonthlyReport(pool, { program: filters.program });
@@ -1520,7 +1520,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "clockAdjustment", header: "Clock adj.", type: "money" },
             { key: "finalGross", header: "Final gross", type: "money" },
             { key: "finalNet", header: "Final net", type: "money" },
-            { key: "afterAll", header: "After All", type: "money" },
+            { key: "afterAll", header: "Masser", type: "money" },
             { key: "spreadsheetValue", header: "Spreadsheet", type: "money" },
             { key: "difference", header: "Difference", type: "money" },
           ],
