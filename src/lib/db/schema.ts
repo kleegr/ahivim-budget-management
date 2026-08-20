@@ -54,6 +54,7 @@ export const users = pgTable(
     seeAllIndividuals: boolean("see_all_individuals").default(false).notNull(),
     seeAllEmployees: boolean("see_all_employees").default(false).notNull(),
     canSeeTransactions: boolean("can_see_transactions").default(true).notNull(),
+    canSeeMoney: boolean("can_see_money").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
