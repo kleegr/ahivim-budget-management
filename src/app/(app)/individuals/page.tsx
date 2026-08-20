@@ -1,4 +1,5 @@
 import { requireUser } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listIndividualBudgetBoard } from "@/lib/data/queries";
 import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
@@ -26,7 +27,10 @@ export default async function IndividualsPage() {
   const user = await requireUser("viewer");
   const canEdit = user.role !== "viewer";
 
-  const result = await withDb((pool) => listIndividualBudgetBoard(pool));
+  const result = await withDb(async (pool) => {
+    const scope = await resolveAccessScope(pool, user);
+    return listIndividualBudgetBoard(pool, new Date(), scope);
+  });
 
   return (
     <>

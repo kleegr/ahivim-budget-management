@@ -10,6 +10,7 @@ import {
   jsonb,
   index,
   uniqueIndex,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -48,10 +49,47 @@ export const users = pgTable(
     role: text("role").default("viewer").notNull(),
     isActive: boolean("is_active").default(true).notNull(),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    /** Access scope (mirror of drizzle/0014_user_access_scope.sql). 'full' | 'scoped'. */
+    accessScope: text("access_scope").default("full").notNull(),
+    seeAllIndividuals: boolean("see_all_individuals").default(false).notNull(),
+    seeAllEmployees: boolean("see_all_employees").default(false).notNull(),
+    canSeeTransactions: boolean("can_see_transactions").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (table) => [uniqueIndex("users_email_key").on(table.email)],
+);
+
+/**
+ * Per-user access grants (mirror of drizzle/0014_user_access_scope.sql). A scoped
+ * viewer may see the individuals / employees granted here, plus the connected set.
+ */
+export const userIndividualAccess = pgTable(
+  "user_individual_access",
+  {
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    individualId: uuid("individual_id").notNull().references(() => individuals.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.individualId] }),
+    index("user_individual_access_user_idx").on(table.userId),
+    index("user_individual_access_individual_idx").on(table.individualId),
+  ],
+);
+
+export const userEmployeeAccess = pgTable(
+  "user_employee_access",
+  {
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id").notNull().references(() => employees.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.employeeId] }),
+    index("user_employee_access_user_idx").on(table.userId),
+    index("user_employee_access_employee_idx").on(table.employeeId),
+  ],
 );
 
 export const individuals = pgTable(

@@ -1,5 +1,6 @@
 import type { PgLikePool } from "@/lib/import/commit";
 import { toMoney, toHours } from "@/lib/money";
+import { individualScopeClause, type AccessScope } from "@/lib/auth/access";
 
 /**
  * EMPLOYEE WORKSPACE READ MODELS
@@ -55,6 +56,7 @@ export interface EmployeePaymentSummary {
 export async function getEmployeePaymentSummary(
   pool: PgLikePool,
   employeeId: string,
+  scope?: AccessScope,
 ): Promise<EmployeePaymentSummary> {
   const empty: EmployeePaymentSummary = {
     agencyGross: toMoney(0),
@@ -70,6 +72,8 @@ export async function getEmployeePaymentSummary(
   };
   if (!isUuid(employeeId)) return empty;
 
+  const params: unknown[] = [employeeId];
+  const scopeClause = scope ? individualScopeClause(scope, "t.individual_id", params) : "";
   const { rows } = await pool.query<Record<string, string>>(
     `SELECT
        COALESCE(sum(t.imported_amount), 0)::text                      AS agency_gross,
@@ -87,8 +91,8 @@ export async function getEmployeePaymentSummary(
        count(*) FILTER (WHERE t.payment_recipient IS NOT NULL)::text  AS attributed_count,
        count(DISTINCT t.check_number)::text                           AS check_count
      FROM payroll_transactions t
-     WHERE t.employee_id = $1`,
-    [employeeId],
+     WHERE t.employee_id = $1${scopeClause}`,
+    params,
   );
   const r = rows[0] ?? {};
   return {
@@ -129,8 +133,11 @@ export interface EmployeeIndividualRow {
 export async function getEmployeeIndividuals(
   pool: PgLikePool,
   employeeId: string,
+  scope?: AccessScope,
 ): Promise<EmployeeIndividualRow[]> {
   if (!isUuid(employeeId)) return [];
+  const params: unknown[] = [employeeId];
+  const scopeClause = scope ? individualScopeClause(scope, "t.individual_id", params) : "";
   const { rows } = await pool.query<{
     id: string;
     display_name: string;
@@ -147,10 +154,10 @@ export async function getEmployeeIndividuals(
             COALESCE(sum(t.calculated_internal_amount), 0)::text AS internal_amount
        FROM payroll_transactions t
        JOIN individuals i ON i.id = t.individual_id
-      WHERE t.employee_id = $1
+      WHERE t.employee_id = $1${scopeClause}
       GROUP BY i.id, i.display_name
       ORDER BY i.display_name`,
-    [employeeId],
+    params,
   );
   return rows.map((r) => ({
     id: r.id,
@@ -187,8 +194,11 @@ export interface EmployeeProgramRow {
 export async function getEmployeeUsageByProgram(
   pool: PgLikePool,
   employeeId: string,
+  scope?: AccessScope,
 ): Promise<EmployeeProgramRow[]> {
   if (!isUuid(employeeId)) return [];
+  const params: unknown[] = [employeeId];
+  const scopeClause = scope ? individualScopeClause(scope, "t.individual_id", params) : "";
   const { rows } = await pool.query<{
     program_code: string;
     program_name: string;
@@ -209,10 +219,10 @@ export async function getEmployeeUsageByProgram(
             COALESCE(sum(t.calculated_internal_amount), 0)::text      AS internal_amount
        FROM payroll_transactions t
        JOIN programs p ON p.id = t.program_id
-      WHERE t.employee_id = $1
+      WHERE t.employee_id = $1${scopeClause}
       GROUP BY p.id, p.code, p.name
       ORDER BY p.name`,
-    [employeeId],
+    params,
   );
   return rows.map((r) => ({
     programCode: r.program_code,
@@ -249,8 +259,11 @@ export interface EmployeeMonthlyPaymentRow {
 export async function getEmployeeMonthlyPayments(
   pool: PgLikePool,
   employeeId: string,
+  scope?: AccessScope,
 ): Promise<EmployeeMonthlyPaymentRow[]> {
   if (!isUuid(employeeId)) return [];
+  const params: unknown[] = [employeeId];
+  const scopeClause = scope ? individualScopeClause(scope, "t.individual_id", params) : "";
   const { rows } = await pool.query<{
     month: string | null;
     agency_gross: string;
@@ -272,10 +285,10 @@ export async function getEmployeeMonthlyPayments(
             count(DISTINCT t.check_number)::text                            AS check_count,
             count(*)::text                                                  AS transaction_count
        FROM payroll_transactions t
-      WHERE t.employee_id = $1
+      WHERE t.employee_id = $1${scopeClause}
       GROUP BY 1
       ORDER BY 1 DESC NULLS LAST`,
-    [employeeId],
+    params,
   );
   return rows.map((r) => ({
     month: r.month,

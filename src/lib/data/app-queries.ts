@@ -1,5 +1,6 @@
 import type { PgLikePool } from "@/lib/import/commit";
 import { addMoney, dec, toMoney } from "@/lib/money";
+import { individualScopeClause, type AccessScope } from "@/lib/auth/access";
 import { calculatePeriodElapsed, type PeriodElapsed } from "@/lib/business/utilization";
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { pickEffectiveRateRow } from "@/lib/business/rate-resolver";
@@ -544,6 +545,8 @@ export interface TransactionFilters {
   search?: string;
   limit?: number;
   offset?: number;
+  /** When present, restricts rows to the individuals this user may see. */
+  scope?: AccessScope;
 }
 
 export async function listTransactions(
@@ -558,14 +561,16 @@ export async function listTransactions(
   const search = filters.search?.trim() ? `%${filters.search.trim()}%` : null;
 
   // Every user-supplied value is a bound parameter; nothing is interpolated.
+  const params: unknown[] = [individualId, employeeId, programCode, search];
+  // A scoped viewer only ever sees transactions for individuals they may view.
+  const scopeClause = filters.scope ? individualScopeClause(filters.scope, "t.individual_id", params) : "";
   const where = `
     WHERE ($1::uuid IS NULL OR t.individual_id = $1)
       AND ($2::uuid IS NULL OR t.employee_id  = $2)
       AND ($3::text IS NULL OR p.code = $3)
       AND ($4::text IS NULL OR i.display_name ILIKE $4 OR e.display_name ILIKE $4
-           OR t.check_number ILIKE $4 OR t.individual_raw ILIKE $4 OR t.employee_raw ILIKE $4)
+           OR t.check_number ILIKE $4 OR t.individual_raw ILIKE $4 OR t.employee_raw ILIKE $4)${scopeClause}
   `;
-  const params = [individualId, employeeId, programCode, search];
 
   const joins = `
     FROM payroll_transactions t
@@ -619,7 +624,7 @@ export async function listTransactions(
        LEFT JOIN imported_files f ON f.id = t.source_file_id
        ${where}
        ORDER BY t.check_date DESC NULLS LAST, t.source_row_number NULLS LAST
-       LIMIT $5 OFFSET $6`,
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, limit, offset],
     ),
   ]);

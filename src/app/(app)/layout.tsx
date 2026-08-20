@@ -1,4 +1,5 @@
-import { requireUser } from "@/lib/auth/session";
+import { requireUser, roleAtLeast } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
 import AppNav from "@/components/app-nav";
 import { withDb } from "@/lib/data/pool";
 import { exceptionCounts } from "@/lib/data/queries";
@@ -15,6 +16,7 @@ export const dynamic = "force-dynamic";
  */
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser("viewer");
+  const isManager = roleAtLeast(user.role, "manager");
 
   // The Review inbox rolls up every "needs a human" category into one number.
   // Failing quietly is the right choice: a broken count must never break the
@@ -25,21 +27,31 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // (rate exceptions, possible-duplicate rows that already imported, group-session
   // grouping, over-budget individuals) are shown on their own screens, not counted
   // here — so the badge means "there is something for you to resolve", not noise.
+  // We also read the user's access scope so the nav can hide Transactions from a
+  // viewer who isn't permitted to see it.
   let reviewCount = 0;
-  const counts = await withDb((pool) => exceptionCounts(pool));
-  if (counts.ok) {
-    const c = counts.data;
-    reviewCount =
-      c.unmatchedNames +
-      c.duplicateIndividuals +
-      c.pendingAliases +
-      c.unknownPrograms +
-      c.reconciliationDifferences;
+  let canSeeTransactions = true;
+  const loaded = await withDb(async (pool) => {
+    const scope = await resolveAccessScope(pool, user);
+    const counts = isManager ? await exceptionCounts(pool) : null;
+    return { canSeeTransactions: scope.canSeeTransactions, counts };
+  });
+  if (loaded.ok) {
+    canSeeTransactions = loaded.data.canSeeTransactions;
+    const c = loaded.data.counts;
+    if (c) {
+      reviewCount =
+        c.unmatchedNames +
+        c.duplicateIndividuals +
+        c.pendingAliases +
+        c.unknownPrograms +
+        c.reconciliationDifferences;
+    }
   }
 
   return (
     <div className="min-h-screen md:flex">
-      <AppNav user={user} reviewCount={reviewCount} />
+      <AppNav user={user} reviewCount={reviewCount} canSeeTransactions={canSeeTransactions} />
       <div className="flex min-h-screen min-w-0 flex-1 flex-col">
         <main id="main" className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-8">
           {children}

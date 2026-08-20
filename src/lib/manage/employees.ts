@@ -2,6 +2,7 @@ import type { PgLikePool } from "@/lib/import/commit";
 import { normalizePersonName } from "@/lib/business/name-matching";
 import { recordChange } from "./audit";
 import { ok, fail, type Result } from "./errors";
+import { employeeScopeClause, type AccessScope } from "@/lib/auth/access";
 
 export const EMPLOYEE_STATUSES = ["active", "inactive", "archived"] as const;
 export type EmployeeStatus = (typeof EMPLOYEE_STATUSES)[number];
@@ -171,17 +172,19 @@ export async function setEmployeeStatus(
 
 export async function listEmployeesManaged(
   pool: PgLikePool,
-  filter: { status?: string; search?: string; includeArchived?: boolean } = {},
+  filter: { status?: string; search?: string; includeArchived?: boolean; scope?: AccessScope } = {},
 ): Promise<EmployeeRecord[]> {
   const status = EMPLOYEE_STATUSES.includes(filter.status as EmployeeStatus) ? filter.status! : null;
   const search = filter.search?.trim() ? `%${filter.search.trim()}%` : null;
+  const params: unknown[] = [status, filter.includeArchived ?? false, search];
+  const scopeClause = filter.scope ? employeeScopeClause(filter.scope, "id", params) : "";
   const { rows } = await pool.query<Row>(
     `SELECT ${COLS} FROM employees
      WHERE ($1::text IS NULL OR status = $1)
        AND ($2::boolean IS TRUE OR status <> 'archived')
-       AND ($3::text IS NULL OR display_name ILIKE $3 OR external_ref ILIKE $3)
+       AND ($3::text IS NULL OR display_name ILIKE $3 OR external_ref ILIKE $3)${scopeClause}
      ORDER BY (status = 'archived'), display_name`,
-    [status, filter.includeArchived ?? false, search],
+    params,
   );
   return rows.map(toRecord);
 }

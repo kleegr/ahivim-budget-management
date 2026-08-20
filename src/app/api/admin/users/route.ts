@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
-import { createUser, listUsers } from "@/lib/auth/users";
+import {
+  createUser,
+  listUsersWithAccess,
+  setUserAccessConfig,
+  type UserAccessConfig,
+} from "@/lib/auth/users";
 import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -14,12 +19,24 @@ const REASONS: Record<string, string> = {
   invalid_email: "That is not a valid email address.",
 };
 
+/** Read a user's access configuration out of a request body, with safe defaults. */
+function parseAccessConfig(body: Record<string, unknown>): UserAccessConfig {
+  return {
+    accessScope: body.accessScope === "scoped" ? "scoped" : "full",
+    seeAllIndividuals: body.seeAllIndividuals === true,
+    seeAllEmployees: body.seeAllEmployees === true,
+    canSeeTransactions: body.canSeeTransactions !== false, // default: may see transactions
+    individualIds: Array.isArray(body.individualIds) ? body.individualIds.map(String) : [],
+    employeeIds: Array.isArray(body.employeeIds) ? body.employeeIds.map(String) : [],
+  };
+}
+
 /** Administrators only. Password hashes are never returned. */
 export async function GET() {
   const user = await apiUser("admin");
   if (!user) return jsonError("Administrator role required", 403);
   try {
-    const users = await listUsers(getPool());
+    const users = await listUsersWithAccess(getPool());
     return NextResponse.json({
       ok: true,
       users: users.map((u) => ({
@@ -30,6 +47,12 @@ export async function GET() {
         isActive: u.isActive,
         lastLoginAt: u.lastLoginAt,
         createdAt: u.createdAt,
+        accessScope: u.accessScope,
+        seeAllIndividuals: u.seeAllIndividuals,
+        seeAllEmployees: u.seeAllEmployees,
+        canSeeTransactions: u.canSeeTransactions,
+        individualCount: u.individualCount,
+        employeeCount: u.employeeCount,
       })),
     });
   } catch (error) {
@@ -45,18 +68,25 @@ export async function POST(request: NextRequest) {
   if (!actor) return jsonError("Administrator role required", 403);
 
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const pool = getPool();
   try {
+    const role = String(body.role ?? "viewer");
     const outcome = await createUser(
-      getPool(),
+      pool,
       {
         email: String(body.email ?? ""),
         displayName: String(body.displayName ?? ""),
         password: String(body.password ?? ""),
-        role: String(body.role ?? "viewer"),
+        role,
       },
       actor.id,
     );
     if (!outcome.ok) return jsonError(REASONS[outcome.reason] ?? "Could not create that user.", 400);
+
+    // Apply the access configuration (scope only ever bites for the viewer role,
+    // but we store it as chosen so the setting persists if the role changes).
+    await setUserAccessConfig(pool, outcome.user.id, parseAccessConfig(body), actor.id);
+
     return NextResponse.json(
       {
         ok: true,

@@ -1,6 +1,8 @@
 import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
-import { listUsers } from "@/lib/auth/users";
+import { listUsersWithAccess } from "@/lib/auth/users";
+import { listIndividualsManaged } from "@/lib/manage/individuals";
+import { listEmployeesManaged } from "@/lib/manage/employees";
 import { listPrograms, listAudit } from "@/lib/data/app-queries";
 import { listProgramRules } from "@/lib/manage/program-rules";
 import {
@@ -10,7 +12,7 @@ import { CreateButton, ActionButton, Field, SelectField, TextAreaField } from "@
 import PasswordForm from "@/components/password-form";
 import ApplyMigrations from "@/components/manage/apply-migrations";
 import AttributePayments from "@/components/settings/attribute-payments";
-import UserAdmin from "@/components/user-admin";
+import UserAccessAdmin from "@/components/settings/user-access-admin";
 import ProgramRules from "@/components/settings/program-rules";
 
 export const dynamic = "force-dynamic";
@@ -21,7 +23,9 @@ export default async function SettingsPage() {
   const isAdmin = user.role === "admin";
 
   const result = await withDb(async (pool) => ({
-    users: isAdmin ? await listUsers(pool) : [],
+    users: isAdmin ? await listUsersWithAccess(pool) : [],
+    individuals: isAdmin ? (await listIndividualsManaged(pool, {})).map((i) => ({ id: i.id, name: i.displayName })) : [],
+    employees: isAdmin ? (await listEmployeesManaged(pool, {})).map((e) => ({ id: e.id, name: e.displayName })) : [],
     programs: await listPrograms(pool),
     programRules: isAdmin ? await listProgramRules(pool) : [],
     audit: isAdmin ? await listAudit(pool, 40) : [],
@@ -61,7 +65,7 @@ export default async function SettingsPage() {
         ) : (
           <>
             {isAdmin ? (
-              <UserAdmin
+              <UserAccessAdmin
                 currentUserId={user.id}
                 initialUsers={result.data.users.map((u) => ({
                   id: u.id,
@@ -70,7 +74,15 @@ export default async function SettingsPage() {
                   role: u.role,
                   isActive: u.isActive,
                   lastLoginAt: u.lastLoginAt,
+                  accessScope: u.accessScope,
+                  seeAllIndividuals: u.seeAllIndividuals,
+                  seeAllEmployees: u.seeAllEmployees,
+                  canSeeTransactions: u.canSeeTransactions,
+                  individualCount: u.individualCount,
+                  employeeCount: u.employeeCount,
                 }))}
+                individuals={result.data.individuals}
+                employees={result.data.employees}
               />
             ) : (
               <Card title="User access">

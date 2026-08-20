@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Name matches — Ahivim Budget Management" };
 
 export default async function MatchesPage() {
-  const user = await requireUser("viewer");
+  const user = await requireUser("manager");
   const canManage = user.role !== "viewer";
   const result = await withDb((pool) => listMatchReviews(pool, { status: "pending" }));
 

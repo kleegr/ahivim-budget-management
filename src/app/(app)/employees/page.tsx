@@ -1,4 +1,5 @@
 import { requireUser } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listEmployeesManaged } from "@/lib/manage/employees";
 import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
@@ -23,7 +24,10 @@ export default async function EmployeesPage() {
   const user = await requireUser("viewer");
   const canEdit = user.role !== "viewer";
 
-  const result = await withDb((pool) => listEmployeesManaged(pool, { includeArchived: true }));
+  const result = await withDb(async (pool) => {
+    const scope = await resolveAccessScope(pool, user);
+    return listEmployeesManaged(pool, { includeArchived: true, scope });
+  });
 
   return (
     <>

@@ -10,8 +10,8 @@ export const dynamic = "force-dynamic";
 
 /** Committed source rows for an import, filterable by review status. */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await apiUser("viewer");
-  if (!user) return jsonError("Authentication required", 401);
+  const user = await apiUser("manager");
+  if (!user) return jsonError("Manager role required", 403);
 
   const { id } = await params;
   if (!isUuid(id)) return jsonError("Not found", 404);

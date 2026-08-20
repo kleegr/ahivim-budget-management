@@ -12,6 +12,7 @@ import {
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
 import { derivePeriodFromRenewal, currentBudgetPeriod, programBudgetPeriod, isCalendarYearProgram, effectiveBilledHours } from "@/lib/business/calculation-strategy";
+import { individualScopeClause, type AccessScope } from "@/lib/auth/access";
 import {
   type BudgetLineStatus,
   BUDGET_STATUS_RANK,
@@ -477,7 +478,10 @@ const BUDGET_SEVERITY: Record<UtilizationStatus, number> = {
 export async function listIndividualBudgetBoard(
   pool: PgLikePool,
   asOf: Date = new Date(),
+  scope?: AccessScope,
 ): Promise<IndividualBudgetBoardRow[]> {
+  const params: unknown[] = [];
+  const scopeClause = scope ? individualScopeClause(scope, "i.id", params) : "";
   const { rows } = await pool.query<{
     id: string;
     display_name: string;
@@ -529,8 +533,9 @@ export async function listIndividualBudgetBoard(
                                         THEN make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int + 1, 1, 1)
                                         ELSE pl.period_end END)
        ) b ON l.id IS NOT NULL
-      WHERE i.merged_into_id IS NULL
+      WHERE i.merged_into_id IS NULL${scopeClause}
       ORDER BY i.display_name`,
+    params,
   );
 
   type Acc = {
@@ -649,6 +654,7 @@ export interface EmployeeReport {
 export async function getEmployeeReport(
   pool: PgLikePool,
   employeeId: string,
+  scope?: AccessScope,
 ): Promise<EmployeeReport | null> {
   const { rows: people } = await pool.query<{ id: string; display_name: string }>(
     `SELECT id, display_name FROM employees WHERE id = $1`,
@@ -656,33 +662,38 @@ export async function getEmployeeReport(
   );
   if (!people[0]) return null;
 
+  // For a scoped viewer every transaction figure is limited to the individuals
+  // they may see; physical hours / group sessions are employee-level time and
+  // stay whole. The same $2 array param is reused across the subqueries.
+  const params: unknown[] = [employeeId];
+  const tScope = scope ? individualScopeClause(scope, "t.individual_id", params) : "";
   const { rows } = await pool.query<Record<string, string>>(
     `SELECT
        (SELECT coalesce(sum(s.physical_hours), 0)
           FROM service_sessions s WHERE s.employee_id = $1)::text          AS physical_hours,
        (SELECT coalesce(sum(t.imported_hours), 0)
-          FROM payroll_transactions t WHERE t.employee_id = $1)::text       AS allocation_hours,
+          FROM payroll_transactions t WHERE t.employee_id = $1${tScope})::text       AS allocation_hours,
        (SELECT count(DISTINCT t.individual_id)
-          FROM payroll_transactions t WHERE t.employee_id = $1)::text      AS individuals_served,
+          FROM payroll_transactions t WHERE t.employee_id = $1${tScope})::text      AS individuals_served,
        (SELECT count(*) FROM service_sessions s
          WHERE s.employee_id = $1 AND s.group_size > 1)::text              AS group_sessions,
        (SELECT coalesce(sum(t.imported_amount), 0)
-          FROM payroll_transactions t WHERE t.employee_id = $1)::text      AS agency_gross,
+          FROM payroll_transactions t WHERE t.employee_id = $1${tScope})::text      AS agency_gross,
        (SELECT coalesce(sum(t.calculated_internal_amount), 0)
-          FROM payroll_transactions t WHERE t.employee_id = $1)::text      AS internal_amount,
+          FROM payroll_transactions t WHERE t.employee_id = $1${tScope})::text      AS internal_amount,
        (SELECT count(*) FROM rate_exceptions x
           JOIN payroll_transactions t ON t.id = x.payroll_transaction_id
-         WHERE t.employee_id = $1)::text                                   AS rate_exceptions`,
-    [employeeId],
+         WHERE t.employee_id = $1${tScope})::text                                   AS rate_exceptions`,
+    params,
   );
   const r = rows[0] ?? {};
 
   const { rows: programs } = await pool.query<{ name: string }>(
     `SELECT DISTINCT p.name
        FROM payroll_transactions t JOIN programs p ON p.id = t.program_id
-      WHERE t.employee_id = $1
+      WHERE t.employee_id = $1${tScope}
       ORDER BY p.name`,
-    [employeeId],
+    params,
   );
 
   return {

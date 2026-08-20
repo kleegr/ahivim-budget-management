@@ -17,7 +17,7 @@ export default async function CorrectionsPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const user = await requireUser("viewer");
+  const user = await requireUser("manager");
   const canManage = user.role !== "viewer";
   const { id } = await params;
   const sp = await searchParams;

@@ -56,7 +56,7 @@ function toneClasses(tone: "warn" | "danger" | "info") {
 }
 
 export default async function ReviewPage() {
-  await requireUser("viewer");
+  await requireUser("manager");
 
   const result = await withDb((pool) => exceptionCounts(pool));
 

@@ -19,8 +19,8 @@ type SessionStatus = (typeof SESSION_STATUSES)[number];
 
 /** Read one planned session. Any signed-in role. */
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await apiUser("viewer");
-  if (!user) return jsonError("Authentication required", 401);
+  const user = await apiUser("manager");
+  if (!user) return jsonError("Manager role required", 403);
 
   const { id } = await params;
   try {

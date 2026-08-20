@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/session";
+import { resolveAccessScope, canViewIndividual } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { getIndividualBudgetView, getIndividualPeriodActivity } from "@/lib/data/queries";
 import { BUDGET_STATUS_PRESENT, type BudgetLineStatus } from "@/lib/business/budget-status";
@@ -74,6 +75,9 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   const result = await withDb(async (pool) => {
     const individual = await getIndividual(pool, id);
     if (!individual) return null;
+    // A scoped user may only open an individual they have access to.
+    const scope = await resolveAccessScope(pool, user);
+    if (!canViewIndividual(scope, id)) return null;
     const budget = await getIndividualBudgetView(pool, id);
     const [strategies, assignments, aliasesAll, scheduledByProgram, activity] = await Promise.all([
       listStrategies(pool, { individualId: id, withAnalytics: true }),

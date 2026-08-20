@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Sync — Ahivim Budget Management" };
 
 export default async function SyncPage() {
-  const user = await requireUser("viewer");
+  const user = await requireUser("manager");
   const result = await withDb(async (pool) => {
     const [config, status, runs, conflicts] = await Promise.all([
       getSyncConfig(pool),

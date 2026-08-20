@@ -1,4 +1,5 @@
 import { requireUser } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listTransactionsForGrid, type GridTransaction } from "@/lib/data/transactions-grid";
 import { PageHeader, ErrorPanel, EmptyState, Card } from "@/components/ui";
@@ -98,9 +99,26 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   const canManage = user.role !== "viewer";
   const sp = await searchParams;
 
-  const result = await withDb((pool) => listTransactionsForGrid(pool));
+  const result = await withDb(async (pool) => {
+    const scope = await resolveAccessScope(pool, user);
+    if (!scope.canSeeTransactions) return { denied: true as const, rows: [] as GridTransaction[] };
+    return { denied: false as const, rows: await listTransactionsForGrid(pool, scope) };
+  });
 
-  const seeded = result.ok ? buildInitialFilters(result.data, sp) : { filters: {}, label: null };
+  // A user whose access hides Transactions is refused server-side, not just in the nav.
+  if (result.ok && result.data.denied) {
+    return (
+      <>
+        <PageHeader eyebrow="Ledger" title="Transactions" />
+        <ErrorPanel title="No access to Transactions">
+          Your account doesn&rsquo;t include permission to view transactions. Ask an administrator if you need it.
+        </ErrorPanel>
+      </>
+    );
+  }
+
+  const rows = result.ok ? result.data.rows : [];
+  const seeded = result.ok ? buildInitialFilters(rows, sp) : { filters: {}, label: null };
 
   return (
     <>
@@ -112,7 +130,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
 
       {!result.ok ? (
         <ErrorPanel title="Could not load transactions">{result.error}</ErrorPanel>
-      ) : result.data.length === 0 ? (
+      ) : rows.length === 0 ? (
         <Card>
           <EmptyState title="No transactions yet">
             Once a payroll file is imported and committed, every row appears here.
@@ -120,7 +138,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         </Card>
       ) : (
         <TransactionsGrid
-          rows={result.data}
+          rows={rows}
           canManage={canManage}
           initialFilters={seeded.filters}
           contextLabel={seeded.label}

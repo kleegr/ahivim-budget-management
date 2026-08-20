@@ -30,8 +30,8 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ report: string }> },
 ) {
-  const user = await apiUser("viewer");
-  if (!user) return jsonError("Sign in to export reports", 401);
+  const user = await apiUser("manager");
+  if (!user) return jsonError("Manager role required", 403);
 
   const { report } = await params;
   if (!isReportKey(report)) return jsonError("Unknown report", 404);

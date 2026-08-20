@@ -106,7 +106,7 @@ export default async function ReportPage({
   params: Promise<{ report: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const user = await requireUser("viewer");
+  const user = await requireUser("manager");
   const { report } = await params;
   if (!isReportKey(report)) notFound();
 

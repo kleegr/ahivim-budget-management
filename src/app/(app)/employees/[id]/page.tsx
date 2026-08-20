@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/session";
+import { resolveAccessScope, canViewEmployee, canViewIndividual } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { getEmployeeReport } from "@/lib/data/queries";
 import { isUuid, listTransactions } from "@/lib/data/app-queries";
@@ -22,6 +23,12 @@ import { dec, formatHours, formatMoney } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Employee — Ahivim Budget Management" };
+
+/** Shown to a scoped viewer in place of the real schedule (which names individuals). */
+const EMPTY_SCHEDULE: Awaited<ReturnType<typeof getEmployeeSchedule>> = {
+  summary: { pendingSessions: 0, pendingHours: "0", completedSessions: 0, completedHours: "0", cancelledSessions: 0, noShowSessions: 0 },
+  upcoming: [],
+};
 
 /*
   The employee profile, simplified to answer: what did this person do, and how
@@ -51,17 +58,25 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
   const result = await withDb(async (pool) => {
     const employee = await getEmployee(pool, id);
     if (!employee) return null;
+    // A scoped user may only open an employee they have access to; and everything
+    // shown about that employee is limited to the individuals they may see.
+    const scope = await resolveAccessScope(pool, user);
+    if (!canViewEmployee(scope, id)) return null;
     const [report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule] = await Promise.all([
-      getEmployeeReport(pool, id),
+      getEmployeeReport(pool, id, scope),
       listAssignments(pool, { employeeId: id, includeInactive: true }),
-      listTransactions(pool, { employeeId: id, limit: 25 }),
-      getEmployeePaymentSummary(pool, id),
-      getEmployeeIndividuals(pool, id),
-      getEmployeeUsageByProgram(pool, id),
-      getEmployeeMonthlyPayments(pool, id),
-      getEmployeeSchedule(pool, id),
+      listTransactions(pool, { employeeId: id, limit: 25, scope }),
+      getEmployeePaymentSummary(pool, id, scope),
+      getEmployeeIndividuals(pool, id, scope),
+      getEmployeeUsageByProgram(pool, id, scope),
+      getEmployeeMonthlyPayments(pool, id, scope),
+      // The schedule's upcoming list names individuals; a scoped viewer doesn't get it.
+      scope.full ? getEmployeeSchedule(pool, id) : Promise.resolve(EMPTY_SCHEDULE),
     ]);
-    return { employee, report, assignments: assignments.filter((a) => a.status === "active"), recent, payment, individualsServed, usageByProgram, monthly, schedule };
+    const activeAssignments = assignments
+      .filter((a) => a.status === "active")
+      .filter((a) => canViewIndividual(scope, a.individualId));
+    return { employee, report, assignments: activeAssignments, recent, payment, individualsServed, usageByProgram, monthly, schedule };
   });
 
   if (!result.ok) {

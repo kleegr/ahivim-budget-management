@@ -37,7 +37,7 @@ const REPORT_GROUPS: { heading: string; description: string; keys: string[] }[] 
 ];
 
 export default async function ReportsPage() {
-  await requireUser("viewer");
+  await requireUser("manager");
 
   const result = await withDb(async (pool) => ({
     individuals: await listIndividuals(pool),

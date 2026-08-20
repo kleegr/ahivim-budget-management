@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
+import { resolveAccessScope, canViewEmployee } from "@/lib/auth/access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import {
   getEmployee,
@@ -21,6 +22,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const { id } = await params;
   try {
     const pool = getPool();
+    const scope = await resolveAccessScope(pool, user);
+    if (!canViewEmployee(scope, id)) return jsonError("Not found", 404);
     const record = await getEmployee(pool, id);
     if (!record) return jsonError("Not found", 404);
     return NextResponse.json({ ok: true, data: record });
