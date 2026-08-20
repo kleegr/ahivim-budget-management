@@ -138,21 +138,24 @@ export default async function IndividualDetailPage({ params }: { params: Promise
   /* ---- header action: edit the person's name/notes. Active/inactive is a
      switch inside the budget below, not an outside button. ---- */
   const headerActions = canEdit ? (
-    <CreateButton
-      label="Edit name"
-      title="Edit individual"
-      endpoint={`/api/individuals/${id}`}
-      method="PATCH"
-      variant="secondary"
-      fields={
-        <>
-          <Field label="Display name" name="displayName" defaultValue={individual.displayName} required />
-          <Field label="Preferred name" name="preferredName" defaultValue={individual.preferredName} />
-          <Field label="Legal name" name="legalName" defaultValue={individual.legalName} />
-          <TextAreaField label="Notes" name="notes" defaultValue={individual.notes} />
-        </>
-      }
-    />
+    <div className="flex flex-wrap items-center gap-2">
+      <MergePanel individualId={id} individualName={individual.displayName} />
+      <CreateButton
+        label="Edit name"
+        title="Edit individual"
+        endpoint={`/api/individuals/${id}`}
+        method="PATCH"
+        variant="secondary"
+        fields={
+          <>
+            <Field label="Display name" name="displayName" defaultValue={individual.displayName} required />
+            <Field label="Preferred name" name="preferredName" defaultValue={individual.preferredName} />
+            <Field label="Legal name" name="legalName" defaultValue={individual.legalName} />
+            <TextAreaField label="Notes" name="notes" defaultValue={individual.notes} />
+          </>
+        }
+      />
+    </div>
   ) : (
     <ButtonLink href="/individuals">All individuals</ButtonLink>
   );
@@ -256,23 +259,6 @@ export default async function IndividualDetailPage({ params }: { params: Promise
           action={<ButtonLink href={txLink({ individualId: id, pbFrom: budget.periodStart ?? undefined, pbTo: budget.periodEnd ?? undefined })} variant="secondary">All rows →</ButtonLink>}
         >
           <EmployeesActivity individualId={id} periodStart={budget.periodStart} periodEnd={budget.periodEnd} employees={activity.byEmployee} />
-        </Card>
-      ) : null}
-
-      {/* ---- Connect transactions billed under another name (manager+) ---- */}
-      {canEdit ? (
-        <Card
-          title="Connect records"
-          description={
-            budget.money.txCount === 0
-              ? "This person has no billed activity in this budget year. If their work came in under a different name, connect that record so its transactions roll up here."
-              : "Billed under more than one name? Fold another record into this person so all of their transactions live together."
-          }
-          className="mb-6"
-        >
-          <div className="px-5 py-4">
-            <MergePanel individualId={id} individualName={individual.displayName} />
-          </div>
         </Card>
       ) : null}
 

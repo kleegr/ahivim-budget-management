@@ -11,7 +11,7 @@ import {
 } from "@/lib/business/utilization";
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
-import { derivePeriodFromRenewal, currentBudgetPeriod, programBudgetPeriod, isCalendarYearProgram } from "@/lib/business/calculation-strategy";
+import { derivePeriodFromRenewal, currentBudgetPeriod, programBudgetPeriod, isCalendarYearProgram, effectiveBilledHours } from "@/lib/business/calculation-strategy";
 import {
   type BudgetLineStatus,
   BUDGET_STATUS_RANK,
@@ -934,8 +934,15 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
     const a = authByProgram.get(pid);
     const b = billedByProgram.get(pid);
     const code = a?.program_code ?? b?.program_code ?? "";
+    // The plan's own per-hour rate (override if set, else the program default).
+    // Needed here (not just for display) because group-session "used" hours are
+    // backed out of the money at this rate.
+    const perHour = a?.rate_override ?? defaultRateByProgram.get(pid) ?? "0";
     const authorized = dec(a?.authorized_hours ?? 0);
-    const used = dec(b?.hours ?? 0);
+    // Group-session programs (Day Hab / Supplemental) bill a combined rate, so the
+    // raw hours aren't this person's real hours — back them out of the internal
+    // money at the budget rate. Every other program uses its real clock hours.
+    const used = dec(effectiveBilledHours(code, b?.hours ?? 0, b?.internal ?? 0, perHour));
     const remaining = authorized.minus(used);
     const status = budgetLineStatus(authorized, used);
     const usagePercent = authorized.greaterThan(0) ? used.dividedBy(authorized).toNumber() : null;
@@ -954,7 +961,6 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
     totAgency = totAgency.plus(dec(b?.agency ?? 0));
     totInternal = totInternal.plus(dec(b?.internal ?? 0));
     totTx += b?.cnt ?? 0;
-    const perHour = a?.rate_override ?? defaultRateByProgram.get(pid) ?? "0";
     const agencyRate = agencyRateByProgram.get(pid) ?? null;
     lines.push({
       programId: pid,
@@ -1089,6 +1095,30 @@ export async function getIndividualPeriodActivity(
   const internalExpr =
     "COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount, t.internal_rate_applied * t.imported_hours, 0)";
 
+  // Budget (internal) per-hour rate for each GROUP-session program for this
+  // individual — override from the plan if set, else the program's latest default.
+  // Group hours are backed out of the money at this rate, exactly like the budget
+  // board, so the two never disagree.
+  const groupRateRes = await pool.query<{ program_id: string; budget_rate: string | null }>(
+    `SELECT p.id AS program_id,
+            COALESCE(
+              (SELECT l.rate_override::text
+                 FROM calculation_strategy_lines l
+                 JOIN calculation_strategies s ON s.id = l.strategy_id
+                WHERE s.individual_id = $1 AND s.status = 'active'
+                  AND l.program_id = p.id AND l.rate_override IS NOT NULL
+                ORDER BY s.created_at LIMIT 1),
+              (SELECT sched.internal_rate::text
+                 FROM program_rate_schedules sched
+                WHERE sched.program_id = p.id
+                ORDER BY sched.effective_from DESC LIMIT 1)
+            ) AS budget_rate
+       FROM programs p
+      WHERE p.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')`,
+    [individualId],
+  );
+  const groupRateByProgram = new Map(groupRateRes.rows.map((r) => [r.program_id, r.budget_rate]));
+
   // Program × month, every program the person billed (not just the budgeted ones).
   const pmRes = await pool.query<{ month: string; program_id: string | null; program_name: string; program_code: string; hours: string; agency: string; internal: string }>(
     `SELECT to_char(date_trunc('month', t.period_begin), 'YYYY-MM') AS month,
@@ -1123,11 +1153,13 @@ export async function getIndividualPeriodActivity(
   );
 
   // Every transaction, so an employee row can expand to its own ledger inline.
-  const txRes = await pool.query<{ id: string; emp_id: string | null; emp_name: string; period_begin: string; program_name: string; hours: string; agency: string; internal: string }>(
+  const txRes = await pool.query<{ id: string; emp_id: string | null; emp_name: string; period_begin: string; prog_id: string | null; program_code: string; program_name: string; hours: string; agency: string; internal: string }>(
     `SELECT t.id::text AS id,
             t.employee_id AS emp_id,
             COALESCE(e.display_name, t.employee_raw, 'Unknown') AS emp_name,
             to_char(t.period_begin, 'YYYY-MM-DD') AS period_begin,
+            t.program_id AS prog_id,
+            COALESCE(p.code, '')                       AS program_code,
             COALESCE(p.name, t.program_raw, 'Unknown') AS program_name,
             t.imported_hours::text  AS hours,
             t.imported_amount::text AS agency,
@@ -1152,7 +1184,9 @@ export async function getIndividualPeriodActivity(
       id: r.id,
       periodBegin: r.period_begin,
       programName: r.program_name,
-      hours: r.hours,
+      // Group-session rows show hours backed out of the money, not the raw
+      // combined-session hours, so an employee's line matches billed-by-month.
+      hours: effectiveBilledHours(r.program_code, r.hours, r.internal, groupRateByProgram.get(r.prog_id ?? "")),
       agency: r.agency,
       internal: r.internal,
     });
@@ -1170,17 +1204,31 @@ export async function getIndividualPeriodActivity(
     })
     .sort((x, y) => dec(y.hours).minus(dec(x.hours)).toNumber());
 
+  // Group-session programs (Day Hab / Supplemental) bill a combined rate, so their
+  // real hours are the money at the budget rate, not the raw session hours.
+  const programsBilled = progRes.rows
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      code: r.code,
+      hours: effectiveBilledHours(r.code, r.hours, r.internal, groupRateByProgram.get(r.id ?? "")),
+      agency: r.agency,
+      internal: r.internal,
+    }))
+    // Re-sort by the effective hours so the biggest programs still lead the columns.
+    .sort((x, y) => dec(y.hours).minus(dec(x.hours)).toNumber());
+
   return {
     byProgramMonth: pmRes.rows.map((r) => ({
       month: r.month,
       programId: r.program_id,
       programName: r.program_name,
       programCode: r.program_code,
-      hours: r.hours,
+      hours: effectiveBilledHours(r.program_code, r.hours, r.internal, groupRateByProgram.get(r.program_id ?? "")),
       agency: r.agency,
       internal: r.internal,
     })),
-    programsBilled: progRes.rows.map((r) => ({ id: r.id, name: r.name, code: r.code, hours: r.hours, agency: r.agency, internal: r.internal })),
+    programsBilled,
     byEmployee,
   };
 }

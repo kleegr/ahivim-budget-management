@@ -1,5 +1,6 @@
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import type { PeriodProgramMonth, PeriodProgram } from "@/lib/data/queries";
+import { isGroupSessionProgram } from "@/lib/business/calculation-strategy";
 
 /**
  * Billed by month, ITEMIZED BY PROGRAM. Hours can't be added across programs
@@ -26,6 +27,9 @@ export default function BilledByMonth({
   const named = programsBilled.slice(0, MAX_COLS);
   const namedIds = new Set(named.map((p) => p.id ?? p.name));
   const hasOther = programsBilled.length > named.length;
+  // Any group-session program on screen gets a footnote explaining its hours are
+  // derived from the money (they bill a combined rate, so raw hours aren't real).
+  const hasGroup = programsBilled.some((p) => isGroupSessionProgram(p.code));
 
   const key = (id: string | null, name: string) => id ?? `raw:${name}`;
   // month -> columnKey -> hours ; month -> {agency, internal}
@@ -127,6 +131,11 @@ export default function BilledByMonth({
           </tr>
         </tbody>
       </table>
+      {hasGroup ? (
+        <p className="mt-3 text-xs text-[var(--color-ink-faint)]">
+          Day Hab and Supplemental are group sessions billed at a combined rate, so their hours are figured from the money at your budget rate (amount ÷ rate), not the raw session hours.
+        </p>
+      ) : null}
     </div>
   );
 }

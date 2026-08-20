@@ -210,6 +210,43 @@ export function isCalendarYearProgram(code: string | null | undefined): boolean 
 }
 
 /**
+ * Programs billed as GROUP sessions: one session serves several people at a
+ * COMBINED rate, so a group row's transaction hours are the whole session's
+ * hours, not this individual's real hours. Day Hab and Supplemental Group Day Hab
+ * are billed this way. (Same two programs as the calendar-year rule, kept as a
+ * separate set so the two concepts can diverge later without surprise.)
+ */
+export const GROUP_SESSION_PROGRAM_CODES: ReadonlySet<string> = new Set(["DAY_HAB", "SUPP_GROUP_DAY_HAB"]);
+
+export function isGroupSessionProgram(code: string | null | undefined): boolean {
+  return !!code && GROUP_SESSION_PROGRAM_CODES.has(code);
+}
+
+/**
+ * The real hours billed for a program. For a normal program this is just the
+ * clock hours on the transactions. For a GROUP-session program the raw hours are
+ * a combined-session figure and mean nothing per person, so we back the hours out
+ * of the money at the plan's OWN hourly rate instead:
+ *
+ *     hours = internal amount / budget rate      (e.g. $10,000 / $17 = 588.24 h)
+ *
+ * The rate is the internal per-hour rate set in the budget (override if present,
+ * else the program's default). If there is no usable rate we fall back to the raw
+ * hours rather than divide by zero. Returns a decimal string.
+ */
+export function effectiveBilledHours(
+  code: string | null | undefined,
+  rawHours: MoneyInput,
+  internalAmount: MoneyInput,
+  budgetRate: MoneyInput | null | undefined,
+): string {
+  if (!isGroupSessionProgram(code)) return dec(rawHours ?? 0).toString();
+  const rate = dec(budgetRate ?? 0);
+  if (!rate.greaterThan(0)) return dec(rawHours ?? 0).toString();
+  return dec(internalAmount ?? 0).dividedBy(rate).toString();
+}
+
+/**
  * The budget period for ONE program line. Day Hab / Supplemental always use the
  * current calendar year (they never expire and never follow the person's renewal);
  * every other program follows the individual's own renewal via currentBudgetPeriod.
