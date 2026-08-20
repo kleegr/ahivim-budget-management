@@ -48,6 +48,9 @@ export interface SheetCsvParseResult {
   snapshotSha256: string;
   totalDataRows: number;
   warnings: string[];
+  /** True when a "Paid" column was found by header — then its values are the
+   *  source of truth for each transaction's paid status on this sync. */
+  paidColumnFound: boolean;
 }
 
 /**
@@ -219,10 +222,12 @@ export function parseSheetCsv(csvText: string): SheetCsvParseResult {
   const header = findHeaderRow(grid);
   let columnMap = { ...AHIVIM_POSITIONAL };
   let mappingStrategy: "header" | "positional" = "positional";
+  let paidHeaderFound = false;
   if (header) {
     const built = buildColumnMap(header.headers);
     columnMap = built.map;
     mappingStrategy = built.strategy;
+    paidHeaderFound = !built.unresolved.includes("paid");
     if (built.unresolved.length) {
       warnings.push(
         `These columns were not found by header and fell back to their known position: ${built.unresolved.join(", ")}.`,
@@ -271,10 +276,17 @@ export function parseSheetCsv(csvText: string): SheetCsvParseResult {
     signatures.push(sig);
   }
 
+  // The "Paid" column often has a blank header (it's column N in the workbook),
+  // so it can't be found by name. Treat the paid column as present when a "Paid"
+  // header matched OR when the mapped paid column actually carries values — that
+  // way an already-filled paid column flows in, while a sheet with no paid data
+  // at all never touches the in-app paid status.
+  const paidColumnFound = paidHeaderFound || ahivimRows.some((r) => (r.raw.paid ?? "").trim() !== "");
+
   // Sort so row re-ordering in the sheet does not read as a content change.
   signatures.sort();
   const snapshotSha256 = createHash("sha256")
-    .update(signatures.join(""))
+    .update(signatures.join(""))
     .digest("hex");
 
   return {
@@ -287,5 +299,7 @@ export function parseSheetCsv(csvText: string): SheetCsvParseResult {
     snapshotSha256,
     totalDataRows: ahivimRows.length,
     warnings,
+    paidColumnFound,
   };
 }
+
