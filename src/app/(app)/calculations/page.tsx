@@ -17,7 +17,7 @@ export const metadata = { title: "Financial — Ahivim Budget Management" };
  * and a "Full sheet" toggle for the complete editable grid.
  */
 export default async function ProjectionsPage({ searchParams }: { searchParams: Promise<{ individualId?: string }> }) {
-  const user = await requireUser("viewer");
+  const user = await requireUser("manager");
   const canManage = user.role !== "viewer";
   const { individualId } = await searchParams;
 

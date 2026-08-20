@@ -14,8 +14,8 @@ export const dynamic = "force-dynamic";
 
 /** Formula steps + change history for the detail panel. */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await apiUser("viewer");
-  if (!user) return jsonError("Sign in to continue.", 401);
+  const user = await apiUser("manager");
+  if (!user) return jsonError("Manager role required", 403);
   const { id } = await params;
   const pool = getPool();
   const [explain, revisions] = await Promise.all([explainStrategy(pool, id), listStrategyRevisions(pool, id)]);

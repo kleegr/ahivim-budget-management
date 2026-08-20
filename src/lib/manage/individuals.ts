@@ -2,6 +2,7 @@ import type { PgLikePool } from "@/lib/import/commit";
 import { normalizePersonName } from "@/lib/business/name-matching";
 import { recordChange } from "./audit";
 import { ok, fail, type Result } from "./errors";
+import { individualScopeClause, type AccessScope } from "@/lib/auth/access";
 
 /** Lifecycle states for a person. Nothing is ever hard-deleted. */
 export const INDIVIDUAL_STATUSES = ["active", "inactive", "discharged", "archived"] as const;
@@ -211,6 +212,8 @@ export interface IndividualListFilter {
   status?: string;
   search?: string;
   includeArchived?: boolean;
+  /** When present, restricts the list to the individuals this user may see. */
+  scope?: AccessScope;
 }
 
 export async function listIndividualsManaged(
@@ -221,14 +224,16 @@ export async function listIndividualsManaged(
     ? filter.status!
     : null;
   const search = filter.search?.trim() ? `%${filter.search.trim()}%` : null;
+  const params: unknown[] = [status, filter.includeArchived ?? false, search];
+  const scopeClause = filter.scope ? individualScopeClause(filter.scope, "id", params) : "";
   const { rows } = await pool.query<Row>(
     `SELECT ${COLS} FROM individuals
      WHERE ($1::text IS NULL OR status = $1)
        AND ($2::boolean IS TRUE OR status <> 'archived')
        AND ($3::text IS NULL OR display_name ILIKE $3 OR legal_name ILIKE $3
-            OR preferred_name ILIKE $3 OR external_ref ILIKE $3)
+            OR preferred_name ILIKE $3 OR external_ref ILIKE $3)${scopeClause}
      ORDER BY (status = 'archived'), display_name`,
-    [status, filter.includeArchived ?? false, search],
+    params,
   );
   return rows.map(toRecord);
 }
