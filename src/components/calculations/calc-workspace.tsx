@@ -373,7 +373,7 @@ export default function CalcWorkspace({
               placeholder="signed, optional"
             />
             <LabeledInput
-              label="After All adjustment"
+              label="Masser adjustment"
               value={form.afterAllAdjustment}
               onChange={(v) => update({ afterAllAdjustment: v })}
               type="number"
@@ -417,7 +417,7 @@ export default function CalcWorkspace({
                 <div className="grid gap-3 sm:grid-cols-3">
                   <StatTile label="Final gross" value={formatMoney(result.finalGross)} />
                   <StatTile label="Final net" value={formatMoney(result.finalNet)} tone="good" />
-                  <StatTile label="After All" value={formatMoney(result.afterAll)} />
+                  <StatTile label="Masser" value={formatMoney(result.afterAll)} />
                 </div>
 
                 <div className="overflow-hidden rounded border border-[var(--color-rule)]">
@@ -468,7 +468,7 @@ export default function CalcWorkspace({
                         <span className="tnum font-medium">{formatMoney(form.spreadsheetValue)}</span>
                       </span>
                       <span>
-                        System (After All):{" "}
+                        System (Masser):{" "}
                         <span className="tnum font-medium">{formatMoney(result.afterAll)}</span>
                       </span>
                       <span>
@@ -549,7 +549,7 @@ export default function CalcWorkspace({
                 <Th numeric>Months</Th>
                 <Th>Basis</Th>
                 <Th numeric>Final net</Th>
-                <Th numeric>After All</Th>
+                <Th numeric>Masser</Th>
                 <Th numeric>Spreadsheet</Th>
                 <Th numeric>Difference</Th>
               </>

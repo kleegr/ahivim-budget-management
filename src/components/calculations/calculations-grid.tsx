@@ -228,7 +228,7 @@ function GlanceView({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: (id: st
           Showing <span className="tnum font-semibold text-[var(--color-ink)]">{visible.length}</span> of{" "}
           <span className="tnum">{rows.length}</span>
         </span>
-        <span className="ml-auto text-xs text-[var(--color-text-soft)]">Sorted so the budgets that need action rise to the top. Click a row for the full calculation.</span>
+        <span className="ml-auto text-xs text-[var(--color-text-soft)]">Sorted so the budgets that need action rise to the top. Click a name to open the profile, or “Explain” for the full calculation.</span>
       </div>
 
       <div className="scroll-thin max-h-[64vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
@@ -244,6 +244,7 @@ function GlanceView({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: (id: st
               <SortHead k="used" align="right">% used</SortHead>
               <SortHead k="left" align="right">Hrs left</SortHead>
               <SortHead k="status">Status</SortHead>
+              <th className="whitespace-nowrap border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 text-left font-semibold">Open</th>
             </tr>
           </thead>
           <tbody>
@@ -252,23 +253,30 @@ function GlanceView({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: (id: st
               return (
                 <tr
                   key={r.id}
-                  onClick={() => onOpen(r.id)}
-                  className="cursor-pointer border-b border-[var(--color-rule)] hover:bg-[var(--color-primary-tint)]"
-                  title="Open the step-by-step calculation"
+                  className="border-b border-[var(--color-rule)] hover:bg-black/[0.02]"
                 >
-                  <td className="px-3 py-2 font-medium text-[var(--color-ink)]">{r.individualName}</td>
+                  <td className="px-3 py-2 font-medium">
+                    <Link href={`/individuals/${r.individualId}`} className="text-[var(--color-primary)] hover:underline" title={`Open ${r.individualName}'s profile`}>
+                      {r.individualName}
+                    </Link>
+                  </td>
                   <td className="px-3 py-2 text-[var(--color-ink-soft)]">{r.label}</td>
                   <td className="tnum px-3 py-2 text-[var(--color-ink-soft)]">{r.renewalDate ?? "—"}</td>
                   <td className="px-3 py-2"><GlancePace row={r} /></td>
                   <td className="tnum px-3 py-2 text-right">{r.analytics?.utilizationPercent != null ? `${Math.round(usedPct(r))}%` : "—"}</td>
                   <td className="tnum px-3 py-2 text-right">{left === null ? "—" : formatHours(r.analytics!.remainingHours)}</td>
                   <td className="px-3 py-2"><UtilizationBadge status={statusOf(r)} /></td>
+                  <td className="whitespace-nowrap px-3 py-2 text-xs">
+                    <button type="button" onClick={() => onOpen(r.id)} className="text-[var(--color-primary)] hover:underline" title="Open the step-by-step calculation">
+                      Explain
+                    </button>
+                  </td>
                 </tr>
               );
             })}
             {visible.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
+                <td colSpan={8} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
                   {rows.length === 0 ? "No projections yet." : "No one matches your search."}
                 </td>
               </tr>
@@ -398,7 +406,7 @@ export default function CalculationsGrid({
       { key: "monthlyGross", label: "Monthly gross", kind: "computed", accessor: (r) => r.monthlyGross },
       { key: "grossNet", label: "Gross net", kind: "computed", accessor: (r) => r.grossNet },
       { key: "net", label: "Net", kind: "computed", accessor: (r) => r.net },
-      editable({ key: "afterAll", label: "Final amount", kind: "money", accessor: (r) => r.afterAll, patch: (v) => ({ afterAll: v === "" ? null : v }) }),
+      editable({ key: "afterAll", label: "Masser", kind: "money", accessor: (r) => r.afterAll, patch: (v) => ({ afterAll: v === "" ? null : v }) }),
       editable({ key: "account", label: "Account", kind: "text", accessor: (r) => r.account, patch: (v) => ({ account: v || null }) }),
     ];
 
@@ -711,7 +719,7 @@ export default function CalculationsGrid({
           <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Yearly gross</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.yearly)}</div></div>
           <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Monthly gross</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.monthly)}</div></div>
           <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Net (monthly)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.net)}</div></div>
-          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">After All</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.after)}</div></div>
+          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Masser</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.after)}</div></div>
           <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]"># Strategies</div><div className="text-lg font-semibold tabular-nums">{totals.strategies}</div></div>
           <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]"># Individuals</div><div className="text-lg font-semibold tabular-nums">{totals.individuals}</div></div>
         </div>

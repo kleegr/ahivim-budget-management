@@ -1,11 +1,21 @@
 import type { PgLikePool } from "@/lib/import/commit";
 import { normalizePersonName } from "@/lib/business/name-matching";
+import { dec } from "@/lib/money";
 import { recordChange } from "./audit";
 import { ok, fail, type Result } from "./errors";
 import { employeeScopeClause, type AccessScope } from "@/lib/auth/access";
 
 export const EMPLOYEE_STATUSES = ["active", "inactive", "archived"] as const;
 export type EmployeeStatus = (typeof EMPLOYEE_STATUSES)[number];
+
+/** Normalise a cut to a stored decimal fraction: 10 or "10%" → 0.10, 0.10 → 0.10. */
+function toCutFraction(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "0";
+  const raw = typeof value === "string" ? value.replace("%", "") : value;
+  let d = dec(raw as string | number);
+  if (d.isNegative()) d = dec(0); // a payout cut is never negative
+  return (d.abs().greaterThan(1) ? d.dividedBy(100) : d).toString();
+}
 
 export interface EmployeeRecord {
   id: string;
@@ -14,6 +24,8 @@ export interface EmployeeRecord {
   externalRef: string | null;
   status: string;
   notes: string | null;
+  /** A separate payout cut, stored as a decimal fraction (0.10 = 10%). */
+  payoutCutPercent: string;
   archivedAt: string | null;
   createdAt: string;
 }
@@ -25,11 +37,13 @@ interface Row {
   external_ref: string | null;
   status: string;
   notes: string | null;
+  payout_cut_percent: string;
   archived_at: string | null;
   created_at: string;
 }
 
 const COLS = `id, display_name, normalized_name, external_ref, status, notes,
+              payout_cut_percent::text AS payout_cut_percent,
               archived_at::text AS archived_at, created_at::text AS created_at`;
 
 const toRecord = (r: Row): EmployeeRecord => ({
@@ -39,6 +53,7 @@ const toRecord = (r: Row): EmployeeRecord => ({
   externalRef: r.external_ref,
   status: r.status,
   notes: r.notes,
+  payoutCutPercent: r.payout_cut_percent,
   archivedAt: r.archived_at,
   createdAt: r.created_at,
 });
@@ -54,6 +69,8 @@ export interface EmployeeInput {
   externalRef?: string | null;
   status?: string;
   notes?: string | null;
+  /** A separate payout cut. Accepts a percent (10) or a fraction (0.10). */
+  payoutCutPercent?: string | number | null;
 }
 
 export async function createEmployee(
@@ -117,7 +134,7 @@ export async function updateEmployee(
 
   const { rows } = await pool.query<Row>(
     `UPDATE employees SET display_name = $2, normalized_name = $3, external_ref = $4,
-       status = COALESCE($5, status), notes = $6, updated_at = now()
+       status = COALESCE($5, status), notes = $6, payout_cut_percent = $7, updated_at = now()
      WHERE id = $1 RETURNING ${COLS}`,
     [
       id,
@@ -126,6 +143,7 @@ export async function updateEmployee(
       input.externalRef === undefined ? before.externalRef : input.externalRef?.trim() || null,
       input.status ?? null,
       input.notes === undefined ? before.notes : input.notes?.trim() || null,
+      input.payoutCutPercent === undefined ? before.payoutCutPercent : toCutFraction(input.payoutCutPercent),
     ],
   );
   const after = toRecord(rows[0]!);
