@@ -62,6 +62,7 @@ export default function BudgetEditor({
   lines,
   programs,
   canEdit,
+  canSeeMoney = true,
 }: {
   individualId: string;
   strategyId: string | null;
@@ -73,6 +74,7 @@ export default function BudgetEditor({
   lines: BudgetEditorLine[];
   programs: Program[];
   canEdit: boolean;
+  canSeeMoney?: boolean;
 }) {
   const router = useRouter();
   const defaultRate = useMemo(() => new Map(programs.map((p) => [p.id, clean(p.defaultRate)])), [programs]);
@@ -153,6 +155,10 @@ export default function BudgetEditor({
   // Per-month-to-finish in dollars, summed per program (each toward its own renewal).
   const perMonthDollarsTotal = rows.reduce((s, r) => s.plus(perMonthDollarsRow(r) ?? dec(0)), dec(0));
   const perMonthDollars = perMonthDollarsTotal.greaterThan(0) ? perMonthDollarsTotal : null;
+  // Per-month-to-finish in HOURS (summed per program) — for hours-only viewers,
+  // who see the totals row in hours instead of dollars.
+  const perMonthHoursTotal = rows.reduce((s, r) => s.plus(perMonth(r) ?? dec(0)), dec(0));
+  const perMonthHours = perMonthHoursTotal.greaterThan(0) ? perMonthHoursTotal : null;
 
   // Over/under budget, counted PER PROGRAM (never netted — one program can be
   // over while another is under, and both matter).
@@ -297,9 +303,9 @@ export default function BudgetEditor({
               <thead>
                 <tr className="text-left text-[var(--color-text-soft)]">
                   <th className="px-5 py-2 font-medium">Program</th>
-                  <th className="px-3 py-2 text-right font-medium">Per hour</th>
+                  {canSeeMoney ? <th className="px-3 py-2 text-right font-medium">Per hour</th> : null}
                   <th className="px-3 py-2 text-right font-medium">Hours</th>
-                  <th className="px-3 py-2 text-right font-medium">Total</th>
+                  {canSeeMoney ? <th className="px-3 py-2 text-right font-medium">Total</th> : null}
                   <th className="px-3 py-2 text-right font-medium">Used</th>
                   <th className="px-3 py-2 text-right font-medium">Left</th>
                   <th className="px-3 py-2 text-right font-medium" title="Hours to bill each month to finish by this program's renewal">Per month to finish</th>
@@ -319,9 +325,9 @@ export default function BudgetEditor({
                           <span className="ml-2 rounded bg-[var(--color-surface-strong)] px-1.5 py-0.5 text-[0.7rem] font-medium text-[var(--color-ink-soft)]" title="This program always runs the calendar year, Jan 1 → Jan 1.">Jan–Jan</span>
                         ) : null}
                       </td>
-                      <td className="tnum px-3 py-2 text-right">{formatMoney(r.perHour)}</td>
+                      {canSeeMoney ? <td className="tnum px-3 py-2 text-right">{formatMoney(r.perHour)}</td> : null}
                       <td className="tnum px-3 py-2 text-right">{formatHours(r.hours)}</td>
-                      <td className="tnum px-3 py-2 text-right font-medium">{formatMoney(rowTotal(r).toString())}</td>
+                      {canSeeMoney ? <td className="tnum px-3 py-2 text-right font-medium">{formatMoney(rowTotal(r).toString())}</td> : null}
                       <td className="tnum px-3 py-2 text-right">{formatHours(r.used)}</td>
                       <td className="tnum px-3 py-2 text-right" style={{ color: left.isNegative() ? "var(--color-pace-over)" : undefined }}>{formatHours(left.toString())}</td>
                       <td className="tnum px-3 py-2 text-right text-[var(--color-ink-soft)]" title={r.effectiveRenewal ? `Renews ${r.effectiveRenewal}` : undefined}>{pm ? `${formatHours(pm.toString())}/mo` : "—"}</td>
@@ -329,6 +335,7 @@ export default function BudgetEditor({
                     </tr>
                   );
                 })}
+                {canSeeMoney ? (
                 <tr className="border-t-2 border-[var(--color-rule-strong)] font-semibold">
                   <td className="px-5 py-2">Total <span className="text-xs font-normal text-[var(--color-ink-faint)]">(in $)</span></td>
                   <td></td>
@@ -339,12 +346,24 @@ export default function BudgetEditor({
                   <td className="tnum px-3 py-2 text-right">{perMonthDollars ? `${formatMoney(perMonthDollars.toString())}/mo` : "—"}</td>
                   <td></td>
                 </tr>
+                ) : (
+                <tr className="border-t-2 border-[var(--color-rule-strong)] font-semibold">
+                  <td className="px-5 py-2">Total <span className="text-xs font-normal text-[var(--color-ink-faint)]">(hours)</span></td>
+                  <td className="tnum px-3 py-2 text-right">{formatHours(totalAuthorized.toString())}</td>
+                  <td className="tnum px-3 py-2 text-right">{formatHours(totalUsed.toString())}</td>
+                  <td className="tnum px-3 py-2 text-right" style={{ color: totalAuthorized.minus(totalUsed).isNegative() ? "var(--color-pace-over)" : undefined }}>{formatHours(totalAuthorized.minus(totalUsed).toString())}</td>
+                  <td className="tnum px-3 py-2 text-right">{perMonthHours ? `${formatHours(perMonthHours.toString())}/mo` : "—"}</td>
+                  <td></td>
+                </tr>
+                )}
               </tbody>
             </table>
           </div>
         )}
         <p className="border-t border-[var(--color-rule)] px-5 py-2 text-xs text-[var(--color-ink-faint)]">
-          Each program is shown in hours; the total is in dollars because hours aren&rsquo;t comparable across programs (each bills at a different rate).
+          {canSeeMoney
+            ? "Each program is shown in hours; the total is in dollars because hours aren’t comparable across programs (each bills at a different rate)."
+            : "Each program is shown in hours."}
           {canEdit && billedNotInPlan.length > 0
             ? ` Billed this year but not in the plan: ${billedNotInPlan.map((l) => `${l.programName} (${formatHours(l.usedHours)} h)`).join(", ")}. Edit the budget to add them.`
             : ""}
