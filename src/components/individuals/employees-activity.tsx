@@ -18,11 +18,13 @@ export default function EmployeesActivity({
   periodStart,
   periodEnd,
   employees,
+  canSeeMoney = true,
 }: {
   individualId: string;
   periodStart: string | null;
   periodEnd: string | null;
   employees: PeriodEmployee[];
+  canSeeMoney?: boolean;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const toggle = (k: string) =>
@@ -57,7 +59,7 @@ export default function EmployeesActivity({
                 </span>
               </button>
               <span className="tnum hidden w-24 text-right text-sm text-[var(--color-ink-soft)] sm:block">{formatHours(e.hours)} h</span>
-              <span className="tnum w-28 text-right text-sm font-medium">{formatMoney(e.agency)}</span>
+              {canSeeMoney ? <span className="tnum w-28 text-right text-sm font-medium">{formatMoney(e.agency)}</span> : null}
               <Link
                 className="w-16 text-right text-xs text-[var(--color-primary)] hover:underline"
                 href={txLink({ individualId, employeeId: e.id ?? undefined, ...window })}
@@ -67,7 +69,7 @@ export default function EmployeesActivity({
               </Link>
             </div>
 
-            {isOpen ? <EmployeePanel employee={e} /> : null}
+            {isOpen ? <EmployeePanel employee={e} canSeeMoney={canSeeMoney} /> : null}
           </div>
         );
       })}
@@ -76,7 +78,7 @@ export default function EmployeesActivity({
 }
 
 /** The expandable per-employee snippet: a program filter + itemized rows + live totals. */
-function EmployeePanel({ employee }: { employee: PeriodEmployee }) {
+function EmployeePanel({ employee, canSeeMoney = true }: { employee: PeriodEmployee; canSeeMoney?: boolean }) {
   const programs = useMemo(() => {
     const set = new Set<string>();
     for (const t of employee.transactions) set.add(t.programName);
@@ -142,8 +144,12 @@ function EmployeePanel({ employee }: { employee: PeriodEmployee }) {
               <th className="py-1.5 pr-3 font-medium">Pay period</th>
               <th className="px-2 py-1.5 font-medium">Program</th>
               <th className="px-2 py-1.5 text-right font-medium">Hours</th>
-              <th className="px-2 py-1.5 text-right font-medium">Billed $</th>
-              <th className="py-1.5 pl-2 text-right font-medium">Company $</th>
+              {canSeeMoney ? (
+                <>
+                  <th className="px-2 py-1.5 text-right font-medium">Billed $</th>
+                  <th className="py-1.5 pl-2 text-right font-medium">Company $</th>
+                </>
+              ) : null}
             </tr>
           </thead>
           <tbody>
@@ -152,16 +158,24 @@ function EmployeePanel({ employee }: { employee: PeriodEmployee }) {
                 <td className="tnum py-1.5 pr-3 text-[var(--color-ink-soft)]">{t.periodBegin}</td>
                 <td className="px-2 py-1.5">{t.programName}</td>
                 <td className="tnum px-2 py-1.5 text-right">{formatHours(t.hours)}</td>
-                <td className="tnum px-2 py-1.5 text-right">{formatMoney(t.agency)}</td>
-                <td className="tnum py-1.5 pl-2 text-right text-[var(--color-ink-soft)]">{formatMoney(t.internal)}</td>
+                {canSeeMoney ? (
+                  <>
+                    <td className="tnum px-2 py-1.5 text-right">{formatMoney(t.agency)}</td>
+                    <td className="tnum py-1.5 pl-2 text-right text-[var(--color-ink-soft)]">{formatMoney(t.internal)}</td>
+                  </>
+                ) : null}
               </tr>
             ))}
             <tr className="border-t-2 border-[var(--color-rule-strong)] font-semibold">
               <td className="py-1.5 pr-3">Total</td>
               <td className="px-2 py-1.5 text-[var(--color-ink-faint)]">{rows.length} {rows.length === 1 ? "row" : "rows"}</td>
               <td className="tnum px-2 py-1.5 text-right">{formatHours(totals.hours.toString())}</td>
-              <td className="tnum px-2 py-1.5 text-right">{formatMoney(totals.agency.toString())}</td>
-              <td className="tnum py-1.5 pl-2 text-right">{formatMoney(totals.internal.toString())}</td>
+              {canSeeMoney ? (
+                <>
+                  <td className="tnum px-2 py-1.5 text-right">{formatMoney(totals.agency.toString())}</td>
+                  <td className="tnum py-1.5 pl-2 text-right">{formatMoney(totals.internal.toString())}</td>
+                </>
+              ) : null}
             </tr>
           </tbody>
         </table>
