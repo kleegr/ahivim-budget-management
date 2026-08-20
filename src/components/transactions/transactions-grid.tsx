@@ -101,14 +101,24 @@ const colWidth = (widths: Record<string, number>, c: ColumnDef<GridTransaction>)
 export default function TransactionsGrid({
   rows,
   canManage,
+  canSeeMoney = true,
   initialFilters,
   contextLabel,
 }: {
   rows: GridTransaction[];
   canManage: boolean;
+  canSeeMoney?: boolean;
   initialFilters?: FilterState;
   contextLabel?: string | null;
 }) {
+  // Hours-only viewers (canSeeMoney === false) never see a dollar figure, so every
+  // money column is removed from the grid entirely — it can't be re-enabled from the
+  // column chooser or leak into an export, since it isn't in the column set at all.
+  const columns = useMemo(
+    () => (canSeeMoney ? COLUMNS : COLUMNS.filter((c) => c.kind !== "money")),
+    [canSeeMoney],
+  );
+
   // Reveal any column that arrives pre-filtered (e.g. a budget drill-through seeds
   // the service-period window), so the user can see exactly what is constraining the view.
   const seededKeys = initialFilters ? Object.keys(initialFilters) : [];
@@ -116,7 +126,7 @@ export default function TransactionsGrid({
 
   const grid = useGrid<GridTransaction, GridTotals>({
     rows,
-    columns: COLUMNS,
+    columns,
     gridKey: "transactions",
     canManage,
     initialSort: [{ key: "checkDate", dir: "desc" }],
@@ -292,10 +302,17 @@ export default function TransactionsGrid({
       {totals ? (
         <div className="space-y-2">
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency total (billed)</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.gross)}</div></div>
-            <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee / internal</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div>
-            <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency difference</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div>
+            {canSeeMoney ? (
+              <>
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency total (billed)</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.gross)}</div></div>
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee / internal</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div>
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency difference</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div>
+              </>
+            ) : null}
             <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Hours</div><div className="text-xl font-semibold tabular-nums">{formatHours(totals.hours)}</div></div>
+            {!canSeeMoney ? (
+              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Transactions</div><div className="text-xl font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
+            ) : null}
           </div>
           <button
             type="button"
@@ -307,7 +324,9 @@ export default function TransactionsGrid({
           </button>
           {showMore ? (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Net pay (per check)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.netPerCheck)}</div></div>
+              {canSeeMoney ? (
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Net pay (per check)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.netPerCheck)}</div></div>
+              ) : null}
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Transactions</div><div className="text-lg font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Checks</div><div className="text-lg font-semibold tabular-nums">{totals.checks.toLocaleString()}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Individuals</div><div className="text-lg font-semibold tabular-nums">{totals.individuals.toLocaleString()}</div></div>
@@ -491,11 +510,17 @@ export default function TransactionsGrid({
       {selTotals ? (
         <div className="sticky bottom-0 z-30 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-[var(--color-primary)] bg-[var(--color-primary-tint)] px-3 py-2 text-sm shadow-sm">
           <span className="font-semibold text-[var(--color-ink)]">{selectedRows.length.toLocaleString()} selected</span>
-          <span className="text-[var(--color-ink-soft)]">Agency <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.gross)}</span></span>
-          <span className="text-[var(--color-ink-soft)]">Employee <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.internal)}</span></span>
-          <span className="text-[var(--color-ink-soft)]">Difference <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.agencyAdditional)}</span></span>
+          {canSeeMoney ? (
+            <>
+              <span className="text-[var(--color-ink-soft)]">Agency <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.gross)}</span></span>
+              <span className="text-[var(--color-ink-soft)]">Employee <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.internal)}</span></span>
+              <span className="text-[var(--color-ink-soft)]">Difference <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.agencyAdditional)}</span></span>
+            </>
+          ) : null}
           <span className="text-[var(--color-ink-soft)]">Hours <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(selTotals.hours)}</span></span>
-          <span className="text-[var(--color-ink-soft)]">Net <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.netPerCheck)}</span></span>
+          {canSeeMoney ? (
+            <span className="text-[var(--color-ink-soft)]">Net <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.netPerCheck)}</span></span>
+          ) : null}
           <div className="ml-auto flex items-center gap-2">
             {grid.canManage ? (
               <>
@@ -515,6 +540,7 @@ export default function TransactionsGrid({
       {selected && (
         <DetailDrawer
           row={selected}
+          canSeeMoney={canSeeMoney}
           onClose={() => setSelected(null)}
           onFilterCheck={(cn) => {
             grid.setFilter("checkNumber", { selected: [cn], contains: "" });
@@ -530,10 +556,12 @@ export default function TransactionsGrid({
 
 function DetailDrawer({
   row,
+  canSeeMoney = true,
   onClose,
   onFilterCheck,
 }: {
   row: GridTransaction;
+  canSeeMoney?: boolean;
   onClose: () => void;
   onFilterCheck: (checkNumber: string) => void;
 }) {
@@ -555,11 +583,11 @@ function DetailDrawer({
         {line("Program", row.program ?? "—")}
         {line("Pay to", row.payTo ?? "—")}
         {line("Hours", row.hours ? formatHours(row.hours) : "—")}
-        {line("Rate", row.rate ? formatMoney(row.rate) : "—")}
-        {line("Agency total", row.gross ? formatMoney(row.gross) : "—")}
-        {line("Employee amount", row.internalAmount ? formatMoney(row.internalAmount) : "—")}
-        {line("Agency difference", row.agencyAdditional ? formatMoney(row.agencyAdditional) : "—")}
-        {line("Total net pay", row.totalNetPay ? formatMoney(row.totalNetPay) : "—")}
+        {canSeeMoney ? line("Rate", row.rate ? formatMoney(row.rate) : "—") : null}
+        {canSeeMoney ? line("Agency total", row.gross ? formatMoney(row.gross) : "—") : null}
+        {canSeeMoney ? line("Employee amount", row.internalAmount ? formatMoney(row.internalAmount) : "—") : null}
+        {canSeeMoney ? line("Agency difference", row.agencyAdditional ? formatMoney(row.agencyAdditional) : "—") : null}
+        {canSeeMoney ? line("Total net pay", row.totalNetPay ? formatMoney(row.totalNetPay) : "—") : null}
         {line("Paid", row.isPaid ? `Paid${row.paidAt ? ` on ${row.paidAt}` : ""}` : "Not paid")}
         {line("Period", `${row.periodBegin ?? "—"} → ${row.periodEnd ?? "—"}`)}
         {line("Paid to", RECIPIENT_LABEL[row.paymentRecipient ?? ""] ?? row.paymentRecipient ?? "—")}
@@ -570,7 +598,7 @@ function DetailDrawer({
           <div className="eyebrow text-[var(--color-text-soft)]">Open</div>
           {row.individualId && <Link href={`/individuals/${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Individual profile →</Link>}
           {row.employeeId && <Link href={`/employees/${row.employeeId}`} className="block text-[var(--color-primary)] hover:underline">Employee: {row.employee} →</Link>}
-          {row.individualId && <Link href={`/calculations?individualId=${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Financial plan →</Link>}
+          {canSeeMoney && row.individualId && <Link href={`/calculations?individualId=${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Financial plan →</Link>}
           {row.checkNumber && <button type="button" onClick={() => onFilterCheck(row.checkNumber as string)} className="block text-left text-[var(--color-primary)] hover:underline">Show all rows on check {row.checkNumber} →</button>}
           {row.sourceFileId && <Link href={`/imports/${row.sourceFileId}`} className="block text-[var(--color-primary)] hover:underline">Import batch →</Link>}
           {row.serviceSessionId && <Link href={`/reconciliation`} className="block text-[var(--color-primary)] hover:underline">Reconciliation record →</Link>}

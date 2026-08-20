@@ -101,8 +101,8 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
-    if (!scope.canSeeTransactions) return { denied: true as const, rows: [] as GridTransaction[] };
-    return { denied: false as const, rows: await listTransactionsForGrid(pool, scope) };
+    if (!scope.canSeeTransactions) return { denied: true as const, rows: [] as GridTransaction[], canSeeMoney: scope.canSeeMoney };
+    return { denied: false as const, rows: await listTransactionsForGrid(pool, scope), canSeeMoney: scope.canSeeMoney };
   });
 
   // A user whose access hides Transactions is refused server-side, not just in the nav.
@@ -118,6 +118,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   }
 
   const rows = result.ok ? result.data.rows : [];
+  const canSeeMoney = result.ok ? result.data.canSeeMoney : true;
   const seeded = result.ok ? buildInitialFilters(rows, sp) : { filters: {}, label: null };
 
   return (
@@ -140,6 +141,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         <TransactionsGrid
           rows={rows}
           canManage={canManage}
+          canSeeMoney={canSeeMoney}
           initialFilters={seeded.filters}
           contextLabel={seeded.label}
         />

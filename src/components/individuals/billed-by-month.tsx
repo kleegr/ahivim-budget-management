@@ -17,10 +17,12 @@ export default function BilledByMonth({
   periodStart,
   byProgramMonth,
   programsBilled,
+  canSeeMoney = true,
 }: {
   periodStart: string;
   byProgramMonth: PeriodProgramMonth[];
   programsBilled: PeriodProgram[];
+  canSeeMoney?: boolean;
 }) {
   // Column set: the biggest programs get their own column; anything past MAX_COLS
   // folds into a single "Other" column so the table never sprawls.
@@ -84,8 +86,12 @@ export default function BilledByMonth({
             {cols.map((c) => (
               <th key={c.id} className="px-2 py-2 text-right font-medium" title={`${c.label} — hours billed`}>{c.label}<span className="ml-0.5 text-[0.7rem] font-normal text-[var(--color-ink-faint)]">h</span></th>
             ))}
-            <th className="px-2 py-2 text-right font-medium" title="Agency amount billed (what was invoiced)">Billed $</th>
-            <th className="py-2 pl-2 text-right font-medium" title="Company/internal amount">Company $</th>
+            {canSeeMoney ? (
+              <>
+                <th className="px-2 py-2 text-right font-medium" title="Agency amount billed (what was invoiced)">Billed $</th>
+                <th className="py-2 pl-2 text-right font-medium" title="Company/internal amount">Company $</th>
+              </>
+            ) : null}
           </tr>
         </thead>
         <tbody>
@@ -105,19 +111,23 @@ export default function BilledByMonth({
                     </td>
                   );
                 })}
-                <td className="px-2 py-1.5 text-right">
-                  {anyBilled ? (
-                    <div className="flex items-center justify-end gap-2">
-                      <div className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-[var(--color-surface-strong)] sm:block" aria-hidden>
-                        <div className="h-full rounded-full" style={{ width: `${fill}%`, background: "var(--color-primary)" }} />
-                      </div>
-                      <span className="tnum font-medium">{formatMoney(agency.toString())}</span>
-                    </div>
-                  ) : (
-                    <span className={m.future ? "text-[var(--color-ink-faint)]" : "text-[var(--color-ink-faint)]"}>{m.future ? "upcoming" : "—"}</span>
-                  )}
-                </td>
-                <td className="tnum py-1.5 pl-2 text-right text-[var(--color-ink-soft)]">{mm ? formatMoney(mm.internal.toString()) : ""}</td>
+                {canSeeMoney ? (
+                  <>
+                    <td className="px-2 py-1.5 text-right">
+                      {anyBilled ? (
+                        <div className="flex items-center justify-end gap-2">
+                          <div className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-[var(--color-surface-strong)] sm:block" aria-hidden>
+                            <div className="h-full rounded-full" style={{ width: `${fill}%`, background: "var(--color-primary)" }} />
+                          </div>
+                          <span className="tnum font-medium">{formatMoney(agency.toString())}</span>
+                        </div>
+                      ) : (
+                        <span className={m.future ? "text-[var(--color-ink-faint)]" : "text-[var(--color-ink-faint)]"}>{m.future ? "upcoming" : "—"}</span>
+                      )}
+                    </td>
+                    <td className="tnum py-1.5 pl-2 text-right text-[var(--color-ink-soft)]">{mm ? formatMoney(mm.internal.toString()) : ""}</td>
+                  </>
+                ) : null}
               </tr>
             );
           })}
@@ -126,12 +136,16 @@ export default function BilledByMonth({
             {cols.map((c) => (
               <td key={c.id} className="tnum px-2 py-2 text-right text-xs font-normal text-[var(--color-ink-faint)]">{formatHours((colTotalH.get(c.id) ?? dec(0)).toString())} h</td>
             ))}
-            <td className="tnum px-2 py-2 text-right">{formatMoney(totAgency.toString())}</td>
-            <td className="tnum py-2 pl-2 text-right">{formatMoney(totInternal.toString())}</td>
+            {canSeeMoney ? (
+              <>
+                <td className="tnum px-2 py-2 text-right">{formatMoney(totAgency.toString())}</td>
+                <td className="tnum py-2 pl-2 text-right">{formatMoney(totInternal.toString())}</td>
+              </>
+            ) : null}
           </tr>
         </tbody>
       </table>
-      {hasGroup ? (
+      {canSeeMoney && hasGroup ? (
         <p className="mt-3 text-xs text-[var(--color-ink-faint)]">
           Day Hab and Supplemental are group sessions billed at a combined rate, so their hours are figured from the money at your budget rate (amount ÷ rate), not the raw session hours.
         </p>

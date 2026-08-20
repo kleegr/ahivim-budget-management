@@ -17,6 +17,11 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["exceljs", "@neondatabase/serverless", "ws"],
   eslint: { ignoreDuringBuilds: false },
   typescript: { ignoreBuildErrors: false },
+  // Never reuse a client-cached RSC payload across navigations. Every screen is
+  // permission-sensitive (role + access scope are re-read from the DB on each
+  // request), so a change to a user's role/access must take effect on their very
+  // next navigation — not up to five minutes later from the router cache.
+  experimental: { staleTimes: { dynamic: 0, static: 0 } },
 };
 
 export default nextConfig;

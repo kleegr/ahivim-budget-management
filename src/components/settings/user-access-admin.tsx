@@ -25,6 +25,7 @@ interface UserRow {
   seeAllIndividuals: boolean;
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
+  canSeeMoney: boolean;
   individualCount: number;
   employeeCount: number;
 }
@@ -34,6 +35,7 @@ interface AccessState {
   seeAllIndividuals: boolean;
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
+  canSeeMoney: boolean;
   individualIds: Set<string>;
   employeeIds: Set<string>;
 }
@@ -43,6 +45,7 @@ const emptyAccess = (): AccessState => ({
   seeAllIndividuals: false,
   seeAllEmployees: false,
   canSeeTransactions: true,
+  canSeeMoney: true,
   individualIds: new Set(),
   employeeIds: new Set(),
 });
@@ -52,6 +55,7 @@ const accessToBody = (a: AccessState) => ({
   seeAllIndividuals: a.seeAllIndividuals,
   seeAllEmployees: a.seeAllEmployees,
   canSeeTransactions: a.canSeeTransactions,
+  canSeeMoney: a.canSeeMoney,
   individualIds: [...a.individualIds],
   employeeIds: [...a.employeeIds],
 });
@@ -201,6 +205,11 @@ function AccessConfig({
         <span>Can see Transactions</span>
         <span className="text-xs text-[var(--color-ink-faint)]">— the billing ledger and every drill-through into it</span>
       </label>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={value.canSeeMoney} onChange={(e) => set({ canSeeMoney: e.target.checked })} />
+        <span>Can see dollar amounts</span>
+        <span className="text-xs text-[var(--color-ink-faint)]">— turn off for an hours-only login (sees hours, never money)</span>
+      </label>
     </div>
   );
 }
@@ -235,6 +244,9 @@ export default function UserAccessAdmin({
   const [editRole, setEditRole] = useState<string>("viewer");
   const [newPassword, setNewPassword] = useState("");
   const [loadingEdit, setLoadingEdit] = useState(false);
+  // True when the current access couldn't be loaded — we then REFUSE to save,
+  // rather than silently overwriting the user's real access with blank defaults.
+  const [editLoadFailed, setEditLoadFailed] = useState(false);
 
   async function patch(id: string, body: Record<string, unknown>, okMsg = "Saved.") {
     setError(null);
@@ -261,18 +273,23 @@ export default function UserAccessAdmin({
     }
   }
 
-  async function openEdit(u: UserRow) {
+  function openEdit(u: UserRow) {
     if (editingId === u.id) {
       setEditingId(null);
       return;
     }
     setEditingId(u.id);
-    setEditRole(u.role);
+    loadAccess(u.id, u.role);
+  }
+
+  async function loadAccess(userId: string, role: string) {
+    setEditRole(role);
     setNewPassword("");
     setEditAccess(null);
+    setEditLoadFailed(false);
     setLoadingEdit(true);
     try {
-      const res = await fetch(`/api/admin/users/${u.id}`);
+      const res = await fetch(`/api/admin/users/${userId}`);
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         access?: {
@@ -280,6 +297,7 @@ export default function UserAccessAdmin({
           seeAllIndividuals: boolean;
           seeAllEmployees: boolean;
           canSeeTransactions: boolean;
+          canSeeMoney: boolean;
           individualIds: string[];
           employeeIds: string[];
         };
@@ -290,21 +308,28 @@ export default function UserAccessAdmin({
           seeAllIndividuals: data.access.seeAllIndividuals,
           seeAllEmployees: data.access.seeAllEmployees,
           canSeeTransactions: data.access.canSeeTransactions,
+          canSeeMoney: data.access.canSeeMoney !== false,
           individualIds: new Set(data.access.individualIds),
           employeeIds: new Set(data.access.employeeIds),
         });
       } else {
-        setEditAccess(emptyAccess());
+        // Loading failed — do NOT default to full access; block saving instead.
+        setEditAccess(null);
+        setEditLoadFailed(true);
       }
     } catch {
-      setEditAccess(emptyAccess());
+      setEditAccess(null);
+      setEditLoadFailed(true);
     } finally {
       setLoadingEdit(false);
     }
   }
 
   async function saveEdit(id: string) {
-    if (!editAccess) return;
+    if (!editAccess) {
+      setError("Couldn't load this person's current access. Close and reopen before saving so nothing is reset by accident.");
+      return;
+    }
     const body: Record<string, unknown> = { role: editRole, ...accessToBody(editAccess) };
     if (newPassword.trim().length > 0) body.password = newPassword.trim();
     const ok = await patch(id, body, "Access updated.");
@@ -342,11 +367,17 @@ export default function UserAccessAdmin({
   }
 
   const accessSummary = (u: UserRow) => {
-    if (u.role !== "viewer" || u.accessScope === "full") return "Sees everything";
+    if (u.role !== "viewer") return "Sees everything";
     const parts: string[] = [];
-    parts.push(u.seeAllIndividuals ? "all individuals" : `${u.individualCount} individual${u.individualCount === 1 ? "" : "s"}`);
-    parts.push(u.seeAllEmployees ? "all employees" : `${u.employeeCount} employee${u.employeeCount === 1 ? "" : "s"}`);
-    return parts.join(" · ") + (u.canSeeTransactions ? "" : " · no transactions");
+    if (u.accessScope === "full") {
+      parts.push("all people");
+    } else {
+      parts.push(u.seeAllIndividuals ? "all individuals" : `${u.individualCount} individual${u.individualCount === 1 ? "" : "s"}`);
+      parts.push(u.seeAllEmployees ? "all employees" : `${u.employeeCount} employee${u.employeeCount === 1 ? "" : "s"}`);
+    }
+    if (!u.canSeeTransactions) parts.push("no transactions");
+    if (!u.canSeeMoney) parts.push("hours only");
+    return parts.join(" · ");
   };
 
   return (
@@ -435,8 +466,13 @@ export default function UserAccessAdmin({
 
               {open && !self ? (
                 <div className="border-t border-[var(--color-rule)] bg-[var(--color-surface-muted)] px-5 py-4">
-                  {loadingEdit || !editAccess ? (
+                  {loadingEdit ? (
                     <p className="text-sm text-[var(--color-ink-faint)]">Loading…</p>
+                  ) : editLoadFailed || !editAccess ? (
+                    <div className="text-sm">
+                      <p className="text-[var(--color-danger)]">Couldn&rsquo;t load this person&rsquo;s current access.</p>
+                      <button type="button" onClick={() => loadAccess(u.id, u.role)} className="btn btn-sm btn-secondary mt-2">Try again</button>
+                    </div>
                   ) : (
                     <div className="space-y-4">
                       <div className="grid gap-3 sm:grid-cols-2">

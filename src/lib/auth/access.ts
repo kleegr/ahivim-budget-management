@@ -35,6 +35,8 @@ export interface AccessScope {
   full: boolean;
   /** May the Transactions surface (grid, drill-throughs, exports) be shown. */
   canSeeTransactions: boolean;
+  /** May the user see dollar amounts at all. When false they see hours only. */
+  canSeeMoney: boolean;
   /** No individual filter (full, or the see-all-individuals override). */
   allIndividuals: boolean;
   /** No employee filter (full, or the see-all-employees override). */
@@ -52,6 +54,7 @@ export function fullAccess(userId: string, role: string): AccessScope {
     role,
     full: true,
     canSeeTransactions: true,
+    canSeeMoney: true,
     allIndividuals: true,
     allEmployees: true,
     individualIds: [],
@@ -77,8 +80,9 @@ export async function resolveAccessScope(
     see_all_individuals: boolean;
     see_all_employees: boolean;
     can_see_transactions: boolean;
+    can_see_money: boolean;
   }>(
-    `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions
+    `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions, can_see_money
        FROM users WHERE id = $1`,
     [user.id],
   );
@@ -87,10 +91,11 @@ export async function resolveAccessScope(
   if (!u) return fullAccess(user.id, user.role);
 
   if (u.access_scope !== "scoped") {
-    // Full-access user: sees all data, but the transactions toggle still applies.
+    // Full-access user: sees all data, but the transactions / money toggles still apply.
     return {
       ...fullAccess(user.id, user.role),
       canSeeTransactions: u.can_see_transactions !== false,
+      canSeeMoney: u.can_see_money !== false,
     };
   }
 
@@ -149,6 +154,7 @@ export async function resolveAccessScope(
     role: user.role,
     full: false,
     canSeeTransactions: u.can_see_transactions === true,
+    canSeeMoney: u.can_see_money !== false,
     allIndividuals: seeAllIndividuals,
     allEmployees: seeAllEmployees,
     individualIds: [...individualIds],

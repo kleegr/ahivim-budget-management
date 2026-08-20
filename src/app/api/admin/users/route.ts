@@ -26,6 +26,7 @@ function parseAccessConfig(body: Record<string, unknown>): UserAccessConfig {
     seeAllIndividuals: body.seeAllIndividuals === true,
     seeAllEmployees: body.seeAllEmployees === true,
     canSeeTransactions: body.canSeeTransactions !== false, // default: may see transactions
+    canSeeMoney: body.canSeeMoney !== false, // default: may see dollar amounts
     individualIds: Array.isArray(body.individualIds) ? body.individualIds.map(String) : [],
     employeeIds: Array.isArray(body.employeeIds) ? body.employeeIds.map(String) : [],
   };

@@ -78,6 +78,7 @@ export default async function SettingsPage() {
                   seeAllIndividuals: u.seeAllIndividuals,
                   seeAllEmployees: u.seeAllEmployees,
                   canSeeTransactions: u.canSeeTransactions,
+                  canSeeMoney: u.canSeeMoney,
                   individualCount: u.individualCount,
                   employeeCount: u.employeeCount,
                 }))}
