@@ -21,7 +21,7 @@ export default async function ImportDetailPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const user = await requireUser("viewer");
+  const user = await requireUser("manager");
   const { id } = await params;
   const sp = await searchParams;
   const first = (k: string) => {

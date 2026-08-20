@@ -12,8 +12,8 @@ export const maxDuration = 300;
 
 /** List uploads. Any signed-in role may read. */
 export async function GET() {
-  const user = await apiUser("viewer");
-  if (!user) return jsonError("Authentication required", 401);
+  const user = await apiUser("manager");
+  if (!user) return jsonError("Manager role required", 403);
   try {
     return NextResponse.json({ ok: true, imports: await listImports(getPool(), 100) });
   } catch (error) {

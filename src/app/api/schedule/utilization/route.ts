@@ -14,8 +14,8 @@ export const dynamic = "force-dynamic";
  * or the individual has no record, so the strip simply hides.
  */
 export async function GET(request: NextRequest) {
-  const user = await apiUser("viewer");
-  if (!user) return jsonError("Authentication required", 401);
+  const user = await apiUser("manager");
+  if (!user) return jsonError("Manager role required", 403);
 
   const individualId = request.nextUrl.searchParams.get("individualId");
   if (!individualId || !/^[0-9a-f-]{36}$/i.test(individualId)) {
