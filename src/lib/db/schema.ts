@@ -101,6 +101,9 @@ export const individuals = pgTable(
     displayName: text("display_name").notNull(),
     externalRef: text("external_ref"),
     notes: text("notes"),
+    /** Dashboard side info (0016): a contact phone and a free-form category / account tag. */
+    phone: text("phone"),
+    category: text("category"),
     legalName: text("legal_name"),
     preferredName: text("preferred_name"),
     status: text("status").default("active").notNull(),
@@ -139,6 +142,9 @@ export const employees = pgTable(
     externalRef: text("external_ref"),
     status: text("status").default("active").notNull(),
     notes: text("notes"),
+    /** A separate payout cut (0016): a percentage taken from what is paid to this
+     *  employee, paid to him separately. Stored as a decimal fraction (0.10 = 10%). */
+    payoutCutPercent: numeric("payout_cut_percent", { precision: 9, scale: 6 }).default("0").notNull(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
