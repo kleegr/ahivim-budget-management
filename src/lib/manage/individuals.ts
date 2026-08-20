@@ -17,6 +17,8 @@ export interface IndividualRecord {
   externalRef: string | null;
   status: string;
   notes: string | null;
+  phone: string | null;
+  category: string | null;
   archivedAt: string | null;
   createdAt: string;
 }
@@ -30,12 +32,15 @@ interface Row {
   external_ref: string | null;
   status: string;
   notes: string | null;
+  phone: string | null;
+  category: string | null;
   archived_at: string | null;
   created_at: string;
 }
 
 const COLS = `id, display_name, legal_name, preferred_name, normalized_name,
-              external_ref, status, notes, archived_at::text AS archived_at,
+              external_ref, status, notes, phone, category,
+              archived_at::text AS archived_at,
               created_at::text AS created_at`;
 
 const toRecord = (r: Row): IndividualRecord => ({
@@ -47,6 +52,8 @@ const toRecord = (r: Row): IndividualRecord => ({
   externalRef: r.external_ref,
   status: r.status,
   notes: r.notes,
+  phone: r.phone,
+  category: r.category,
   archivedAt: r.archived_at,
   createdAt: r.created_at,
 });
@@ -64,6 +71,9 @@ export interface IndividualInput {
   externalRef?: string | null;
   status?: string;
   notes?: string | null;
+  /** Dashboard side info: a contact phone and a category / account tag. */
+  phone?: string | null;
+  category?: string | null;
 }
 
 export async function createIndividual(
@@ -151,6 +161,8 @@ export async function updateIndividual(
        external_ref = $6,
        status = COALESCE($7, status),
        notes = $8,
+       phone = $9,
+       category = $10,
        updated_at = now()
      WHERE id = $1
      RETURNING ${COLS}`,
@@ -163,6 +175,8 @@ export async function updateIndividual(
       input.externalRef === undefined ? before.externalRef : input.externalRef?.trim() || null,
       input.status ?? null,
       input.notes === undefined ? before.notes : input.notes?.trim() || null,
+      input.phone === undefined ? before.phone : input.phone?.trim() || null,
+      input.category === undefined ? before.category : input.category?.trim() || null,
     ],
   );
   const after = toRecord(rows[0]!);
