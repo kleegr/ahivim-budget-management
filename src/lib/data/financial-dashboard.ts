@@ -45,7 +45,7 @@ export interface FinancialDashboardRow {
   billedGrossAll: string; // Σ agency gross (imported_amount)
   employeesMadeAll: string; // Σ internal amount
   agencyMadeAll: string; // Σ agency additional
-  taxesAll: string; // cut1 × employeesMadeAll
+  taxesAll: string; // withholding: Σ (check gross − net) on non-agency checks
   hoursAll: string;
   txCountAll: number;
 
@@ -58,8 +58,19 @@ export interface FinancialDashboardRow {
   txCountPeriod: number;
 }
 
+/** An individual with billing (or active) but no budget yet — offered in the
+ *  "Add budget" picker so a plan can be created from someone already in the data. */
+export interface BudgetCandidate {
+  id: string;
+  name: string;
+  txCount: number;
+  billed: string; // all-time agency gross, so the biggest billers surface first
+}
+
 export interface FinancialDashboard {
   rows: FinancialDashboardRow[];
+  /** Individuals without a budget, for the "Add budget" picker (billers first). */
+  candidates: BudgetCandidate[];
   /** Portfolio totals for both windows (computed over every row). */
   totals: {
     all: DashboardTotals;
@@ -93,27 +104,9 @@ interface PlanAgg {
  * no plan, both appear — the union of the two id sets.
  */
 export async function getFinancialDashboard(pool: PgLikePool): Promise<FinancialDashboard> {
-  // 1. People (active first) with their editable side info.
-  const { rows: people } = await pool.query<{
-    id: string;
-    name: string;
-    status: string;
-    phone: string | null;
-    category: string | null;
-    notes: string | null;
-  }>(
-    `SELECT i.id,
-            COALESCE(i.display_name, i.normalized_name) AS name,
-            i.status,
-            i.phone, i.category, i.notes
-       FROM individuals i
-      WHERE i.status = 'active' OR EXISTS (
-              SELECT 1 FROM payroll_transactions t WHERE t.individual_id = i.id
-            )
-      ORDER BY name`,
-  );
-
-  // 2. Plan reserves per individual, from the canonical strategy calculator.
+  // 1. Plan reserves per individual, from the canonical strategy calculator. The
+  //    board shows ONLY people who have a budget (an active strategy); their ids
+  //    are exactly the keys here.
   const { rows: strategies } = await listStrategies(pool, {});
   const planByInd = new Map<string, PlanAgg>();
   for (const s of strategies) {
@@ -136,9 +129,53 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
       prev.hasMasser = prev.hasMasser || s.afterAll != null;
       prev.planYearlyGross = prev.planYearlyGross.plus(dec(s.yearlyGross));
       prev.planNetYearly = prev.planNetYearly.plus(netYearly);
-      // Keep the primary plan's period/renewal/cut1 (the first, highest-sorted).
+      // Keep the primary plan's period/renewal (the first, highest-sorted).
     }
   }
+  const budgetedIds = [...planByInd.keys()];
+
+  // 2. The budgeted people, with their editable side info.
+  const { rows: people } = budgetedIds.length
+    ? await pool.query<{
+        id: string;
+        name: string;
+        status: string;
+        phone: string | null;
+        category: string | null;
+        notes: string | null;
+      }>(
+        `SELECT i.id,
+                COALESCE(i.display_name, i.normalized_name) AS name,
+                i.status,
+                i.phone, i.category, i.notes
+           FROM individuals i
+          WHERE i.id = ANY($1::uuid[])
+          ORDER BY name`,
+        [budgetedIds],
+      )
+    : { rows: [] };
+
+  // 2b. Candidates for the "Add budget" picker — people with billing (or active)
+  //     but no budget yet, biggest billers first, so a plan can be started from
+  //     someone already in the transactions. Merged-away records are excluded.
+  const { rows: candidateRows } = await pool.query<{
+    id: string; name: string; tx_count: string; billed: string;
+  }>(
+    `SELECT i.id,
+            COALESCE(i.display_name, i.normalized_name) AS name,
+            (SELECT count(*) FROM payroll_transactions t WHERE t.individual_id = i.id)::text AS tx_count,
+            COALESCE((SELECT sum(t.imported_amount) FROM payroll_transactions t WHERE t.individual_id = i.id), 0)::text AS billed
+       FROM individuals i
+      WHERE NOT (i.id = ANY($1::uuid[]))
+        AND i.merged_into_id IS NULL
+        AND (i.status = 'active'
+             OR EXISTS (SELECT 1 FROM payroll_transactions t WHERE t.individual_id = i.id))
+      ORDER BY billed DESC NULLS LAST, name`,
+    [budgetedIds.length ? budgetedIds : ["00000000-0000-0000-0000-000000000000"]],
+  );
+  const candidates: BudgetCandidate[] = candidateRows.map((c) => ({
+    id: c.id, name: c.name, txCount: Number(c.tx_count), billed: toMoney(c.billed),
+  }));
 
   // 3. Actual money per individual — all-time and windowed to the current period.
   //    The window is each individual's primary-plan budget period; individuals
@@ -291,5 +328,5 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
   tPeriod.agencyMade = toMoney(accPerAgency);
   tPeriod.taxes = toMoney(accPerTax);
 
-  return { rows, totals: { all: tAll, period: tPeriod, masser: toMoney(accMasser) } };
+  return { rows, candidates, totals: { all: tAll, period: tPeriod, masser: toMoney(accMasser) } };
 }
