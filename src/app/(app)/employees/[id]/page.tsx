@@ -16,10 +16,13 @@ import {
 import { txLink } from "@/lib/nav/tx-link";
 import { getEmployee } from "@/lib/manage/employees";
 import { listAssignments } from "@/lib/manage/assignments";
+import { listTransactionsForGrid } from "@/lib/data/transactions-grid";
 import {
   Card, Table, Th, Td, Tr, Money, Hours, Plain, ErrorPanel, PageHeader, ButtonLink,
 } from "@/components/ui";
 import { CreateButton, ActionButton, Field, TextAreaField } from "@/components/manage/client";
+import TransactionsGrid from "@/components/transactions/transactions-grid";
+import EmployeeMerge from "@/components/employees/employee-merge";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
@@ -63,7 +66,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
     // shown about that employee is limited to the individuals they may see.
     const scope = await resolveAccessScope(pool, user);
     if (!canViewEmployee(scope, id)) return null;
-    const [report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding] = await Promise.all([
+    const [report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, gridRows] = await Promise.all([
       getEmployeeReport(pool, id, scope),
       listAssignments(pool, { employeeId: id, includeInactive: true }),
       listTransactions(pool, { employeeId: id, limit: 25, scope }),
@@ -75,11 +78,13 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
       // is not shown to viewers.
       canEdit ? getEmployeeSchedule(pool, id) : Promise.resolve(EMPTY_SCHEDULE),
       getEmployeeWithholding(pool, id),
+      // Every transaction for this employee, for the embedded ledger grid.
+      scope.canSeeTransactions ? listTransactionsForGrid(pool, scope, { employeeId: id }) : Promise.resolve([]),
     ]);
     const activeAssignments = assignments
       .filter((a) => a.status === "active")
       .filter((a) => canViewIndividual(scope, a.individualId));
-    return { employee, report, assignments: activeAssignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, canSeeMoney: scope.canSeeMoney };
+    return { employee, report, assignments: activeAssignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, gridRows, canSeeTransactions: scope.canSeeTransactions, canSeeMoney: scope.canSeeMoney };
   });
 
   if (!result.ok) {
@@ -92,15 +97,16 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
   }
   if (!result.data) notFound();
 
-  const { employee, report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, canSeeMoney } = result.data;
+  const { employee, report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, gridRows, canSeeTransactions, canSeeMoney } = result.data;
   const attributionAvailable = payment.transactionCount === 0 || payment.attributedCount > 0;
   const hasWithholding = dec(withholding.withheld).greaterThan(0);
 
-  // A separate payout cut: a percentage of what this employee earned (the
-  // internal amount owed to them), paid to him separately. Stored as a fraction.
+  // A separate payout cut: a percentage of what this employee took home — the
+  // NET they actually received on checks paid to them, after withholding — paid
+  // to him separately. "How much to give him after the net." Stored as a fraction.
   const cutFraction = dec(employee.payoutCutPercent || "0");
   const cutPercentDisplay = cutFraction.times(100).toDecimalPlaces(2).toString();
-  const cutBase = report ? dec(report.internalAmount) : dec(0);
+  const cutBase = dec(withholding.net);
   const cutAmount = cutBase.times(cutFraction);
 
   const headerActions = canEdit ? (
@@ -126,6 +132,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
           </>
         }
       />
+      <EmployeeMerge employeeId={id} employeeName={employee.displayName} />
       {employee.status === "active" ? (
         <ActionButton label="Archive" endpoint={`/api/employees/${id}`} body={{ action: "archive" }} withReason />
       ) : (
@@ -165,12 +172,12 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
           {canSeeMoney && cutFraction.greaterThan(0) ? (
             <div className="mt-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg border border-[var(--color-primary-soft)] bg-[var(--color-primary-tint)] px-4 py-3">
               <div className="text-sm">
-                <span className="font-semibold text-[var(--color-ink)]">Payout cut ({cutPercentDisplay}%)</span>
-                <span className="ml-2 text-[var(--color-ink-soft)]">a separate cut of what this employee earned, paid to him separately</span>
+                <span className="font-semibold text-[var(--color-ink)]">Give him after the net ({cutPercentDisplay}%)</span>
+                <span className="ml-2 text-[var(--color-ink-soft)]">a separate cut of the net he actually received, paid to him separately</span>
               </div>
               <div className="text-right">
                 <span className="tnum text-xl font-semibold">{formatMoney(cutAmount)}</span>
-                <span className="ml-2 text-xs text-[var(--color-ink-faint)]">{cutPercentDisplay}% × {formatMoney(cutBase)} earned</span>
+                <span className="ml-2 text-xs text-[var(--color-ink-faint)]">{cutPercentDisplay}% × {formatMoney(cutBase)} net</span>
               </div>
             </div>
           ) : null}
@@ -228,6 +235,17 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
             ))}
           </Table>
         </Card>
+      ) : null}
+
+      {/* ---- All transactions — the full ledger grid, scoped to this employee ---- */}
+      {canSeeTransactions && gridRows.length > 0 ? (
+        <section className="mb-6">
+          <div className="mb-2 flex items-baseline justify-between gap-2">
+            <h2 className="text-lg font-semibold">All transactions</h2>
+            <span className="text-xs text-[var(--color-text-soft)]">{gridRows.length.toLocaleString()} rows · filter, sort, total{canEdit ? " and mark paid" : ""}, like the Transactions page</span>
+          </div>
+          <TransactionsGrid rows={gridRows} canManage={canEdit} canSeeMoney={canSeeMoney} contextLabel={null} />
+        </section>
       ) : null}
 
       {/* ---- Everything else, folded away ---- */}

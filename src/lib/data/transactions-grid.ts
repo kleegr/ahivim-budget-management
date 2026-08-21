@@ -53,10 +53,19 @@ export interface GridTransaction {
   paidNote: string | null; // optional free note kept with the paid flag
 }
 
-export async function listTransactionsForGrid(pool: PgLikePool, scope?: AccessScope): Promise<GridTransaction[]> {
+export async function listTransactionsForGrid(
+  pool: PgLikePool,
+  scope?: AccessScope,
+  opts?: { employeeId?: string },
+): Promise<GridTransaction[]> {
   // A scoped user only ever sees transactions for the individuals they may view.
   const params: unknown[] = [];
   const scopeClause = scope ? transactionScopeClause(scope, "t.individual_id", params) : "";
+  let employeeClause = "";
+  if (opts?.employeeId && /^[0-9a-f-]{36}$/i.test(opts.employeeId)) {
+    params.push(opts.employeeId);
+    employeeClause = ` AND t.employee_id = $${params.length}`;
+  }
   const { rows } = await pool.query<{
     id: string;
     pay_to: string | null;
@@ -125,7 +134,7 @@ export async function listTransactionsForGrid(pool: PgLikePool, scope?: AccessSc
     LEFT JOIN individuals i ON i.id = t.individual_id
     LEFT JOIN employees   e ON e.id = t.employee_id
     LEFT JOIN programs    p ON p.id = t.program_id
-    WHERE TRUE${scopeClause}
+    WHERE TRUE${scopeClause}${employeeClause}
     ORDER BY t.check_date DESC NULLS LAST, t.check_number, t.source_row_number NULLS LAST
   `, params);
 
