@@ -1,6 +1,6 @@
 import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
-import { getFinancialDashboard } from "@/lib/data/financial-dashboard";
+import { getMasserSheet } from "@/lib/data/masser-sheet";
 import { PageHeader, ErrorPanel } from "@/components/ui";
 import MasserDashboard from "@/components/financial/masser-dashboard";
 
@@ -8,24 +8,24 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Masser — Ahivim Budget Management" };
 
 /**
- * The Masser board — the money side across the whole roster, one row per
- * individual. It answers the questions the Google sheet's summary tab did: how
- * much we set aside (Masser), how much the employees made, how much the agency
- * made, the total between them, and the tax reserve — with a phone, an account
- * tag and free notes editable right on each row. Managers only (the money side).
+ * The Masser board — the cuts / calculation sheet across the whole budgeted
+ * roster, one row per plan: the two cuts, the clock and other adjustments, the
+ * authorized hours per program (the budget), then yearly gross → monthly gross →
+ * gross net → net, and Masser (the "After All" set-aside). Columns show / hide /
+ * reorder; account, phone and notes edit inline. Managers only.
  */
 export default async function MasserPage() {
   const user = await requireUser("manager");
   const canManage = user.role !== "viewer";
 
-  const result = await withDb((pool) => getFinancialDashboard(pool));
+  const result = await withDb((pool) => getMasserSheet(pool));
 
   return (
     <>
       <PageHeader
-        eyebrow="Financial · the money board"
+        eyebrow="Financial · the cuts sheet"
         title="Masser"
-        description="Every individual on one board: how much to put away (Masser), what the employees made, what the agency made, the total between them, and the tax reserve. Money splits cleanly — what the employees made plus what the agency made equals the total billed. Toggle between this budget year and all-time, and keep a phone, an account tag and notes on each person."
+        description="Every plan on one sheet: the first and second cuts, the clock and other adjustments, the authorized hours per program, then yearly gross, monthly gross, gross net and net — and Masser, the fixed set-aside. Show, hide and reorder columns to your taste; the footer totals every money column."
       />
 
       {!result.ok ? (
