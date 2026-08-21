@@ -114,12 +114,13 @@ export async function getEmployeePaymentSummary(
 /* -------------------------------------------------------------------------- */
 
 export interface EmployeeWithholding {
-  /** Σ over this employee's non-agency checks of (check gross − net). */
+  /** Σ over this employee's non-agency checks of max(check gross − net, 0). */
   withheld: string;
-  /** Gross and net that produced it, for context. */
+  /** Gross and NET the employee actually received across those checks. `net` is
+   *  the base for the payout cut ("what to give him after the net"). */
   gross: string;
   net: string;
-  /** Number of checks that carried a real gross > net gap. */
+  /** Number of checks paid to the employee (non-agency, with a net figure). */
   checks: number;
 }
 
@@ -148,10 +149,10 @@ export async function getEmployeeWithholding(
           AND payment_recipient IS DISTINCT FROM 'excellent_staffing'
         GROUP BY check_number
      )
-     SELECT COALESCE(sum(GREATEST(cg - cn, 0)), 0)::text                        AS withheld,
-            COALESCE(sum(cg) FILTER (WHERE cn IS NOT NULL AND cg > cn), 0)::text AS gross,
-            COALESCE(sum(cn) FILTER (WHERE cn IS NOT NULL AND cg > cn), 0)::text AS net,
-            count(*) FILTER (WHERE cn IS NOT NULL AND cg > cn)::text             AS checks
+     SELECT COALESCE(sum(GREATEST(cg - cn, 0)), 0)::text AS withheld,
+            COALESCE(sum(cg), 0)::text                   AS gross,
+            COALESCE(sum(cn), 0)::text                   AS net,
+            count(*)::text                               AS checks
        FROM ct
       WHERE cn IS NOT NULL`,
     [employeeId],
