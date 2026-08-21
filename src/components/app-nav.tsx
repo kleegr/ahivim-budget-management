@@ -120,7 +120,7 @@ function ReportsIcon() {
 
 function MasserIcon() {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden>
       <circle cx="12" cy="12" r="8" />
       <path d="M12 7v10M9.5 9.2c0-1 1.1-1.7 2.5-1.7s2.5.7 2.5 1.7-1.1 1.6-2.5 1.9-2.5.9-2.5 1.9 1.1 1.7 2.5 1.7 2.5-.7 2.5-1.7" />
     </svg>
@@ -286,6 +286,16 @@ function NavLinks({
               onNavigate={onNavigate}
             />
           ) : null}
+          {isManager ? (
+            <PrimaryTile
+              href="/masser"
+              label="Masser board"
+              sub="The money side per person — put-away, taxes, who made what"
+              icon={<MasserIcon />}
+              active={isActive("/masser")}
+              onNavigate={onNavigate}
+            />
+          ) : null}
           <PrimaryTile
             href="/individuals"
             label="Individuals"
@@ -318,15 +328,6 @@ function NavLinks({
                 label="Financial"
                 icon={<ProjectionsIcon />}
                 active={financialActive}
-                onNavigate={onNavigate}
-              />
-            </li>
-            <li>
-              <QuietLink
-                href="/masser"
-                label="Masser board"
-                icon={<MasserIcon />}
-                active={isActive("/masser")}
                 onNavigate={onNavigate}
               />
             </li>
