@@ -87,6 +87,23 @@ describe("settlement history SQL scope", () => {
     expect(sql.indexOf("ORDER BY se.created_at")).toBeLessThan(sql.indexOf("LIMIT 250"));
     expect(historyCall?.[1]).toEqual([[EMPLOYEE_GRANTED]]);
   });
+
+  it("groups the same normalized check number used by ambiguous source ids", async () => {
+    const query = vi.fn(async (_sql: string) => ({ rows: [] }));
+    const pool = { query, connect: vi.fn() } as unknown as PgLikePool;
+
+    await getSettlementDashboard(pool);
+
+    const checkIssueCall = query.mock.calls.find(([sql]) => String(sql).includes("WITH direct_sources AS"));
+    expect(checkIssueCall).toBeDefined();
+    const sql = String(checkIssueCall?.[0]);
+    expect(sql).toContain(
+      "concat(employee_id::text, ':ambiguous-check:', NULLIF(btrim(check_number), '')) AS source_id",
+    );
+    expect(sql).toContain(
+      "GROUP BY employee_id, employee_name, NULLIF(btrim(check_number), '')",
+    );
+  });
 });
 
 describe("live settlement pace", () => {

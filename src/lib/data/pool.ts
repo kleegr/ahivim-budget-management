@@ -13,6 +13,11 @@ export async function withDb<T>(
   try {
     return { ok: true, data: await run(getPool()) };
   } catch (error) {
-    return { ok: false, error: redactError(error, "The database is not reachable right now.") };
+    const detail = redactError(error, "Unknown database error");
+    console.error("[withDb] Database-backed view failed:", detail);
+    return {
+      ok: false,
+      error: "This information could not be loaded right now. Refresh the page in a moment.",
+    };
   }
 }

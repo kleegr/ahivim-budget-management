@@ -520,7 +520,7 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
            FROM direct_sources
           GROUP BY source_id, employee_id, employee_name, NULLIF(btrim(check_number), '')
        ), ambiguous_numbered_checks AS (
-         SELECT concat(employee_id::text, ':ambiguous-check:', btrim(check_number)) AS source_id,
+         SELECT concat(employee_id::text, ':ambiguous-check:', NULLIF(btrim(check_number), '')) AS source_id,
                 employee_id, employee_name, NULLIF(btrim(check_number), '') AS check_number,
                 to_char(min(check_date), 'YYYY-MM-DD') AS check_date,
                 to_char(min(period_begin), 'YYYY-MM-DD') AS period_begin,
