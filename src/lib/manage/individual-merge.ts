@@ -3,6 +3,8 @@ import { ok, fail, type Result } from "@/lib/manage/errors";
 import { recordChange } from "@/lib/manage/audit";
 import { findMatchCandidates, type IndividualForMatch } from "@/lib/business/individual-matching";
 import { similarity } from "@/lib/business/name-matching";
+import { repointSettlementPerson } from "@/lib/manage/settlement-person-merge";
+import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -25,6 +27,7 @@ export async function mergeIndividuals(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await acquireSettlementSourceLock(client);
     const both = await client.query<{ id: string; display_name: string; normalized_name: string; status: string; merged_into_id: string | null }>(
       `SELECT id, display_name, normalized_name, status, merged_into_id FROM individuals WHERE id = ANY($1::uuid[]) FOR UPDATE`,
       [[keepId, mergeId]],
@@ -45,9 +48,10 @@ export async function mergeIndividuals(
       `SELECT table_name FROM information_schema.columns
         WHERE table_schema = current_schema() AND column_name = 'individual_id'`,
     );
-    const repointed: Record<string, number> = {};
+    const repointed: Record<string, number> = await repointSettlementPerson(client, "individual", keepId, mergeId);
     for (const { table_name } of cols.rows) {
       if (!/^[a-z_][a-z0-9_]*$/.test(table_name)) continue;
+      if (["settlement_events", "settlement_obligations"].includes(table_name)) continue;
       const res = await client.query(
         `UPDATE "${table_name}" SET individual_id = $1 WHERE individual_id = $2`,
         [keepId, mergeId],

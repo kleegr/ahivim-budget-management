@@ -1,6 +1,7 @@
 import type { PgLikePool } from "@/lib/import/commit";
 import { addMoney, dec, toMoney } from "@/lib/money";
-import { individualScopeClause, type AccessScope } from "@/lib/auth/access";
+import { transactionScopeClause, type AccessScope } from "@/lib/auth/access";
+import { redactTransactionFields } from "@/lib/auth/money-redaction";
 import { calculatePeriodElapsed, type PeriodElapsed } from "@/lib/business/utilization";
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { pickEffectiveRateRow } from "@/lib/business/rate-resolver";
@@ -545,7 +546,7 @@ export interface TransactionFilters {
   search?: string;
   limit?: number;
   offset?: number;
-  /** When present, restricts rows to the individuals this user may see. */
+  /** When present, restricts ledger rows to this user's direct person grants. */
   scope?: AccessScope;
 }
 
@@ -562,8 +563,9 @@ export async function listTransactions(
 
   // Every user-supplied value is a bound parameter; nothing is interpolated.
   const params: unknown[] = [individualId, employeeId, programCode, search];
-  // A scoped viewer only ever sees transactions for individuals they may view.
-  const scopeClause = filters.scope ? individualScopeClause(filters.scope, "t.individual_id", params) : "";
+  const scopeClause = filters.scope
+    ? transactionScopeClause(filters.scope, "t.individual_id", "t.employee_id", params)
+    : "";
   const where = `
     WHERE ($1::uuid IS NULL OR t.individual_id = $1)
       AND ($2::uuid IS NULL OR t.employee_id  = $2)
@@ -639,7 +641,7 @@ export async function listTransactions(
       internalAmount,
       agencyRetention: toMoney(dec(agencyGross).minus(dec(internalAmount))),
     },
-    rows: rowsRes.rows.map((r) => ({
+    rows: rowsRes.rows.map((r) => redactTransactionFields({
       id: r.id,
       checkNumber: r.check_number,
       checkDate: r.check_date,
@@ -658,7 +660,7 @@ export async function listTransactions(
       duplicateStatus: r.duplicate_status,
       sourceFile: r.source_file,
       sourceRowNumber: r.source_row_number,
-    })),
+    }, filters.scope)),
   };
 }
 

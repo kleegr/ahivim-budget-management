@@ -13,6 +13,7 @@ import SortMenu from "@/components/data-grid/sort-menu";
 import { formatCell } from "@/components/data-grid/engine";
 import { isNumericKind, type ColumnDef, type FilterState } from "@/components/data-grid/types";
 import PeriodControl, { type PeriodRange } from "@/components/period-control";
+import type { TransactionFieldVisibility } from "@/lib/auth/money-redaction";
 
 /* ------------------------------------------------------------------ config */
 
@@ -102,21 +103,41 @@ export default function TransactionsGrid({
   rows,
   canManage,
   canSeeMoney = true,
+  visibility,
+  canSeeBudgets = true,
   initialFilters,
   contextLabel,
 }: {
   rows: GridTransaction[];
   canManage: boolean;
   canSeeMoney?: boolean;
+  visibility?: TransactionFieldVisibility;
+  canSeeBudgets?: boolean;
   initialFilters?: FilterState;
   contextLabel?: string | null;
 }) {
-  // Hours-only viewers (canSeeMoney === false) never see a dollar figure, so every
-  // money column is removed from the grid entirely — it can't be re-enabled from the
-  // column chooser or leak into an export, since it isn't in the column set at all.
+  const fields = useMemo<TransactionFieldVisibility>(() => visibility ?? ({
+    canSeeMoney,
+    canSeeHours: true,
+    canSeeBilledAmounts: canSeeMoney,
+    canSeeEmployeeAmounts: canSeeMoney,
+    canSeeAgencySpread: canSeeMoney,
+    canSeeCheckNet: canSeeMoney,
+    canSeeTaxes: canSeeMoney,
+  }), [canSeeMoney, visibility]);
+
+  // Disallowed fields are absent from the column chooser and export payload as
+  // well as redacted from the server-provided rows.
   const columns = useMemo(
-    () => (canSeeMoney ? COLUMNS : COLUMNS.filter((c) => c.kind !== "money")),
-    [canSeeMoney],
+    () => COLUMNS.filter((column) => {
+      if (column.key === "hours") return fields.canSeeHours;
+      if (column.key === "rate" || column.key === "gross") return fields.canSeeBilledAmounts;
+      if (column.key === "internalAmount") return fields.canSeeEmployeeAmounts;
+      if (column.key === "agencyAdditional") return fields.canSeeAgencySpread;
+      if (column.key === "totalNetPay") return fields.canSeeCheckNet;
+      return true;
+    }),
+    [fields],
   );
 
   // Reveal any column that arrives pre-filtered (e.g. a budget drill-through seeds
@@ -302,15 +323,11 @@ export default function TransactionsGrid({
       {totals ? (
         <div className="space-y-2">
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {canSeeMoney ? (
-              <>
-                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency total (billed)</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.gross)}</div></div>
-                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee / internal</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div>
-                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency difference</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div>
-              </>
-            ) : null}
-            <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Hours</div><div className="text-xl font-semibold tabular-nums">{formatHours(totals.hours)}</div></div>
-            {!canSeeMoney ? (
+            {fields.canSeeBilledAmounts ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency total (billed)</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.gross)}</div></div> : null}
+            {fields.canSeeEmployeeAmounts ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee / internal</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div> : null}
+            {fields.canSeeAgencySpread ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency difference</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div> : null}
+            {fields.canSeeHours ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Hours</div><div className="text-xl font-semibold tabular-nums">{formatHours(totals.hours)}</div></div> : null}
+            {!fields.canSeeBilledAmounts && !fields.canSeeEmployeeAmounts && !fields.canSeeAgencySpread ? (
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Transactions</div><div className="text-xl font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
             ) : null}
           </div>
@@ -324,7 +341,7 @@ export default function TransactionsGrid({
           </button>
           {showMore ? (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-              {canSeeMoney ? (
+              {fields.canSeeCheckNet ? (
                 <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Net pay (per check)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.netPerCheck)}</div></div>
               ) : null}
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Transactions</div><div className="text-lg font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
@@ -510,15 +527,11 @@ export default function TransactionsGrid({
       {selTotals ? (
         <div className="sticky bottom-0 z-30 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-[var(--color-primary)] bg-[var(--color-primary-tint)] px-3 py-2 text-sm shadow-sm">
           <span className="font-semibold text-[var(--color-ink)]">{selectedRows.length.toLocaleString()} selected</span>
-          {canSeeMoney ? (
-            <>
-              <span className="text-[var(--color-ink-soft)]">Agency <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.gross)}</span></span>
-              <span className="text-[var(--color-ink-soft)]">Employee <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.internal)}</span></span>
-              <span className="text-[var(--color-ink-soft)]">Difference <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.agencyAdditional)}</span></span>
-            </>
-          ) : null}
-          <span className="text-[var(--color-ink-soft)]">Hours <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(selTotals.hours)}</span></span>
-          {canSeeMoney ? (
+          {fields.canSeeBilledAmounts ? <span className="text-[var(--color-ink-soft)]">Agency <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.gross)}</span></span> : null}
+          {fields.canSeeEmployeeAmounts ? <span className="text-[var(--color-ink-soft)]">Employee <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.internal)}</span></span> : null}
+          {fields.canSeeAgencySpread ? <span className="text-[var(--color-ink-soft)]">Difference <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.agencyAdditional)}</span></span> : null}
+          {fields.canSeeHours ? <span className="text-[var(--color-ink-soft)]">Hours <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(selTotals.hours)}</span></span> : null}
+          {fields.canSeeCheckNet ? (
             <span className="text-[var(--color-ink-soft)]">Net <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.netPerCheck)}</span></span>
           ) : null}
           <div className="ml-auto flex items-center gap-2">
@@ -540,7 +553,8 @@ export default function TransactionsGrid({
       {selected && (
         <DetailDrawer
           row={selected}
-          canSeeMoney={canSeeMoney}
+          visibility={fields}
+          canSeeBudgets={canSeeBudgets}
           onClose={() => setSelected(null)}
           onFilterCheck={(cn) => {
             grid.setFilter("checkNumber", { selected: [cn], contains: "" });
@@ -556,12 +570,14 @@ export default function TransactionsGrid({
 
 function DetailDrawer({
   row,
-  canSeeMoney = true,
+  visibility,
+  canSeeBudgets,
   onClose,
   onFilterCheck,
 }: {
   row: GridTransaction;
-  canSeeMoney?: boolean;
+  visibility: TransactionFieldVisibility;
+  canSeeBudgets: boolean;
   onClose: () => void;
   onFilterCheck: (checkNumber: string) => void;
 }) {
@@ -582,12 +598,12 @@ function DetailDrawer({
         {line("Check #", row.checkNumber ?? "—")}
         {line("Program", row.program ?? "—")}
         {line("Pay to", row.payTo ?? "—")}
-        {line("Hours", row.hours ? formatHours(row.hours) : "—")}
-        {canSeeMoney ? line("Rate", row.rate ? formatMoney(row.rate) : "—") : null}
-        {canSeeMoney ? line("Agency total", row.gross ? formatMoney(row.gross) : "—") : null}
-        {canSeeMoney ? line("Employee amount", row.internalAmount ? formatMoney(row.internalAmount) : "—") : null}
-        {canSeeMoney ? line("Agency difference", row.agencyAdditional ? formatMoney(row.agencyAdditional) : "—") : null}
-        {canSeeMoney ? line("Total net pay", row.totalNetPay ? formatMoney(row.totalNetPay) : "—") : null}
+        {visibility.canSeeHours ? line("Hours", row.hours ? formatHours(row.hours) : "—") : null}
+        {visibility.canSeeBilledAmounts ? line("Rate", row.rate ? formatMoney(row.rate) : "—") : null}
+        {visibility.canSeeBilledAmounts ? line("Agency total", row.gross ? formatMoney(row.gross) : "—") : null}
+        {visibility.canSeeEmployeeAmounts ? line("Employee amount", row.internalAmount ? formatMoney(row.internalAmount) : "—") : null}
+        {visibility.canSeeAgencySpread ? line("Agency difference", row.agencyAdditional ? formatMoney(row.agencyAdditional) : "—") : null}
+        {visibility.canSeeCheckNet ? line("Total net pay", row.totalNetPay ? formatMoney(row.totalNetPay) : "—") : null}
         {line("Paid", row.isPaid ? `Paid${row.paidAt ? ` on ${row.paidAt}` : ""}` : "Not paid")}
         {line("Period", `${row.periodBegin ?? "—"} → ${row.periodEnd ?? "—"}`)}
         {line("Paid to", RECIPIENT_LABEL[row.paymentRecipient ?? ""] ?? row.paymentRecipient ?? "—")}
@@ -598,7 +614,7 @@ function DetailDrawer({
           <div className="eyebrow text-[var(--color-text-soft)]">Open</div>
           {row.individualId && <Link href={`/individuals/${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Individual profile →</Link>}
           {row.employeeId && <Link href={`/employees/${row.employeeId}`} className="block text-[var(--color-primary)] hover:underline">Employee: {row.employee} →</Link>}
-          {canSeeMoney && row.individualId && <Link href={`/calculations?individualId=${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Financial plan →</Link>}
+          {canSeeBudgets && row.individualId && <Link href={`/calculations?individualId=${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Financial plan →</Link>}
           {row.checkNumber && <button type="button" onClick={() => onFilterCheck(row.checkNumber as string)} className="block text-left text-[var(--color-primary)] hover:underline">Show all rows on check {row.checkNumber} →</button>}
           {row.sourceFileId && <Link href={`/imports/${row.sourceFileId}`} className="block text-[var(--color-primary)] hover:underline">Import batch →</Link>}
           {row.serviceSessionId && <Link href={`/reconciliation`} className="block text-[var(--color-primary)] hover:underline">Reconciliation record →</Link>}

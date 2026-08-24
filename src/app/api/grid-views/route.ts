@@ -12,6 +12,10 @@ export async function GET(request: NextRequest) {
   if (!user) return jsonError("Sign in to continue.", 401);
   const grid = request.nextUrl.searchParams.get("grid") ?? "";
   if (!grid) return jsonError("A grid is required.", 400);
+  // Saved view configs are opaque and can contain names, date ranges and hidden
+  // financial filters. Viewers cannot create them, so do not share manager views
+  // into a granular-access session where those fields cannot be safely redacted.
+  if (user.role === "viewer") return NextResponse.json({ ok: true, data: [] });
   const views = await listGridViews(getPool(), grid);
   return NextResponse.json({ ok: true, data: views });
 }

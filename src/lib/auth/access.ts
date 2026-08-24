@@ -23,28 +23,44 @@ import type { PgLikePool } from "@/lib/import/commit";
  * employees"). A separate `can_see_transactions` flag hides the whole
  * Transactions surface regardless of the rest.
  *
- * Resolution is done ONCE per request and the resulting id sets are injected into
- * every list / board / grid / report query so a scoped user can never see an
- * out-of-scope row on any screen or export — the filtering is in SQL, not the UI.
+ * Resolution is done ONCE per request. Expanded id sets govern which person pages
+ * may be opened; explicit grant sets govern ledger rows. Both are injected into
+ * SQL queries, so authorization never depends on client-side hiding.
  */
 
-export interface AccessScope {
+export interface VisibilityPermissions {
+  /** Compatibility/master switch: false suppresses every monetary category. */
+  canSeeMoney: boolean;
+  canSeeHours: boolean;
+  canSeeBilledAmounts: boolean;
+  canSeeEmployeeAmounts: boolean;
+  canSeeAgencySpread: boolean;
+  canSeeCheckNet: boolean;
+  canSeeTaxes: boolean;
+  canSeeBudgets: boolean;
+  canSeeEmployeeDeals: boolean;
+  canSeeSettlements: boolean;
+}
+
+export interface AccessScope extends VisibilityPermissions {
   userId: string;
   role: string;
   /** Sees everything — no filtering at all. */
   full: boolean;
   /** May the Transactions surface (grid, drill-throughs, exports) be shown. */
   canSeeTransactions: boolean;
-  /** May the user see dollar amounts at all. When false they see hours only. */
-  canSeeMoney: boolean;
   /** No individual filter (full, or the see-all-individuals override). */
   allIndividuals: boolean;
   /** No employee filter (full, or the see-all-employees override). */
   allEmployees: boolean;
-  /** The visible individual ids (used only when !allIndividuals). */
+  /** Individuals visible for navigation, including connected people. */
   individualIds: string[];
-  /** The visible employee ids (used only when !allEmployees). */
+  /** Employees visible for navigation, including connected people. */
   employeeIds: string[];
+  /** Individuals granted directly by an administrator, before navigation expansion. */
+  grantedIndividualIds: string[];
+  /** Employees granted directly by an administrator, before navigation expansion. */
+  grantedEmployeeIds: string[];
 }
 
 /** A scope that sees everything (admins, full-access users, and the safe fallback). */
@@ -55,10 +71,21 @@ export function fullAccess(userId: string, role: string): AccessScope {
     full: true,
     canSeeTransactions: true,
     canSeeMoney: true,
+    canSeeHours: true,
+    canSeeBilledAmounts: true,
+    canSeeEmployeeAmounts: true,
+    canSeeAgencySpread: true,
+    canSeeCheckNet: true,
+    canSeeTaxes: true,
+    canSeeBudgets: true,
+    canSeeEmployeeDeals: true,
+    canSeeSettlements: true,
     allIndividuals: true,
     allEmployees: true,
     individualIds: [],
     employeeIds: [],
+    grantedIndividualIds: [],
+    grantedEmployeeIds: [],
   };
 }
 
@@ -81,21 +108,72 @@ export async function resolveAccessScope(
     see_all_employees: boolean;
     can_see_transactions: boolean;
     can_see_money: boolean;
+    can_see_hours: boolean;
+    can_see_billed_amounts: boolean;
+    can_see_employee_amounts: boolean;
+    can_see_agency_spread: boolean;
+    can_see_check_net: boolean;
+    can_see_taxes: boolean;
+    can_see_budgets: boolean;
+    can_see_employee_deals: boolean;
+    can_see_settlements: boolean;
   }>(
-    `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions, can_see_money
+    `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions, can_see_money,
+            can_see_hours, can_see_billed_amounts, can_see_employee_amounts,
+            can_see_agency_spread, can_see_check_net, can_see_taxes,
+            can_see_budgets, can_see_employee_deals, can_see_settlements
        FROM users WHERE id = $1`,
     [user.id],
   );
   const u = rows[0];
-  // No row (shouldn't happen) → safe default of full access, matching pre-feature behaviour.
-  if (!u) return fullAccess(user.id, user.role);
+  // The account was present when the session was checked, but it may have been
+  // removed or deactivated before this query. Fail closed during that race.
+  if (!u) {
+    return {
+      userId: user.id,
+      role: user.role,
+      full: false,
+      canSeeTransactions: false,
+      canSeeMoney: false,
+      canSeeHours: false,
+      canSeeBilledAmounts: false,
+      canSeeEmployeeAmounts: false,
+      canSeeAgencySpread: false,
+      canSeeCheckNet: false,
+      canSeeTaxes: false,
+      canSeeBudgets: false,
+      canSeeEmployeeDeals: false,
+      canSeeSettlements: false,
+      allIndividuals: false,
+      allEmployees: false,
+      individualIds: [],
+      employeeIds: [],
+      grantedIndividualIds: [],
+      grantedEmployeeIds: [],
+    };
+  }
+
+  const canSeeMoney = u.can_see_money !== false;
+  const canSeeHours = u.can_see_hours !== false;
+  const visibility: VisibilityPermissions = {
+    canSeeMoney,
+    canSeeHours,
+    canSeeBilledAmounts: canSeeMoney && u.can_see_billed_amounts !== false,
+    canSeeEmployeeAmounts: canSeeMoney && u.can_see_employee_amounts !== false,
+    canSeeAgencySpread: canSeeMoney && u.can_see_agency_spread !== false,
+    canSeeCheckNet: canSeeMoney && u.can_see_check_net !== false,
+    canSeeTaxes: canSeeMoney && u.can_see_taxes !== false,
+    canSeeBudgets: canSeeHours && u.can_see_budgets !== false,
+    canSeeEmployeeDeals: canSeeMoney && u.can_see_employee_deals === true,
+    canSeeSettlements: canSeeMoney && u.can_see_settlements === true,
+  };
 
   if (u.access_scope !== "scoped") {
     // Full-access user: sees all data, but the transactions / money toggles still apply.
     return {
       ...fullAccess(user.id, user.role),
       canSeeTransactions: u.can_see_transactions !== false,
-      canSeeMoney: u.can_see_money !== false,
+      ...visibility,
     };
   }
 
@@ -154,11 +232,13 @@ export async function resolveAccessScope(
     role: user.role,
     full: false,
     canSeeTransactions: u.can_see_transactions === true,
-    canSeeMoney: u.can_see_money !== false,
+    ...visibility,
     allIndividuals: seeAllIndividuals,
     allEmployees: seeAllEmployees,
     individualIds: [...individualIds],
     employeeIds: [...employeeIds],
+    grantedIndividualIds: grantedIndividuals,
+    grantedEmployeeIds: grantedEmployees,
   };
 }
 
@@ -172,6 +252,16 @@ export function canViewIndividual(scope: AccessScope, individualId: string): boo
 export function canViewEmployee(scope: AccessScope, employeeId: string): boolean {
   if (scope.full || scope.allEmployees) return true;
   return scope.employeeIds.includes(employeeId);
+}
+
+/** Sensitive employee data requires an explicit grant, not navigation expansion. */
+export function hasDirectEmployeeAccess(scope: AccessScope, employeeId: string): boolean {
+  return scope.full || scope.allEmployees || scope.grantedEmployeeIds.includes(employeeId);
+}
+
+/** Sensitive individual data requires an explicit grant, not navigation expansion. */
+export function hasDirectIndividualAccess(scope: AccessScope, individualId: string): boolean {
+  return scope.full || scope.allIndividuals || scope.grantedIndividualIds.includes(individualId);
 }
 
 /**
@@ -194,12 +284,35 @@ export function employeeScopeClause(scope: AccessScope, column: string, params: 
 }
 
 /**
- * Transaction-level rows are always scoped by the INDIVIDUAL they belong to: the
- * visible-individual set already folds in the individuals connected to any granted
- * employee, so this one predicate covers the grid, drill-throughs, employee-page
- * activity and every transaction-derived aggregate. Rows with no individual
- * (unmatched exceptions) are admin-only, so a scoped user never sees them.
+ * Restrict transaction rows to the grants an administrator made explicitly.
+ * Connected people remain visible for navigation, but never grant ledger access:
+ * an individual grant permits that individual's rows, while an employee grant
+ * permits only that employee's rows. The see-all switches act as wildcard grants
+ * on their respective axes. Rows unmatched on both axes remain full-access only.
  */
-export function transactionScopeClause(scope: AccessScope, individualColumn: string, params: unknown[]): string {
-  return individualScopeClause(scope, individualColumn, params);
+export function transactionScopeClause(
+  scope: AccessScope,
+  individualColumn: string,
+  employeeColumn: string,
+  params: unknown[],
+): string {
+  if (scope.full) return "";
+
+  const permitted: string[] = [];
+
+  if (scope.allIndividuals) {
+    permitted.push(`${individualColumn} IS NOT NULL`);
+  } else if (scope.grantedIndividualIds.length > 0) {
+    params.push(scope.grantedIndividualIds);
+    permitted.push(`${individualColumn} = ANY($${params.length}::uuid[])`);
+  }
+
+  if (scope.allEmployees) {
+    permitted.push(`${employeeColumn} IS NOT NULL`);
+  } else if (scope.grantedEmployeeIds.length > 0) {
+    params.push(scope.grantedEmployeeIds);
+    permitted.push(`${employeeColumn} = ANY($${params.length}::uuid[])`);
+  }
+
+  return permitted.length > 0 ? ` AND (${permitted.join(" OR ")})` : " AND FALSE";
 }

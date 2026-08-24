@@ -8,6 +8,7 @@ import {
   listStrategyRevisions,
   type UpdateStrategyInput,
 } from "@/lib/manage/calculation-strategies";
+import { refreshSettlementObligations } from "@/lib/manage/settlements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,6 +48,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   };
   const result = await updateStrategy(getPool(), patch, user.id, reason);
   if (!result.ok) return resultResponse(result);
-  const computed = await explainStrategy(getPool(), id);
-  return NextResponse.json({ ok: true, data: { id, computed } });
+  const pool = getPool();
+  const computed = await explainStrategy(pool, id);
+  const settlementRefresh = await refreshSettlementObligations(pool, {}, user.id);
+  return NextResponse.json({
+    ok: true,
+    data: { id, computed },
+    settlements: settlementRefresh.ok ? settlementRefresh.data : null,
+    settlementWarning: settlementRefresh.ok ? null : settlementRefresh.message,
+  });
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { listPrograms } from "@/lib/data/app-queries";
 import { createProgram, type ProgramInput } from "@/lib/manage/programs";
@@ -16,7 +17,15 @@ export async function GET() {
   try {
     const pool = getPool();
     const data = await listPrograms(pool);
-    return NextResponse.json({ ok: true, data });
+    const scope = await resolveAccessScope(pool, user);
+    return NextResponse.json({
+      ok: true,
+      data: data.map((program) => ({
+        ...program,
+        agencyRate: scope.canSeeBilledAmounts ? program.agencyRate : null,
+        internalRate: scope.canSeeEmployeeAmounts ? program.internalRate : null,
+      })),
+    });
   } catch (error) {
     return jsonError(redactError(error), 500);
   }

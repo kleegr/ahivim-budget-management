@@ -1,8 +1,9 @@
-import { type NextRequest } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import { readJson, resultResponse, sameOriginOrFail, jsonError } from "@/lib/http";
 import { duplicateStrategy } from "@/lib/manage/calculation-strategies";
+import { refreshSettlementObligations } from "@/lib/manage/settlements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,6 +15,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (cross) return cross;
   const { id } = await params;
   const body = await readJson(request);
-  const result = await duplicateStrategy(getPool(), { id, label: body.label ? String(body.label) : undefined }, user.id);
-  return resultResponse(result, 201);
+  const pool = getPool();
+  const result = await duplicateStrategy(pool, { id, label: body.label ? String(body.label) : undefined }, user.id);
+  if (!result.ok) return resultResponse(result);
+  const settlementRefresh = await refreshSettlementObligations(pool, {}, user.id);
+  return NextResponse.json({
+    ok: true,
+    data: result.data,
+    settlements: settlementRefresh.ok ? settlementRefresh.data : null,
+    settlementWarning: settlementRefresh.ok ? null : settlementRefresh.message,
+  }, { status: 201 });
 }

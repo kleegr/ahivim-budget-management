@@ -21,6 +21,7 @@ export async function GET() {
     candidatesPresent: present,
     authSecretConfigured: Boolean(process.env.AUTH_SECRET?.trim()),
     migrationTokenConfigured: Boolean(process.env.MIGRATION_TOKEN?.trim()),
+    cronSecretConfigured: Boolean(process.env.CRON_SECRET?.trim()),
     bootstrapAdminConfigured: Boolean(process.env.BOOTSTRAP_ADMIN_EMAIL?.trim()),
     nodeEnv: process.env.NODE_ENV ?? null,
   });

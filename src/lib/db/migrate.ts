@@ -1,6 +1,6 @@
 import { getPool } from "./index";
 import { MIGRATIONS } from "./migrations.generated";
-import { createHash } from "node:crypto";
+import { migrationChecksum, migrationChecksumMatches } from "./migration-checksum";
 import type { PgLikePool } from "@/lib/import/commit";
 
 /**
@@ -21,10 +21,18 @@ const resolve = (pool: MaybePool): PgLikePool => pool ?? (getPool() as unknown a
  */
 
 export const LEDGER_TABLE = "_ahivim_migrations";
+export const MIGRATION_ADVISORY_LOCK = 471114723;
+
+export class MigrationLockUnavailableError extends Error {
+  constructor() {
+    super("Another process is applying database migrations.");
+    this.name = "MigrationLockUnavailableError";
+  }
+}
 
 export interface MigrationOutcome {
   name: string;
-  status: "applied" | "skipped" | "checksum_mismatch";
+  status: "applied" | "skipped";
   statements?: number;
   error?: string;
 }
@@ -34,6 +42,11 @@ export interface MigrationRunResult {
   outcomes: MigrationOutcome[];
   applied: number;
   skipped: number;
+}
+
+export interface RunMigrationsOptions {
+  /** Auto-migrate uses a non-blocking attempt; operator-triggered runs wait. */
+  waitForLock?: boolean;
 }
 
 export async function ledgerExists(explicitPool?: MaybePool): Promise<boolean> {
@@ -64,74 +77,96 @@ function splitStatements(sql: string): string[] {
     });
 }
 
-export async function runMigrations(explicitPool?: MaybePool): Promise<MigrationRunResult> {
+export async function runMigrations(
+  explicitPool?: MaybePool,
+  options: RunMigrationsOptions = {},
+): Promise<MigrationRunResult> {
   const pool = resolve(explicitPool);
-  const existedBefore = await ledgerExists(pool);
+  const client = await pool.connect();
+  let lockAcquired = false;
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ${LEDGER_TABLE} (
-      name        text PRIMARY KEY,
-      checksum    text NOT NULL,
-      applied_at  timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-
-  const { rows: applied } = await pool.query<{ name: string; checksum: string }>(
-    `SELECT name, checksum FROM ${LEDGER_TABLE}`,
-  );
-  const appliedMap = new Map(applied.map((r) => [r.name, r.checksum]));
-
-  const outcomes: MigrationOutcome[] = [];
-
-  for (const migration of MIGRATIONS) {
-    const checksum = createHash("sha256").update(migration.sql).digest("hex");
-    const previous = appliedMap.get(migration.name);
-
-    if (previous !== undefined) {
-      outcomes.push({
-        name: migration.name,
-        status: previous === checksum ? "skipped" : "checksum_mismatch",
-        error:
-          previous === checksum
-            ? undefined
-            : "This migration has already been applied but its contents have changed. " +
-              "Add a new migration instead of editing an applied one.",
-      });
-      continue;
+  try {
+    if (options.waitForLock === false) {
+      const { rows } = await client.query<{ got: boolean }>(
+        `SELECT pg_try_advisory_lock($1) AS got`,
+        [MIGRATION_ADVISORY_LOCK],
+      );
+      if (rows[0]?.got !== true) throw new MigrationLockUnavailableError();
+    } else {
+      await client.query(`SELECT pg_advisory_lock($1)`, [MIGRATION_ADVISORY_LOCK]);
     }
+    lockAcquired = true;
 
-    const statements = splitStatements(migration.sql);
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      for (const statement of statements) {
-        await client.query(statement);
+    const { rows: ledgerRows } = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = current_schema() AND table_name = $1
+       ) AS exists`,
+      [LEDGER_TABLE],
+    );
+    const existedBefore = ledgerRows[0]?.exists === true;
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ${LEDGER_TABLE} (
+        name        text PRIMARY KEY,
+        checksum    text NOT NULL,
+        applied_at  timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+
+    const { rows: applied } = await client.query<{ name: string; checksum: string }>(
+      `SELECT name, checksum FROM ${LEDGER_TABLE}`,
+    );
+    const appliedMap = new Map(applied.map((row) => [row.name, row.checksum]));
+    const outcomes: MigrationOutcome[] = [];
+
+    for (const migration of MIGRATIONS) {
+      const checksum = migrationChecksum(migration.sql);
+      const previous = appliedMap.get(migration.name);
+
+      if (previous !== undefined) {
+        if (!migrationChecksumMatches(previous, migration.sql)) {
+          throw new Error(
+            `Migration ${migration.name} checksum mismatch. ` +
+            "Add a new migration instead of editing an applied one.",
+          );
+        }
+        outcomes.push({ name: migration.name, status: "skipped" });
+        continue;
       }
-      await client.query(
-        `INSERT INTO ${LEDGER_TABLE} (name, checksum) VALUES ($1, $2)`,
-        [migration.name, checksum],
-      );
-      await client.query("COMMIT");
-      outcomes.push({ name: migration.name, status: "applied", statements: statements.length });
-    } catch (error) {
-      await client.query("ROLLBACK");
-      // The message may name a column or constraint, never a connection string.
-      throw new Error(
-        `Migration ${migration.name} failed and was rolled back: ${
-          error instanceof Error ? error.message : "unknown error"
-        }`,
-      );
-    } finally {
-      client.release();
-    }
-  }
 
-  return {
-    ledgerExistedBefore: existedBefore,
-    outcomes,
-    applied: outcomes.filter((o) => o.status === "applied").length,
-    skipped: outcomes.filter((o) => o.status === "skipped").length,
-  };
+      const statements = splitStatements(migration.sql);
+      try {
+        await client.query("BEGIN");
+        for (const statement of statements) await client.query(statement);
+        await client.query(
+          `INSERT INTO ${LEDGER_TABLE} (name, checksum) VALUES ($1, $2)`,
+          [migration.name, checksum],
+        );
+        await client.query("COMMIT");
+        outcomes.push({ name: migration.name, status: "applied", statements: statements.length });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw new Error(
+          `Migration ${migration.name} failed and was rolled back: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        );
+      }
+    }
+
+    return {
+      ledgerExistedBefore: existedBefore,
+      outcomes,
+      applied: outcomes.filter((outcome) => outcome.status === "applied").length,
+      skipped: outcomes.filter((outcome) => outcome.status === "skipped").length,
+    };
+  } finally {
+    if (lockAcquired) {
+      await client.query(`SELECT pg_advisory_unlock($1)`, [MIGRATION_ADVISORY_LOCK]).catch(() => undefined);
+    }
+    client.release();
+  }
 }
 
 /** Table names present in the current schema, for the health report. */

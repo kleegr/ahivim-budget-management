@@ -1,5 +1,6 @@
 import type { PgLikePool } from "@/lib/import/commit";
 import { transactionScopeClause, type AccessScope } from "@/lib/auth/access";
+import { redactTransactionFields } from "@/lib/auth/money-redaction";
 
 /**
  * Read model for the Transactions workspace (the "Ahivim" grid).
@@ -58,9 +59,11 @@ export async function listTransactionsForGrid(
   scope?: AccessScope,
   opts?: { employeeId?: string },
 ): Promise<GridTransaction[]> {
-  // A scoped user only ever sees transactions for the individuals they may view.
+  // Ledger access follows direct grants, not the wider connected-navigation sets.
   const params: unknown[] = [];
-  const scopeClause = scope ? transactionScopeClause(scope, "t.individual_id", params) : "";
+  const scopeClause = scope
+    ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
+    : "";
   let employeeClause = "";
   if (opts?.employeeId && /^[0-9a-f-]{36}$/i.test(opts.employeeId)) {
     params.push(opts.employeeId);
@@ -138,7 +141,15 @@ export async function listTransactionsForGrid(
     ORDER BY t.check_date DESC NULLS LAST, t.check_number, t.source_row_number NULLS LAST
   `, params);
 
-  return rows.map((r) => ({
+  return rows.map((r) => {
+    const rowScope = scope && !(
+      scope.full
+      || scope.allEmployees
+      || (r.employee_id !== null && scope.grantedEmployeeIds.includes(r.employee_id))
+    )
+      ? { ...scope, canSeeCheckNet: false, canSeeTaxes: false }
+      : scope;
+    return redactTransactionFields({
     id: r.id,
     payTo: r.pay_to,
     checkDate: r.check_date,
@@ -167,6 +178,7 @@ export async function listTransactionsForGrid(
     serviceSessionId: r.service_session_id,
     isPaid: r.is_paid,
     paidAt: r.paid_at,
-    paidNote: r.paid_note,
-  }));
+      paidNote: r.paid_note,
+    }, rowScope);
+  });
 }

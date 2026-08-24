@@ -2,6 +2,8 @@ import type { PgLikePool } from "@/lib/import/commit";
 import { ok, fail, type Result } from "@/lib/manage/errors";
 import { recordChange } from "@/lib/manage/audit";
 import { similarity } from "@/lib/business/name-matching";
+import { repointSettlementPerson } from "@/lib/manage/settlement-person-merge";
+import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -26,6 +28,7 @@ export async function mergeEmployees(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await acquireSettlementSourceLock(client);
     const both = await client.query<{ id: string; display_name: string; normalized_name: string; status: string }>(
       `SELECT id, display_name, normalized_name, status FROM employees WHERE id = ANY($1::uuid[]) FOR UPDATE`,
       [[keepId, mergeId]],
@@ -41,14 +44,40 @@ export async function mergeEmployees(
       return fail("conflict", "That employee is already archived.");
     }
 
+    const dealOwners = await client.query<{ employee_id: string }>(
+      `SELECT employee_id
+         FROM employee_deals
+        WHERE employee_id = ANY($1::uuid[])
+        ORDER BY id
+        FOR UPDATE`,
+      [[keepId, mergeId]],
+    );
+    const keepDealCount = dealOwners.rows.filter((row) => row.employee_id === keepId).length;
+    const mergeDealCount = dealOwners.rows.filter((row) => row.employee_id === mergeId).length;
+    if (keepDealCount > 0 && mergeDealCount > 0) {
+      await client.query("ROLLBACK");
+      return fail(
+        "conflict",
+        "Both employees have deal history. Resolve which deal history should remain before merging them.",
+      );
+    }
+
     // Repoint every table with an employee_id column (robust to schema growth).
     const cols = await client.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.columns
         WHERE table_schema = current_schema() AND column_name = 'employee_id'`,
     );
-    const repointed: Record<string, number> = {};
+    const repointed: Record<string, number> = await repointSettlementPerson(client, "employee", keepId, mergeId);
+    if (mergeDealCount > 0) {
+      const deals = await client.query(
+        `UPDATE employee_deals SET employee_id = $1, updated_at = now() WHERE employee_id = $2`,
+        [keepId, mergeId],
+      );
+      if (deals.rowCount) repointed.employee_deals = deals.rowCount;
+    }
     for (const { table_name } of cols.rows) {
       if (!/^[a-z_][a-z0-9_]*$/.test(table_name)) continue;
+      if (["employee_deals", "settlement_events", "settlement_obligations"].includes(table_name)) continue;
       const res = await client.query(
         `UPDATE "${table_name}" SET employee_id = $1 WHERE employee_id = $2`,
         [keepId, mergeId],

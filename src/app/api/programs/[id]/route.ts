@@ -1,8 +1,9 @@
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { updateProgram, type ProgramInput } from "@/lib/manage/programs";
+import { refreshSettlementObligations } from "@/lib/manage/settlements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,7 +32,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       user.id,
       reason,
     );
-    return resultResponse(result, 200);
+    if (!result.ok) return resultResponse(result);
+    const settlementRefresh = await refreshSettlementObligations(pool, {}, user.id);
+    return NextResponse.json({
+      ok: true,
+      data: result.data,
+      settlements: settlementRefresh.ok ? settlementRefresh.data : null,
+      settlementWarning: settlementRefresh.ok ? null : settlementRefresh.message,
+    });
   } catch (error) {
     return jsonError(redactError(error), 500);
   }

@@ -1,0 +1,110 @@
+import { describe, expect, it, vi } from "vitest";
+import { fullAccess, type AccessScope } from "@/lib/auth/access";
+import {
+  getSettlementDashboard,
+  settlementHistoryScopeWhere,
+  withLiveIndividualPace,
+} from "@/lib/data/settlements";
+import type { PgLikePool } from "@/lib/import/commit";
+
+const EMPLOYEE_GRANTED = "00000000-0000-4000-8000-000000000001";
+const EMPLOYEE_CONNECTED = "00000000-0000-4000-8000-000000000002";
+const INDIVIDUAL_GRANTED = "00000000-0000-4000-8000-000000000003";
+const INDIVIDUAL_CONNECTED = "00000000-0000-4000-8000-000000000004";
+
+function scoped(overrides: Partial<AccessScope> = {}): AccessScope {
+  return {
+    ...fullAccess("viewer-1", "viewer"),
+    full: false,
+    allIndividuals: false,
+    allEmployees: false,
+    individualIds: [],
+    employeeIds: [],
+    grantedIndividualIds: [],
+    grantedEmployeeIds: [],
+    ...overrides,
+  };
+}
+
+describe("settlement history SQL scope", () => {
+  it("uses an explicit employee grant without widening through connected people", () => {
+    const params: unknown[] = [];
+    const where = settlementHistoryScopeWhere(scoped({
+      employeeIds: [EMPLOYEE_GRANTED, EMPLOYEE_CONNECTED],
+      individualIds: [INDIVIDUAL_CONNECTED],
+      grantedEmployeeIds: [EMPLOYEE_GRANTED],
+    }), params);
+
+    expect(where).toBe("WHERE (se.employee_id = ANY($1::uuid[]))");
+    expect(params).toEqual([[EMPLOYEE_GRANTED]]);
+    expect(params).not.toContainEqual([EMPLOYEE_CONNECTED]);
+    expect(params).not.toContainEqual([INDIVIDUAL_CONNECTED]);
+  });
+
+  it("combines direct grants and supports all-person overrides", () => {
+    const params: unknown[] = ["existing"];
+    const where = settlementHistoryScopeWhere(scoped({
+      allEmployees: true,
+      grantedIndividualIds: [INDIVIDUAL_GRANTED],
+    }), params);
+
+    expect(where).toBe(
+      "WHERE (se.employee_id IS NOT NULL OR se.individual_id = ANY($2::uuid[]))",
+    );
+    expect(params).toEqual(["existing", [INDIVIDUAL_GRANTED]]);
+  });
+
+  it("keeps full and absent scopes unchanged and denies an empty scoped viewer", () => {
+    const fullParams: unknown[] = [];
+    expect(settlementHistoryScopeWhere(fullAccess("admin-1", "admin"), fullParams)).toBe("");
+    expect(fullParams).toEqual([]);
+
+    const absentParams: unknown[] = [];
+    expect(settlementHistoryScopeWhere(undefined, absentParams)).toBe("");
+    expect(absentParams).toEqual([]);
+
+    const emptyParams: unknown[] = [];
+    expect(settlementHistoryScopeWhere(scoped(), emptyParams)).toBe("WHERE FALSE");
+    expect(emptyParams).toEqual([]);
+  });
+
+  it("places the authorization predicate before settlement history ordering and limit", async () => {
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      void sql;
+      void params;
+      return { rows: [] };
+    });
+    const pool = { query, connect: vi.fn() } as unknown as PgLikePool;
+    const scope = scoped({ grantedEmployeeIds: [EMPLOYEE_GRANTED] });
+
+    await getSettlementDashboard(pool, scope);
+
+    const historyCall = query.mock.calls.find(([sql]) => String(sql).includes("SELECT se.id"));
+    expect(historyCall).toBeDefined();
+    const sql = String(historyCall?.[0]);
+    expect(sql).toContain("WHERE (se.employee_id = ANY($1::uuid[]))");
+    expect(sql.indexOf("WHERE (se.employee_id")).toBeLessThan(sql.indexOf("ORDER BY se.created_at"));
+    expect(sql.indexOf("ORDER BY se.created_at")).toBeLessThan(sql.indexOf("LIMIT 250"));
+    expect(historyCall?.[1]).toEqual([[EMPLOYEE_GRANTED]]);
+  });
+});
+
+describe("live settlement pace", () => {
+  it("recomputes elapsed time and status from the read date", () => {
+    const calculation = withLiveIndividualPace(
+      {
+        flow: "individual_plan",
+        plannedHours: "100",
+        actualHours: "80",
+        timeElapsedPercent: "0.100000",
+        paceStatus: "behind_pace",
+      },
+      "2026-01-01",
+      "2026-12-31",
+      new Date("2026-07-01T12:00:00Z"),
+    );
+
+    expect(calculation.timeElapsedPercent).toBe("0.498630");
+    expect(calculation.paceStatus).toBe("ahead_of_pace");
+  });
+});

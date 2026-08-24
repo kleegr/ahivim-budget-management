@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { listTables, LEDGER_TABLE } from "@/lib/db/migrate";
 import { MIGRATIONS } from "@/lib/db/migrations.generated";
+import { migrationChecksumMatches } from "@/lib/db/migration-checksum";
 import { ensureMigrationsApplied } from "@/lib/db/auto-migrate";
 import { ensurePostMigrationTasks } from "@/lib/db/post-migrate";
 import { apiUser } from "@/lib/auth/session";
@@ -39,9 +40,14 @@ export async function GET() {
   // Health is computed server-side; only the boolean crosses the public surface.
   let healthy = false;
   try {
-    const { rows } = await pool.query<{ name: string }>(`SELECT name FROM ${LEDGER_TABLE}`);
-    const applied = new Set(rows.map((r) => r.name));
-    healthy = MIGRATIONS.length > 0 && MIGRATIONS.every((m) => applied.has(m.name));
+    const { rows } = await pool.query<{ name: string; checksum: string }>(
+      `SELECT name, checksum FROM ${LEDGER_TABLE}`,
+    );
+    const applied = new Map(rows.map((row) => [row.name, row.checksum]));
+    healthy = MIGRATIONS.length > 0 && MIGRATIONS.every((migration) =>
+      typeof applied.get(migration.name) === "string"
+        && migrationChecksumMatches(applied.get(migration.name)!, migration.sql),
+    );
   } catch {
     healthy = false;
   }

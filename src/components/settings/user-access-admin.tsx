@@ -26,6 +26,15 @@ interface UserRow {
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
   canSeeMoney: boolean;
+  canSeeHours: boolean;
+  canSeeBilledAmounts: boolean;
+  canSeeEmployeeAmounts: boolean;
+  canSeeAgencySpread: boolean;
+  canSeeCheckNet: boolean;
+  canSeeTaxes: boolean;
+  canSeeBudgets: boolean;
+  canSeeEmployeeDeals: boolean;
+  canSeeSettlements: boolean;
   individualCount: number;
   employeeCount: number;
 }
@@ -36,16 +45,34 @@ interface AccessState {
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
   canSeeMoney: boolean;
+  canSeeHours: boolean;
+  canSeeBilledAmounts: boolean;
+  canSeeEmployeeAmounts: boolean;
+  canSeeAgencySpread: boolean;
+  canSeeCheckNet: boolean;
+  canSeeTaxes: boolean;
+  canSeeBudgets: boolean;
+  canSeeEmployeeDeals: boolean;
+  canSeeSettlements: boolean;
   individualIds: Set<string>;
   employeeIds: Set<string>;
 }
 
 const emptyAccess = (): AccessState => ({
-  accessScope: "full",
+  accessScope: "scoped",
   seeAllIndividuals: false,
   seeAllEmployees: false,
-  canSeeTransactions: true,
-  canSeeMoney: true,
+  canSeeTransactions: false,
+  canSeeMoney: false,
+  canSeeHours: false,
+  canSeeBilledAmounts: false,
+  canSeeEmployeeAmounts: false,
+  canSeeAgencySpread: false,
+  canSeeCheckNet: false,
+  canSeeTaxes: false,
+  canSeeBudgets: false,
+  canSeeEmployeeDeals: false,
+  canSeeSettlements: false,
   individualIds: new Set(),
   employeeIds: new Set(),
 });
@@ -56,9 +83,46 @@ const accessToBody = (a: AccessState) => ({
   seeAllEmployees: a.seeAllEmployees,
   canSeeTransactions: a.canSeeTransactions,
   canSeeMoney: a.canSeeMoney,
+  canSeeHours: a.canSeeHours,
+  canSeeBilledAmounts: a.canSeeBilledAmounts,
+  canSeeEmployeeAmounts: a.canSeeEmployeeAmounts,
+  canSeeAgencySpread: a.canSeeAgencySpread,
+  canSeeCheckNet: a.canSeeCheckNet,
+  canSeeTaxes: a.canSeeTaxes,
+  canSeeBudgets: a.canSeeBudgets && a.canSeeHours,
+  canSeeEmployeeDeals: a.canSeeEmployeeDeals,
+  canSeeSettlements: a.canSeeSettlements,
   individualIds: [...a.individualIds],
   employeeIds: [...a.employeeIds],
 });
+
+type VisibilityKey =
+  | "canSeeHours"
+  | "canSeeBilledAmounts"
+  | "canSeeEmployeeAmounts"
+  | "canSeeAgencySpread"
+  | "canSeeCheckNet"
+  | "canSeeTaxes"
+  | "canSeeBudgets"
+  | "canSeeEmployeeDeals"
+  | "canSeeSettlements";
+
+const VISIBILITY_OPTIONS: Array<{
+  key: VisibilityKey;
+  label: string;
+  description: string;
+  requiresMoney?: boolean;
+}> = [
+  { key: "canSeeHours", label: "Hours", description: "authorized, scheduled and billed time" },
+  { key: "canSeeBilledAmounts", label: "Funder amounts", description: "rates and totals billed to the funder", requiresMoney: true },
+  { key: "canSeeEmployeeAmounts", label: "Employee amounts", description: "base amounts earned or payable", requiresMoney: true },
+  { key: "canSeeAgencySpread", label: "Agency spread", description: "the billed-to-base difference", requiresMoney: true },
+  { key: "canSeeCheckNet", label: "Check net", description: "net pay recorded on employee checks", requiresMoney: true },
+  { key: "canSeeTaxes", label: "Taxes and withholding", description: "gross, net and payroll withholding details", requiresMoney: true },
+  { key: "canSeeBudgets", label: "Budgets", description: "individual budgets and financial plans; enabling this also enables Hours" },
+  { key: "canSeeEmployeeDeals", label: "Employee deals", description: "deal terms and calculated obligations", requiresMoney: true },
+  { key: "canSeeSettlements", label: "Settlements", description: "balances, payments and action history", requiresMoney: true },
+];
 
 /* ------------------------------------------------------------ multi-select */
 
@@ -145,6 +209,17 @@ function AccessConfig({
   }
   const scoped = value.accessScope === "scoped";
   const set = (patch: Partial<AccessState>) => onChange({ ...value, ...patch });
+  const setVisibility = (key: VisibilityKey, checked: boolean) => {
+    if (key === "canSeeHours" && !checked) {
+      set({ canSeeHours: false, canSeeBudgets: false });
+      return;
+    }
+    if (key === "canSeeBudgets" && checked) {
+      set({ canSeeBudgets: true, canSeeHours: true });
+      return;
+    }
+    set({ [key]: checked } as Partial<AccessState>);
+  };
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2">
@@ -207,9 +282,33 @@ function AccessConfig({
       </label>
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={value.canSeeMoney} onChange={(e) => set({ canSeeMoney: e.target.checked })} />
-        <span>Can see dollar amounts</span>
-        <span className="text-xs text-[var(--color-ink-faint)]">— turn off for an hours-only login (sees hours, never money)</span>
+        <span className="font-medium">Allow dollar amounts</span>
+        <span className="text-xs text-[var(--color-ink-faint)]">master switch for every money permission below</span>
       </label>
+
+      <fieldset className="border-t border-[var(--color-rule)] pt-3">
+        <legend className="eyebrow pr-2 text-[var(--color-ink-faint)]">Visible information</legend>
+        <div className="grid gap-x-5 gap-y-2 sm:grid-cols-2">
+          {VISIBILITY_OPTIONS.map((option) => {
+            const unavailable = option.requiresMoney === true && !value.canSeeMoney;
+            return (
+              <label key={option.key} className={`flex items-start gap-2 text-sm ${unavailable ? "opacity-50" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={value[option.key]}
+                  onChange={(e) => setVisibility(option.key, e.target.checked)}
+                  disabled={unavailable}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="block font-medium">{option.label}</span>
+                  <span className="block text-xs text-[var(--color-ink-faint)]">{option.description}</span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </fieldset>
     </div>
   );
 }
@@ -228,7 +327,7 @@ export default function UserAccessAdmin({
   employees: Option[];
 }) {
   const router = useRouter();
-  const [users] = useState(initialUsers);
+  const users = initialUsers;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -298,6 +397,15 @@ export default function UserAccessAdmin({
           seeAllEmployees: boolean;
           canSeeTransactions: boolean;
           canSeeMoney: boolean;
+          canSeeHours: boolean;
+          canSeeBilledAmounts: boolean;
+          canSeeEmployeeAmounts: boolean;
+          canSeeAgencySpread: boolean;
+          canSeeCheckNet: boolean;
+          canSeeTaxes: boolean;
+          canSeeBudgets: boolean;
+          canSeeEmployeeDeals: boolean;
+          canSeeSettlements: boolean;
           individualIds: string[];
           employeeIds: string[];
         };
@@ -309,6 +417,15 @@ export default function UserAccessAdmin({
           seeAllEmployees: data.access.seeAllEmployees,
           canSeeTransactions: data.access.canSeeTransactions,
           canSeeMoney: data.access.canSeeMoney !== false,
+          canSeeHours: data.access.canSeeHours !== false,
+          canSeeBilledAmounts: data.access.canSeeBilledAmounts !== false,
+          canSeeEmployeeAmounts: data.access.canSeeEmployeeAmounts !== false,
+          canSeeAgencySpread: data.access.canSeeAgencySpread !== false,
+          canSeeCheckNet: data.access.canSeeCheckNet !== false,
+          canSeeTaxes: data.access.canSeeTaxes !== false,
+          canSeeBudgets: data.access.canSeeBudgets !== false && data.access.canSeeHours !== false,
+          canSeeEmployeeDeals: data.access.canSeeEmployeeDeals === true,
+          canSeeSettlements: data.access.canSeeSettlements === true,
           individualIds: new Set(data.access.individualIds),
           employeeIds: new Set(data.access.employeeIds),
         });
@@ -377,6 +494,12 @@ export default function UserAccessAdmin({
     }
     if (!u.canSeeTransactions) parts.push("no transactions");
     if (!u.canSeeMoney) parts.push("hours only");
+    const visibleCategories = VISIBILITY_OPTIONS.filter(
+      (option) => u[option.key] && (!option.requiresMoney || u.canSeeMoney),
+    ).length;
+    if (visibleCategories < VISIBILITY_OPTIONS.length) {
+      parts.push(`${visibleCategories}/${VISIBILITY_OPTIONS.length} info areas`);
+    }
     return parts.join(" · ");
   };
 

@@ -1,10 +1,12 @@
 import type { PgLikePool, PgLikeClient } from "@/lib/import/commit";
 import { ok, fail, type Result } from "@/lib/manage/errors";
 import { recordChange } from "@/lib/manage/audit";
+import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
 import { dec, toMoney, toHours } from "@/lib/money";
 import {
   computeStrategy,
   currentBudgetPeriod,
+  effectiveBilledHours,
   type StrategyResult,
 } from "@/lib/business/calculation-strategy";
 import { calculatePeriodElapsed, classifyUtilization, type UtilizationStatus } from "@/lib/business/utilization";
@@ -145,8 +147,14 @@ function effectiveLineRate(args: {
 
 export async function listStrategies(
   pool: PgLikePool,
-  opts: { individualId?: string; includeArchived?: boolean; withAnalytics?: boolean } = {},
+  opts: {
+    individualId?: string;
+    includeArchived?: boolean;
+    withAnalytics?: boolean;
+    asOf?: string;
+  } = {},
 ): Promise<{ rows: StrategyGridRow[]; programs: ProgramRate[] }> {
+  const asOf = (opts.asOf ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
   const params: unknown[] = [];
   const where: string[] = [];
   if (opts.individualId) {
@@ -223,12 +231,14 @@ export async function listStrategies(
     overrideFromByStrategy.set(l.strategy_id, of);
   }
 
+  const rateByStrategy = new Map<string, Record<string, string>>();
   const rows: StrategyGridRow[] = strategies.map((s) => {
     const hours = hoursByStrategy.get(s.id) ?? {};
     const overrides = overrideByStrategy.get(s.id) ?? {};
     const overrideFroms = overrideFromByStrategy.get(s.id) ?? {};
     const active = s.individual_status === "active";
-    const period = currentBudgetPeriod(s.renewal_date, active);
+    const period = currentBudgetPeriod(s.renewal_date, active, asOf);
+    const rates: Record<string, string> = {};
     const strategyLines = Object.entries(hours).map(([programId, h]) => {
       const def = rateAsOf(schedules, programId, s.renewal_date);
       const { rate, isOverride } = effectiveLineRate({
@@ -237,6 +247,7 @@ export async function listStrategies(
         renewalDate: s.renewal_date,
         defaultRate: def,
       });
+      rates[programId] = rate;
       return {
         programLabel: programId,
         programId,
@@ -246,6 +257,7 @@ export async function listStrategies(
         defaultRate: def,
       };
     });
+    rateByStrategy.set(s.id, rates);
     const computed = computeStrategy({
       lines: strategyLines,
       monthDivisor: s.month_divisor,
@@ -284,13 +296,18 @@ export async function listStrategies(
   });
 
   if (opts.withAnalytics && rows.length > 0) {
-    await attachStrategyAnalytics(pool, rows);
+    await attachStrategyAnalytics(pool, rows, rateByStrategy, asOf);
   }
   return { rows, programs };
 }
 
 /** Bulk actual-vs-plan analytics for a set of strategy rows (2 aggregate queries). */
-async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]): Promise<void> {
+async function attachStrategyAnalytics(
+  pool: PgLikePool,
+  rows: StrategyGridRow[],
+  rateByStrategy: ReadonlyMap<string, Record<string, string>>,
+  asOf: string,
+): Promise<void> {
   const individualIds = [...new Set(rows.map((r) => r.individualId))];
 
   // Billed actuals per (individual, program), WINDOWED to each individual's
@@ -313,11 +330,11 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
   // so those individuals fall back to their full billed history (a LEFT JOIN
   // that leaves the window null). This keeps paced budgets honest without
   // zeroing out plans that simply have no dated period.
-  const billed = await pool.query<{ individual_id: string; program_id: string; hours: string; internal: string; observations: string }>(
+  const billed = await pool.query<{ individual_id: string; program_id: string; program_code: string; hours: string; internal: string; observations: string }>(
     `WITH win AS (
        SELECT * FROM unnest($1::uuid[], $2::date[], $3::date[]) AS w(individual_id, start_date, end_date)
      )
-     SELECT t.individual_id, t.program_id,
+     SELECT t.individual_id, t.program_id, pr.code AS program_code,
             COALESCE(sum(t.imported_hours),0)::text AS hours,
             COALESCE(sum(COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
                      t.internal_rate_applied * t.imported_hours, 0)),0)::text AS internal,
@@ -329,14 +346,14 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
         AND (
           -- Day Hab / Supplemental always bill on the calendar year …
           (pr.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
-             AND t.period_begin >= make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int, 1, 1)
-             AND t.period_begin <  make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int + 1, 1, 1))
+             AND t.period_begin >= make_date(EXTRACT(YEAR FROM $5::date)::int, 1, 1)
+             AND t.period_begin <  make_date(EXTRACT(YEAR FROM $5::date)::int + 1, 1, 1))
           -- … everything else uses the individual's own renewal window.
           OR (pr.code NOT IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
              AND (w.individual_id IS NULL OR (t.period_begin >= w.start_date AND t.period_begin <= w.end_date)))
         )
-      GROUP BY t.individual_id, t.program_id`,
-    [winIds, winStarts, winEnds, individualIds],
+      GROUP BY t.individual_id, t.program_id, pr.code`,
+    [winIds, winStarts, winEnds, individualIds, asOf],
   );
   // Pending scheduled per (individual, program).
   const scheduled = await pool.query<{ individual_id: string; program_id: string; hours: string; internal: string }>(
@@ -351,8 +368,15 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
   );
 
   const key = (i: string, p: string) => `${i}:${p}`;
-  const billedMap = new Map<string, { hours: string; internal: string; observations: string }>();
-  for (const r of billed.rows) billedMap.set(key(r.individual_id, r.program_id), { hours: r.hours, internal: r.internal, observations: r.observations });
+  const billedMap = new Map<string, { code: string; hours: string; internal: string; observations: string }>();
+  for (const r of billed.rows) {
+    billedMap.set(key(r.individual_id, r.program_id), {
+      code: r.program_code,
+      hours: r.hours,
+      internal: r.internal,
+      observations: r.observations,
+    });
+  }
   const schedMap = new Map<string, { hours: string; internal: string }>();
   for (const r of scheduled.rows) schedMap.set(key(r.individual_id, r.program_id), { hours: r.hours, internal: r.internal });
 
@@ -364,7 +388,12 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
     for (const pid of programIds) {
       planned = planned.plus(dec(row.hours[pid] ?? 0));
       const b = billedMap.get(key(row.individualId, pid));
-      if (b) { actualH = actualH.plus(dec(b.hours)); actualI = actualI.plus(dec(b.internal)); observations += Number(b.observations); }
+      if (b) {
+        const budgetRate = rateByStrategy.get(row.id)?.[pid] ?? null;
+        actualH = actualH.plus(effectiveBilledHours(b.code, b.hours, b.internal, budgetRate));
+        actualI = actualI.plus(dec(b.internal));
+        observations += Number(b.observations);
+      }
       const s = schedMap.get(key(row.individualId, pid));
       if (s) { schedH = schedH.plus(dec(s.hours)); schedI = schedI.plus(dec(s.internal)); }
     }
@@ -378,7 +407,10 @@ async function attachStrategyAnalytics(pool: PgLikePool, rows: StrategyGridRow[]
     let elapsed: ReturnType<typeof calculatePeriodElapsed> | null = null;
     if (row.periodStart && row.periodEnd) {
       try {
-        elapsed = calculatePeriodElapsed({ startDate: row.periodStart, endDate: row.periodEnd });
+        elapsed = calculatePeriodElapsed(
+          { startDate: row.periodStart, endDate: row.periodEnd },
+          new Date(`${asOf}T00:00:00Z`),
+        );
       } catch {
         elapsed = null;
       }
@@ -573,6 +605,7 @@ export async function updateStrategy(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await acquireSettlementSourceLock(client);
     const existing = await client.query(`SELECT id FROM calculation_strategies WHERE id = $1 FOR UPDATE`, [input.id]);
     if (existing.rowCount === 0) {
       await client.query("ROLLBACK");
@@ -652,6 +685,7 @@ export async function duplicateStrategy(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await acquireSettlementSourceLock(client);
     const src = await client.query<{ individual_id: string; label: string }>(
       `SELECT individual_id, label FROM calculation_strategies WHERE id = $1`,
       [input.id],

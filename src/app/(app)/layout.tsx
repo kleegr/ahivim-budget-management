@@ -31,13 +31,19 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // viewer who isn't permitted to see it.
   let reviewCount = 0;
   let canSeeTransactions = true;
+  let canSeeSettlements = isManager;
   const loaded = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
     const counts = isManager ? await exceptionCounts(pool) : null;
-    return { canSeeTransactions: scope.canSeeTransactions, counts };
+    return {
+      canSeeTransactions: scope.canSeeTransactions,
+      canSeeSettlements: scope.canSeeSettlements,
+      counts,
+    };
   });
   if (loaded.ok) {
     canSeeTransactions = loaded.data.canSeeTransactions;
+    canSeeSettlements = loaded.data.canSeeSettlements;
     const c = loaded.data.counts;
     if (c) {
       reviewCount =
@@ -51,7 +57,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="min-h-screen md:flex">
-      <AppNav user={user} reviewCount={reviewCount} canSeeTransactions={canSeeTransactions} />
+      <AppNav
+        user={user}
+        reviewCount={reviewCount}
+        canSeeTransactions={canSeeTransactions}
+        canSeeSettlements={canSeeSettlements}
+      />
       <div className="flex min-h-screen min-w-0 flex-1 flex-col">
         <main id="main" className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-8">
           {children}

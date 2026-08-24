@@ -1,6 +1,11 @@
 import { getPool } from "./index";
-import { runMigrations, LEDGER_TABLE } from "./migrate";
+import {
+  runMigrations,
+  LEDGER_TABLE,
+  MigrationLockUnavailableError,
+} from "./migrate";
 import { MIGRATIONS } from "./migrations.generated";
+import { migrationChecksumMatches } from "./migration-checksum";
 
 /**
  * Apply outstanding migrations on the deployed instance — safely, and WITHOUT
@@ -23,7 +28,12 @@ import { MIGRATIONS } from "./migrations.generated";
  * Still idempotent, still crash-safe, still self-healing on deploy.
  */
 
-const MIGRATION_ADVISORY_LOCK = 471114723;
+export class MigrationChecksumMismatchError extends Error {
+  constructor(name: string) {
+    super(`Migration ${name} checksum mismatch. Add a new migration instead of editing an applied one.`);
+    this.name = "MigrationChecksumMismatchError";
+  }
+}
 
 export interface MigrateOutcome {
   ran: boolean;
@@ -34,18 +44,25 @@ export interface MigrateOutcome {
   error?: string;
 }
 
-/** Lock-free check: are all shipped migrations recorded in the ledger? */
+/** Lock-free check: are all shipped migrations recorded with exact checksums? */
 async function isSchemaCurrent(): Promise<boolean> {
   try {
     const pool = getPool();
-    const last = MIGRATIONS[MIGRATIONS.length - 1]?.name;
-    if (!last) return true;
-    const { rows } = await pool.query<{ present: boolean }>(
-      `SELECT EXISTS (SELECT 1 FROM ${LEDGER_TABLE} WHERE name = $1) AS present`,
-      [last],
+    if (MIGRATIONS.length === 0) return true;
+    const expected = new Map(MIGRATIONS.map((migration) => [migration.name, migration.sql]));
+    const { rows } = await pool.query<{ name: string; checksum: string }>(
+      `SELECT name, checksum FROM ${LEDGER_TABLE} WHERE name = ANY($1::text[])`,
+      [[...expected.keys()]],
     );
-    return rows[0]?.present === true;
-  } catch {
+    const applied = new Map(rows.map((row) => [row.name, row.checksum]));
+    for (const [name, sql] of expected) {
+      const actual = applied.get(name);
+      if (actual === undefined) return false;
+      if (!migrationChecksumMatches(actual, sql)) throw new MigrationChecksumMismatchError(name);
+    }
+    return true;
+  } catch (error) {
+    if (error instanceof MigrationChecksumMismatchError) throw error;
     return false; // ledger missing / unreachable → treat as behind
   }
 }
@@ -56,31 +73,19 @@ async function applyPendingMigrations(): Promise<MigrateOutcome> {
     return { ran: false, applied: 0, skipped: MIGRATIONS.length, ok: true, current: true };
   }
 
-  let client;
   try {
-    client = await getPool().connect();
+    // The runner owns the advisory-lock connection, so checking and applying
+    // migrations are serialized as one operation without a nested lock.
+    const result = await runMigrations(undefined, { waitForLock: false });
+    console.log(`[auto-migrate] applied=${result.applied} skipped=${result.skipped}`);
+    return { ran: true, applied: result.applied, skipped: result.skipped, ok: true, current: true };
   } catch (error) {
-    return { ran: false, applied: 0, skipped: 0, ok: false, error: error instanceof Error ? error.message : "connect failed" };
-  }
-  try {
-    // NON-blocking: if another instance is already migrating, don't wait.
-    const { rows } = await client.query<{ got: boolean }>(`SELECT pg_try_advisory_lock($1) AS got`, [MIGRATION_ADVISORY_LOCK]);
-    if (rows[0]?.got !== true) {
+    if (error instanceof MigrationLockUnavailableError) {
       return { ran: false, applied: 0, skipped: 0, ok: true, current: false };
     }
-    try {
-      const result = await runMigrations();
-      console.log(`[auto-migrate] applied=${result.applied} skipped=${result.skipped}`);
-      return { ran: true, applied: result.applied, skipped: result.skipped, ok: true, current: true };
-    } finally {
-      await client.query(`SELECT pg_advisory_unlock($1)`, [MIGRATION_ADVISORY_LOCK]).catch(() => {});
-    }
-  } catch (error) {
     const message = error instanceof Error ? error.message : "unknown error";
     console.error("[auto-migrate] migrations did not complete:", message);
     return { ran: false, applied: 0, skipped: 0, ok: false, error: message };
-  } finally {
-    client.release();
   }
 }
 

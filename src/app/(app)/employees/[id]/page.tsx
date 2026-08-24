@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/session";
-import { resolveAccessScope, canViewEmployee, canViewIndividual } from "@/lib/auth/access";
+import { resolveAccessScope, canViewEmployee, canViewIndividual, hasDirectEmployeeAccess } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { getEmployeeReport } from "@/lib/data/queries";
 import { isUuid, listTransactions } from "@/lib/data/app-queries";
@@ -16,14 +16,17 @@ import {
 import { txLink } from "@/lib/nav/tx-link";
 import { getEmployee } from "@/lib/manage/employees";
 import { listAssignments } from "@/lib/manage/assignments";
+import { listEmployeeDeals } from "@/lib/manage/employee-deals";
+import { getPersonSettlementBalance } from "@/lib/data/settlements";
 import { listTransactionsForGrid } from "@/lib/data/transactions-grid";
 import {
   Card, Table, Th, Td, Tr, Money, Hours, Plain, ErrorPanel, PageHeader, ButtonLink,
 } from "@/components/ui";
-import { CreateButton, ActionButton, Field, TextAreaField } from "@/components/manage/client";
+import { CreateButton, ActionButton, Field, SelectField, TextAreaField } from "@/components/manage/client";
 import TransactionsGrid from "@/components/transactions/transactions-grid";
 import EmployeeMerge from "@/components/employees/employee-merge";
 import { dec, formatHours, formatMoney } from "@/lib/money";
+import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Employee — Ahivim Budget Management" };
@@ -66,10 +69,21 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
     // shown about that employee is limited to the individuals they may see.
     const scope = await resolveAccessScope(pool, user);
     if (!canViewEmployee(scope, id)) return null;
-    const [report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, gridRows] = await Promise.all([
+    const directAccess = hasDirectEmployeeAccess(scope, id);
+    const canSeeEmployeeDeals = scope.canSeeEmployeeDeals && directAccess;
+    const canSeeSettlements = scope.canSeeSettlements && directAccess;
+    const canSeeCheckNet = scope.canSeeCheckNet && directAccess;
+    const canSeeTaxes = scope.canSeeTaxes && directAccess;
+    const [report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, gridRows, deals, settlement] = await Promise.all([
       getEmployeeReport(pool, id, scope),
       listAssignments(pool, { employeeId: id, includeInactive: true }),
-      listTransactions(pool, { employeeId: id, limit: 25, scope }),
+      scope.canSeeTransactions
+        ? listTransactions(pool, { employeeId: id, limit: 25, scope })
+        : Promise.resolve({
+            rows: [],
+            total: 0,
+            totals: { agencyGross: "0.00", internalAmount: "0.00", agencyRetention: "0.00" },
+          }),
       getEmployeePaymentSummary(pool, id, scope),
       getEmployeeIndividuals(pool, id, scope),
       getEmployeeUsageByProgram(pool, id, scope),
@@ -77,14 +91,31 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
       // The schedule (a manager surface, and its upcoming list names individuals)
       // is not shown to viewers.
       canEdit ? getEmployeeSchedule(pool, id) : Promise.resolve(EMPTY_SCHEDULE),
-      getEmployeeWithholding(pool, id),
+      canSeeTaxes ? getEmployeeWithholding(pool, id, scope) : Promise.resolve({ gross: "0", net: "0", withheld: "0", checks: 0 }),
       // Every transaction for this employee, for the embedded ledger grid.
       scope.canSeeTransactions ? listTransactionsForGrid(pool, scope, { employeeId: id }) : Promise.resolve([]),
+      canSeeEmployeeDeals ? listEmployeeDeals(pool, id) : Promise.resolve([]),
+      canSeeSettlements ? getPersonSettlementBalance(pool, { employeeId: id }) : Promise.resolve({ payable: "0", receivable: "0", reserve: "0", credit: "0", openItems: 0 }),
     ]);
     const activeAssignments = assignments
       .filter((a) => a.status === "active")
       .filter((a) => canViewIndividual(scope, a.individualId));
-    return { employee, report, assignments: activeAssignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, gridRows, canSeeTransactions: scope.canSeeTransactions, canSeeMoney: scope.canSeeMoney };
+    return {
+      employee, report, assignments: activeAssignments, recent, payment,
+      individualsServed, usageByProgram, monthly, schedule, withholding,
+      gridRows, deals, settlement,
+      canSeeTransactions: scope.canSeeTransactions,
+      canSeeHours: scope.canSeeHours,
+      canSeeBilledAmounts: scope.canSeeBilledAmounts,
+      canSeeEmployeeAmounts: scope.canSeeEmployeeAmounts,
+      canSeeAgencySpread: scope.canSeeAgencySpread,
+      canSeeCheckNet,
+      canSeeTaxes,
+      canSeeBudgets: scope.canSeeBudgets,
+      canSeeEmployeeDeals,
+      canSeeSettlements,
+      transactionVisibility: transactionFieldVisibility(scope),
+    };
   });
 
   if (!result.ok) {
@@ -97,17 +128,23 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
   }
   if (!result.data) notFound();
 
-  const { employee, report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, gridRows, canSeeTransactions, canSeeMoney } = result.data;
+  const {
+    employee, report, assignments, recent, payment, individualsServed,
+    usageByProgram, monthly, schedule, withholding, gridRows, deals, settlement,
+    canSeeTransactions, canSeeHours, canSeeBilledAmounts,
+    canSeeEmployeeAmounts, canSeeAgencySpread, canSeeCheckNet, canSeeTaxes,
+    canSeeBudgets, canSeeEmployeeDeals, canSeeSettlements, transactionVisibility,
+  } = result.data;
   const attributionAvailable = payment.transactionCount === 0 || payment.attributedCount > 0;
   const hasWithholding = dec(withholding.withheld).greaterThan(0);
 
-  // A separate payout cut: a percentage of what this employee took home — the
-  // NET they actually received on checks paid to them, after withholding — paid
-  // to him separately. "How much to give him after the net." Stored as a fraction.
-  const cutFraction = dec(employee.payoutCutPercent || "0");
-  const cutPercentDisplay = cutFraction.times(100).toDecimalPlaces(2).toString();
-  const cutBase = dec(withholding.net);
-  const cutAmount = cutBase.times(cutFraction);
+  const currentDeal = deals.find((deal) => {
+    const today = new Date().toISOString().slice(0, 10);
+    return deal.status === "active" && deal.effectiveFrom <= today && (!deal.effectiveTo || deal.effectiveTo >= today);
+  }) ?? deals.find((deal) => deal.status === "active") ?? null;
+  const directPercent = currentDeal ? dec(currentDeal.directPercent).times(100).toDecimalPlaces(2).toString() : "";
+  const agencyPercent = currentDeal ? dec(currentDeal.agencyCutPercent).times(100).toDecimalPlaces(2).toString() : "";
+  const today = new Date().toISOString().slice(0, 10);
 
   const headerActions = canEdit ? (
     <div className="flex flex-wrap gap-2">
@@ -120,17 +157,36 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
         fields={
           <>
             <Field label="Display name" name="displayName" defaultValue={employee.displayName} required />
-            <Field
-              label="Payout cut %"
-              name="payoutCutPercent"
-              type="number"
-              defaultValue={cutFraction.greaterThan(0) ? cutPercentDisplay : ""}
-              placeholder="e.g. 10"
-              help="A separate cut of what this employee earns, paid to him separately. 10 = 10%. Leave blank for none."
-            />
             <TextAreaField label="Notes" name="notes" defaultValue={employee.notes} />
           </>
         }
+      />
+      <CreateButton
+        label={currentDeal ? "Change deal" : "Set deal"}
+        title={currentDeal ? "Change employee deal" : "Set employee deal"}
+        endpoint="/api/employee-deals"
+        fields={
+          <>
+            <SelectField
+              label="When paid directly"
+              name="directRule"
+              defaultValue={currentDeal?.directRule ?? "keep_all"}
+              options={[
+                { value: "keep_all", label: "Employee keeps the whole net check" },
+                { value: "giveback_percent", label: "Employee gives the agency a percentage of net" },
+                { value: "giveback_all", label: "Employee gives the agency the whole net check" },
+              ]}
+              required
+            />
+            <Field label="Direct give-back %" name="directPercent" type="number" defaultValue={directPercent} placeholder="e.g. 10" help="Used only for the percentage option. It is applied to the whole check net, never gross or taxes." />
+            <Field label="Agency cut of base %" name="agencyCutPercent" type="number" defaultValue={agencyPercent} placeholder="e.g. 20" help="When the agency receives the funder payment, the employee gets the remaining base amount. The billed spread stays with the agency first." />
+            <Field label="Starts on" name="effectiveFrom" type="date" defaultValue={currentDeal?.effectiveFrom ?? today} required />
+            <Field label="Ends on (optional)" name="effectiveTo" type="date" defaultValue={currentDeal?.effectiveTo ?? ""} />
+            <Field label="Reason for change" name="reason" placeholder="New agreement, correction, annual review…" required />
+            <TextAreaField label="Deal notes" name="notes" defaultValue={currentDeal?.notes} />
+          </>
+        }
+        hidden={{ employeeId: id }}
       />
       <EmployeeMerge employeeId={id} employeeName={employee.displayName} />
       {employee.status === "active" ? (
@@ -154,7 +210,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
         <section className="card fade-in-up mb-6 px-5 py-5">
           <p className="eyebrow">What this employee has done</p>
           <p className="mt-1 text-2xl font-semibold leading-tight">
-            Billed <span className="tnum">{formatHours(report.allocationHours)}</span> hours for{" "}
+            {canSeeHours ? <>Billed <span className="tnum">{formatHours(report.allocationHours)}</span> hours for </> : <>Served </>}
             <span className="tnum">{report.individualsServed}</span> {report.individualsServed === 1 ? "person" : "people"}
           </p>
           <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
@@ -162,26 +218,14 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
             {report.programs.length ? `: ${report.programs.join(", ")}` : ""}
             {report.groupSessions > 0 ? ` · ${report.groupSessions.toLocaleString()} group sessions` : ""}
           </p>
-          {canSeeMoney ? (
+          {canSeeBilledAmounts || canSeeEmployeeAmounts || canSeeAgencySpread ? (
             <div className="mt-4 grid gap-3 sm:grid-cols-3">
-              <MoneyTile label="Agency total (billed)" value={formatMoney(report.agencyGross)} sub="what the funder paid" />
-              <MoneyTile label="Employee earned" value={formatMoney(report.internalAmount)} sub="owed to this employee" />
-              <MoneyTile label="Agency difference" value={formatMoney(payment.agencyAdditional)} sub="agency total above the employee amount" />
+              {canSeeBilledAmounts ? <MoneyTile label="Agency total (billed)" value={formatMoney(report.agencyGross)} sub="what the funder paid" /> : null}
+              {canSeeEmployeeAmounts ? <MoneyTile label="Base amount" value={formatMoney(report.internalAmount)} sub="before the employee deal" /> : null}
+              {canSeeAgencySpread ? <MoneyTile label="Agency difference" value={formatMoney(payment.agencyAdditional)} sub="agency total above the employee amount" /> : null}
             </div>
           ) : null}
-          {canSeeMoney && cutFraction.greaterThan(0) ? (
-            <div className="mt-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg border border-[var(--color-primary-soft)] bg-[var(--color-primary-tint)] px-4 py-3">
-              <div className="text-sm">
-                <span className="font-semibold text-[var(--color-ink)]">Give him after the net ({cutPercentDisplay}%)</span>
-                <span className="ml-2 text-[var(--color-ink-soft)]">a separate cut of the net he actually received, paid to him separately</span>
-              </div>
-              <div className="text-right">
-                <span className="tnum text-xl font-semibold">{formatMoney(cutAmount)}</span>
-                <span className="ml-2 text-xs text-[var(--color-ink-faint)]">{cutPercentDisplay}% × {formatMoney(cutBase)} net</span>
-              </div>
-            </div>
-          ) : null}
-          {canSeeMoney && hasWithholding ? (
+          {canSeeTaxes && hasWithholding ? (
             <div className="mt-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface-muted)] px-4 py-3">
               <div className="text-sm">
                 <span className="font-semibold text-[var(--color-ink)]">Taxes withheld</span>
@@ -189,7 +233,10 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
               </div>
               <div className="text-right">
                 <span className="tnum text-xl font-semibold">{formatMoney(withholding.withheld)}</span>
-                <span className="ml-2 text-xs text-[var(--color-ink-faint)]">{formatMoney(withholding.gross)} gross − {formatMoney(withholding.net)} net · {withholding.checks} check{withholding.checks === 1 ? "" : "s"}</span>
+                <span className="ml-2 text-xs text-[var(--color-ink-faint)]">
+                  {canSeeCheckNet ? `${formatMoney(withholding.gross)} gross − ${formatMoney(withholding.net)} net · ` : ""}
+                  {withholding.checks} check{withholding.checks === 1 ? "" : "s"}
+                </span>
               </div>
             </div>
           ) : null}
@@ -201,17 +248,82 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
         </section>
       )}
 
+      {canSeeEmployeeDeals || canSeeSettlements ? (
+        <section className="mb-6 border-y border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-5 sm:px-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="eyebrow">{canSeeEmployeeDeals && canSeeSettlements ? "Employee deal and balance" : canSeeEmployeeDeals ? "Employee deal" : "Settlement balance"}</p>
+              <h2 className="mt-1 text-lg font-semibold">
+                {canSeeEmployeeDeals ? (currentDeal ? `Terms from ${currentDeal.effectiveFrom}` : "No deal is configured") : `${settlement.openItems} open item${settlement.openItems === 1 ? "" : "s"}`}
+              </h2>
+            </div>
+            {canSeeSettlements ? <ButtonLink href={`/settlements?employeeId=${id}`} variant="secondary">Open settlement ledger</ButtonLink> : null}
+          </div>
+          {canSeeEmployeeDeals && currentDeal ? (
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <div className="border-l-4 border-[var(--color-info)] pl-3">
+                <p className="text-sm font-semibold">Employee receives the check directly</p>
+                <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
+                  {currentDeal.directRule === "keep_all"
+                    ? "The employee keeps the whole check net. Nothing is owed back."
+                    : currentDeal.directRule === "giveback_all"
+                      ? "The employee gives the agency the whole check net."
+                      : `The employee gives the agency ${directPercent}% of the whole check net.`}
+                </p>
+                <p className="mt-1 text-xs text-[var(--color-ink-faint)]">Gross and taxes remain display facts; neither changes this calculation.</p>
+              </div>
+              <div className="border-l-4 border-[var(--color-success)] pl-3">
+                <p className="text-sm font-semibold">Agency receives the funder payment</p>
+                <p className="mt-1 text-sm text-[var(--color-ink-soft)]">The agency keeps {agencyPercent}% of the base amount and pays the employee the remaining {dec(1).minus(currentDeal.agencyCutPercent).times(100).toDecimalPlaces(2).toString()}%.</p>
+                <p className="mt-1 text-xs text-[var(--color-ink-faint)]">The funder-to-base spread is already the agency&rsquo;s and stays outside this deal.</p>
+              </div>
+            </div>
+          ) : canSeeEmployeeDeals ? (
+            <p className="mt-2 text-sm text-[var(--color-ink-soft)]">Set a start date and terms before the ledger can calculate this employee&rsquo;s checks.</p>
+          ) : null}
+          {canSeeSettlements ? <div className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-[var(--color-rule)] bg-[var(--color-rule)] sm:grid-cols-4">
+            <div className="bg-[var(--color-surface-muted)] px-3 py-2"><p className="text-xs text-[var(--color-ink-faint)]">Agency still pays</p><p className="tnum mt-1 font-semibold">{formatMoney(settlement.payable)}</p></div>
+            <div className="bg-[var(--color-surface-muted)] px-3 py-2"><p className="text-xs text-[var(--color-ink-faint)]">Employee still gives</p><p className="tnum mt-1 font-semibold">{formatMoney(settlement.receivable)}</p></div>
+            <div className="bg-[var(--color-surface-muted)] px-3 py-2"><p className="text-xs text-[var(--color-ink-faint)]">Credit</p><p className="tnum mt-1 font-semibold">{formatMoney(settlement.credit)}</p></div>
+            <div className="bg-[var(--color-surface-muted)] px-3 py-2"><p className="text-xs text-[var(--color-ink-faint)]">Open items</p><p className="tnum mt-1 font-semibold">{settlement.openItems}</p></div>
+          </div> : null}
+          {canSeeEmployeeDeals && deals.length > 1 ? (
+            <details className="mt-4 text-sm">
+              <summary className="cursor-pointer font-medium">Deal history ({deals.length})</summary>
+              <div className="mt-2 overflow-x-auto">
+                <Table head={<><Th>Dates</Th><Th>Direct check</Th><Th>Agency-routed</Th><Th numeric>Revision</Th></>}>
+                  {deals.map((deal) => (
+                    <Tr key={deal.id}>
+                      <Td><span className="tnum">{deal.effectiveFrom}</span>{deal.effectiveTo ? <span className="tnum text-[var(--color-ink-faint)]"> to {deal.effectiveTo}</span> : null}</Td>
+                      <Td>{deal.directRule === "keep_all" ? "Keep net" : deal.directRule === "giveback_all" ? "Give all net" : `${dec(deal.directPercent).times(100).toDecimalPlaces(2).toString()}% of net`}</Td>
+                      <Td>{dec(deal.agencyCutPercent).times(100).toDecimalPlaces(2).toString()}% of base</Td>
+                      <Td numeric className="tnum">{deal.revision}</Td>
+                    </Tr>
+                  ))}
+                </Table>
+              </div>
+            </details>
+          ) : null}
+        </section>
+      ) : null}
+
       {/* ---- Who they served ---- */}
       {individualsServed.length > 0 ? (
-        <Card title="People served" description="Everyone this employee billed for. Click a name to open their budget, or the rows to see the transactions." className="mb-6">
-          <Table head={<><Th>Person</Th><Th numeric>Billed hours</Th><Th numeric>Transactions</Th>{canSeeMoney ? <Th numeric>Agency total</Th> : null}<Th>Open</Th></>}>
+        <Card
+          title="People served"
+          description={canSeeTransactions
+            ? "Everyone this employee billed for. Click a name to open their profile, or the rows to see the transactions."
+            : "Everyone this employee billed for. Click a name to open their profile."}
+          className="mb-6"
+        >
+          <Table head={<><Th>Person</Th>{canSeeHours ? <Th numeric>Billed hours</Th> : null}<Th numeric>Transactions</Th>{canSeeBilledAmounts ? <Th numeric>Agency total</Th> : null}{canSeeTransactions ? <Th>Open</Th> : null}</>}>
             {individualsServed.map((row) => (
               <Tr key={row.id}>
                 <Td><Link className="font-medium text-[var(--color-primary)] underline-offset-2 hover:underline" href={`/individuals/${row.id}`}>{row.displayName}</Link></Td>
-                <Td numeric><Hours value={row.allocationHours} /></Td>
+                {canSeeHours ? <Td numeric><Hours value={row.allocationHours} /></Td> : null}
                 <Td numeric className="tnum">{row.transactionCount}</Td>
-                {canSeeMoney ? <Td numeric><Money value={row.agencyGross} /></Td> : null}
-                <Td><Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ employeeId: id, individualId: row.id })}>rows →</Link></Td>
+                {canSeeBilledAmounts ? <Td numeric><Money value={row.agencyGross} /></Td> : null}
+                {canSeeTransactions ? <Td><Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ employeeId: id, individualId: row.id })}>rows →</Link></Td> : null}
               </Tr>
             ))}
           </Table>
@@ -220,17 +332,19 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
 
       {/* ---- By program ---- */}
       {usageByProgram.length > 0 ? (
-        <Card title="Billed by program" description={canSeeMoney ? "Hours and money for each program, straight from the ledger." : "Hours for each program, straight from the ledger."} className="mb-6"
-          action={<ButtonLink href={txLink({ employeeId: id })} variant="secondary">All rows →</ButtonLink>}>
-          <Table head={<><Th>Program</Th><Th numeric>Billed hours</Th><Th numeric>Transactions</Th>{canSeeMoney ? <Th numeric>Agency total</Th> : null}{canSeeMoney ? <Th numeric>Employee amount</Th> : null}<Th>Open</Th></>}>
+        <Card title="Billed by program" description="Activity for each program, straight from the ledger." className="mb-6"
+          action={canSeeTransactions ? <ButtonLink href={txLink({ employeeId: id })} variant="secondary">All rows →</ButtonLink> : undefined}>
+          <Table head={<><Th>Program</Th>{canSeeHours ? <Th numeric>Billed hours</Th> : null}<Th numeric>Transactions</Th>{canSeeBilledAmounts ? <Th numeric>Agency total</Th> : null}{canSeeEmployeeAmounts ? <Th numeric>Employee amount</Th> : null}{canSeeTransactions ? <Th>Open</Th> : null}</>}>
             {usageByProgram.map((row) => (
               <Tr key={row.programCode}>
-                <Td><Link className="font-medium text-[var(--color-primary)] underline-offset-2 hover:underline" href={txLink({ employeeId: id, program: row.programName })}>{row.programName}</Link></Td>
-                <Td numeric><Hours value={row.allocationHours} /></Td>
+                <Td>{canSeeTransactions
+                  ? <Link className="font-medium text-[var(--color-primary)] underline-offset-2 hover:underline" href={txLink({ employeeId: id, program: row.programName })}>{row.programName}</Link>
+                  : <span className="font-medium">{row.programName}</span>}</Td>
+                {canSeeHours ? <Td numeric><Hours value={row.allocationHours} /></Td> : null}
                 <Td numeric className="tnum">{row.transactionCount}</Td>
-                {canSeeMoney ? <Td numeric><Money value={row.agencyGross} /></Td> : null}
-                {canSeeMoney ? <Td numeric><Money value={row.internalAmount} /></Td> : null}
-                <Td><Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ employeeId: id, program: row.programName })}>rows →</Link></Td>
+                {canSeeBilledAmounts ? <Td numeric><Money value={row.agencyGross} /></Td> : null}
+                {canSeeEmployeeAmounts ? <Td numeric><Money value={row.internalAmount} /></Td> : null}
+                {canSeeTransactions ? <Td><Link className="text-xs text-[var(--color-primary)] hover:underline" href={txLink({ employeeId: id, program: row.programName })}>rows →</Link></Td> : null}
               </Tr>
             ))}
           </Table>
@@ -244,7 +358,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
             <h2 className="text-lg font-semibold">All transactions</h2>
             <span className="text-xs text-[var(--color-text-soft)]">{gridRows.length.toLocaleString()} rows · filter, sort, total{canEdit ? " and mark paid" : ""}, like the Transactions page</span>
           </div>
-          <TransactionsGrid rows={gridRows} canManage={canEdit} canSeeMoney={canSeeMoney} contextLabel={null} />
+          <TransactionsGrid rows={gridRows} canManage={canEdit} visibility={transactionVisibility} canSeeBudgets={canSeeBudgets} contextLabel={null} />
         </section>
       ) : null}
 
@@ -255,7 +369,9 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
         assignments={assignments}
         schedule={schedule}
         monthly={monthly}
-        canSeeMoney={canSeeMoney}
+        canSeeHours={canSeeHours}
+        canSeeBilledAmounts={canSeeBilledAmounts}
+        canSeeEmployeeAmounts={canSeeEmployeeAmounts}
         attributionAvailable={attributionAvailable}
         rateExceptions={report?.rateExceptions ?? 0}
         physicalHours={report?.physicalHours ?? "0"}
@@ -269,14 +385,17 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
 /* ------------------------------------------------------------- collapsed */
 
 function MoreDetails({
-  id, recent, assignments, schedule, monthly, canSeeMoney, attributionAvailable, rateExceptions, physicalHours, billedHours, notes,
+  id, recent, assignments, schedule, monthly, canSeeHours, canSeeBilledAmounts,
+  canSeeEmployeeAmounts, attributionAvailable, rateExceptions, physicalHours, billedHours, notes,
 }: {
   id: string;
   recent: Awaited<ReturnType<typeof listTransactions>>;
   assignments: Awaited<ReturnType<typeof listAssignments>>;
   schedule: Awaited<ReturnType<typeof getEmployeeSchedule>>;
   monthly: Awaited<ReturnType<typeof getEmployeeMonthlyPayments>>;
-  canSeeMoney: boolean;
+  canSeeHours: boolean;
+  canSeeBilledAmounts: boolean;
+  canSeeEmployeeAmounts: boolean;
   attributionAvailable: boolean;
   rateExceptions: number;
   physicalHours: string;
@@ -284,7 +403,7 @@ function MoreDetails({
   notes: string | null;
 }) {
   const hasPending = schedule.summary.pendingSessions > 0;
-  const groupGap = dec(billedHours).greaterThan(dec(physicalHours));
+  const groupGap = canSeeHours && dec(billedHours).greaterThan(dec(physicalHours));
   const hasAnything =
     recent.rows.length > 0 || assignments.length > 0 || hasPending || monthly.length > 0 || rateExceptions > 0 || groupGap || !!notes;
   if (!hasAnything) return null;
@@ -303,13 +422,13 @@ function MoreDetails({
         {monthly.length > 0 ? (
           <div>
             <p className="eyebrow mb-2">Pay by month</p>
-            <Table head={<><Th>Month</Th>{canSeeMoney ? <Th numeric>Agency total</Th> : null}{canSeeMoney ? <Th numeric>Employee amount</Th> : null}{canSeeMoney && attributionAvailable ? <Th numeric>Paid directly</Th> : null}<Th numeric>Checks</Th></>}>
+            <Table head={<><Th>Month</Th>{canSeeBilledAmounts ? <Th numeric>Agency total</Th> : null}{canSeeEmployeeAmounts ? <Th numeric>Employee amount</Th> : null}{canSeeEmployeeAmounts && attributionAvailable ? <Th numeric>Paid directly</Th> : null}<Th numeric>Checks</Th></>}>
               {monthly.map((m) => (
                 <Tr key={m.month ?? "undated"}>
                   <Td><span className="tnum">{m.month ?? "Undated"}</span></Td>
-                  {canSeeMoney ? <Td numeric><Money value={m.agencyGross} /></Td> : null}
-                  {canSeeMoney ? <Td numeric><Money value={m.internalAmount} /></Td> : null}
-                  {canSeeMoney && attributionAvailable ? <Td numeric><Money value={m.paidToEmployee} /></Td> : null}
+                  {canSeeBilledAmounts ? <Td numeric><Money value={m.agencyGross} /></Td> : null}
+                  {canSeeEmployeeAmounts ? <Td numeric><Money value={m.internalAmount} /></Td> : null}
+                  {canSeeEmployeeAmounts && attributionAvailable ? <Td numeric><Money value={m.paidToEmployee} /></Td> : null}
                   <Td numeric className="tnum">{m.checkCount}</Td>
                 </Tr>
               ))}
@@ -331,12 +450,12 @@ function MoreDetails({
         {assignments.length > 0 ? (
           <div>
             <p className="eyebrow mb-2">Allowed to serve</p>
-            <Table head={<><Th>Person</Th><Th>Program</Th><Th numeric>Allowed hours</Th></>}>
+            <Table head={<><Th>Person</Th><Th>Program</Th>{canSeeHours ? <Th numeric>Allowed hours</Th> : null}</>}>
               {assignments.map((a) => (
                 <Tr key={a.id}>
                   <Td><Link className="font-medium text-[var(--color-primary)] hover:underline" href={`/individuals/${a.individualId}`}>{a.individualName}</Link></Td>
                   <Td><Plain value={a.programName} /></Td>
-                  <Td numeric>{a.allowedHours ? <Hours value={a.allowedHours} /> : "—"}</Td>
+                  {canSeeHours ? <Td numeric>{a.allowedHours ? <Hours value={a.allowedHours} /> : "—"}</Td> : null}
                 </Tr>
               ))}
             </Table>
@@ -346,14 +465,14 @@ function MoreDetails({
         {recent.rows.length > 0 ? (
           <div>
             <p className="eyebrow mb-2">Recent transactions</p>
-            <Table head={<><Th>Check</Th><Th>Person</Th><Th>Program</Th><Th numeric>Hours</Th>{canSeeMoney ? <Th numeric>Amount</Th> : null}</>}>
+            <Table head={<><Th>Check</Th><Th>Person</Th><Th>Program</Th>{canSeeHours ? <Th numeric>Hours</Th> : null}{canSeeBilledAmounts ? <Th numeric>Amount</Th> : null}</>}>
               {recent.rows.slice(0, 15).map((t) => (
                 <Tr key={t.id}>
                   <Td><span className="tnum">{t.checkNumber ?? "—"}</span><p className="text-xs text-[var(--color-ink-faint)]"><Plain value={t.checkDate} /></p></Td>
                   <Td>{t.individualId ? <Link className="text-[var(--color-primary)] hover:underline" href={`/individuals/${t.individualId}`}><Plain value={t.individual} /></Link> : <Plain value={t.individual} />}</Td>
                   <Td><Plain value={t.program} /></Td>
-                  <Td numeric><Hours value={t.hours} /></Td>
-                  {canSeeMoney ? <Td numeric><Money value={t.amount} /></Td> : null}
+                  {canSeeHours ? <Td numeric><Hours value={t.hours} /></Td> : null}
+                  {canSeeBilledAmounts ? <Td numeric><Money value={t.amount} /></Td> : null}
                 </Tr>
               ))}
             </Table>

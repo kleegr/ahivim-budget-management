@@ -5,7 +5,7 @@ import {
   createUser,
   listUsersWithAccess,
   setUserAccessConfig,
-  type UserAccessConfig,
+  userAccessConfigFromInput,
 } from "@/lib/auth/users";
 import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
 
@@ -18,19 +18,6 @@ const REASONS: Record<string, string> = {
   invalid_role: "Role must be viewer, manager or admin.",
   invalid_email: "That is not a valid email address.",
 };
-
-/** Read a user's access configuration out of a request body, with safe defaults. */
-function parseAccessConfig(body: Record<string, unknown>): UserAccessConfig {
-  return {
-    accessScope: body.accessScope === "scoped" ? "scoped" : "full",
-    seeAllIndividuals: body.seeAllIndividuals === true,
-    seeAllEmployees: body.seeAllEmployees === true,
-    canSeeTransactions: body.canSeeTransactions !== false, // default: may see transactions
-    canSeeMoney: body.canSeeMoney !== false, // default: may see dollar amounts
-    individualIds: Array.isArray(body.individualIds) ? body.individualIds.map(String) : [],
-    employeeIds: Array.isArray(body.employeeIds) ? body.employeeIds.map(String) : [],
-  };
-}
 
 /** Administrators only. Password hashes are never returned. */
 export async function GET() {
@@ -52,6 +39,16 @@ export async function GET() {
         seeAllIndividuals: u.seeAllIndividuals,
         seeAllEmployees: u.seeAllEmployees,
         canSeeTransactions: u.canSeeTransactions,
+        canSeeMoney: u.canSeeMoney,
+        canSeeHours: u.canSeeHours,
+        canSeeBilledAmounts: u.canSeeBilledAmounts,
+        canSeeEmployeeAmounts: u.canSeeEmployeeAmounts,
+        canSeeAgencySpread: u.canSeeAgencySpread,
+        canSeeCheckNet: u.canSeeCheckNet,
+        canSeeTaxes: u.canSeeTaxes,
+        canSeeBudgets: u.canSeeBudgets,
+        canSeeEmployeeDeals: u.canSeeEmployeeDeals,
+        canSeeSettlements: u.canSeeSettlements,
         individualCount: u.individualCount,
         employeeCount: u.employeeCount,
       })),
@@ -86,7 +83,7 @@ export async function POST(request: NextRequest) {
 
     // Apply the access configuration (scope only ever bites for the viewer role,
     // but we store it as chosen so the setting persists if the role changes).
-    await setUserAccessConfig(pool, outcome.user.id, parseAccessConfig(body), actor.id);
+    await setUserAccessConfig(pool, outcome.user.id, userAccessConfigFromInput(body, role), actor.id);
 
     return NextResponse.json(
       {
