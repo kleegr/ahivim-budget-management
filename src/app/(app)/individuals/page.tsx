@@ -4,7 +4,7 @@ import { withDb } from "@/lib/data/pool";
 import { listIndividualBudgetBoard } from "@/lib/data/queries";
 import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
-import IndividualsList, { type IndividualRow } from "@/components/individuals/individuals-list";
+import IndividualsList from "@/components/individuals/individuals-list";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Individuals — Ahivim Budget Management" };
@@ -32,17 +32,17 @@ export default async function IndividualsPage() {
     const rows = await listIndividualBudgetBoard(pool, new Date(), scope);
     return rows.map((row) => (
       scope.canSeeBudgets && scope.canSeeHours && hasDirectIndividualAccess(scope, row.id)
-        ? row
-        : { ...row, programs: [], budget: null, hasBilling: false }
+        ? { ...row, insightsVisible: true }
+        : { ...row, programs: [], budget: null, hasBilling: false, insightsVisible: false }
     ));
   });
 
   return (
     <>
       <PageHeader
-        eyebrow="Register"
+        eyebrow="Budgets"
         title="Individuals"
-        description="Everyone with authorized services, with each person's budget health at a glance — authorized hours vs. what has actually been billed this period. The badge, % used and remaining match the individual's own page and the ledger exactly. Search or sort live, and open a record for the full picture."
+        description="See who is over authorization, falling behind pace, nearing renewal, or missing the budget needed to explain billing."
         action={
           canEdit ? (
             <CreateButton label="New individual" title="New individual" endpoint="/api/individuals" fields={individualFields()} />
@@ -59,7 +59,7 @@ export default async function IndividualsPage() {
           </EmptyState>
         </Card>
       ) : (
-        <IndividualsList rows={result.data as IndividualRow[]} />
+        <IndividualsList rows={result.data} />
       )}
     </>
   );

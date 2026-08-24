@@ -2,45 +2,32 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity,
+  BadgeDollarSign,
+  BarChart3,
+  ChevronDown,
+  Inbox,
+  LayoutDashboard,
+  LogOut,
+  Menu,
+  Search,
+  Settings2,
+  WalletCards,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import type { AuthenticatedUser } from "@/lib/auth/session";
+import {
+  destinationIsActive,
+  getVisibleAdminDestinations,
+  getVisibleWorkspaces,
+  workspaceIsActive,
+  type NavigationAccess,
+  type VisibleNavigationWorkspace,
+} from "@/lib/nav/app-navigation";
 import CommandBar from "@/components/command-bar";
-
-/*
-  Navigation, redesigned.
-
-  The mental model is deliberately small:
-
-    Home     — one place to see what needs you today
-    -----
-    Workspaces
-      Transactions   — what was actually billed
-      Projections    — budgets, pacing and what's left
-      People         — individuals and employees, together
-    -----
-    Overview
-      Schedule       — plan sessions on a calendar
-      Review · N     — one inbox for everything the system can't decide alone
-      Reports        — exports and analysis
-    -----
-    Admin
-      Settings & data tools (rarely opened)
-
-  What used to be 15 top-level doors is now three workspaces, one inbox, and a
-  quiet admin drawer. Nothing has been deleted — every legacy screen is still
-  reachable — they just stop competing with the daily work.
-*/
-
-const ADMIN_ITEMS: { href: string; label: string }[] = [
-  { href: "/settings", label: "Settings" },
-  { href: "/sync", label: "Sheet sync" },
-  { href: "/imports", label: "Imports (backup)" },
-  { href: "/reconciliation", label: "Sheet vs. system" },
-  { href: "/aliases", label: "Known spellings" },
-  { href: "/matches", label: "Name matches" },
-  { href: "/exceptions", label: "All flagged items" },
-];
 
 const ROLE_LABEL: Record<string, string> = {
   admin: "Administrator",
@@ -48,360 +35,174 @@ const ROLE_LABEL: Record<string, string> = {
   viewer: "Viewer",
 };
 
-function TransactionsIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden>
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <path d="M3 9h18" />
-      <path d="M8 4v16" />
-    </svg>
-  );
-}
+const WORKSPACE_ICONS: Record<VisibleNavigationWorkspace["id"], LucideIcon> = {
+  overview: LayoutDashboard,
+  budgets: WalletCards,
+  payroll: BadgeDollarSign,
+  activity: Activity,
+  review: Inbox,
+  reports: BarChart3,
+};
 
-function ProjectionsIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden>
-      <path d="M3 3v18h18" />
-      <path d="M7 14l4-4 3 3 5-6" />
-      <path d="M19 7v3h-3" />
-    </svg>
-  );
-}
+const FOCUSABLE = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
 
-function PeopleIcon() {
+function Wordmark({ onNavigate }: { onNavigate?: () => void }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden>
-      <circle cx="9" cy="8" r="3.2" />
-      <path d="M3 20c0-3 2.7-5 6-5s6 2 6 5" />
-      <circle cx="17" cy="9" r="2.6" />
-      <path d="M15 20c0-2.4 1.6-4.2 4-4.6" />
-    </svg>
-  );
-}
-
-function HomeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
-      <path d="M3 10.5 12 3l9 7.5" />
-      <path d="M5 9.5V21h14V9.5" />
-      <path d="M10 21v-6h4v6" />
-    </svg>
-  );
-}
-
-function CalendarIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
-      <rect x="3" y="5" width="18" height="16" rx="2" />
-      <path d="M3 10h18" />
-      <path d="M8 3v4M16 3v4" />
-    </svg>
-  );
-}
-
-function InboxIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
-      <path d="M3 13h5l2 3h4l2-3h5" />
-      <path d="M3 13V7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6" />
-      <path d="M3 13v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6" />
-    </svg>
-  );
-}
-
-function ReportsIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
-      <rect x="4" y="4" width="16" height="16" rx="2" />
-      <path d="M8 16v-4M12 16V8M16 16v-6" />
-    </svg>
-  );
-}
-
-function MasserIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden>
-      <circle cx="12" cy="12" r="8" />
-      <path d="M12 7v10M9.5 9.2c0-1 1.1-1.7 2.5-1.7s2.5.7 2.5 1.7-1.1 1.6-2.5 1.9-2.5.9-2.5 1.9 1.1 1.7 2.5 1.7 2.5-.7 2.5-1.7" />
-    </svg>
-  );
-}
-
-function SettlementIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
-      <path d="M4 7h13M14 4l3 3-3 3" />
-      <path d="M20 17H7M10 14l-3 3 3 3" />
-    </svg>
-  );
-}
-
-function CogIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9c.3.6.9 1 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
-    </svg>
-  );
-}
-
-function Wordmark() {
-  return (
-    <Link href="/home" className="flex items-center gap-2.5">
-      <span className="grid h-8 w-8 place-items-center rounded-lg bg-[var(--color-primary)] text-sm font-bold text-white">A</span>
-      <span className="leading-tight">
-        <span className="block text-sm font-semibold text-[var(--color-ink)]">Ahivim</span>
-        <span className="block text-[0.65rem] text-[var(--color-ink-faint)]">Budget Management</span>
-      </span>
-    </Link>
-  );
-}
-
-function PrimaryTile({
-  href,
-  label,
-  sub,
-  icon,
-  active,
-  onNavigate,
-}: {
-  href: string;
-  label: string;
-  sub: string;
-  icon: ReactNode;
-  active: boolean;
-  onNavigate?: () => void;
-}) {
-  return (
-    <Link
-      href={href}
-      onClick={onNavigate}
-      aria-current={active ? "page" : undefined}
-      className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 transition-colors ${
-        active
-          ? "border-transparent bg-[var(--color-primary)] text-white shadow-sm"
-          : "border-[var(--color-rule-strong)] bg-[var(--color-surface)] text-[var(--color-ink)] hover:border-[var(--color-primary)] hover:bg-[var(--color-primary-tint)]"
-      }`}
-    >
-      <span
-        className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${
-          active ? "bg-white/15 text-white" : "bg-[var(--color-primary-tint)] text-[var(--color-primary)]"
-        }`}
-      >
-        {icon}
-      </span>
+    <Link href="/home" onClick={onNavigate} className="flex min-w-0 items-center gap-2.5 rounded-md outline-offset-4 focus-visible:outline-2 focus-visible:outline-[var(--color-primary)]">
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-primary)] text-sm font-bold text-white">A</span>
       <span className="min-w-0 leading-tight">
-        <span className="block text-sm font-semibold">{label}</span>
-        <span className={`block text-[0.7rem] ${active ? "text-white/80" : "text-[var(--color-ink-faint)]"}`}>{sub}</span>
+        <span className="block truncate text-sm font-semibold text-[var(--color-ink)]">Ahivim</span>
+        <span className="block truncate text-[0.65rem] text-[var(--color-ink-faint)]">Budget Management</span>
       </span>
     </Link>
   );
 }
 
-function QuietLink({
-  href,
-  label,
-  icon,
-  active,
-  onNavigate,
-  count,
-}: {
-  href: string;
-  label: string;
-  icon?: ReactNode;
-  active: boolean;
-  onNavigate?: () => void;
-  count?: number;
-}) {
-  return (
-    <Link
-      href={href}
-      onClick={onNavigate}
-      aria-current={active ? "page" : undefined}
-      className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors ${
-        active
-          ? "bg-[var(--color-primary-tint)] font-medium text-[var(--color-primary)]"
-          : "text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
-      }`}
-    >
-      {icon ? (
-        <span className={active ? "text-[var(--color-primary)]" : "text-[var(--color-ink-faint)]"}>{icon}</span>
-      ) : (
-        <span className={`h-1.5 w-1.5 rounded-full ${active ? "bg-[var(--color-primary)]" : "bg-[var(--color-rule-strong)]"}`} />
-      )}
-      <span className="flex-1">{label}</span>
-      {count && count > 0 ? (
-        <span className="tnum inline-flex min-w-[1.5rem] justify-center rounded-full bg-[var(--color-warn-soft)] px-1.5 py-0.5 text-[0.65rem] font-semibold text-[var(--color-warn)]">
-          {count > 99 ? "99+" : count}
-        </span>
-      ) : null}
-    </Link>
-  );
-}
-
-function NavLinks({
+function WorkspaceNavigation({
   pathname,
-  onNavigate,
+  access,
   reviewCount,
-  role,
-  canSeeTransactions,
-  canSeeSettlements,
+  onNavigate,
 }: {
   pathname: string;
-  onNavigate?: () => void;
+  access: NavigationAccess;
   reviewCount: number;
-  role: string;
-  canSeeTransactions: boolean;
-  canSeeSettlements: boolean;
+  onNavigate?: () => void;
 }) {
-  // A viewer sees only their people and (if permitted) the ledger; managers and
-  // admins see the analysis and admin drawers. Server-side guards enforce this
-  // regardless — hiding the links just keeps a scoped user from bumping into doors.
-  const isManager = role === "manager" || role === "admin";
-  const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
-  const financialActive = isActive("/calculations") || isActive("/projections");
-  const individualsActive = isActive("/individuals") || isActive("/people");
-  const employeesActive = isActive("/employees");
-  const homeActive = isActive("/home") || isActive("/dashboard");
+  const workspaces = useMemo(() => getVisibleWorkspaces(access), [access]);
 
   return (
-    <nav aria-label="Primary" className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
-      {/* Home — the management overview, managers and admins only */}
-      {isManager ? (
-        <div>
-          <ul className="space-y-0.5">
-            <li>
-              <QuietLink
-                href="/home"
-                label="Home"
-                icon={<HomeIcon />}
-                active={homeActive}
-                onNavigate={onNavigate}
-              />
+    <div>
+      <p className="eyebrow px-3 pb-2">Work</p>
+      <ul className="space-y-1">
+        {workspaces.map((workspace) => {
+          const active = workspaceIsActive(pathname, workspace);
+          const landingActive = destinationIsActive(pathname, workspace.destinations[0]);
+          const Icon = WORKSPACE_ICONS[workspace.id];
+          const secondary = workspace.destinations.filter((destination) => destination.href !== workspace.href);
+
+          return (
+            <li key={workspace.id}>
+              <Link
+                href={workspace.href}
+                onClick={onNavigate}
+                aria-current={landingActive ? "page" : undefined}
+                title={workspace.hint}
+                className={`flex min-h-10 items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
+                  active
+                    ? "bg-[var(--color-primary-tint)] font-semibold text-[var(--color-primary)]"
+                    : "font-medium text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
+                }`}
+              >
+                <Icon className={`h-[1.1rem] w-[1.1rem] shrink-0 ${active ? "text-[var(--color-primary)]" : "text-[var(--color-ink-faint)]"}`} aria-hidden />
+                <span className="min-w-0 flex-1 truncate">{workspace.label}</span>
+                {workspace.id === "review" && reviewCount > 0 ? (
+                  <span className="tnum inline-flex min-w-6 justify-center rounded-full bg-[var(--color-warn-soft)] px-1.5 py-0.5 text-[0.65rem] font-semibold text-[var(--color-warn)]">
+                    {reviewCount > 99 ? "99+" : reviewCount}
+                  </span>
+                ) : null}
+              </Link>
+
+              {active && secondary.length > 0 ? (
+                <ul className="ml-[1.8rem] mt-1 space-y-0.5 border-l border-[var(--color-rule-strong)] pl-3">
+                  {secondary.map((destination) => {
+                    const childActive = destinationIsActive(pathname, destination);
+                    return (
+                      <li key={destination.id}>
+                        <Link
+                          href={destination.href}
+                          onClick={onNavigate}
+                          aria-current={childActive ? "page" : undefined}
+                          title={destination.hint}
+                          className={`block rounded-md px-2 py-1.5 text-xs transition-colors ${
+                            childActive
+                              ? "font-semibold text-[var(--color-primary)]"
+                              : "text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
+                          }`}
+                        >
+                          {destination.label}
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : null}
             </li>
-          </ul>
-        </div>
-      ) : null}
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
 
-      {/* The daily workspaces — the ledger and the two people views it feeds */}
-      <div>
-        <p className="eyebrow px-2 pb-1.5">Workspaces</p>
-        <div className="space-y-2">
-          {canSeeTransactions ? (
-            <PrimaryTile
-              href="/transactions"
-              label="Transactions"
-              sub="What was actually billed — the source of truth"
-              icon={<TransactionsIcon />}
-              active={isActive("/transactions")}
-              onNavigate={onNavigate}
-            />
-          ) : null}
-          {isManager ? (
-            <PrimaryTile
-              href="/masser"
-              label="Masser board"
-              sub="The money side per person — put-away, taxes, who made what"
-              icon={<MasserIcon />}
-              active={isActive("/masser")}
-              onNavigate={onNavigate}
-            />
-          ) : null}
-          <PrimaryTile
-            href="/individuals"
-            label="Individuals"
-            sub="Budgets, usage & people, per individual"
-            icon={<PeopleIcon />}
-            active={individualsActive}
-            onNavigate={onNavigate}
-          />
-          <PrimaryTile
-            href="/employees"
-            label="Employees"
-            sub="Each worker's activity, from the ledger"
-            icon={<PeopleIcon />}
-            active={employeesActive}
-            onNavigate={onNavigate}
-          />
-        </div>
-      </div>
+function AdministrationNavigation({
+  pathname,
+  access,
+  onNavigate,
+  controlId,
+}: {
+  pathname: string;
+  access: NavigationAccess;
+  onNavigate?: () => void;
+  controlId: string;
+}) {
+  const items = useMemo(() => getVisibleAdminDestinations(access), [access]);
+  const active = items.some((item) => destinationIsActive(pathname, item));
+  const [open, setOpen] = useState(active);
+  const isManager = access.role === "manager" || access.role === "admin";
 
-      {/* Analysis: budgets planning, money and everything you sometimes need.
-          Manager+ only — a scoped viewer sees per-individual financials on the
-          individual page, not the portfolio-wide analysis screens. */}
-      {isManager || canSeeSettlements ? (
-        <div>
-          <p className="eyebrow px-2 pb-1.5">Analysis</p>
-          <ul className="space-y-0.5">
-            {canSeeSettlements ? <li>
-              <QuietLink
-                href="/settlements"
-                label="Settlements"
-                icon={<SettlementIcon />}
-                active={isActive("/settlements")}
-                onNavigate={onNavigate}
-              />
-            </li> : null}
-            {isManager ? <li>
-              <QuietLink
-                href="/calculations"
-                label="Financial"
-                icon={<ProjectionsIcon />}
-                active={financialActive}
-                onNavigate={onNavigate}
-              />
-            </li> : null}
-            {isManager ? <li>
-              <QuietLink
-                href="/reports"
-                label="Reports"
-                icon={<ReportsIcon />}
-                active={isActive("/reports")}
-                onNavigate={onNavigate}
-              />
-            </li> : null}
-            {isManager ? <li>
-              <QuietLink
-                href="/schedule"
-                label="Schedule"
-                icon={<CalendarIcon />}
-                active={isActive("/schedule")}
-                onNavigate={onNavigate}
-              />
-            </li> : null}
-            {isManager ? <li>
-              <QuietLink
-                href="/review"
-                label="Review"
-                icon={<InboxIcon />}
-                active={isActive("/review")}
-                onNavigate={onNavigate}
-                count={reviewCount}
-              />
-            </li> : null}
-          </ul>
-        </div>
-      ) : null}
+  useEffect(() => {
+    if (active) setOpen(true);
+  }, [active]);
 
-      {/* Admin — the drawer everyone rarely opens. A viewer only ever sees
-          Settings here (to change their own password); the ops tools are manager+. */}
-      <div className="space-y-1.5 border-t border-[var(--color-rule)] pt-4">
-        <p className="eyebrow px-2 pb-1">{isManager ? "Admin" : "Account"}</p>
-        <ul className="space-y-0.5">
-          {ADMIN_ITEMS.filter((item) => item.href === "/settings" || isManager).map((item) => (
-            <li key={item.href}>
-              <QuietLink
+  return (
+    <div className="border-t border-[var(--color-rule)] pt-3">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={controlId}
+        onClick={() => setOpen((value) => !value)}
+        className={`flex min-h-10 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+          active
+            ? "bg-[var(--color-primary-tint)] font-semibold text-[var(--color-primary)]"
+            : "font-medium text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
+        }`}
+      >
+        <Settings2 className={`h-[1.1rem] w-[1.1rem] shrink-0 ${active ? "text-[var(--color-primary)]" : "text-[var(--color-ink-faint)]"}`} aria-hidden />
+        <span className="min-w-0 flex-1 truncate">{isManager ? "Administration" : "Account"}</span>
+        <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden />
+      </button>
+
+      <ul id={controlId} hidden={!open} className="ml-[1.8rem] mt-1 space-y-0.5 border-l border-[var(--color-rule-strong)] pl-3">
+        {items.map((item) => {
+          const itemActive = destinationIsActive(pathname, item);
+          return (
+            <li key={item.id}>
+              <Link
                 href={item.href}
-                label={item.href === "/settings" && !isManager ? "Settings & password" : item.label}
-                icon={item.href === "/settings" ? <CogIcon /> : undefined}
-                active={isActive(item.href)}
-                onNavigate={onNavigate}
-              />
+                onClick={onNavigate}
+                aria-current={itemActive ? "page" : undefined}
+                title={item.hint}
+                className={`block rounded-md px-2 py-1.5 text-xs transition-colors ${
+                  itemActive
+                    ? "font-semibold text-[var(--color-primary)]"
+                    : "text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
+                }`}
+              >
+                {item.label}
+              </Link>
             </li>
-          ))}
-        </ul>
-      </div>
-    </nav>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -413,11 +214,38 @@ function UserFooter({ user }: { user: AuthenticatedUser }) {
         <p className="text-xs text-[var(--color-ink-faint)]">{ROLE_LABEL[user.role] ?? user.role}</p>
       </div>
       <form method="post" action="/api/auth/logout">
-        <button type="submit" className="btn btn-sm btn-secondary w-full">
+        <button type="submit" className="btn btn-sm btn-secondary flex w-full items-center justify-center gap-2">
+          <LogOut className="h-4 w-4" aria-hidden />
           Sign out
         </button>
       </form>
     </div>
+  );
+}
+
+function SidebarBody({
+  user,
+  pathname,
+  access,
+  reviewCount,
+  onNavigate,
+  adminControlId,
+}: {
+  user: AuthenticatedUser;
+  pathname: string;
+  access: NavigationAccess;
+  reviewCount: number;
+  onNavigate?: () => void;
+  adminControlId: string;
+}) {
+  return (
+    <>
+      <nav aria-label="Primary" className="flex-1 space-y-4 overflow-y-auto px-3 py-4">
+        <WorkspaceNavigation pathname={pathname} access={access} reviewCount={reviewCount} onNavigate={onNavigate} />
+        <AdministrationNavigation pathname={pathname} access={access} onNavigate={onNavigate} controlId={adminControlId} />
+      </nav>
+      <UserFooter user={user} />
+    </>
   );
 }
 
@@ -434,79 +262,164 @@ export default function AppNav({
 }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const access = useMemo<NavigationAccess>(
+    () => ({ role: user.role, canSeeTransactions, canSeeSettlements }),
+    [user.role, canSeeTransactions, canSeeSettlements],
+  );
 
-  // Close the mobile drawer whenever the route changes.
+  const closeDrawer = useCallback(() => setOpen(false), []);
+  const openDrawer = useCallback(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : menuButtonRef.current;
+    setOpen(true);
+  }, []);
+
   useEffect(() => {
     setOpen(false);
   }, [pathname]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 768px)");
+    const closeAtDesktop = (event: MediaQueryListEvent) => {
+      if (event.matches) setOpen(false);
+    };
+    media.addEventListener("change", closeAtDesktop);
+    return () => media.removeEventListener("change", closeAtDesktop);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusFrame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeDrawer();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const drawer = drawerRef.current;
+      if (!drawer) return;
+      const focusable = Array.from(drawer.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+        (element) => element.offsetParent !== null && element.getAttribute("aria-hidden") !== "true",
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        drawer.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+      window.requestAnimationFrame(() => previousFocusRef.current?.focus());
+    };
+  }, [open, closeDrawer]);
 
   return (
     <>
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-2 focus:rounded focus:bg-[var(--color-primary)] focus:px-3 focus:py-2 focus:text-white"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-[70] focus:rounded focus:bg-[var(--color-primary)] focus:px-3 focus:py-2 focus:text-white"
       >
         Skip to content
       </a>
 
-      <CommandBar
-        role={user.role}
-        canSeeTransactions={canSeeTransactions}
-        canSeeSettlements={canSeeSettlements}
-      />
+      <CommandBar role={user.role} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} />
 
-      {/* Mobile top bar */}
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 md:hidden">
         <Wordmark />
         <button
+          ref={menuButtonRef}
           type="button"
-          className="btn btn-sm btn-secondary"
           aria-expanded={open}
-          aria-controls="app-sidebar"
-          onClick={() => setOpen((v) => !v)}
+          aria-controls="mobile-app-sidebar"
+          aria-label="Open navigation"
+          title="Open navigation"
+          onClick={openDrawer}
+          className="btn btn-sm btn-secondary grid h-9 w-9 place-items-center p-0"
         >
-          Menu
+          <Menu className="h-5 w-5" aria-hidden />
         </button>
       </header>
 
-      {/* Backdrop for mobile drawer */}
-      {open && (
-        <div className="fixed inset-0 z-30 bg-black/30 md:hidden" onClick={() => setOpen(false)} aria-hidden />
-      )}
+      {open ? <div className="fixed inset-0 z-30 bg-black/30 md:hidden" onClick={closeDrawer} aria-hidden /> : null}
 
-      {/* Sidebar (desktop) / drawer (mobile) */}
       <aside
-        id="app-sidebar"
-        className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-[var(--color-rule)] bg-[var(--color-surface)] transition-transform md:sticky md:top-0 md:z-0 md:h-screen md:translate-x-0 ${
-          open ? "translate-x-0 shadow-lg" : "-translate-x-full"
+        ref={drawerRef}
+        id="mobile-app-sidebar"
+        role="dialog"
+        aria-modal={open ? "true" : undefined}
+        aria-label="Main navigation"
+        aria-hidden={!open}
+        inert={!open}
+        tabIndex={-1}
+        className={`fixed inset-y-0 left-0 z-40 flex w-[min(20rem,calc(100vw-2rem))] flex-col border-r border-[var(--color-rule)] bg-[var(--color-surface)] shadow-xl transition-transform md:hidden ${
+          open ? "translate-x-0" : "pointer-events-none -translate-x-full"
         }`}
       >
-        <div className="hidden flex-col gap-3 px-5 py-4 md:flex">
+        <div className="flex items-center justify-between gap-3 px-5 py-4">
+          <Wordmark onNavigate={closeDrawer} />
+          <button
+            ref={closeButtonRef}
+            type="button"
+            className="btn btn-sm btn-ghost grid h-9 w-9 place-items-center p-0"
+            onClick={closeDrawer}
+            aria-label="Close navigation"
+            title="Close navigation"
+          >
+            <X className="h-5 w-5" aria-hidden />
+          </button>
+        </div>
+        <SidebarBody
+          user={user}
+          pathname={pathname}
+          access={access}
+          reviewCount={reviewCount}
+          onNavigate={closeDrawer}
+          adminControlId="mobile-administration-links"
+        />
+      </aside>
+
+      <aside className="hidden h-screen w-64 shrink-0 flex-col border-r border-[var(--color-rule)] bg-[var(--color-surface)] md:sticky md:top-0 md:flex">
+        <div className="flex flex-col gap-3 px-5 py-4">
           <Wordmark />
           <button
             type="button"
             onClick={() => window.dispatchEvent(new Event("open-command-bar"))}
-            className="flex items-center justify-between gap-2 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface-muted)] px-2.5 py-1.5 text-xs text-[var(--color-ink-faint)] transition-colors hover:border-[var(--color-primary)] hover:text-[var(--color-ink)]"
+            className="flex min-h-9 items-center gap-2 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface-muted)] px-2.5 py-1.5 text-xs text-[var(--color-ink-soft)] transition-colors hover:border-[var(--color-primary)] hover:text-[var(--color-ink)]"
           >
-            <span>Go to…</span>
-            <kbd className="rounded border border-[var(--color-rule-strong)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[0.65rem] font-medium">⌘K</kbd>
+            <Search className="h-4 w-4" aria-hidden />
+            <span>Search</span>
           </button>
         </div>
-        <div className="flex items-center justify-between px-5 py-4 md:hidden">
-          <Wordmark />
-          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setOpen(false)} aria-label="Close menu">
-            ✕
-          </button>
-        </div>
-        <NavLinks
+        <SidebarBody
+          user={user}
           pathname={pathname}
-          onNavigate={() => setOpen(false)}
+          access={access}
           reviewCount={reviewCount}
-          role={user.role}
-          canSeeTransactions={canSeeTransactions}
-          canSeeSettlements={canSeeSettlements}
+          adminControlId="desktop-administration-links"
         />
-        <UserFooter user={user} />
       </aside>
     </>
   );

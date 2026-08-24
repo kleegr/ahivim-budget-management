@@ -67,7 +67,7 @@ export function PortfolioBurndownCard({ forecast }: { forecast: PortfolioForecas
 
 export function AgencyInternalDonut({
   items,
-  title = "Agency vs internal",
+  title = "Funder billed composition",
   subtitle,
 }: {
   items: { internal: string; additional: string }[];
@@ -78,15 +78,15 @@ export function AgencyInternalDonut({
   const additional = sumCol(items.map((i) => i.additional));
   const gross = dec(internal).plus(dec(additional)).toString();
   const slices: DonutSlice[] = [
-    { label: "Employee amount", value: internal, display: formatMoney(internal), color: CHART_COLORS.primary },
-    { label: "Agency difference", value: additional, display: formatMoney(additional), color: CHART_COLORS.accent },
+    { label: "Employee base", value: internal, display: formatMoney(internal), color: CHART_COLORS.primary },
+    { label: "Agency spread", value: additional, display: formatMoney(additional), color: CHART_COLORS.accent },
   ];
   return (
     <Donut
       data={slices}
       title={title}
-      subtitle={subtitle ?? "Share of agency gross retained internally vs the agency additional."}
-      centerLabel="Agency total"
+      subtitle={subtitle ?? "Funder billed divided between Employee base and Agency spread."}
+      centerLabel="Funder billed"
       centerValue={formatMoney(gross)}
     />
   );
@@ -97,7 +97,7 @@ export function AgencyInternalDonut({
 export function ProgramTotalsBar({
   items,
   title = "Program totals",
-  subtitle = "Agency total by program (top 10).",
+  subtitle = "Funder billed by program (top 10).",
 }: {
   items: { label: string; value: string }[];
   title?: string;
@@ -175,7 +175,17 @@ export function BudgetUtilizationBar({
     { label: "Near limit", color: CHART_COLORS.near },
     { label: "Over 100%", color: CHART_COLORS.over },
   ];
-  return <BarChart data={data} title={title} subtitle={subtitle} legend={legend} />;
+  return (
+    <BarChart
+      data={data}
+      title={title}
+      subtitle={subtitle}
+      legend={legend}
+      domainMaximum={100}
+      referenceValue={100}
+      referenceLabel="Authorized"
+    />
+  );
 }
 
 /* ----------------------------------- generic dispatch for the report page --- */

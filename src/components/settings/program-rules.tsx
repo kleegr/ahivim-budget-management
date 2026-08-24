@@ -138,7 +138,7 @@ function RuleEditor({ program }: { program: ProgramRulesRow }) {
           />
         </label>
         <label className="block">
-          <span className="eyebrow">Agency difference rate</span>
+          <span className="eyebrow">Agency spread rate</span>
           <input
             type="number"
             step="any"

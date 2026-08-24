@@ -3,12 +3,12 @@ import { resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listTransactionsForGrid, type GridTransaction } from "@/lib/data/transactions-grid";
 import { PageHeader, ErrorPanel, EmptyState, Card } from "@/components/ui";
-import TransactionsGrid from "@/components/transactions/transactions-grid";
+import BilledActivityWorkspace from "@/components/transactions/billed-activity-workspace";
 import type { FilterState } from "@/components/data-grid/types";
 import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Transactions — Ahivim Budget Management" };
+export const metadata = { title: "Billed Activity - Ahivim Budget Management" };
 
 type SP = Record<string, string | string[] | undefined>;
 const one = (v: string | string[] | undefined): string | undefined =>
@@ -113,7 +113,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   if (result.ok && result.data.denied) {
     return (
       <>
-        <PageHeader eyebrow="Ledger" title="Transactions" />
+        <PageHeader eyebrow="Service activity" title="Billed activity" />
         <ErrorPanel title="No access to Transactions">
           Your account doesn&rsquo;t include permission to view transactions. Ask an administrator if you need it.
         </ErrorPanel>
@@ -127,9 +127,9 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   return (
     <>
       <PageHeader
-        eyebrow="Ledger · source of truth"
-        title="Transactions"
-        description="Every committed payroll row in one filterable grid — like the Ahivim workbook tab. Filter any column or pick a period, sort, and the totals at the top update to match exactly what you see. Every summary number elsewhere in the app links back into this grid, pre-filtered."
+        eyebrow="Service activity"
+        title="Billed activity"
+        description="Review each employee check as a whole, including its routing, pay period, employee base, agency spread, and direct-check net."
       />
 
       {!result.ok ? (
@@ -141,7 +141,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
           </EmptyState>
         </Card>
       ) : (
-        <TransactionsGrid
+        <BilledActivityWorkspace
           rows={rows}
           canManage={canManage}
           visibility={result.data.visibility}

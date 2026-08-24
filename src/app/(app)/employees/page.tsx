@@ -1,7 +1,7 @@
 import { requireUser } from "@/lib/auth/session";
 import { resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
-import { listEmployeesManaged } from "@/lib/manage/employees";
+import { listEmployeeDirectory } from "@/lib/data/employee-directory";
 import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
 import EmployeesList, { type EmployeeRow } from "@/components/employees/employees-list";
@@ -26,15 +26,15 @@ export default async function EmployeesPage() {
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
-    return listEmployeesManaged(pool, { includeArchived: true, scope });
+    return listEmployeeDirectory(pool, scope);
   });
 
   return (
     <>
       <PageHeader
-        eyebrow="Register"
+        eyebrow="Payroll"
         title="Employees"
-        description="Everyone who delivers services. Search or sort live, and open a record to see hours, the individuals they serve, and recent transactions."
+        description="See who has payroll activity, which checks still need a deal, and where an open payment balance needs follow-up."
         action={
           canEdit ? (
             <CreateButton label="New employee" title="New employee" endpoint="/api/employees" fields={employeeFields()} />
@@ -58,6 +58,14 @@ export default async function EmployeesPage() {
             externalRef: r.externalRef,
             status: r.status,
             archived: r.status === "archived" || r.archivedAt !== null,
+            transactionCount: r.transactionCount,
+            checkCount: r.checkCount,
+            billedHours: r.billedHours,
+            individualsServed: r.individualsServed,
+            lastActivityDate: r.lastActivityDate,
+            dealReadiness: r.dealReadiness,
+            missingDealTransactions: r.missingDealTransactions,
+            openSettlementItems: r.openSettlementItems,
           }))}
           canEdit={canEdit}
         />

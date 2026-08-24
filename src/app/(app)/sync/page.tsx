@@ -23,9 +23,9 @@ export default async function SyncPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Transactions"
-        title="Sheet sync"
-        description="The Google Sheet is the source of truth for Transactions. New rows import automatically every day; changes and removals are surfaced here for review — never applied or deleted silently."
+        eyebrow="Data source"
+        title="Automatic sync"
+        description="Monitor source freshness, imported changes, and conflicts awaiting review."
       />
 
       {!result.ok ? (

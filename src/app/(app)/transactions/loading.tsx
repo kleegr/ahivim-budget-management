@@ -22,7 +22,7 @@ export default function TransactionsLoading() {
       </div>
 
       {/* Filter bar */}
-      <Skeleton className="mb-3 h-12 w-full rounded-xl" />
+      <Skeleton className="mb-3 h-12 w-full rounded-lg" />
 
       {/* Filtered subtotals */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">

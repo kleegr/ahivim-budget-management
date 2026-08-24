@@ -12,7 +12,7 @@ import { PageHeader, StatTile, ErrorPanel, ButtonLink } from "@/components/ui";
 import ReconcileClient from "@/components/reconciliation/reconcile-client";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Reconciliation — Ahivim Budget Management" };
+export const metadata = { title: "Schedule Matching - Ahivim Budget Management" };
 
 /** Default window: the first day of three months ago through today. */
 function defaultRange(): { from: string; to: string } {
@@ -55,9 +55,9 @@ export default async function ReconciliationPage({
   return (
     <>
       <PageHeader
-        eyebrow="Actuals"
-        title="Reconciliation"
-        description="Match planned sessions against imported transactions. Group sessions are surfaced but never auto-matched — their money divides across individuals, so they are matched by hand."
+        eyebrow="Service activity"
+        title="Schedule matching"
+        description="Connect planned sessions with billed activity and resolve unmatched work."
         action={<ButtonLink href="/reconciliation/groups">Group review</ButtonLink>}
       />
 
@@ -88,7 +88,7 @@ export default async function ReconciliationPage({
 
           <form
             method="get"
-            className="mt-4 flex flex-wrap items-end gap-3 rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-3 text-sm"
+            className="mt-4 flex flex-wrap items-end gap-3 border-y border-[var(--color-rule)] py-3 text-sm"
           >
             <label className="block">
               <span className="eyebrow">From</span>
@@ -96,7 +96,7 @@ export default async function ReconciliationPage({
                 type="date"
                 name="from"
                 defaultValue={from}
-                className="mt-1 block rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1 text-sm"
+                className="input mt-1 block"
               />
             </label>
             <label className="block">
@@ -105,7 +105,7 @@ export default async function ReconciliationPage({
                 type="date"
                 name="to"
                 defaultValue={to}
-                className="mt-1 block rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1 text-sm"
+                className="input mt-1 block"
               />
             </label>
             <label className="block">
@@ -113,7 +113,7 @@ export default async function ReconciliationPage({
               <select
                 name="programId"
                 defaultValue={programId}
-                className="mt-1 block rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1 text-sm"
+                className="select mt-1 block"
               >
                 <option value="">All programs</option>
                 {result.data.programs.map((p) => (
@@ -129,7 +129,7 @@ export default async function ReconciliationPage({
             </label>
             <button
               type="submit"
-              className="rounded bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-white"
+              className="btn btn-sm btn-primary"
             >
               Apply
             </button>

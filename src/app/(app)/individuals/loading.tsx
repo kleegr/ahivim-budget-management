@@ -15,7 +15,7 @@ export default function IndividualsLoading() {
       </div>
 
       {/* Filter form */}
-      <Skeleton className="mb-3 h-16 w-full rounded-xl" />
+      <Skeleton className="mb-3 h-16 w-full rounded-lg" />
 
       {/* Table */}
       <div className="card overflow-hidden">

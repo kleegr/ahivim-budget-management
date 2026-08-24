@@ -86,7 +86,10 @@ export default function ReportGrid({
     initialHidden: [],
     computeTotals: (filtered) => {
       const tiles = table.columns
-        .filter((c) => c.type === "money" || c.type === "hours" || c.type === "int")
+        // Money and hours are additive. Generic integer and percentage columns
+        // are not: summing days-left, rates, or percentages creates a confident
+        // looking number with no business meaning.
+        .filter((c) => c.type === "money" || c.type === "hours")
         .map((c) => {
           let sum = dec(0);
           for (const r of filtered) {
@@ -111,7 +114,7 @@ export default function ReportGrid({
     serializeHidden: true,
   });
 
-  const tileCls = "rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2";
+  const tileCls = "min-w-0 px-4 py-3";
 
   return (
     <div className="space-y-3">
@@ -132,7 +135,7 @@ export default function ReportGrid({
 
       {/* filtered totals */}
       {grid.totals ? (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+        <div className="grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)] sm:grid-cols-3 lg:grid-cols-5">
           {grid.totals.tiles.map((t) => (
             <div key={t.key} className={tileCls}>
               <div className="eyebrow text-[var(--color-ink-faint)]">{t.header}</div>
@@ -140,7 +143,7 @@ export default function ReportGrid({
             </div>
           ))}
           <div className={tileCls}>
-            <div className="eyebrow text-[var(--color-ink-faint)]"># Rows</div>
+            <div className="eyebrow text-[var(--color-ink-faint)]">Rows</div>
             <div className="tnum text-lg font-semibold">{grid.totals.rowCount.toLocaleString()}</div>
           </div>
         </div>

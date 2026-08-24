@@ -15,6 +15,7 @@ import ApplyMigrations from "@/components/manage/apply-migrations";
 import AttributePayments from "@/components/settings/attribute-payments";
 import UserAccessAdmin from "@/components/settings/user-access-admin";
 import ProgramRules from "@/components/settings/program-rules";
+import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings — Ahivim Budget Management" };
@@ -43,13 +44,21 @@ export default async function SettingsPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Configuration"
-        title="Settings"
-        description="Your account, and — for administrators — user access, the rate schedule and the audit trail."
+        eyebrow="Administration"
+        title="Settings and access"
+        description="Accounts, visibility, program rates, audit history, and system maintenance."
       />
 
       <div className="space-y-4">
-        <Card title="Your account">
+        <nav aria-label="Settings sections" className="scroll-thin sticky top-[var(--shell-header-height,0px)] z-20 -mx-1 flex gap-1 overflow-x-auto border-b border-[var(--color-rule)] bg-[var(--color-paper)] px-1 py-2">
+          <Link href="#account" className="btn btn-sm btn-ghost shrink-0">Account</Link>
+          {isAdmin ? <Link href="#access" className="btn btn-sm btn-ghost shrink-0">User access</Link> : null}
+          <Link href="#programs" className="btn btn-sm btn-ghost shrink-0">Programs</Link>
+          {isAdmin ? <Link href="#activity" className="btn btn-sm btn-ghost shrink-0">Activity</Link> : null}
+          {isAdmin ? <Link href="#system" className="btn btn-sm btn-ghost shrink-0">System</Link> : null}
+        </nav>
+
+        <section id="account" className="scroll-mt-24"><Card title="Your account">
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 border-b border-[var(--color-rule)] px-5 py-4 text-sm sm:grid-cols-4">
             <dt className="text-[var(--color-ink-faint)]">Name</dt>
             <dd>{user.displayName}</dd>
@@ -67,14 +76,14 @@ export default async function SettingsPage() {
             </dd>
           </dl>
           <PasswordForm />
-        </Card>
+        </Card></section>
 
         {!result.ok ? (
           <ErrorPanel title="Could not load settings data">{result.error}</ErrorPanel>
         ) : (
           <>
             {isAdmin ? (
-              <UserAccessAdmin
+              <section id="access" className="scroll-mt-24"><UserAccessAdmin
                 currentUserId={user.id}
                 initialUsers={result.data.users.map((u) => ({
                   id: u.id,
@@ -102,7 +111,7 @@ export default async function SettingsPage() {
                 }))}
                 individuals={result.data.individuals}
                 employees={result.data.employees}
-              />
+              /></section>
             ) : (
               <Card title="User access">
                 <EmptyState title="Administrators manage accounts">
@@ -111,7 +120,7 @@ export default async function SettingsPage() {
               </Card>
             )}
 
-            <Card
+            <section id="programs" className="scroll-mt-24 space-y-4"><Card
               title="Programs and rates"
               description={
                 isAdmin
@@ -148,7 +157,7 @@ export default async function SettingsPage() {
               {result.data.programs.length === 0 ? (
                 <EmptyState title="No programs are configured" />
               ) : (
-                <Table head={<><Th>Code</Th><Th>Program</Th><Th numeric>Agency</Th><Th numeric>Internal</Th><Th>Effective from</Th><Th>Group</Th><Th>Active</Th>{isAdmin ? <Th>Actions</Th> : null}</>}>
+                <Table head={<><Th>Code</Th><Th>Program</Th><Th numeric>Funder rate</Th><Th numeric>Employee base rate</Th><Th>Effective from</Th><Th>Group</Th><Th>Active</Th>{isAdmin ? <Th>Actions</Th> : null}</>}>
                   {result.data.programs.map((p) => (
                     <Tr key={p.id}>
                       <Td><code className="text-xs">{p.code}</code></Td>
@@ -201,11 +210,11 @@ export default async function SettingsPage() {
               )}
             </Card>
 
-            {isAdmin ? <ProgramRules programs={result.data.programRules} /> : null}
+            {isAdmin ? <ProgramRules programs={result.data.programRules} /> : null}</section>
 
             {isAdmin ? (
               <>
-                <Card title="Audit trail" description="The 40 most recent recorded actions">
+                <section id="activity" className="scroll-mt-24"><Card title="Audit trail" description="The 40 most recent recorded actions">
                   {result.data.audit.length === 0 ? (
                     <EmptyState title="No audit entries yet" />
                   ) : (
@@ -220,11 +229,11 @@ export default async function SettingsPage() {
                       ))}
                     </Table>
                   )}
-                </Card>
-                <Card title="Database" description="Administrator maintenance">
+                </Card></section>
+                <section id="system" className="scroll-mt-24"><Card title="System maintenance" description="Administrative data operations">
                   <ApplyMigrations />
                   <AttributePayments />
-                </Card>
+                </Card></section>
               </>
             ) : null}
           </>

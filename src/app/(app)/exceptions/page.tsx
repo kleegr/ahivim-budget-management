@@ -34,9 +34,9 @@ export default async function ExceptionsPage({
   return (
     <>
       <PageHeader
-        eyebrow="Review queue"
-        title="Exceptions"
-        description="Everything the import could not resolve on its own. Imported values are never replaced; they are preserved, flagged and presented here."
+        eyebrow="Review"
+        title="Data exceptions"
+        description="Resolve unknown programs, unexpected rates, and duplicate source rows."
       />
 
       {!result.ok ? (

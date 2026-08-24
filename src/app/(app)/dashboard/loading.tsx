@@ -17,7 +17,7 @@ export default function DashboardLoading() {
       {/* Workspace buttons */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {Array.from({ length: 5 }).map((_, i) => (
-          <Skeleton key={i} className="h-[4.5rem] w-full rounded-xl" />
+          <Skeleton key={i} className="h-[4.5rem] w-full rounded-lg" />
         ))}
       </div>
 
@@ -36,7 +36,7 @@ export default function DashboardLoading() {
       {/* Two panels */}
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
         {Array.from({ length: 2 }).map((_, i) => (
-          <div key={i} className="rounded-xl border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-5">
+          <div key={i} className="rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-5">
             <Skeleton className="h-5 w-40" />
             <div className="mt-3 space-y-2">
               {Array.from({ length: 4 }).map((_, j) => (

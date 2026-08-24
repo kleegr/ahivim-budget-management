@@ -15,9 +15,9 @@ export default async function MatchesPage() {
   return (
     <>
       <PageHeader
-        eyebrow="People"
-        title="Name matches"
-        description="Where the Calculations and Transactions tabs spelled a name differently, obvious variants are connected automatically. Anything uncertain waits here for you to confirm — so two records for one person become one, and nobody is merged by mistake."
+        eyebrow="Review"
+        title="Duplicate people"
+        description="Confirm whether similar records belong to the same person."
       />
       {!result.ok ? (
         <ErrorPanel title="Could not load matches">{result.error}</ErrorPanel>

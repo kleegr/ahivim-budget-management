@@ -168,7 +168,7 @@ export default function ReconcileClient({
                 <Th>Program</Th>
                 <Th>Individuals</Th>
                 <Th numeric>Hours</Th>
-                <Th numeric>Expected</Th>
+                <Th numeric>Employee base</Th>
                 <Th>Match</Th>
                 {canManage ? <Th>Action</Th> : null}
               </>
@@ -240,7 +240,7 @@ export default function ReconcileClient({
                 <Th>Program</Th>
                 <Th>Individual</Th>
                 <Th numeric>Hours</Th>
-                <Th numeric>Amount</Th>
+                <Th numeric>Funder billed</Th>
               </>
             }
           >
@@ -307,7 +307,7 @@ export default function ReconcileClient({
                       <Th>Program</Th>
                       <Th>Individual</Th>
                       <Th numeric>Hours</Th>
-                      <Th numeric>Amount</Th>
+                      <Th numeric>Funder billed</Th>
                       <Th>Use</Th>
                     </>
                   }

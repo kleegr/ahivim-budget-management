@@ -2,36 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-
-/**
- * ⌘K / Ctrl-K command bar — the fastest path to any screen. For a user coming
- * from a spreadsheet's Ctrl-F reflex, this makes the whole navigation a single
- * keystroke away, and quietly settles the "how many doors?" question for power
- * users: type where you want to go and press Enter.
- */
-
-// Restricted items are offered only when the corresponding server-side scope allows them.
-type Item = { label: string; href: string; hint?: string; keywords?: string; manager?: boolean; tx?: boolean; settlements?: boolean };
-
-const ITEMS: Item[] = [
-  { label: "Home", href: "/home", hint: "What needs you today", keywords: "dashboard start", manager: true },
-  { label: "Transactions", href: "/transactions", hint: "What was billed — the source of truth", keywords: "ledger billed payroll", tx: true },
-  { label: "Individuals", href: "/individuals", hint: "Budgets, usage & people", keywords: "clients participants budget health board" },
-  { label: "Employees", href: "/employees", hint: "Activity from the ledger", keywords: "staff workers people" },
-  { label: "Settlements", href: "/settlements", hint: "What is owed, received, and set aside", keywords: "payments givebacks reserves ledger done", settlements: true },
-  { label: "Financial", href: "/calculations", hint: "Rates, cuts & net", keywords: "calculations money plan cuts projections", manager: true },
-  { label: "Schedule", href: "/schedule", hint: "Plan sessions on a calendar", keywords: "calendar sessions", manager: true },
-  { label: "Review", href: "/review", hint: "Clear the inbox", keywords: "exceptions matches aliases reconciliation names rates", manager: true },
-  { label: "Reports", href: "/reports", hint: "Export & analysis", manager: true },
-  { label: "Settings", href: "/settings", hint: "Your account", keywords: "admin sync imports password" },
-  // The most-opened reports, reachable directly (manager+).
-  { label: "Report: Budget utilization", href: "/reports/budget-utilization", keywords: "pace off track behind", manager: true },
-  { label: "Report: Expiring authorizations", href: "/reports/expiring-authorizations", keywords: "renew lapse 60 days", manager: true },
-  { label: "Report: Utilization outliers", href: "/reports/utilization-outliers", keywords: "over budget behind", manager: true },
-  { label: "Report: Agency earnings", href: "/reports/agency-earnings", keywords: "money markup total", manager: true },
-  { label: "Report: Employee payable", href: "/reports/employee-payable", keywords: "owed pay", manager: true },
-  { label: "Report: Program totals", href: "/reports/program-totals", keywords: "money by program", manager: true },
-];
+import { Search, X } from "lucide-react";
+import { getCommandDestinations, type NavigationAccess } from "@/lib/nav/app-navigation";
 
 export default function CommandBar({
   role = "admin",
@@ -44,31 +16,34 @@ export default function CommandBar({
 } = {}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [q, setQ] = useState("");
+  const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  // Only offer destinations this user can actually open.
-  const isManager = role === "manager" || role === "admin";
-  const available = useMemo(
-    () => ITEMS.filter((i) =>
-      (!i.manager || isManager)
-      && (!i.tx || canSeeTransactions)
-      && (!i.settlements || canSeeSettlements),
-    ),
-    [isManager, canSeeTransactions, canSeeSettlements],
+  const openerRef = useRef<HTMLElement | null>(null);
+  const access = useMemo<NavigationAccess>(
+    () => ({ role, canSeeTransactions, canSeeSettlements }),
+    [role, canSeeTransactions, canSeeSettlements],
   );
+  const available = useMemo(() => getCommandDestinations(access), [access]);
 
   const results = useMemo(() => {
-    const needle = q.trim().toLowerCase();
+    const needle = query.trim().toLowerCase();
     if (!needle) return available;
-    return available.filter((i) => `${i.label} ${i.hint ?? ""} ${i.keywords ?? ""}`.toLowerCase().includes(needle));
-  }, [q, available]);
+    return available.filter((item) =>
+      `${item.label} ${item.hint} ${item.keywords ?? ""}`.toLowerCase().includes(needle),
+    );
+  }, [query, available]);
+
+  const show = useCallback(() => {
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setOpen(true);
+  }, []);
 
   const close = useCallback(() => {
     setOpen(false);
-    setQ("");
+    setQuery("");
     setActive(0);
+    window.requestAnimationFrame(() => openerRef.current?.focus());
   }, []);
 
   const go = useCallback(
@@ -79,25 +54,31 @@ export default function CommandBar({
     [close, router],
   );
 
-  // Global ⌘K / Ctrl-K to open (and toggle closed).
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
-        e.preventDefault();
-        setOpen((v) => !v);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        if (open) close();
+        else show();
       }
     };
-    const onOpen = () => setOpen(true);
-    window.addEventListener("keydown", onKey);
+    const onOpen = () => show();
+    window.addEventListener("keydown", onKeyDown);
     window.addEventListener("open-command-bar", onOpen);
     return () => {
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("open-command-bar", onOpen);
     };
-  }, []);
+  }, [open, close, show]);
 
   useEffect(() => {
-    if (open) inputRef.current?.focus();
+    if (!open) return;
+    inputRef.current?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
   }, [open]);
 
   useEffect(() => {
@@ -111,62 +92,69 @@ export default function CommandBar({
       className="overlay-in fixed inset-0 z-[60] flex items-start justify-center bg-black/30 p-4 pt-[12vh] backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
-      aria-label="Command menu"
+      aria-label="Search Ahivim"
       onClick={close}
     >
       <div
-        className="pop-in w-full max-w-lg origin-top overflow-hidden rounded-xl border border-[var(--color-rule-strong)] bg-[var(--color-surface)] shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
+        className="pop-in w-full max-w-lg origin-top overflow-hidden rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
       >
-        <input
-          ref={inputRef}
-          value={q}
-          onChange={(e) => {
-            setQ(e.target.value);
-            setActive(0);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setActive((a) => Math.min(a + 1, results.length - 1));
-            } else if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setActive((a) => Math.max(a - 1, 0));
-            } else if (e.key === "Enter") {
-              e.preventDefault();
-              const item = results[active];
-              if (item) go(item.href);
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              close();
-            }
-          }}
-          placeholder="Go to… (type a screen or report)"
-          className="w-full border-b border-[var(--color-rule)] bg-transparent px-4 py-3 text-sm outline-none"
-          aria-label="Search screens"
-        />
-        <ul className="max-h-[50vh] overflow-auto py-1">
-          {results.map((item, i) => (
-            <li key={item.href + item.label}>
+        <div className="flex items-center border-b border-[var(--color-rule)] px-3">
+          <Search className="h-4 w-4 shrink-0 text-[var(--color-ink-faint)]" aria-hidden />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setActive(0);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setActive((value) => Math.min(value + 1, results.length - 1));
+              } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setActive((value) => Math.max(value - 1, 0));
+              } else if (event.key === "Enter") {
+                event.preventDefault();
+                const item = results[active];
+                if (item) go(item.href);
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                close();
+              }
+            }}
+            placeholder="Search workspaces and reports"
+            className="min-w-0 flex-1 bg-transparent px-3 py-3 text-sm outline-none"
+            aria-label="Search workspaces and reports"
+          />
+          <button type="button" onClick={close} className="btn btn-sm btn-ghost grid h-8 w-8 place-items-center p-0" aria-label="Close search" title="Close search">
+            <X className="h-4 w-4" aria-hidden />
+          </button>
+        </div>
+
+        <ul className="max-h-[55vh] overflow-auto py-1">
+          {results.map((item, index) => (
+            <li key={item.id}>
               <button
                 type="button"
-                onMouseEnter={() => setActive(i)}
+                onMouseEnter={() => setActive(index)}
                 onClick={() => go(item.href)}
-                className={`flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm ${
-                  i === active ? "bg-[var(--color-primary-tint)] text-[var(--color-primary)]" : "text-[var(--color-ink)] hover:bg-[var(--color-surface-strong)]"
+                className={`flex min-h-11 w-full items-center justify-between gap-4 px-4 py-2 text-left text-sm ${
+                  index === active
+                    ? "bg-[var(--color-primary-tint)] text-[var(--color-primary)]"
+                    : "text-[var(--color-ink)] hover:bg-[var(--color-surface-strong)]"
                 }`}
               >
                 <span className="font-medium">{item.label}</span>
-                {item.hint ? <span className="truncate text-xs text-[var(--color-ink-faint)]">{item.hint}</span> : null}
+                <span className="truncate text-xs text-[var(--color-ink-faint)]">{item.hint}</span>
               </button>
             </li>
           ))}
-          {results.length === 0 ? <li className="px-4 py-6 text-center text-sm text-[var(--color-ink-faint)]">No screen matches “{q}”.</li> : null}
+          {results.length === 0 ? (
+            <li className="px-4 py-8 text-center text-sm text-[var(--color-ink-faint)]">No matching destination</li>
+          ) : null}
         </ul>
-        <div className="flex items-center justify-between border-t border-[var(--color-rule)] px-4 py-2 text-[0.7rem] text-[var(--color-ink-faint)]">
-          <span>↑↓ to move · ↵ to open · esc to close</span>
-          <span>⌘K</span>
-        </div>
       </div>
     </div>
   );

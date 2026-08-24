@@ -7,7 +7,7 @@ import { PageHeader, ErrorPanel } from "@/components/ui";
 import CalculationsGrid from "@/components/calculations/calculations-grid";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Financial — Ahivim Budget Management" };
+export const metadata = { title: "Budget planning - Ahivim Budget Management" };
 
 /**
  * Financial (the Calculations workbook). This is the money side — internal
@@ -38,13 +38,13 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
   return (
     <>
       <PageHeader
-        eyebrow="Financial · the money side"
-        title="Financial"
-        description="The Calculations workbook: internal rates, the first and second cuts, adjustments, and each account's net and Masser (the fixed set-aside, formerly “after all”). This is the money model — distinct from Budget (authorized vs billed hours), which lives on each individual. Glance sorts the accounts that need action to the top; Full sheet edits hours and cuts inline, every figure explained."
+        eyebrow="Planning"
+        title="Budget planning"
+        description="Portfolio pace, projected exhaustion, renewal risk, and annual plan calculations."
       />
 
       {!result.ok ? (
-        <ErrorPanel title="Could not load projections">{result.error}</ErrorPanel>
+        <ErrorPanel title="Could not load budget planning">{result.error}</ErrorPanel>
       ) : (
         <>
           {individualId ? (

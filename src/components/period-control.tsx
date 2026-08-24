@@ -1,5 +1,6 @@
 "use client";
 
+import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 /**
@@ -16,13 +17,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
  */
 
 export type PeriodRange = { from: string; to: string } | null;
+type ConcretePeriodRange = Exclude<PeriodRange, null>;
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const pad = (n: number) => String(n).padStart(2, "0");
 const iso = (y: number, m: number, d: number) => `${y}-${pad(m)}-${pad(d)}`;
 const lastDay = (y: number, m: number) => new Date(y, m, 0).getDate(); // m = 1..12
 
-function monthRange(y: number, m: number): PeriodRange {
+function monthRange(y: number, m: number): ConcretePeriodRange {
   return { from: iso(y, m, 1), to: iso(y, m, lastDay(y, m)) };
 }
 function monthOf(r: PeriodRange): { y: number; m: number } | null {
@@ -46,6 +48,22 @@ function parseParam(v: string | null): PeriodRange {
   return m ? { from: m[1], to: m[2] } : null;
 }
 
+function sameRange(a: PeriodRange, b: PeriodRange): boolean {
+  if (a === null || b === null) return a === b;
+  return a.from === b.from && a.to === b.to;
+}
+
+function currentPresetRanges(now = new Date()) {
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+  const quarterStart = Math.floor(now.getMonth() / 3) * 3 + 1;
+  return {
+    month: monthRange(year, month),
+    quarter: { from: iso(year, quarterStart, 1), to: iso(year, quarterStart + 2, lastDay(year, quarterStart + 2)) },
+    year: { from: `${year}-01-01`, to: `${year}-12-31` },
+  } satisfies Record<"month" | "quarter" | "year", ConcretePeriodRange>;
+}
+
 export default function PeriodControl({
   onChange,
   paramKey = "period",
@@ -59,8 +77,13 @@ export default function PeriodControl({
   }, [paramKey]);
 
   const [range, setRange] = useState<PeriodRange>(initial);
+  const [presets, setPresets] = useState<ReturnType<typeof currentPresetRanges> | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+
+  useEffect(() => {
+    setPresets(currentPresetRanges());
+  }, []);
 
   // Apply on mount and whenever the range changes; keep the URL in sync without a
   // server round-trip. Depends only on `range` (onChange is read via a ref so an
@@ -75,6 +98,12 @@ export default function PeriodControl({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range]);
+
+  useEffect(() => {
+    const onPopState = () => setRange(parseParam(new URL(window.location.href).searchParams.get(paramKey)));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [paramKey]);
 
   const step = (delta: number) => {
     const base = monthOf(range) ?? (() => {
@@ -94,37 +123,41 @@ export default function PeriodControl({
     setRange(monthRange(y, m));
   };
   const thisMonth = () => {
-    const d = new Date();
-    setRange(monthRange(d.getFullYear(), d.getMonth() + 1));
+    setRange(presets?.month ?? currentPresetRanges().month);
   };
   const thisQuarter = () => {
-    const d = new Date();
-    const y = d.getFullYear();
-    const startM = Math.floor(d.getMonth() / 3) * 3 + 1;
-    setRange({ from: iso(y, startM, 1), to: iso(y, startM + 2, lastDay(y, startM + 2)) });
+    setRange(presets?.quarter ?? currentPresetRanges().quarter);
   };
   const thisYear = () => {
-    const y = new Date().getFullYear();
-    setRange({ from: `${y}-01-01`, to: `${y}-12-31` });
+    setRange(presets?.year ?? currentPresetRanges().year);
   };
 
-  const btn = "rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors";
-  const preset = (active: boolean) =>
-    `${btn} ${active ? "bg-[var(--color-primary)] text-white" : "border border-[var(--color-rule-strong)] bg-[var(--color-surface)] text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`;
+  const preset = (active: boolean) => `btn btn-sm ${active ? "btn-primary" : "btn-secondary"}`;
   const isAll = range === null;
-  const isYear = !!range && /^\d{4}-01-01$/.test(range.from) && /^\d{4}-12-31$/.test(range.to);
+  const isMonth = !!presets && sameRange(range, presets.month);
+  const isQuarter = !!presets && sameRange(range, presets.quarter);
+  const isYear = !!presets && sameRange(range, presets.year);
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
+    <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Reporting period">
       <div className="inline-flex items-center overflow-hidden rounded-md border border-[var(--color-rule-strong)] bg-[var(--color-surface)]">
-        <button type="button" onClick={() => step(-1)} className="px-2 py-1.5 text-sm hover:bg-[var(--color-surface-strong)]" aria-label="Previous month">◀</button>
-        <span className="min-w-[7.5rem] px-3 py-1.5 text-center text-sm font-semibold tabular-nums">{labelOf(range)}</span>
-        <button type="button" onClick={() => step(1)} className="px-2 py-1.5 text-sm hover:bg-[var(--color-surface-strong)]" aria-label="Next month">▶</button>
+        <button type="button" onClick={() => step(-1)} className="btn btn-sm btn-icon btn-ghost rounded-none border-r border-[var(--color-rule)]" aria-label="Previous month" title="Previous month">
+          <ChevronLeft aria-hidden className="h-4 w-4" />
+        </button>
+        <span className="inline-flex min-h-9 min-w-[8.5rem] items-center justify-center gap-2 px-3 text-center text-sm font-semibold tabular-nums" aria-live="polite">
+          <CalendarDays aria-hidden className="h-4 w-4 text-[var(--color-ink-faint)]" />
+          {labelOf(range)}
+        </span>
+        <button type="button" onClick={() => step(1)} className="btn btn-sm btn-icon btn-ghost rounded-none border-l border-[var(--color-rule)]" aria-label="Next month" title="Next month">
+          <ChevronRight aria-hidden className="h-4 w-4" />
+        </button>
       </div>
-      <button type="button" onClick={thisMonth} className={preset(false)}>This month</button>
-      <button type="button" onClick={thisQuarter} className={preset(false)}>Quarter</button>
-      <button type="button" onClick={thisYear} className={preset(isYear)}>Year</button>
-      <button type="button" onClick={() => setRange(null)} className={preset(isAll)}>All time</button>
+      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Period presets">
+        <button type="button" onClick={thisMonth} aria-pressed={isMonth} className={preset(isMonth)}>This month</button>
+        <button type="button" onClick={thisQuarter} aria-pressed={isQuarter} className={preset(isQuarter)}>This quarter</button>
+        <button type="button" onClick={thisYear} aria-pressed={isYear} className={preset(isYear)}>This year</button>
+        <button type="button" onClick={() => setRange(null)} aria-pressed={isAll} className={preset(isAll)}>All time</button>
+      </div>
     </div>
   );
 }
