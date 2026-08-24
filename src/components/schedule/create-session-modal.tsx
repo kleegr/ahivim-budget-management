@@ -247,9 +247,9 @@ export default function CreateSessionModal({
             <p className="eyebrow">Expected billing</p>
             {preview?.billing ? (
               <dl className="mt-1 grid grid-cols-2 gap-y-1 text-sm">
-                <dt className="text-[var(--color-ink-faint)]">Rate</dt><dd className="tnum text-right">${preview.billing.expectedRate}</dd>
-                <dt className="text-[var(--color-ink-faint)]">Internal</dt><dd className="tnum text-right">${preview.billing.internalAmount}</dd>
-                <dt className="text-[var(--color-ink-faint)]">Agency total</dt><dd className="tnum text-right">${preview.billing.agencyGross}</dd>
+                <dt className="text-[var(--color-ink-faint)]">Funder rate</dt><dd className="tnum text-right">${preview.billing.expectedRate}</dd>
+                <dt className="text-[var(--color-ink-faint)]">Employee base</dt><dd className="tnum text-right">${preview.billing.internalAmount}</dd>
+                <dt className="text-[var(--color-ink-faint)]">Funder billed</dt><dd className="tnum text-right">${preview.billing.agencyGross}</dd>
                 {isGroup ? <><dt className="text-[var(--color-ink-faint)]">Per individual</dt><dd className="tnum text-right">{preview.billing.perIndividual.hours} h · ${preview.billing.perIndividual.amount}</dd></> : null}
               </dl>
             ) : <p className="mt-1 text-sm text-[var(--color-ink-faint)]">Pick a program, at least one individual, a date and a duration.</p>}

@@ -109,9 +109,9 @@ export default async function AliasesPage({
   return (
     <>
       <PageHeader
-        eyebrow="Name matching"
-        title="Alias management"
-        description="Aliases map imported spellings to a canonical person. Only approved aliases resolve future imports; nothing is ever merged automatically."
+        eyebrow="Review"
+        title="Name spellings"
+        description="Connect imported spellings to the correct individual or employee."
         action={newAliasAction}
       />
 

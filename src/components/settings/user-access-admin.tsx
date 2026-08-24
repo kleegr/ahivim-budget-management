@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Eye, EyeOff } from "lucide-react";
 
 /**
  * Administrator user + access management.
@@ -13,6 +14,58 @@ import { useRouter } from "next/navigation";
  */
 
 type Option = { id: string; name: string };
+
+function PasswordField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  required,
+  minLength,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  required?: boolean;
+  minLength?: number;
+}) {
+  const id = useId();
+  const [visible, setVisible] = useState(false);
+  const actionLabel = visible ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`;
+
+  return (
+    <div className="text-sm">
+      <label htmlFor={id} className="text-xs font-medium">
+        {label}
+      </label>
+      <div className="relative mt-1">
+        <input
+          id={id}
+          required={required}
+          minLength={minLength}
+          type={visible ? "text" : "password"}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          autoComplete="new-password"
+          className="input w-full pr-11 text-sm"
+          placeholder={placeholder}
+        />
+        <button
+          type="button"
+          onClick={() => setVisible((current) => !current)}
+          aria-label={actionLabel}
+          aria-pressed={visible}
+          aria-controls={id}
+          title={actionLabel}
+          className="absolute inset-y-0 right-0 grid w-10 place-items-center rounded-r-md text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-primary)]"
+        >
+          {visible ? <EyeOff aria-hidden="true" className="h-4 w-4" /> : <Eye aria-hidden="true" className="h-4 w-4" />}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 interface UserRow {
   id: string;
@@ -115,13 +168,13 @@ const VISIBILITY_OPTIONS: Array<{
 }> = [
   { key: "canSeeHours", label: "Hours", description: "authorized, scheduled and billed time" },
   { key: "canSeeBilledAmounts", label: "Funder amounts", description: "rates and totals billed to the funder", requiresMoney: true },
-  { key: "canSeeEmployeeAmounts", label: "Employee amounts", description: "base amounts earned or payable", requiresMoney: true },
+  { key: "canSeeEmployeeAmounts", label: "Employee base", description: "base amounts earned or payable", requiresMoney: true },
   { key: "canSeeAgencySpread", label: "Agency spread", description: "the billed-to-base difference", requiresMoney: true },
   { key: "canSeeCheckNet", label: "Check net", description: "net pay recorded on employee checks", requiresMoney: true },
   { key: "canSeeTaxes", label: "Taxes and withholding", description: "gross, net and payroll withholding details", requiresMoney: true },
-  { key: "canSeeBudgets", label: "Budgets", description: "individual budgets and financial plans; enabling this also enables Hours" },
+  { key: "canSeeBudgets", label: "Budgets", description: "individual budgets and annual plans; enabling this also enables Hours" },
   { key: "canSeeEmployeeDeals", label: "Employee deals", description: "deal terms and calculated obligations", requiresMoney: true },
-  { key: "canSeeSettlements", label: "Settlements", description: "balances, payments and action history", requiresMoney: true },
+  { key: "canSeeSettlements", label: "Payments and balances", description: "open balances, payments and action history", requiresMoney: true },
 ];
 
 /* ------------------------------------------------------------ multi-select */
@@ -536,10 +589,14 @@ export default function UserAccessAdmin({
               <span className="text-xs font-medium">Display name</span>
               <input required type="text" value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} className="input mt-1 w-full text-sm" />
             </label>
-            <label className="block text-sm">
-              <span className="text-xs font-medium">Initial password</span>
-              <input required minLength={10} type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} autoComplete="new-password" className="input mt-1 w-full text-sm" placeholder="10+ characters" />
-            </label>
+            <PasswordField
+              label="Initial password"
+              value={form.password}
+              onChange={(password) => setForm({ ...form, password })}
+              placeholder="10+ characters"
+              required
+              minLength={10}
+            />
             <label className="block text-sm">
               <span className="text-xs font-medium">Role</span>
               <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="input mt-1 w-full text-sm">
@@ -607,10 +664,12 @@ export default function UserAccessAdmin({
                             <option value="admin">Administrator</option>
                           </select>
                         </label>
-                        <label className="block text-sm">
-                          <span className="text-xs font-medium">Reset password (optional)</span>
-                          <input type="text" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" placeholder="Leave blank to keep current" className="input mt-1 w-full text-sm" />
-                        </label>
+                        <PasswordField
+                          label="Reset password (optional)"
+                          value={newPassword}
+                          onChange={setNewPassword}
+                          placeholder="Leave blank to keep current"
+                        />
                       </div>
                       <AccessConfig value={editAccess} onChange={setEditAccess} individuals={individuals} employees={employees} role={editRole} />
                       <div className="flex gap-2">

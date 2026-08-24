@@ -2,14 +2,26 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  BadgeCheck,
+  CalendarDays,
+  Clock3,
+  FileWarning,
+  ReceiptText,
+  Search,
+  Users,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { Badge } from "@/components/ui";
 import { ActionButton } from "@/components/manage/client";
-
-/**
- * The Employees register as a fast client grid — live search and sort, a
- * show-archived toggle, no Apply-filters page reload. This mirrors the
- * Individuals list so "how do I filter?" has one answer everywhere.
- */
+import type { EmployeeDealReadiness } from "@/lib/data/employee-directory";
+import { dec, formatHours } from "@/lib/money";
 
 export type EmployeeRow = {
   id: string;
@@ -17,85 +29,405 @@ export type EmployeeRow = {
   externalRef: string | null;
   status: string;
   archived: boolean;
+  transactionCount: number;
+  checkCount: number;
+  billedHours: string | null;
+  individualsServed: number;
+  lastActivityDate: string | null;
+  dealReadiness: EmployeeDealReadiness | null;
+  missingDealTransactions: number | null;
+  openSettlementItems: number | null;
 };
 
-type SortKey = "name" | "ref" | "status";
+type DirectoryFilter = "all" | "attention" | "deal" | "settlement" | "activity" | "no_activity";
+type SortKey = "name" | "activity" | "checks" | "hours" | "deal" | "settlement" | "status";
+type SortState = { key: SortKey; dir: "asc" | "desc" };
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function formatDate(value: string | null): string {
+  if (!value) return "No dated activity";
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!match) return value;
+  const month = MONTHS[Number(match[2]) - 1];
+  return month ? `${month} ${Number(match[3])}, ${match[1]}` : value;
+}
+
+function needsAttention(row: EmployeeRow): boolean {
+  return !row.archived && (
+    row.dealReadiness === "needs_deal"
+    || (row.openSettlementItems ?? 0) > 0
+  );
+}
+
+function matchesFilter(row: EmployeeRow, filter: DirectoryFilter): boolean {
+  if (filter !== "all" && row.archived) return false;
+  if (filter === "attention") return needsAttention(row);
+  if (filter === "deal") return !row.archived && row.dealReadiness === "needs_deal";
+  if (filter === "settlement") return !row.archived && (row.openSettlementItems ?? 0) > 0;
+  if (filter === "activity") return row.transactionCount > 0;
+  if (filter === "no_activity") return row.transactionCount === 0;
+  return true;
+}
+
+function SummaryMetric({ icon: Icon, label, value, tone = "default" }: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  tone?: "default" | "attention" | "success";
+}) {
+  const toneClass = tone === "attention"
+    ? "text-[var(--color-warn)]"
+    : tone === "success"
+      ? "text-[var(--color-success)]"
+      : "text-[var(--color-primary)]";
+
+  return (
+    <div className="flex min-w-0 items-center gap-3 py-3">
+      <Icon size={18} className={`shrink-0 ${toneClass}`} strokeWidth={1.8} aria-hidden />
+      <dl className="min-w-0">
+        <dt className="truncate text-xs font-medium text-[var(--color-ink-soft)]">{label}</dt>
+        <dd className="tnum mt-0.5 text-lg font-semibold leading-none text-[var(--color-ink)]">{value}</dd>
+      </dl>
+    </div>
+  );
+}
+
+function DealStatus({ row }: { row: EmployeeRow }) {
+  if (row.dealReadiness === null) {
+    return <span className="text-[var(--color-ink-faint)]">-</span>;
+  }
+  if (row.dealReadiness === "needs_deal") {
+    const count = row.missingDealTransactions ?? 0;
+    return (
+      <div>
+        <span className="inline-flex items-center gap-1.5 font-medium text-[var(--color-danger)]">
+          <FileWarning size={14} aria-hidden /> Deal needed
+        </span>
+        <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
+          {count.toLocaleString()} uncovered {count === 1 ? "transaction" : "transactions"}
+        </p>
+      </div>
+    );
+  }
+  if (row.dealReadiness === "ready") {
+    return (
+      <span className="inline-flex items-center gap-1.5 font-medium text-[var(--color-success)]">
+        <BadgeCheck size={14} aria-hidden /> Deal ready
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[var(--color-ink-faint)]">
+      <Clock3 size={14} aria-hidden /> No deal activity
+    </span>
+  );
+}
+
+function SortHead({ column, children, align = "left", sort, onSort }: {
+  column: SortKey;
+  children: string;
+  align?: "left" | "right";
+  sort: SortState;
+  onSort: (key: SortKey) => void;
+}) {
+  const active = sort.key === column;
+  const Icon = active ? (sort.dir === "asc" ? ArrowUp : ArrowDown) : ArrowUpDown;
+  return (
+    <th
+      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+      className={`whitespace-nowrap border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 font-semibold ${align === "right" ? "text-right" : "text-left"}`}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(column)}
+        className={`inline-flex items-center gap-1.5 hover:text-[var(--color-primary)] ${align === "right" ? "flex-row-reverse" : ""}`}
+        title={`Sort by ${children}`}
+      >
+        {children}
+        <Icon size={13} className={active ? "text-[var(--color-primary)]" : "text-[var(--color-ink-faint)]"} aria-hidden />
+      </button>
+    </th>
+  );
+}
 
 export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; canEdit: boolean }) {
   const [q, setQ] = useState("");
   const [showArchived, setShowArchived] = useState(false);
-  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "name", dir: "asc" });
+  const [filter, setFilter] = useState<DirectoryFilter>("all");
+  const [sort, setSort] = useState<SortState>({ key: "activity", dir: "desc" });
+
+  const activeRows = useMemo(() => rows.filter((row) => !row.archived), [rows]);
+  const canSeeHours = rows.some((row) => row.billedHours !== null);
+  const canSeeDeals = rows.some((row) => row.dealReadiness !== null);
+  const canSeeSettlements = rows.some((row) => row.openSettlementItems !== null);
+
+  const counts = useMemo(() => ({
+    all: activeRows.length,
+    attention: activeRows.filter(needsAttention).length,
+    deal: activeRows.filter((row) => row.dealReadiness === "needs_deal").length,
+    settlement: activeRows.filter((row) => (row.openSettlementItems ?? 0) > 0).length,
+    activity: activeRows.filter((row) => row.transactionCount > 0).length,
+    no_activity: activeRows.filter((row) => row.transactionCount === 0).length,
+  }), [activeRows]);
+
+  const totals = useMemo(() => ({
+    transactions: activeRows.reduce((sum, row) => sum + row.transactionCount, 0),
+    checks: activeRows.reduce((sum, row) => sum + row.checkCount, 0),
+    billedHours: activeRows.reduce((sum, row) => sum.plus(row.billedHours ?? 0), dec(0)).toString(),
+    openItems: activeRows.reduce((sum, row) => sum + (row.openSettlementItems ?? 0), 0),
+  }), [activeRows]);
+
+  const filterOptions = useMemo(() => {
+    const options: Array<{ key: DirectoryFilter; label: string; icon: LucideIcon }> = [
+      { key: "all", label: "All active", icon: Users },
+    ];
+    if (canSeeDeals || canSeeSettlements) {
+      options.push({ key: "attention", label: "Needs attention", icon: AlertTriangle });
+    }
+    if (canSeeDeals) options.push({ key: "deal", label: "Deal needed", icon: FileWarning });
+    if (canSeeSettlements) options.push({ key: "settlement", label: "Open balance", icon: ReceiptText });
+    options.push(
+      { key: "activity", label: "Has activity", icon: Activity },
+      { key: "no_activity", label: "No activity", icon: Clock3 },
+    );
+    return options;
+  }, [canSeeDeals, canSeeSettlements]);
 
   const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    let list = rows.filter((r) => (showArchived ? true : !r.archived));
+    let list = rows.filter((row) => (showArchived ? true : !row.archived));
+    list = list.filter((row) => matchesFilter(row, filter));
     if (needle) {
-      list = list.filter((r) => r.name.toLowerCase().includes(needle) || (r.externalRef ?? "").toLowerCase().includes(needle));
+      list = list.filter((row) => [
+        row.name,
+        row.externalRef,
+        row.status,
+        row.lastActivityDate,
+      ].some((value) => value?.toLowerCase().includes(needle)));
     }
-    const cmp = (a: EmployeeRow, b: EmployeeRow) => {
-      let d = 0;
-      if (sort.key === "name") d = a.name.localeCompare(b.name);
-      else if (sort.key === "ref") d = (a.externalRef ?? "").localeCompare(b.externalRef ?? "");
-      else d = a.status.localeCompare(b.status);
-      if (d === 0) d = a.name.localeCompare(b.name);
-      return sort.dir === "asc" ? d : -d;
+
+    const dealRank = (row: EmployeeRow) => (
+      row.dealReadiness === "needs_deal" ? 0
+        : row.dealReadiness === "ready" ? 1
+          : row.dealReadiness === "not_needed" ? 2 : 3
+    );
+    const compare = (a: EmployeeRow, b: EmployeeRow): number => {
+      let difference = 0;
+      switch (sort.key) {
+        case "name":
+          difference = a.name.localeCompare(b.name);
+          break;
+        case "activity":
+          difference = a.transactionCount - b.transactionCount;
+          break;
+        case "checks":
+          difference = a.checkCount - b.checkCount;
+          break;
+        case "hours":
+          difference = dec(a.billedHours ?? 0).comparedTo(dec(b.billedHours ?? 0));
+          break;
+        case "deal":
+          difference = dealRank(a) - dealRank(b);
+          break;
+        case "settlement":
+          difference = (a.openSettlementItems ?? -1) - (b.openSettlementItems ?? -1);
+          break;
+        case "status":
+          difference = a.status.localeCompare(b.status);
+          break;
+      }
+      if (difference === 0) difference = a.name.localeCompare(b.name);
+      return sort.dir === "asc" ? difference : -difference;
     };
-    return list.slice().sort(cmp);
-  }, [rows, q, showArchived, sort]);
+    return list.slice().sort(compare);
+  }, [filter, q, rows, showArchived, sort]);
 
-  const archivedCount = useMemo(() => rows.filter((r) => r.archived).length, [rows]);
-  const toggle = (key: SortKey) => setSort((p) => (p.key === key ? { key, dir: p.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
+  const archivedCount = rows.filter((row) => row.archived).length;
+  const hasActiveFilters = q.trim().length > 0 || filter !== "all";
+  const resetFilters = () => {
+    setQ("");
+    setFilter("all");
+  };
+  const toggleSort = (key: SortKey) => {
+    setSort((previous) => previous.key === key
+      ? { key, dir: previous.dir === "asc" ? "desc" : "asc" }
+      : { key, dir: ["activity", "checks", "hours", "settlement"].includes(key) ? "desc" : "asc" });
+  };
 
-  const Head = ({ k, children }: { k: SortKey; children: React.ReactNode }) => (
-    <th className="whitespace-nowrap border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 text-left font-semibold">
-      <button type="button" onClick={() => toggle(k)} className="inline-flex items-center gap-1 hover:underline" title="Sort">
-        {children}
-        <span className="text-[10px] text-[var(--color-primary)]">{sort.key === k ? (sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
-      </button>
-    </th>
-  );
+  const tableColumnCount = 4
+    + (canSeeHours ? 1 : 0)
+    + (canSeeDeals ? 1 : 0)
+    + (canSeeSettlements ? 1 : 0)
+    + (canEdit ? 1 : 0);
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search a name or reference…" className="input w-64 max-w-full" aria-label="Search employees" />
-        {archivedCount > 0 ? (
-          <label className="flex items-center gap-2 text-sm text-[var(--color-ink-soft)]">
-            <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
-            Show archived ({archivedCount})
-          </label>
-        ) : null}
-        <span className="ml-auto text-sm text-[var(--color-text-soft)]">
-          <span className="tnum font-semibold text-[var(--color-ink)]">{visible.length}</span> {visible.length === 1 ? "employee" : "employees"}
-        </span>
+    <div className="space-y-4">
+      <section aria-label="Employee portfolio summary" className="border-y border-[var(--color-rule-strong)]">
+        <div className="grid grid-cols-2 gap-x-5 sm:grid-cols-3 xl:grid-cols-6">
+          <SummaryMetric icon={Users} label="Active employees" value={activeRows.length.toLocaleString()} />
+          <SummaryMetric icon={Activity} label="Transactions" value={totals.transactions.toLocaleString()} />
+          <SummaryMetric icon={CalendarDays} label="Checks / periods" value={totals.checks.toLocaleString()} />
+          {canSeeHours ? <SummaryMetric icon={Clock3} label="Billed hours" value={formatHours(totals.billedHours)} /> : null}
+          {canSeeDeals ? (
+            <SummaryMetric
+              icon={FileWarning}
+              label="Deals needed"
+              value={counts.deal.toLocaleString()}
+              tone={counts.deal > 0 ? "attention" : "success"}
+            />
+          ) : null}
+          {canSeeSettlements ? (
+            <SummaryMetric
+              icon={ReceiptText}
+              label="Open balance items"
+              value={totals.openItems.toLocaleString()}
+              tone={totals.openItems > 0 ? "attention" : "success"}
+            />
+          ) : null}
+        </div>
+      </section>
+
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative w-72 max-w-full">
+            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-ink-faint)]" aria-hidden />
+            <input
+              value={q}
+              onChange={(event) => setQ(event.target.value)}
+              placeholder="Search employees or references"
+              className="input w-full pl-9 pr-9"
+              aria-label="Search employees"
+            />
+            {q ? (
+              <button
+                type="button"
+                onClick={() => setQ("")}
+                className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-md text-[var(--color-ink-faint)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
+                aria-label="Clear employee search"
+                title="Clear search"
+              >
+                <X size={14} aria-hidden />
+              </button>
+            ) : null}
+          </div>
+          {archivedCount > 0 ? (
+            <label className="flex items-center gap-2 text-sm text-[var(--color-ink-soft)]">
+              <input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} />
+              Show archived ({archivedCount})
+            </label>
+          ) : null}
+          <span className="ml-auto text-sm text-[var(--color-text-soft)]" aria-live="polite">
+            <span className="tnum font-semibold text-[var(--color-ink)]">{visible.length}</span>{" "}
+            {visible.length === 1 ? "employee" : "employees"}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Filter employees by follow-up needed">
+          {filterOptions.map(({ key, label, icon: Icon }) => {
+            const selected = filter === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setFilter(key)}
+                aria-pressed={selected}
+                className={`inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors ${
+                  selected
+                    ? "border-[var(--color-primary)] bg-[var(--color-primary)] text-white"
+                    : "border-[var(--color-rule-strong)] bg-[var(--color-surface)] text-[var(--color-ink-soft)] hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]"
+                }`}
+              >
+                <Icon size={13} aria-hidden />
+                {label}
+                <span className={selected ? "text-white/75" : "text-[var(--color-ink-faint)]"}>{counts[key]}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      <div className="scroll-thin max-h-[68vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
+      <div className="scroll-thin max-h-[62vh] overflow-auto rounded-md border border-[var(--color-rule-strong)]">
         <table className="w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10">
             <tr>
-              <Head k="name">Name</Head>
-              <Head k="ref">Reference</Head>
-              <Head k="status">Status</Head>
-              {canEdit ? <th className="border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 text-left font-semibold">Actions</th> : null}
+              <SortHead column="name" sort={sort} onSort={toggleSort}>Employee</SortHead>
+              <SortHead column="activity" sort={sort} onSort={toggleSort}>Service activity</SortHead>
+              <SortHead column="checks" sort={sort} onSort={toggleSort}>Checks / periods</SortHead>
+              {canSeeHours ? <SortHead column="hours" align="right" sort={sort} onSort={toggleSort}>Billed hours</SortHead> : null}
+              {canSeeDeals ? <SortHead column="deal" sort={sort} onSort={toggleSort}>Deal readiness</SortHead> : null}
+              {canSeeSettlements ? <SortHead column="settlement" align="right" sort={sort} onSort={toggleSort}>Open items</SortHead> : null}
+              <SortHead column="status" sort={sort} onSort={toggleSort}>Status</SortHead>
+              {canEdit ? (
+                <th className="border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 text-left font-semibold">
+                  Actions
+                </th>
+              ) : null}
             </tr>
           </thead>
           <tbody>
-            {visible.map((r) => (
-              <tr key={r.id} className="border-b border-[var(--color-rule)] hover:bg-[var(--color-surface-muted)]">
-                <td className="px-3 py-2">
-                  <Link className="font-medium text-[var(--color-primary)] underline-offset-2 hover:underline" href={`/employees/${r.id}`}>
-                    {r.name}
+            {visible.map((row) => (
+              <tr key={row.id} className={`border-b border-[var(--color-rule)] hover:bg-[var(--color-surface-muted)] ${row.archived ? "opacity-70" : ""}`}>
+                <td className="px-3 py-2.5">
+                  <Link className="font-semibold text-[var(--color-primary)] underline-offset-2 hover:underline" href={`/employees/${row.id}`}>
+                    {row.name}
                   </Link>
+                  <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
+                    {row.externalRef ? `Reference ${row.externalRef}` : "No payroll reference"}
+                  </p>
                 </td>
-                <td className="px-3 py-2 text-[var(--color-ink-soft)]">{r.externalRef ?? <span className="text-[var(--color-ink-faint)]">—</span>}</td>
-                <td className="px-3 py-2"><Badge value={r.status} /></td>
-                {canEdit ? (
-                  <td className="whitespace-nowrap px-3 py-2">
-                    {r.archived ? (
-                      <ActionButton label="Restore" endpoint={`/api/employees/${r.id}`} body={{ action: "restore" }} withReason />
+                <td className="px-3 py-2.5">
+                  {row.transactionCount > 0 ? (
+                    <>
+                      <p className="tnum font-medium text-[var(--color-ink)]">
+                        {row.transactionCount.toLocaleString()} {row.transactionCount === 1 ? "transaction" : "transactions"}
+                      </p>
+                      <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
+                        {row.individualsServed.toLocaleString()} {row.individualsServed === 1 ? "person" : "people"} served
+                      </p>
+                    </>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-[var(--color-ink-faint)]">
+                      <Clock3 size={14} aria-hidden /> No activity
+                    </span>
+                  )}
+                </td>
+                <td className="px-3 py-2.5">
+                  <p className="tnum font-medium text-[var(--color-ink)]">
+                    {row.checkCount.toLocaleString()} {row.checkCount === 1 ? "check / period" : "checks / periods"}
+                  </p>
+                  <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
+                    {row.lastActivityDate ? `Latest ${formatDate(row.lastActivityDate)}` : "No dated activity"}
+                  </p>
+                </td>
+                {canSeeHours ? (
+                  <td className="tnum px-3 py-2.5 text-right font-medium">
+                    {row.billedHours === null ? <span className="text-[var(--color-ink-faint)]">-</span> : `${formatHours(row.billedHours)} h`}
+                  </td>
+                ) : null}
+                {canSeeDeals ? <td className="px-3 py-2.5"><DealStatus row={row} /></td> : null}
+                {canSeeSettlements ? (
+                  <td className="tnum px-3 py-2.5 text-right">
+                    {row.openSettlementItems === null ? (
+                      <span className="text-[var(--color-ink-faint)]">-</span>
+                    ) : row.openSettlementItems > 0 ? (
+                      <span className="inline-flex items-center justify-end gap-1.5 font-semibold text-[var(--color-warn)]">
+                        <AlertTriangle size={14} aria-hidden /> {row.openSettlementItems.toLocaleString()}
+                      </span>
                     ) : (
-                      <ActionButton label="Archive" endpoint={`/api/employees/${r.id}`} body={{ action: "archive" }} withReason />
+                      <span className="inline-flex items-center justify-end gap-1.5 text-[var(--color-success)]">
+                        <BadgeCheck size={14} aria-hidden /> Clear
+                      </span>
+                    )}
+                  </td>
+                ) : null}
+                <td className="px-3 py-2.5"><Badge value={row.status} /></td>
+                {canEdit ? (
+                  <td className="whitespace-nowrap px-3 py-2.5">
+                    {row.archived ? (
+                      <ActionButton label="Restore" endpoint={`/api/employees/${row.id}`} body={{ action: "restore" }} withReason />
+                    ) : (
+                      <ActionButton label="Archive" endpoint={`/api/employees/${row.id}`} body={{ action: "archive" }} withReason />
                     )}
                   </td>
                 ) : null}
@@ -103,8 +435,13 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
             ))}
             {visible.length === 0 ? (
               <tr>
-                <td colSpan={canEdit ? 4 : 3} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
-                  {rows.length === 0 ? "No employees yet — they appear here once a workbook is committed." : "No one matches your search."}
+                <td colSpan={tableColumnCount} className="px-3 py-12 text-center text-[var(--color-text-soft)]">
+                  <p>{rows.length === 0 ? "No employees yet." : "No employees match these filters."}</p>
+                  {hasActiveFilters ? (
+                    <button type="button" onClick={resetFilters} className="mt-2 font-medium text-[var(--color-primary)] hover:underline">
+                      Clear filters
+                    </button>
+                  ) : null}
                 </td>
               </tr>
             ) : null}

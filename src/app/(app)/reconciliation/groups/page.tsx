@@ -39,9 +39,9 @@ export default async function GroupReviewPage({
   return (
     <>
       <PageHeader
-        eyebrow="Actuals"
-        title="Group-detection review"
-        description="Multi-individual sessions the importer detected, with the money-conservation check behind each split. Confirming or rejecting a group changes only its status — the allocations the importer wrote are never rewritten here."
+        eyebrow="Review"
+        title="Group session review"
+        description="Confirm billed rows that may represent one shared service session."
         action={<ButtonLink href="/reconciliation">Back to reconciliation</ButtonLink>}
       />
 

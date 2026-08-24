@@ -317,7 +317,7 @@ export function HeaderFilter<Row, T>({ grid, col }: { grid: UseGridResult<Row, T
         ? createPortal(
             <div
               ref={popRef}
-              className="pop-in fixed z-[70] origin-top rounded-xl border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-2 shadow-lg"
+              className="pop-in fixed z-[70] origin-top rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-2 shadow-lg"
               style={{ top: pos.top, left: pos.left }}
               onClick={(e) => e.stopPropagation()}
             >
@@ -347,7 +347,7 @@ export function HeaderFilter<Row, T>({ grid, col }: { grid: UseGridResult<Row, T
 export function FilterBar<Row, T>({ grid }: { grid: UseGridResult<Row, T> }) {
   if (grid.chips.length === 0) return null;
   return (
-    <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-[var(--color-rule)] bg-[var(--color-surface-muted)] px-3 py-2">
+    <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface-muted)] px-3 py-2">
       <span className="eyebrow mr-1">Filters</span>
       {grid.chips.map((chip) => (
         <button

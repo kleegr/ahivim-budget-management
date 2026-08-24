@@ -92,7 +92,7 @@ export default function BilledByMonth({
               <th key={c.id} className="px-2 py-2 text-right font-medium" title={`${c.label} — hours billed`}>{c.label}<span className="ml-0.5 text-[0.7rem] font-normal text-[var(--color-ink-faint)]">h</span></th>
             ))}
             {canSeeBilledAmounts ? <th className="px-2 py-2 text-right font-medium" title="Agency amount billed (what was invoiced)">Billed $</th> : null}
-            {canSeeEmployeeAmounts ? <th className="py-2 pl-2 text-right font-medium" title="Company/internal amount">Company $</th> : null}
+            {canSeeEmployeeAmounts ? <th className="py-2 pl-2 text-right font-medium">Employee base</th> : null}
           </tr>
         </thead>
         <tbody>

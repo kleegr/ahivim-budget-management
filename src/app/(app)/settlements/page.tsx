@@ -6,7 +6,7 @@ import { getSettlementDashboard } from "@/lib/data/settlements";
 import { withDb } from "@/lib/data/pool";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Settlements - Ahivim Budget Management" };
+export const metadata = { title: "Payments - Ahivim Budget Management" };
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
@@ -45,16 +45,16 @@ export default async function SettlementsPage({
   return (
     <>
       <PageHeader
-        eyebrow="Money control"
-        title="Settlements"
-        description="Exact balances for employee payouts, employee give-backs, and individual set-asides."
+        eyebrow="Payroll"
+        title="Payments"
+        description="Employee payments, give-backs, annual set-asides, credits, and remaining balances."
       />
 
       {!result.ok ? (
-        <ErrorPanel title="Could not load settlements">{result.error}</ErrorPanel>
+        <ErrorPanel title="Could not load payments">{result.error}</ErrorPanel>
       ) : result.data.denied ? (
-        <ErrorPanel title="No access to Settlements">
-          Your account doesn&rsquo;t include permission to view settlement balances. Ask an administrator if you need it.
+        <ErrorPanel title="No access to Payments">
+          Your account doesn&rsquo;t include permission to view payment balances. Ask an administrator if you need it.
         </ErrorPanel>
       ) : (
         <SettlementDashboard

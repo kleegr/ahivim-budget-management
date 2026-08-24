@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import type {
   CalendarSession, SessionWarningFlags, ScheduleUtilizationSummary,
 } from "@/lib/data/schedule-queries";
@@ -136,52 +137,51 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
     <div className="space-y-4">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="inline-flex overflow-hidden rounded border border-[var(--color-rule-strong)]">
+        <div className="segmented-control" role="tablist" aria-label="Calendar view">
           {(["month", "week", "day"] as View[]).map((v) => (
             <button
               key={v}
               type="button"
+              role="tab"
+              aria-selected={view === v}
               onClick={() => setView(v)}
-              className={`px-3 py-1.5 text-sm capitalize ${
-                view === v ? "bg-[var(--color-primary)] text-white" : "bg-white text-[var(--color-ink)]"
-              }`}
+              className="capitalize"
             >
               {v}
             </button>
           ))}
         </div>
         <div className="inline-flex items-center gap-1">
-          <button type="button" onClick={() => step(-1)} aria-label="Previous" className="rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1.5 text-sm">←</button>
-          <button type="button" onClick={() => setAnchor(today)} className="rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm">Today</button>
-          <button type="button" onClick={() => step(1)} aria-label="Next" className="rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1.5 text-sm">→</button>
+          <button type="button" onClick={() => step(-1)} aria-label="Previous period" title="Previous period" className="btn btn-sm btn-icon btn-ghost"><ChevronLeft aria-hidden className="h-4 w-4" /></button>
+          <button type="button" onClick={() => setAnchor(today)} className="btn btn-sm btn-secondary">Today</button>
+          <button type="button" onClick={() => step(1)} aria-label="Next period" title="Next period" className="btn btn-sm btn-icon btn-ghost"><ChevronRight aria-hidden className="h-4 w-4" /></button>
         </div>
-        <p className="display text-base font-medium">{label}</p>
+        <p className="display min-w-0 text-base font-semibold">{label}</p>
         <div className="ml-auto flex items-center gap-2">
-          {loading ? <span className="text-xs text-[var(--color-ink-faint)]">Loading…</span> : null}
+          {loading ? <span role="status" className="text-xs text-[var(--color-ink-faint)]">Loading…</span> : null}
           {canManage ? (
-            <button type="button" onClick={() => setCreating({ date: view === "month" ? today : anchor })} className="rounded bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-white">
-              New session
+            <button type="button" onClick={() => setCreating({ date: view === "month" ? today : anchor })} className="btn btn-sm btn-primary">
+              <Plus aria-hidden className="h-4 w-4" /> New session
             </button>
           ) : null}
         </div>
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2 text-sm">
-        <span className="eyebrow">View</span>
-        <select value={filters.employeeId} onChange={(e) => setFilters((f) => ({ ...f, employeeId: e.target.value, unassigned: false }))} className="rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1 text-sm">
+      <div className="flex flex-wrap items-center gap-2 border-y border-[var(--color-rule)] py-3 text-sm">
+        <select aria-label="Filter by employee" value={filters.employeeId} onChange={(e) => setFilters((f) => ({ ...f, employeeId: e.target.value, unassigned: false }))} className="select">
           <option value="">All employees</option>
           {employees.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
         </select>
-        <select value={filters.individualId} onChange={(e) => setFilters((f) => ({ ...f, individualId: e.target.value }))} className="rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1 text-sm">
+        <select aria-label="Filter by individual" value={filters.individualId} onChange={(e) => setFilters((f) => ({ ...f, individualId: e.target.value }))} className="select">
           <option value="">All individuals</option>
           {individuals.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
         </select>
-        <select value={filters.programId} onChange={(e) => setFilters((f) => ({ ...f, programId: e.target.value }))} className="rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1 text-sm">
+        <select aria-label="Filter by program" value={filters.programId} onChange={(e) => setFilters((f) => ({ ...f, programId: e.target.value }))} className="select">
           <option value="">All programs</option>
           {programs.map((p) => <option key={p.id} value={p.id}>{p.code}</option>)}
         </select>
-        <select value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))} className="rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1 text-sm">
+        <select aria-label="Filter by status" value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))} className="select">
           <option value="">Any status</option>
           <option value="pending">Pending</option>
           <option value="completed">Completed</option>
@@ -193,8 +193,8 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
           Unassigned only
         </label>
         {(filters.employeeId || filters.individualId || filters.programId || filters.status || filters.unassigned) ? (
-          <button type="button" onClick={() => setFilters({ employeeId: "", individualId: "", programId: "", unassigned: false, status: "" })} className="text-xs text-[var(--color-primary)] underline">
-            Clear
+          <button type="button" onClick={() => setFilters({ employeeId: "", individualId: "", programId: "", unassigned: false, status: "" })} className="btn btn-sm btn-ghost">
+            <X aria-hidden className="h-4 w-4" /> Clear filters
           </button>
         ) : null}
       </div>

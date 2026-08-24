@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { LayoutList, TableProperties } from "lucide-react";
 import { dec, formatMoney, formatHours } from "@/lib/money";
 import type { StrategyGridRow, ProgramRate } from "@/lib/manage/calculation-strategies";
 import { type ColumnDef, type GridFieldKind, isNumericKind } from "@/components/data-grid/types";
@@ -404,9 +405,9 @@ export default function CalculationsGrid({
     const computed: ColumnDef<StrategyGridRow>[] = [
       { key: "yearlyGross", label: "Yearly gross", kind: "computed", accessor: (r) => r.yearlyGross },
       { key: "monthlyGross", label: "Monthly gross", kind: "computed", accessor: (r) => r.monthlyGross },
-      { key: "grossNet", label: "Gross net", kind: "computed", accessor: (r) => r.grossNet },
+      { key: "grossNet", label: "After deductions", kind: "computed", accessor: (r) => r.grossNet },
       { key: "net", label: "Net", kind: "computed", accessor: (r) => r.net },
-      editable({ key: "afterAll", label: "Masser", kind: "money", accessor: (r) => r.afterAll, patch: (v) => ({ afterAll: v === "" ? null : v }) }),
+      editable({ key: "afterAll", label: "Annual set-aside", kind: "money", accessor: (r) => r.afterAll, patch: (v) => ({ afterAll: v === "" ? null : v }) }),
       editable({ key: "account", label: "Account", kind: "text", accessor: (r) => r.account, patch: (v) => ({ account: v || null }) }),
     ];
 
@@ -652,25 +653,22 @@ export default function CalculationsGrid({
 
   return (
     <div className="space-y-3">
-      {/* Glance ⇄ Full sheet. Glance is the default: the whole portfolio at a
-          glance, risk-first. Full sheet is the complete editable grid with every
-          column, inline editing and copy/paste — nothing is lost, only ranked. */}
-      <div className="inline-flex rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-0.5 text-sm">
+      <div className="segmented-control" role="tablist" aria-label="Budget planning views">
         <button
           type="button"
           onClick={() => setView("glance")}
-          aria-pressed={view === "glance"}
-          className={`rounded-md px-3 py-1.5 font-medium transition-colors ${view === "glance" ? "bg-[var(--color-primary)] text-white" : "text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}
+          role="tab"
+          aria-selected={view === "glance"}
         >
-          Glance
+          <LayoutList className="h-4 w-4" aria-hidden /> Plan health
         </button>
         <button
           type="button"
           onClick={() => setView("full")}
-          aria-pressed={view === "full"}
-          className={`rounded-md px-3 py-1.5 font-medium transition-colors ${view === "full" ? "bg-[var(--color-primary)] text-white" : "text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}
+          role="tab"
+          aria-selected={view === "full"}
         >
-          Full sheet
+          <TableProperties className="h-4 w-4" aria-hidden /> Advanced editor
         </button>
       </div>
 
@@ -716,24 +714,19 @@ export default function CalculationsGrid({
       {/* filter-aware totals */}
       {totals && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Yearly gross</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.yearly)}</div></div>
-          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Monthly gross</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.monthly)}</div></div>
-          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Net (monthly)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.net)}</div></div>
-          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Masser</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.after)}</div></div>
-          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]"># Strategies</div><div className="text-lg font-semibold tabular-nums">{totals.strategies}</div></div>
-          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]"># Individuals</div><div className="text-lg font-semibold tabular-nums">{totals.individuals}</div></div>
+          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Annual employee base</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.yearly)}</div></div>
+          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Monthly employee base</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.monthly)}</div></div>
+          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Net plan amount</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.net)}</div></div>
+          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Annual set-aside</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.after)}</div></div>
+          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Plans</div><div className="text-lg font-semibold tabular-nums">{totals.strategies}</div></div>
+          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Individuals</div><div className="text-lg font-semibold tabular-nums">{totals.individuals}</div></div>
         </div>
       )}
 
       {notice && <div className="rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-1.5 text-sm">{notice}</div>}
       {!canManage && <div className="rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-1.5 text-sm text-[var(--color-text-soft)]">You have read-only access. Editing is available to managers.</div>}
 
-      {/* grid */}
-      {canManage && (
-        <p className="text-xs text-[var(--color-text-soft)]">
-          Tip: click a cell to select, drag-select with Shift-click or arrow keys, <kbd className="rounded border border-[var(--color-rule-strong)] px-1">Ctrl/⌘+C</kbd> to copy, and paste a block from Excel with <kbd className="rounded border border-[var(--color-rule-strong)] px-1">Ctrl/⌘+V</kbd>. Double-click or <kbd className="rounded border border-[var(--color-rule-strong)] px-1">Enter</kbd> to edit.
-        </p>
-      )}
+      {/* Advanced editor grid. */}
       <div
         ref={gridRef}
         tabIndex={0}

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { MoveHorizontal, PanelRightOpen, X } from "lucide-react";
 import { formatMoney, formatHours } from "@/lib/money";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 import { computeGridTotals, type GridTotals } from "@/lib/business/transaction-totals";
@@ -74,11 +75,11 @@ const COLUMNS: ColumnDef<GridTransaction>[] = [
   { key: "checkNumber", label: "Check #", kind: "text", width: 90, accessor: (r) => r.checkNumber },
   { key: "hours", label: "Hours", kind: "hours", width: 80, accessor: (r) => r.hours },
   { key: "rate", label: "Rate", kind: "money", width: 80, hidden: true, accessor: (r) => r.rate },
-  { key: "gross", label: "Agency total", kind: "money", width: 120, accessor: (r) => r.gross },
-  { key: "internalAmount", label: "Employee amount", kind: "money", width: 150, accessor: (r) => r.internalAmount },
-  { key: "agencyAdditional", label: "Agency difference", kind: "money", width: 160, accessor: (r) => r.agencyAdditional },
+  { key: "gross", label: "Funder billed", kind: "money", width: 120, accessor: (r) => r.gross },
+  { key: "internalAmount", label: "Employee base", kind: "money", width: 150, accessor: (r) => r.internalAmount },
+  { key: "agencyAdditional", label: "Agency spread", kind: "money", width: 160, accessor: (r) => r.agencyAdditional },
   { key: "totalNetPay", label: "Total net pay", kind: "money", width: 120, accessor: (r) => r.totalNetPay },
-  { key: "paid", label: "Paid", kind: "text", width: 96, accessor: (r) => (r.isPaid ? "Paid" : "Unpaid") },
+  { key: "paid", label: "Source paid marker", kind: "text", width: 130, hidden: true, accessor: (r) => (r.isPaid ? "Marked" : "Not marked") },
   { key: "periodBegin", label: "Period begin", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodBegin },
   { key: "periodEnd", label: "Period end", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodEnd },
   { key: "paymentRecipient", label: "Paid to", kind: "badge", width: 150, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => r.paymentRecipient },
@@ -223,7 +224,7 @@ export default function TransactionsGrid({
 
   const selectedRows = useMemo(() => (grid.filtered as GridTransaction[]).filter((r) => sel.has(r.id)), [grid.filtered, sel]);
   const selTotals = useMemo(() => (selectedRows.length > 0 ? computeGridTotals(selectedRows) : null), [selectedRows]);
-  const SEL_W = 40;
+  const SEL_W = 72;
 
   // The persistent period control drives the check-date filter (and the URL).
   const setFilter = grid.setFilter;
@@ -323,9 +324,9 @@ export default function TransactionsGrid({
       {totals ? (
         <div className="space-y-2">
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {fields.canSeeBilledAmounts ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency total (billed)</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.gross)}</div></div> : null}
-            {fields.canSeeEmployeeAmounts ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee / internal</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div> : null}
-            {fields.canSeeAgencySpread ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency difference</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div> : null}
+            {fields.canSeeBilledAmounts ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Funder billed</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.gross)}</div></div> : null}
+            {fields.canSeeEmployeeAmounts ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee base</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div> : null}
+            {fields.canSeeAgencySpread ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency spread</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div> : null}
             {fields.canSeeHours ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Hours</div><div className="text-xl font-semibold tabular-nums">{formatHours(totals.hours)}</div></div> : null}
             {!fields.canSeeBilledAmounts && !fields.canSeeEmployeeAmounts && !fields.canSeeAgencySpread ? (
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Transactions</div><div className="text-xl font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
@@ -369,6 +370,8 @@ export default function TransactionsGrid({
           <thead className="sticky top-0 z-20">
             <tr>
               <th
+                scope="col"
+                aria-label="Select rows and open transaction details"
                 className="border-b border-r border-[var(--color-rule-strong)] bg-[var(--color-surface-strong,#f1efe9)] px-0 text-center align-middle"
                 style={{ position: "sticky", left: 0, zIndex: 30 }}
               >
@@ -389,8 +392,9 @@ export default function TransactionsGrid({
                 return (
                   <th
                     key={c.key}
+                    scope="col"
                     aria-sort={s ? (s.dir === "asc" ? "ascending" : "descending") : "none"}
-                    className="relative border-b border-r border-[var(--color-rule-strong)] bg-[var(--color-surface-strong,#f1efe9)] px-2 py-1.5 text-left align-middle font-semibold"
+                    className="group relative border-b border-r border-[var(--color-rule-strong)] bg-[var(--color-surface-strong,#f1efe9)] px-2 py-1.5 text-left align-middle font-semibold"
                     style={isFrozen ? { position: "sticky", left: frozenLeft[c.key], zIndex: 30 } : undefined}
                   >
                     <div className="flex items-center gap-1">
@@ -405,14 +409,26 @@ export default function TransactionsGrid({
                       )}
                       <HeaderFilter grid={grid} col={c} />
                     </div>
-                    <span
+                    <button
+                      type="button"
                       onMouseDown={(e) => {
                         e.preventDefault();
+                        e.currentTarget.focus();
                         dragRef.current = { key: c.key, startX: e.clientX, startW: colWidth(widths, c) };
                       }}
-                      title="Drag to resize this column"
-                      className="absolute right-0 top-0 h-full w-2 cursor-col-resize select-none border-r-2 border-transparent hover:border-[var(--color-primary)]"
-                    />
+                      onKeyDown={(e) => {
+                        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                        e.preventDefault();
+                        const step = e.shiftKey ? 24 : 8;
+                        const direction = e.key === "ArrowRight" ? 1 : -1;
+                        grid.setWidth(c.key, Math.max(56, colWidth(widths, c) + direction * step));
+                      }}
+                      aria-label={`Resize ${c.label} column. Current width ${colWidth(widths, c)} pixels.`}
+                      title="Drag to resize, or use Left and Right arrow keys"
+                      className="absolute right-0 top-0 grid h-full w-5 cursor-col-resize place-items-center border-r-2 border-transparent text-[var(--color-ink-faint)] hover:border-[var(--color-primary)] hover:text-[var(--color-primary)] focus-visible:border-[var(--color-primary)] focus-visible:text-[var(--color-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-primary)]"
+                    >
+                      <MoveHorizontal aria-hidden="true" className="h-3.5 w-3.5" />
+                    </button>
                   </th>
                 );
               })}
@@ -430,31 +446,33 @@ export default function TransactionsGrid({
               return (
               <tr
                 key={r.id}
-                onClick={() => setSelected(r)}
-                onKeyDown={(e) => {
-                  // Only when the row itself is focused, so nested links keep their own Enter/Space.
-                  if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
-                    e.preventDefault();
-                    setSelected(r);
-                  }
-                }}
-                role="button"
-                tabIndex={0}
-                aria-label={`View transaction details${r.individual ? ` for ${r.individual}` : ""}${r.checkDate ? ` on ${r.checkDate}` : ""}`}
-                className={`cursor-pointer ${selected?.id === r.id ? "bg-[var(--color-primary-soft,#eef2ff)]" : isSel ? "bg-[var(--color-primary-tint,#f5f7ff)]" : "hover:bg-black/[0.03]"}`}
+                className={selected?.id === r.id ? "bg-[var(--color-primary-soft,#eef2ff)]" : isSel ? "bg-[var(--color-primary-tint,#f5f7ff)]" : "hover:bg-black/[0.03]"}
                 style={{ height: ROW_H }}
               >
                 <td
-                  className="border-b border-r border-[var(--color-rule)] text-center"
+                  className="border-b border-r border-[var(--color-rule)]"
                   style={{ position: "sticky", left: 0, zIndex: 10, background: rowBg }}
-                  onClick={(e) => e.stopPropagation()}
                 >
-                  <input
-                    type="checkbox"
-                    aria-label={`Select this transaction${r.individual ? ` for ${r.individual}` : ""}`}
-                    checked={isSel}
-                    onChange={() => toggleRow(r.id)}
-                  />
+                  <div className="flex items-center justify-center gap-1">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select this transaction${r.individual ? ` for ${r.individual}` : ""}`}
+                      checked={isSel}
+                      onChange={() => toggleRow(r.id)}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setSelected(r)}
+                      aria-label={`Open transaction details${r.individual ? ` for ${r.individual}` : ""}${r.checkDate ? ` on ${r.checkDate}` : ""}`}
+                      aria-haspopup="dialog"
+                      aria-expanded={selected?.id === r.id}
+                      aria-controls="transaction-detail-drawer"
+                      title="Open transaction details"
+                      className="grid h-7 w-7 shrink-0 place-items-center rounded text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-primary)]"
+                    >
+                      <PanelRightOpen aria-hidden="true" className="h-4 w-4" />
+                    </button>
+                  </div>
                 </td>
                 {visibleColumns.map((c) => {
                   const isFrozen = c.key in frozenLeft;
@@ -471,17 +489,17 @@ export default function TransactionsGrid({
                             type="button"
                             disabled={busy}
                             onClick={() => setPaid([r.id], !r.isPaid)}
-                            title={r.isPaid ? `Paid${r.paidAt ? ` on ${r.paidAt}` : ""} — click to mark unpaid` : "Mark this transaction paid"}
+                            title={r.isPaid ? `Source marked paid${r.paidAt ? ` on ${r.paidAt}` : ""}` : "Mark the source row paid"}
                             className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
                               r.isPaid
                                 ? "bg-[var(--color-success-soft,#e6f4ea)] text-[var(--color-success,#127a3d)]"
                                 : "text-[var(--color-ink-faint)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
                             }`}
                           >
-                            {r.isPaid ? "✓ Paid" : "Mark paid"}
+                            {r.isPaid ? "Marked" : "Mark source"}
                           </button>
                         ) : r.isPaid ? (
-                          <span className="text-xs font-medium text-[var(--color-success,#127a3d)]">✓ Paid</span>
+                          <span className="text-xs font-medium text-[var(--color-success,#127a3d)]">Marked</span>
                         ) : (
                           <span className="text-[var(--color-ink-faint)]">—</span>
                         )}
@@ -519,17 +537,17 @@ export default function TransactionsGrid({
       </div>
 
       {notice ? (
-        <p className="rounded-lg border border-[var(--color-danger)] bg-[var(--color-danger-soft,#fdecec)] px-3 py-2 text-sm text-[var(--color-danger)]">{notice}</p>
+        <p role="alert" className="rounded-lg border border-[var(--color-danger)] bg-[var(--color-danger-soft,#fdecec)] px-3 py-2 text-sm text-[var(--color-danger)]">{notice}</p>
       ) : null}
 
       {/* Selection status bar — like Google Sheets: totals of exactly what you
           ticked (not the filter), plus bulk "mark paid" on the selection. */}
       {selTotals ? (
         <div className="sticky bottom-0 z-30 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-[var(--color-primary)] bg-[var(--color-primary-tint)] px-3 py-2 text-sm shadow-sm">
-          <span className="font-semibold text-[var(--color-ink)]">{selectedRows.length.toLocaleString()} selected</span>
-          {fields.canSeeBilledAmounts ? <span className="text-[var(--color-ink-soft)]">Agency <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.gross)}</span></span> : null}
-          {fields.canSeeEmployeeAmounts ? <span className="text-[var(--color-ink-soft)]">Employee <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.internal)}</span></span> : null}
-          {fields.canSeeAgencySpread ? <span className="text-[var(--color-ink-soft)]">Difference <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.agencyAdditional)}</span></span> : null}
+          <span role="status" aria-live="polite" className="font-semibold text-[var(--color-ink)]">{selectedRows.length.toLocaleString()} selected</span>
+          {fields.canSeeBilledAmounts ? <span className="text-[var(--color-ink-soft)]">Funder billed <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.gross)}</span></span> : null}
+          {fields.canSeeEmployeeAmounts ? <span className="text-[var(--color-ink-soft)]">Employee base <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.internal)}</span></span> : null}
+          {fields.canSeeAgencySpread ? <span className="text-[var(--color-ink-soft)]">Agency spread <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.agencyAdditional)}</span></span> : null}
           {fields.canSeeHours ? <span className="text-[var(--color-ink-soft)]">Hours <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(selTotals.hours)}</span></span> : null}
           {fields.canSeeCheckNet ? (
             <span className="text-[var(--color-ink-soft)]">Net <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.netPerCheck)}</span></span>
@@ -538,10 +556,10 @@ export default function TransactionsGrid({
             {grid.canManage ? (
               <>
                 <button type="button" disabled={busy} onClick={() => setPaid(selectedRows.map((r) => r.id), true)} className="btn btn-sm btn-primary">
-                  {busy ? "…" : "Mark paid"}
+                  {busy ? "…" : "Mark source paid"}
                 </button>
                 <button type="button" disabled={busy} onClick={() => setPaid(selectedRows.map((r) => r.id), false)} className="btn btn-sm btn-secondary">
-                  Mark unpaid
+                  Clear source marker
                 </button>
               </>
             ) : null}
@@ -585,13 +603,15 @@ function DetailDrawer({
     <div className="flex justify-between gap-4 py-1"><span className="text-[var(--color-text-soft)]">{label}</span><span className="text-right font-medium">{value}</span></div>
   );
   return (
-    <div className="drawer-in fixed inset-y-0 right-0 z-50 w-full max-w-sm overflow-auto border-l border-[var(--color-rule-strong)] bg-white shadow-2xl">
+    <div id="transaction-detail-drawer" role="dialog" aria-modal="false" aria-labelledby="transaction-detail-title" className="drawer-in fixed inset-y-0 right-0 z-50 w-full max-w-sm overflow-auto border-l border-[var(--color-rule-strong)] bg-white shadow-2xl">
       <div className="flex items-center justify-between border-b border-[var(--color-rule)] px-4 py-3">
         <div>
           <div className="eyebrow text-[var(--color-text-soft)]">Transaction</div>
-          <div className="text-lg font-semibold">{row.individual ?? "—"}</div>
+          <div id="transaction-detail-title" className="text-lg font-semibold">{row.individual ?? "—"}</div>
         </div>
-        <button type="button" onClick={onClose} className="rounded px-2 py-1 text-lg hover:bg-black/5" aria-label="Close">×</button>
+        <button type="button" onClick={onClose} className="btn btn-icon btn-ghost" aria-label="Close transaction details" title="Close transaction details">
+          <X aria-hidden="true" className="h-4 w-4" />
+        </button>
       </div>
       <div className="px-4 py-3 text-sm">
         {line("Check date", row.checkDate ?? "—")}
@@ -600,11 +620,11 @@ function DetailDrawer({
         {line("Pay to", row.payTo ?? "—")}
         {visibility.canSeeHours ? line("Hours", row.hours ? formatHours(row.hours) : "—") : null}
         {visibility.canSeeBilledAmounts ? line("Rate", row.rate ? formatMoney(row.rate) : "—") : null}
-        {visibility.canSeeBilledAmounts ? line("Agency total", row.gross ? formatMoney(row.gross) : "—") : null}
-        {visibility.canSeeEmployeeAmounts ? line("Employee amount", row.internalAmount ? formatMoney(row.internalAmount) : "—") : null}
-        {visibility.canSeeAgencySpread ? line("Agency difference", row.agencyAdditional ? formatMoney(row.agencyAdditional) : "—") : null}
+        {visibility.canSeeBilledAmounts ? line("Funder billed", row.gross ? formatMoney(row.gross) : "—") : null}
+        {visibility.canSeeEmployeeAmounts ? line("Employee base", row.internalAmount ? formatMoney(row.internalAmount) : "—") : null}
+        {visibility.canSeeAgencySpread ? line("Agency spread", row.agencyAdditional ? formatMoney(row.agencyAdditional) : "—") : null}
         {visibility.canSeeCheckNet ? line("Total net pay", row.totalNetPay ? formatMoney(row.totalNetPay) : "—") : null}
-        {line("Paid", row.isPaid ? `Paid${row.paidAt ? ` on ${row.paidAt}` : ""}` : "Not paid")}
+        {line("Source paid marker", row.isPaid ? `Marked${row.paidAt ? ` on ${row.paidAt}` : ""}` : "Not marked")}
         {line("Period", `${row.periodBegin ?? "—"} → ${row.periodEnd ?? "—"}`)}
         {line("Paid to", RECIPIENT_LABEL[row.paymentRecipient ?? ""] ?? row.paymentRecipient ?? "—")}
         {line("Match status", row.matchStatus ?? "—")}
@@ -614,7 +634,7 @@ function DetailDrawer({
           <div className="eyebrow text-[var(--color-text-soft)]">Open</div>
           {row.individualId && <Link href={`/individuals/${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Individual profile →</Link>}
           {row.employeeId && <Link href={`/employees/${row.employeeId}`} className="block text-[var(--color-primary)] hover:underline">Employee: {row.employee} →</Link>}
-          {canSeeBudgets && row.individualId && <Link href={`/calculations?individualId=${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Financial plan →</Link>}
+          {canSeeBudgets && row.individualId && <Link href={`/calculations?individualId=${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Budget plan →</Link>}
           {row.checkNumber && <button type="button" onClick={() => onFilterCheck(row.checkNumber as string)} className="block text-left text-[var(--color-primary)] hover:underline">Show all rows on check {row.checkNumber} →</button>}
           {row.sourceFileId && <Link href={`/imports/${row.sourceFileId}`} className="block text-[var(--color-primary)] hover:underline">Import batch →</Link>}
           {row.serviceSessionId && <Link href={`/reconciliation`} className="block text-[var(--color-primary)] hover:underline">Reconciliation record →</Link>}

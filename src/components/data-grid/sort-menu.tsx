@@ -85,7 +85,7 @@ export default function SortMenu({
         ? createPortal(
             <div
               ref={menuRef}
-              className="pop-in fixed z-[70] origin-top rounded-xl border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-1 shadow-lg"
+              className="pop-in fixed z-[70] origin-top rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-1 shadow-lg"
               style={{ top: pos.top, left: pos.left, width: WIDTH }}
               onClick={(e) => e.stopPropagation()}
             >

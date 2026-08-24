@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { X } from "lucide-react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 
 /**
  * Interactive primitives (client-only): accessible Tabs, a server-composable
@@ -9,6 +10,77 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
  */
 
 export type TabDef = { id: string; label: string; badge?: ReactNode };
+
+function validTabId(tabs: TabDef[], id: string | undefined): string | undefined {
+  return id && tabs.some((tab) => tab.id === id) ? id : undefined;
+}
+
+function TabList({
+  tabs,
+  active,
+  onSelect,
+  baseId,
+  label = "Views",
+}: {
+  tabs: TabDef[];
+  active: string;
+  onSelect: (id: string) => void;
+  baseId: string;
+  label?: string;
+}) {
+  const refs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  const move = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    let next = index;
+    if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = tabs.length - 1;
+    else next = (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    const tab = tabs[next];
+    if (!tab) return;
+    onSelect(tab.id);
+    refs.current[next]?.focus();
+  };
+
+  return (
+    <div
+      role="tablist"
+      aria-label={label}
+      className="scroll-thin flex gap-1 overflow-x-auto border-b border-[var(--color-rule)]"
+    >
+      {tabs.map((tab, index) => {
+        const isActive = tab.id === active;
+        return (
+          <button
+            ref={(node) => { refs.current[index] = node; }}
+            key={tab.id}
+            id={`${baseId}-tab-${index}`}
+            type="button"
+            role="tab"
+            tabIndex={isActive ? 0 : -1}
+            aria-selected={isActive}
+            aria-controls={`${baseId}-panel-${index}`}
+            onClick={() => onSelect(tab.id)}
+            onKeyDown={(event) => move(event, index)}
+            className={`relative -mb-px flex min-h-11 shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3.5 py-2 text-sm font-semibold transition-colors ${
+              isActive
+                ? "border-[var(--color-primary)] text-[var(--color-primary)]"
+                : "border-transparent text-[var(--color-ink-soft)] hover:border-[var(--color-rule-strong)] hover:text-[var(--color-ink)]"
+            }`}
+          >
+            {tab.label}
+            {tab.badge != null ? (
+              <span className={`tnum rounded-full px-1.5 py-0.5 text-xs ${isActive ? "bg-[var(--color-primary-tint)] text-[var(--color-primary)]" : "bg-[var(--color-surface-strong)] text-[var(--color-ink-soft)]"}`}>
+                {tab.badge}
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 export function Tabs({
   tabs,
@@ -22,6 +94,15 @@ export function Tabs({
   children?: (activeId: string) => ReactNode;
 }) {
   const [active, setActive] = useState<string>(initialId ?? tabs[0]?.id ?? "");
+  const baseId = useId();
+
+  useEffect(() => {
+    if (initialId && tabs.some((tab) => tab.id === initialId)) setActive(initialId);
+  }, [initialId, tabs]);
+
+  useEffect(() => {
+    if (!tabs.some((tab) => tab.id === active)) setActive(tabs[0]?.id ?? "");
+  }, [active, tabs]);
 
   const select = (id: string) => {
     setActive(id);
@@ -30,34 +111,15 @@ export function Tabs({
 
   return (
     <div>
-      <div role="tablist" className="flex flex-wrap gap-1 border-b border-[var(--color-rule)]">
-        {tabs.map((t) => {
-          const isActive = t.id === active;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              onClick={() => select(t.id)}
-              className={`relative -mb-px flex items-center gap-1.5 rounded-t-lg px-3.5 py-2 text-sm font-medium transition-colors ${
-                isActive
-                  ? "border-b-2 border-[var(--color-primary)] text-[var(--color-primary)]"
-                  : "border-b-2 border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"
-              }`}
-            >
-              {t.label}
-              {t.badge != null ? (
-                <span className="rounded-full bg-[var(--color-surface-strong)] px-1.5 text-xs text-[var(--color-ink-soft)]">
-                  {t.badge}
-                </span>
-              ) : null}
-            </button>
-          );
-        })}
-      </div>
+      <TabList tabs={tabs} active={active} onSelect={select} baseId={baseId} />
       {children ? (
-        <div role="tabpanel" className="pt-4">
+        <div
+          id={`${baseId}-panel-${Math.max(0, tabs.findIndex((tab) => tab.id === active))}`}
+          role="tabpanel"
+          aria-labelledby={`${baseId}-tab-${Math.max(0, tabs.findIndex((tab) => tab.id === active))}`}
+          tabIndex={0}
+          className="pt-4 outline-none"
+        >
           {children(active)}
         </div>
       ) : null}
@@ -84,9 +146,26 @@ export function TabPanels({
    *  server round-trip on force-dynamic pages. */
   paramKey?: string;
 }) {
-  const valid = (id: string | undefined) => (id && panels.some((p) => p.id === id) ? id : undefined);
-  const [active, setActive] = useState<string>(valid(initialId) ?? panels[0]?.id ?? "");
+  const [active, setActive] = useState<string>(validTabId(panels, initialId) ?? panels[0]?.id ?? "");
   const current = panels.find((p) => p.id === active) ?? panels[0];
+  const activeIndex = Math.max(0, panels.findIndex((panel) => panel.id === current?.id));
+  const baseId = useId();
+
+  useEffect(() => {
+    const next = validTabId(panels, initialId);
+    if (next) setActive(next);
+    else if (!panels.some((panel) => panel.id === active)) setActive(panels[0]?.id ?? "");
+  }, [active, initialId, panels]);
+
+  useEffect(() => {
+    if (!paramKey) return;
+    const onPopState = () => {
+      const next = validTabId(panels, new URL(window.location.href).searchParams.get(paramKey) ?? undefined);
+      if (next) setActive(next);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [panels, paramKey]);
 
   const select = (id: string) => {
     setActive(id);
@@ -98,33 +177,14 @@ export function TabPanels({
   };
   return (
     <div>
-      <div role="tablist" className="scroll-thin flex flex-wrap gap-1 overflow-x-auto border-b border-[var(--color-rule)]">
-        {panels.map((p) => {
-          const isActive = p.id === (current?.id ?? "");
-          return (
-            <button
-              key={p.id}
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              onClick={() => select(p.id)}
-              className={`relative -mb-px flex items-center gap-1.5 whitespace-nowrap rounded-t-lg px-4 py-2.5 text-sm font-medium transition-colors ${
-                isActive
-                  ? "border-b-2 border-[var(--color-primary)] text-[var(--color-primary)]"
-                  : "border-b-2 border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"
-              }`}
-            >
-              {p.label}
-              {p.badge != null ? (
-                <span className="rounded-full bg-[var(--color-surface-strong)] px-1.5 text-xs text-[var(--color-ink-soft)]">
-                  {p.badge}
-                </span>
-              ) : null}
-            </button>
-          );
-        })}
-      </div>
-      <div role="tabpanel" className="pt-5">
+      <TabList tabs={panels} active={current?.id ?? ""} onSelect={select} baseId={baseId} />
+      <div
+        id={`${baseId}-panel-${activeIndex}`}
+        role="tabpanel"
+        aria-labelledby={`${baseId}-tab-${activeIndex}`}
+        tabIndex={0}
+        className="pt-5 outline-none"
+      >
         {current?.content}
       </div>
     </div>
@@ -147,21 +207,61 @@ export function Dialog({
   size?: "sm" | "md" | "lg";
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  const titleId = useId();
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusableSelector = [
+      "a[href]",
+      "button:not([disabled])",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "[tabindex]:not([tabindex='-1'])",
+    ].join(",");
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const focusable = Array.from(panelRef.current?.querySelectorAll<HTMLElement>(focusableSelector) ?? [])
+        .filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
+      if (focusable.length === 0) {
+        e.preventDefault();
+        panelRef.current?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", onKey);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    panelRef.current?.focus();
+    const focusFrame = window.requestAnimationFrame(() => {
+      const preferred = panelRef.current?.querySelector<HTMLElement>("[autofocus]");
+      const first = panelRef.current?.querySelector<HTMLElement>(focusableSelector);
+      (preferred ?? first ?? panelRef.current)?.focus();
+    });
     return () => {
+      window.cancelAnimationFrame(focusFrame);
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = previousOverflow;
+      if (previousFocusRef.current?.isConnected) previousFocusRef.current.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -169,29 +269,35 @@ export function Dialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8"
+      className="overlay-in fixed inset-0 z-50 flex items-end justify-center overflow-y-auto bg-black/45 p-0 sm:items-start sm:p-8"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) onCloseRef.current();
       }}
     >
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        aria-label={title ? undefined : "Dialog"}
         tabIndex={-1}
-        className={`card mt-8 w-full ${width} outline-none`}
+        className={`card pop-in relative flex max-h-[calc(100dvh-1rem)] w-full flex-col rounded-b-none ${width} outline-none sm:mt-8 sm:max-h-[calc(100dvh-4rem)] sm:rounded-b-lg`}
       >
         {title ? (
           <header className="flex items-center justify-between gap-3 border-b border-[var(--color-rule)] px-5 py-3.5">
-            <h2 className="display text-[0.95rem] font-semibold">{title}</h2>
-            <button type="button" onClick={onClose} className="btn btn-sm btn-ghost" aria-label="Close">
-              ✕
+            <h2 id={titleId} className="display min-w-0 text-base font-semibold text-[var(--color-ink)]">{title}</h2>
+            <button type="button" onClick={() => onCloseRef.current()} className="btn btn-sm btn-icon btn-ghost shrink-0" aria-label="Close dialog" title="Close">
+              <X aria-hidden className="h-4 w-4" />
             </button>
           </header>
-        ) : null}
-        <div className="px-5 py-4">{children}</div>
+        ) : (
+          <button type="button" onClick={() => onCloseRef.current()} className="btn btn-sm btn-icon btn-ghost absolute right-3 top-3 z-10" aria-label="Close dialog" title="Close">
+            <X aria-hidden className="h-4 w-4" />
+          </button>
+        )}
+        <div className="min-h-0 overflow-y-auto px-5 py-4">{children}</div>
         {footer ? (
-          <footer className="flex flex-wrap justify-end gap-2 border-t border-[var(--color-rule)] px-5 py-3">
+          <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-[var(--color-rule)] bg-[var(--color-surface-muted)] px-5 py-3">
             {footer}
           </footer>
         ) : null}

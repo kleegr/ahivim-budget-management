@@ -38,7 +38,7 @@ export default async function SchedulePage({
       <PageHeader
         eyebrow="Planning"
         title="Schedule"
-        description="Plan one-off and recurring sessions. Conflicts are flagged but never block — save with a reason. Every session shows its forecast against each individual's approved hours."
+        description="Plan service sessions and compare scheduled hours with each authorization."
       />
 
       {!result.ok ? (

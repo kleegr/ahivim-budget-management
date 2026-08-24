@@ -3,6 +3,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import {
+  AlertCircle,
+  CalendarClock,
+  ChevronRight,
+  LayoutList,
+  Phone,
+  Plus,
+  Settings2,
+  TableProperties,
+} from "lucide-react";
 import { dec, formatMoney } from "@/lib/money";
 import type { MasserSheet, MasserSheetRow } from "@/lib/data/masser-sheet";
 import type { BudgetCandidate } from "@/lib/data/financial-dashboard";
@@ -33,15 +43,273 @@ const BASE_WIDTHS: Record<string, number> = {
 // Program columns: wide enough for the code + its rate underneath.
 const PROG_W = 104;
 
-function PhoneGlyph() {
+type WorkspaceView = "overview" | "matrix";
+
+export type AnnualFundingProgress = {
+  target: string;
+  expectedToDate: string;
+  actualSetAside: string;
+  remaining: string;
+  variance: string;
+  periodBegin: string | null;
+  periodEnd: string | null;
+};
+
+type PlanHealth = {
+  label: string;
+  tone: "good" | "warn" | "danger" | "muted";
+  rank: number;
+};
+
+type PersonPlanSummary = {
+  individualId: string;
+  individualName: string;
+  labels: string[];
+  active: boolean;
+  account: string | null;
+  renewalDate: string | null;
+  hours: string;
+  yearlyGross: string;
+  net: string;
+  plannedMasser: string;
+};
+
+function summarizePlans(rows: MasserSheetRow[]): PersonPlanSummary[] {
+  const people = new Map<string, PersonPlanSummary>();
+  for (const row of rows) {
+    const current = people.get(row.individualId);
+    const renewalDate = [current?.renewalDate, row.renewalDate]
+      .filter((value): value is string => Boolean(value))
+      .sort()[0] ?? null;
+    people.set(row.individualId, {
+      individualId: row.individualId,
+      individualName: row.individualName,
+      labels: [...new Set([...(current?.labels ?? []), row.label || "Annual plan"])],
+      active: (current?.active ?? false) || row.active,
+      account: current?.account ?? row.account,
+      renewalDate,
+      hours: dec(current?.hours ?? 0).plus(dec(totalHours(row))).toFixed(2),
+      yearlyGross: dec(current?.yearlyGross ?? 0).plus(dec(row.yearlyGross || 0)).toFixed(2),
+      net: dec(current?.net ?? 0).plus(dec(row.net || 0)).toFixed(2),
+      plannedMasser: dec(current?.plannedMasser ?? 0).plus(dec(row.masser || 0)).toFixed(2),
+    });
+  }
+  return [...people.values()];
+}
+
+function planHealth(row: PersonPlanSummary, funding?: AnnualFundingProgress): PlanHealth {
+  if (!row.active) return { label: "Inactive", tone: "muted", rank: 7 };
+  if (!row.renewalDate) return { label: "Renewal date needed", tone: "warn", rank: 1 };
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const renewal = new Date(`${row.renewalDate}T00:00:00`);
+  const days = Math.ceil((renewal.getTime() - today.getTime()) / 86_400_000);
+  if (days < 0) return { label: "Renewal overdue", tone: "danger", rank: 0 };
+  if (days <= 60) return { label: `Renews in ${days}d`, tone: "warn", rank: 1 };
+  if (dec(row.plannedMasser || 0).lessThanOrEqualTo(0)) return { label: "Set-aside target needed", tone: "warn", rank: 2 };
+  if (!funding) return { label: "Funding not calculated", tone: "warn", rank: 3 };
+  if (dec(funding.remaining).lessThanOrEqualTo(0)) return { label: "Fully set aside", tone: "good", rank: 6 };
+  if (dec(funding.variance).isNegative()) return { label: "Behind annual pace", tone: "danger", rank: 2 };
+  return { label: "On annual pace", tone: "good", rank: 5 };
+}
+
+const HEALTH_STYLE: Record<PlanHealth["tone"], string> = {
+  good: "bg-[var(--color-success-soft)] text-[var(--color-success)]",
+  warn: "bg-[var(--color-warn-soft)] text-[var(--color-warn)]",
+  danger: "bg-[var(--color-danger-soft)] text-[var(--color-danger)]",
+  muted: "bg-[var(--color-surface-strong)] text-[var(--color-ink-soft)]",
+};
+
+function totalHours(row: MasserSheetRow): string {
+  return Object.values(row.hours).reduce((total, value) => total.plus(dec(value || 0)), dec(0)).toFixed(2);
+}
+
+function PlanOverview({
+  data,
+  funding,
+  onOpenMatrix,
+}: {
+  data: MasserSheet;
+  funding: Record<string, AnnualFundingProgress>;
+  onOpenMatrix: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [attentionOnly, setAttentionOnly] = useState(false);
+  const people = useMemo(() => summarizePlans(data.rows), [data.rows]);
+  const totals = useMemo(() => {
+    let target = dec(0);
+    let actual = dec(0);
+    let remaining = dec(0);
+    let needsAttention = 0;
+    for (const row of people) {
+      if (!row.active) continue;
+      const progress = funding[row.individualId];
+      target = target.plus(dec(progress?.target ?? row.plannedMasser));
+      actual = actual.plus(dec(progress?.actualSetAside ?? 0));
+      remaining = remaining.plus(dec(progress?.remaining ?? row.plannedMasser));
+      if (planHealth(row, progress).rank <= 3) needsAttention += 1;
+    }
+    return { target, actual, remaining, needsAttention, people: people.filter((row) => row.active).length };
+  }, [funding, people]);
+
+  const rows = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return people
+      .filter((row) => {
+        const health = planHealth(row, funding[row.individualId]);
+        if (attentionOnly && health.rank > 3) return false;
+        if (!needle) return true;
+        return `${row.individualName} ${row.labels.join(" ")} ${row.account ?? ""}`.toLowerCase().includes(needle);
+      })
+      .sort((a, b) => {
+        const rank = planHealth(a, funding[a.individualId]).rank - planHealth(b, funding[b.individualId]).rank;
+        return rank || a.individualName.localeCompare(b.individualName);
+      });
+  }, [attentionOnly, funding, people, query]);
+
+  const metric = "min-w-0 px-5 py-4 first:pl-0 last:pr-0";
+
   return (
-    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="inline-block shrink-0 text-[var(--color-ink-faint)]" aria-hidden>
-      <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.6a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.5-1.2a2 2 0 0 1 2.1-.5c.8.3 1.7.6 2.6.7a2 2 0 0 1 1.7 2Z" />
-    </svg>
+    <div className="space-y-5">
+      <section aria-label="Annual plan summary" className="grid border-y border-[var(--color-rule)] sm:grid-cols-2 lg:grid-cols-5 lg:divide-x lg:divide-[var(--color-rule)]">
+        <div className={metric}>
+          <p className="eyebrow">People with plans</p>
+          <p className="tnum mt-1 text-2xl font-semibold">{totals.people.toLocaleString()}</p>
+        </div>
+        <div className={metric}>
+          <p className="eyebrow">Needs attention</p>
+          <p className={`tnum mt-1 text-2xl font-semibold ${totals.needsAttention ? "text-[var(--color-warn)]" : "text-[var(--color-success)]"}`}>{totals.needsAttention.toLocaleString()}</p>
+        </div>
+        <div className={metric}>
+          <p className="eyebrow">Annual target</p>
+          <p className="tnum mt-1 text-2xl font-semibold">{formatMoney(totals.target.toFixed(2))}</p>
+        </div>
+        <div className={metric}>
+          <p className="eyebrow">Set aside to date</p>
+          <p className="tnum mt-1 text-2xl font-semibold text-[var(--color-success)]">{formatMoney(totals.actual.toFixed(2))}</p>
+        </div>
+        <div className={metric}>
+          <p className="eyebrow">Remaining</p>
+          <p className="tnum mt-1 text-2xl font-semibold text-[var(--color-warn)]">{formatMoney(totals.remaining.toFixed(2))}</p>
+        </div>
+      </section>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative min-w-[15rem] flex-1 sm:max-w-md">
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="input w-full"
+            placeholder="Search a person or account"
+            aria-label="Search annual plans"
+          />
+        </div>
+        <label className="inline-flex min-h-9 items-center gap-2 text-sm text-[var(--color-ink-soft)]">
+          <input type="checkbox" checked={attentionOnly} onChange={(event) => setAttentionOnly(event.target.checked)} />
+          Needs attention
+          {totals.needsAttention > 0 ? <span className="tnum font-semibold text-[var(--color-warn)]">{totals.needsAttention}</span> : null}
+        </label>
+        <span className="tnum ml-auto text-sm text-[var(--color-ink-faint)]">{rows.length.toLocaleString()} people</span>
+      </div>
+
+      <div className="overflow-hidden rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)]">
+        <div className="scroll-thin overflow-x-auto">
+          <table className="w-full min-w-[1040px] border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] text-left">
+                <th className="px-4 py-3 font-semibold">Individual</th>
+                <th className="px-4 py-3 font-semibold">Annual status</th>
+                <th className="px-4 py-3 font-semibold">Budget year</th>
+                <th className="px-4 py-3 text-right font-semibold">Annual target</th>
+                <th className="px-4 py-3 text-right font-semibold">Expected today</th>
+                <th className="px-4 py-3 text-right font-semibold">Set aside</th>
+                <th className="px-4 py-3 text-right font-semibold">Remaining</th>
+                <th className="w-12 px-2 py-3"><span className="sr-only">Open</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const progress = funding[row.individualId];
+                const health = planHealth(row, progress);
+                const target = progress?.target ?? row.plannedMasser;
+                return (
+                  <tr key={row.individualId} className="border-b border-[var(--color-rule)] last:border-0 hover:bg-[var(--color-surface-muted)]">
+                    <td className="px-4 py-3">
+                      <Link href={`/individuals/${row.individualId}`} className="font-semibold text-[var(--color-ink)] hover:text-[var(--color-primary)]">
+                        {row.individualName}
+                      </Link>
+                      <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">{row.labels.join(", ")}{row.account ? ` · ${row.account}` : ""} · {dec(row.hours).toDecimalPlaces(1).toString()} h</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-xs font-medium ${HEALTH_STYLE[health.tone]}`}>
+                        {health.tone === "danger" || health.tone === "warn" ? <AlertCircle className="h-3.5 w-3.5" aria-hidden /> : null}
+                        {health.label}
+                      </span>
+                    </td>
+                    <td className="tnum px-4 py-3 text-[var(--color-ink-soft)]">{progress?.periodBegin && progress.periodEnd ? `${progress.periodBegin} – ${progress.periodEnd}` : row.renewalDate ? `Renews ${row.renewalDate}` : "Not set"}</td>
+                    <td className="tnum px-4 py-3 text-right">{dec(target).greaterThan(0) ? formatMoney(target) : "Not set"}</td>
+                    <td className="tnum px-4 py-3 text-right text-[var(--color-ink-soft)]">{progress ? formatMoney(progress.expectedToDate) : "Not calculated"}</td>
+                    <td className="tnum px-4 py-3 text-right font-medium">{progress ? formatMoney(progress.actualSetAside) : "—"}</td>
+                    <td className="tnum px-4 py-3 text-right font-medium text-[var(--color-warn)]">{progress ? formatMoney(progress.remaining) : formatMoney(target)}</td>
+                    <td className="px-2 py-3 text-right">
+                      <Link href={`/individuals/${row.individualId}`} className="icon-button" aria-label={`Open ${row.individualName}`}>
+                        <ChevronRight className="h-4 w-4" aria-hidden />
+                      </Link>
+                    </td>
+                  </tr>
+                );
+              })}
+              {rows.length === 0 ? (
+                <tr><td colSpan={8} className="px-4 py-12 text-center text-[var(--color-ink-soft)]">No plans match the current view.</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 border-t border-[var(--color-rule)] pt-4">
+        <div className="flex items-center gap-2 text-sm text-[var(--color-ink-soft)]">
+          <CalendarClock className="h-4 w-4" aria-hidden />
+          Annual targets are measured against each person&apos;s renewal year.
+        </div>
+        <button type="button" onClick={onOpenMatrix} className="btn btn-secondary">
+          <TableProperties className="h-4 w-4" aria-hidden />
+          Edit plan matrix
+        </button>
+      </div>
+    </div>
   );
 }
 
-export default function MasserDashboard({ data, canManage }: { data: MasserSheet; canManage: boolean }) {
+export default function MasserDashboard({
+  data,
+  funding = {},
+  canManage,
+}: {
+  data: MasserSheet;
+  funding?: Record<string, AnnualFundingProgress>;
+  canManage: boolean;
+}) {
+  const [view, setView] = useState<WorkspaceView>("overview");
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-rule)]">
+        <div className="segmented-control" role="tablist" aria-label="Annual plan views">
+          <button type="button" role="tab" aria-selected={view === "overview"} onClick={() => setView("overview")}>
+            <LayoutList className="h-4 w-4" aria-hidden /> Overview
+          </button>
+          <button type="button" role="tab" aria-selected={view === "matrix"} onClick={() => setView("matrix")}>
+            <TableProperties className="h-4 w-4" aria-hidden /> Plan matrix
+          </button>
+        </div>
+      </div>
+      {view === "overview" ? <PlanOverview data={data} funding={funding} onOpenMatrix={() => setView("matrix")} /> : <MasserMatrix data={data} canManage={canManage} />}
+    </div>
+  );
+}
+
+function MasserMatrix({ data, canManage }: { data: MasserSheet; canManage: boolean }) {
   const router = useRouter();
   const [rows, setRows] = useState<MasserSheetRow[]>(data.rows);
   const [accountOptions, setAccountOptions] = useState<string[]>(data.accountOptions);
@@ -162,12 +430,12 @@ export default function MasserDashboard({ data, canManage }: { data: MasserSheet
     }));
 
     const computed: ColumnDef<MasserSheetRow>[] = [
-      { key: "yearlyGross", label: "Yearly gross", kind: "computed", width: BASE_WIDTHS.yearlyGross, accessor: (r) => r.yearlyGross, render: (r) => <span className="block px-2 py-1">{formatMoney(r.yearlyGross)}</span> },
-      { key: "monthlyGross", label: "Monthly gross", kind: "computed", width: BASE_WIDTHS.monthlyGross, accessor: (r) => r.monthlyGross, render: (r) => <span className="block px-2 py-1">{formatMoney(r.monthlyGross)}</span> },
-      { key: "grossNet", label: "Gross net", kind: "computed", width: BASE_WIDTHS.grossNet, accessor: (r) => r.grossNet, render: (r) => <span className="block px-2 py-1">{formatMoney(r.grossNet)}</span> },
-      { key: "net", label: "Net", kind: "computed", width: BASE_WIDTHS.net, accessor: (r) => r.net, render: (r) => <span className="block px-2 py-1 font-medium">{formatMoney(r.net)}</span> },
+      { key: "yearlyGross", label: "Annual employee base", kind: "computed", width: BASE_WIDTHS.yearlyGross, accessor: (r) => r.yearlyGross, render: (r) => <span className="block px-2 py-1">{formatMoney(r.yearlyGross)}</span> },
+      { key: "monthlyGross", label: "Monthly employee base", kind: "computed", width: BASE_WIDTHS.monthlyGross, accessor: (r) => r.monthlyGross, render: (r) => <span className="block px-2 py-1">{formatMoney(r.monthlyGross)}</span> },
+      { key: "grossNet", label: "After deductions", kind: "computed", width: BASE_WIDTHS.grossNet, accessor: (r) => r.grossNet, render: (r) => <span className="block px-2 py-1">{formatMoney(r.grossNet)}</span> },
+      { key: "net", label: "Net plan amount", kind: "computed", width: BASE_WIDTHS.net, accessor: (r) => r.net, render: (r) => <span className="block px-2 py-1 font-medium">{formatMoney(r.net)}</span> },
       {
-        key: "masser", label: "Masser", kind: "money", width: BASE_WIDTHS.masser, accessor: (r) => r.masser,
+        key: "masser", label: "Annual set-aside", kind: "money", width: BASE_WIDTHS.masser, accessor: (r) => r.masser,
         render: (r) => <NumCell text={r.masser ? formatMoney(r.masser) : ""} strong warn canManage={canManage} saving={busyKey(r.strategyId, "masser")} initial={r.masser ? dec(r.masser).toString() : ""} onSave={(v) => editStrategy(r, "masser", { afterAll: v === "" ? null : v })} />,
       },
       {
@@ -223,13 +491,13 @@ export default function MasserDashboard({ data, canManage }: { data: MasserSheet
         grid={grid}
         searchPlaceholder="Search a person, account or note…"
         exportEndpoint="/api/grid/export"
-        exportTitle="Masser board"
-        exportFilename="masser"
+        exportTitle="Annual plan matrix"
+        exportFilename="annual-plans"
         showColumnChooser
         extraActions={canManage ? (
           <span className="ml-auto inline-flex items-center gap-2">
-            <button type="button" onClick={() => setOptsOpen(true)} className="btn btn-sm btn-secondary">Account options</button>
-            <button type="button" onClick={() => setAddOpen(true)} className="btn btn-sm btn-primary">+ Add budget</button>
+            <button type="button" onClick={() => setOptsOpen(true)} className="btn btn-sm btn-secondary"><Settings2 className="h-4 w-4" aria-hidden />Account options</button>
+            <button type="button" onClick={() => setAddOpen(true)} className="btn btn-sm btn-primary"><Plus className="h-4 w-4" aria-hidden />Add budget</button>
           </span>
         ) : null}
       />
@@ -238,9 +506,7 @@ export default function MasserDashboard({ data, canManage }: { data: MasserSheet
 
       {notice ? <div className="rounded border border-[var(--color-danger)] bg-[#fdf2f5] px-3 py-1.5 text-sm text-[var(--color-danger)]">{notice}</div> : null}
 
-      <p className="text-xs text-[var(--color-text-soft)]">
-        One row per plan: the two cuts, clock &amp; other adjustments, the authorized hours per program (the budget), then yearly gross → monthly gross → gross net → net, and Masser (the fixed set-aside). Cuts, hours and Masser edit against the plan; account, phone and notes against the person.{canManage ? " Click any cell to edit. Use “Columns” to show, hide and reorder." : ""}
-      </p>
+      <p className="text-xs font-medium text-[var(--color-text-soft)]">Advanced plan editor · one row per annual plan</p>
 
       <div className="scroll-thin relative max-h-[66vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
         <table className="border-collapse text-sm" style={{ tableLayout: "fixed", width: tableWidth }}>
@@ -378,7 +644,7 @@ function PhoneCell({ row, canManage, saving, onSave }: { row: MasserSheetRow; ca
     const commit = (v: string) => { setEditing(false); const t = v.trim(); onSave(t === "" ? null : t); };
     return (
       <div className="flex items-center gap-1 px-1 py-0.5">
-        <PhoneGlyph />
+        <Phone className="h-3 w-3 shrink-0 text-[var(--color-ink-faint)]" aria-hidden />
         <input autoFocus type="tel" defaultValue={row.phone ?? ""} placeholder="Phone…"
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commit((e.target as HTMLInputElement).value); } else if (e.key === "Escape") { e.preventDefault(); setEditing(false); } }}
           onBlur={(e) => commit(e.target.value)}
@@ -389,7 +655,7 @@ function PhoneCell({ row, canManage, saving, onSave }: { row: MasserSheetRow; ca
   return (
     <button type="button" disabled={!canManage} onClick={() => canManage && setEditing(true)}
       className={`flex w-full items-center gap-1 px-2 py-1 text-left ${canManage ? "cursor-text hover:bg-[var(--color-primary-tint)]/50" : ""}`} title={canManage ? "Click to edit" : undefined}>
-      <PhoneGlyph />
+      <Phone className="h-3 w-3 shrink-0 text-[var(--color-ink-faint)]" aria-hidden />
       {row.phone ? <a href={`tel:${row.phone}`} className="tnum truncate hover:underline" onClick={(e) => e.stopPropagation()}>{row.phone}</a> : <span className="text-[var(--color-text-soft)]">{canManage ? "add…" : "—"}</span>}
       {saving ? <span className="text-[10px] text-[var(--color-text-soft)]">…</span> : null}
     </button>

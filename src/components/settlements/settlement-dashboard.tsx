@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useDeferredValue, useMemo, useState } from "react";
+import { ArrowDownLeft, ArrowUpRight, BadgeCheck, CreditCard, PiggyBank } from "lucide-react";
 import { FilterBar, HeaderFilter } from "@/components/data-grid/filter-bar";
 import SortMenu from "@/components/data-grid/sort-menu";
 import { Toolbar } from "@/components/data-grid/toolbar";
@@ -19,7 +20,7 @@ import type {
 import { dec, formatMoney, type Decimal } from "@/lib/money";
 
 type View = "items" | "history";
-type StateFilter = "needs_action" | "open" | "partial" | "settled" | "credit" | "void" | "all";
+type QueueFilter = "open" | "payable" | "receivable" | "reserve" | "credit" | "completed";
 type Notice = { tone: "success" | "error"; message: string };
 
 interface RefreshResult {
@@ -44,16 +45,6 @@ interface ApiPayload<T> {
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-const STATE_FILTERS: { value: StateFilter; label: string }[] = [
-  { value: "needs_action", label: "Needs action" },
-  { value: "open", label: "Open" },
-  { value: "partial", label: "Partial" },
-  { value: "settled", label: "Settled" },
-  { value: "credit", label: "Credits" },
-  { value: "void", label: "Void" },
-  { value: "all", label: "All" },
-];
 
 const STATE_STYLES: Record<SettlementRow["state"], string> = {
   open: "bg-[var(--color-warn-soft)] text-[var(--color-warn)]",
@@ -175,16 +166,6 @@ function eventItemIdentity(event: Pick<
 
 function rowDate(row: SettlementRow): string {
   return row.checkDate ?? row.periodEnd ?? row.periodBegin ?? row.createdAt.slice(0, 10);
-}
-
-function stateFilterMode(selected: string[] | undefined): StateFilter | null {
-  if (selected === undefined) return "all";
-  const ordered = [...selected].sort().join(",");
-  if (ordered === "credit,open,partial") return "needs_action";
-  if (selected.length === 1 && STATE_FILTERS.some((filter) => filter.value === selected[0])) {
-    return selected[0] as StateFilter;
-  }
-  return null;
 }
 
 function metadataString(row: SettlementRow, key: string): string | null {
@@ -461,27 +442,49 @@ function SettlementCell({ row, column }: { row: SettlementRow; column: ColumnDef
   }
 }
 
-function SummaryBand({ data }: { data: SettlementDashboardData }) {
-  const needsAction = data.summary.openCount + data.summary.partialCount + data.summary.creditCount;
+function SummaryBand({
+  data,
+  active,
+  onSelect,
+}: {
+  data: SettlementDashboardData;
+  active: QueueFilter | null;
+  onSelect: (queue: QueueFilter) => void;
+}) {
+  const actionableCredits = data.rows.filter((source) => (
+    source.state === "credit"
+    && data.rows.some((target) => (
+      target.id !== source.id
+      && target.personType === source.personType
+      && target.personId === source.personId
+      && target.direction === source.direction
+      && target.state !== "void"
+      && dec(target.balance).greaterThan(0)
+    ))
+  )).length;
+  const needsAction = data.summary.openCount + data.summary.partialCount + actionableCredits;
   const metrics = [
-    { label: "Needs action", value: needsAction.toLocaleString(), hint: `${data.summary.partialCount} partial, ${data.summary.creditCount} credit` },
-    { label: "Agency to pay", value: formatMoney(data.summary.agencyOwes), hint: "Employee payouts" },
-    { label: "Agency to receive", value: formatMoney(data.summary.employeesOwe), hint: "Give-backs and fees" },
-    { label: "Set aside", value: formatMoney(data.summary.reservesToSetAside), hint: "Individual reserves" },
-    { label: "Credits", value: formatMoney(data.summary.credits), hint: "Paid above obligation" },
+    { queue: "open" as const, label: "Open work", value: needsAction.toLocaleString(), hint: `${data.summary.partialCount} partially completed`, icon: <CreditCard className="h-4 w-4" aria-hidden /> },
+    { queue: "payable" as const, label: "Agency pays", value: formatMoney(data.summary.agencyOwes), hint: "Employee payments", icon: <ArrowUpRight className="h-4 w-4" aria-hidden /> },
+    { queue: "receivable" as const, label: "Agency receives", value: formatMoney(data.summary.employeesOwe), hint: "Employee give-backs", icon: <ArrowDownLeft className="h-4 w-4" aria-hidden /> },
+    { queue: "reserve" as const, label: "Set aside", value: formatMoney(data.summary.reservesToSetAside), hint: "Individual annual reserves", icon: <PiggyBank className="h-4 w-4" aria-hidden /> },
+    { queue: "credit" as const, label: "Credits", value: formatMoney(data.summary.credits), hint: `${actionableCredits} ready to apply`, icon: <BadgeCheck className="h-4 w-4" aria-hidden /> },
   ];
 
   return (
-    <section aria-label="Settlement summary" className="grid overflow-hidden rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] grid-cols-2 md:grid-cols-5">
-      {metrics.map((metric, index) => (
-        <div
+    <section aria-label="Payment work queues" className="grid border-y border-[var(--color-rule)] grid-cols-2 md:grid-cols-5">
+      {metrics.map((metric) => (
+        <button
           key={metric.label}
-          className={`min-w-0 px-3 py-3 ${index % 2 === 1 ? "border-l border-[var(--color-rule)]" : ""} ${index >= 2 ? "border-t border-[var(--color-rule)] md:border-t-0" : ""} ${index > 0 ? "md:border-l md:border-[var(--color-rule)]" : ""}`}
+          type="button"
+          onClick={() => onSelect(metric.queue)}
+          aria-pressed={active === metric.queue}
+          className={`min-w-0 border-b border-r border-[var(--color-rule)] px-4 py-3 text-left transition-colors last:border-r-0 md:border-b-0 ${active === metric.queue ? "bg-[var(--color-primary-tint)]" : "hover:bg-[var(--color-surface-muted)]"}`}
         >
-          <p className="eyebrow truncate">{metric.label}</p>
+          <p className={`flex items-center gap-2 text-xs font-semibold ${active === metric.queue ? "text-[var(--color-primary)]" : "text-[var(--color-ink-soft)]"}`}>{metric.icon}{metric.label}</p>
           <p className="tnum mt-1 truncate text-lg font-semibold text-[var(--color-ink)]">{metric.value}</p>
           <p className="mt-0.5 truncate text-xs text-[var(--color-ink-faint)]">{metric.hint}</p>
-        </div>
+        </button>
       ))}
     </section>
   );
@@ -495,7 +498,7 @@ function MissingDeals({ data }: { data: SettlementDashboardData }) {
         <h2 className="text-sm font-semibold text-[var(--color-warn)]">
           {data.missingDeals.length} employee{data.missingDeals.length === 1 ? " needs" : "s need"} a deal
         </h2>
-        <p className="text-xs text-[var(--color-ink-soft)]">Their transactions cannot create settlement items yet.</p>
+        <p className="text-xs text-[var(--color-ink-soft)]">Their transactions cannot create payment items yet.</p>
       </div>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
         {data.missingDeals.map((employee) => (
@@ -572,7 +575,7 @@ function CheckIssues({ data }: { data: SettlementDashboardData }) {
 
         <div className="border-t border-[var(--color-rule)] px-4 pb-3 pt-2">
           <p id="direct-check-issues-help" className="text-xs leading-5 text-[var(--color-ink-soft)]">
-            Direct give-backs use one whole-check net; agency-routed payouts use the recorded base amount. Correct these source fields, then refresh settlements.
+            Direct give-backs use one whole-check net; agency-routed payouts use the recorded base amount. Correct these source fields, then refresh payments.
           </p>
           <ul aria-describedby="direct-check-issues-help" className="mt-2 divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)]">
             {data.checkIssues.map((issue) => {
@@ -640,7 +643,7 @@ function ItemsTable({
   return (
     <div className="scroll-thin relative max-h-[62vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)]">
       <table className="table-fixed border-collapse text-sm" style={{ width: tableWidth }}>
-        <caption className="sr-only">Settlement obligations and current balances</caption>
+        <caption className="sr-only">Payment obligations and current balances</caption>
         <colgroup>
           {canManage ? <col style={{ width: 40 }} /> : null}
           <col style={{ width: 36 }} />
@@ -748,7 +751,7 @@ function ItemsTable({
           })}
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={grid.visibleColumns.length + utilityColumns} className="px-4 py-12 text-center text-sm text-[var(--color-ink-faint)]">No settlement items match these filters.</td>
+              <td colSpan={grid.visibleColumns.length + utilityColumns} className="px-4 py-12 text-center text-sm text-[var(--color-ink-faint)]">No payment items match these filters.</td>
             </tr>
           ) : null}
         </tbody>
@@ -770,7 +773,7 @@ function HistoryTable({
   return (
     <div className="scroll-thin relative max-h-[62vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)]">
       <table className={`w-full ${canManage ? "min-w-[1216px]" : "min-w-[1120px]"} table-fixed border-collapse text-sm`}>
-        <caption className="sr-only">Recent settlement payment and reversal history</caption>
+        <caption className="sr-only">Recent payment and reversal history</caption>
         <colgroup>
           <col className="w-32" />
           <col className="w-44" />
@@ -864,6 +867,14 @@ function SettleModal({ rows, onClose, onDone }: { rows: SettlementRow[]; onClose
     (current, row) => ({ ...current, [row.direction]: current[row.direction].plus(row.balance) }),
     { payable: dec(0), receivable: dec(0), reserve: dec(0) },
   ), [rows]);
+  const directions = useMemo(() => new Set(rows.map((row) => row.direction)), [rows]);
+  const actionCopy = directions.size !== 1
+    ? { title: "Record selected balances", button: `Record ${rows.length} balances`, done: "balances" }
+    : directions.has("payable")
+      ? { title: "Record agency payments", button: `Record ${rows.length} payments`, done: "agency payments" }
+      : directions.has("receivable")
+        ? { title: "Record amounts received", button: `Record ${rows.length} receipts`, done: "amounts received" }
+        : { title: "Record annual set-asides", button: `Record ${rows.length} set-asides`, done: "set-asides" };
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -878,15 +889,15 @@ function SettleModal({ rows, onClose, onDone }: { rows: SettlementRow[]; onClose
         reference,
         note,
       });
-      onDone(`Marked ${rows.length} settlement item${rows.length === 1 ? "" : "s"} settled.`);
+      onDone(`Recorded ${rows.length} ${actionCopy.done}.`);
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "The settlements could not be recorded.");
+      setError(submitError instanceof Error ? submitError.message : "The payments could not be recorded.");
       setBusy(false);
     }
   };
 
   return (
-    <Modal title="Mark exact balances settled" onClose={busy ? () => undefined : onClose}>
+    <Modal title={actionCopy.title} onClose={busy ? () => undefined : onClose}>
       <form className="space-y-4" onSubmit={submit}>
         {error ? <p role="alert" className="rounded border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-3 py-2 text-sm text-[var(--color-danger)]">{error}</p> : null}
         <p className="text-sm text-[var(--color-ink-soft)]">
@@ -898,7 +909,7 @@ function SettleModal({ rows, onClose, onDone }: { rows: SettlementRow[]; onClose
           <div><dt className="text-xs text-[var(--color-ink-faint)]">Set aside</dt><dd className="tnum font-semibold">{formatMoney(totals.reserve)}</dd></div>
         </dl>
         <label className="block text-sm font-medium">
-          Settlement date
+          Payment date
           <input type="date" required value={occurredOn} onChange={(event) => setOccurredOn(event.target.value)} className="input mt-1 w-full" />
         </label>
         <label className="block text-sm font-medium">
@@ -912,7 +923,7 @@ function SettleModal({ rows, onClose, onDone }: { rows: SettlementRow[]; onClose
         <div className="flex justify-end gap-2">
           <button type="button" disabled={busy} onClick={onClose} className="btn btn-sm btn-ghost">Cancel</button>
           <button type="submit" disabled={busy || rows.length === 0 || !occurredOn} className="btn btn-sm btn-primary">
-            {busy ? "Recording..." : `Mark ${rows.length} settled`}
+            {busy ? "Recording..." : actionCopy.button}
           </button>
         </div>
       </form>
@@ -1164,7 +1175,7 @@ function ReverseModal({ event, onClose, onDone }: { event: SettlementEventRow; o
   };
 
   return (
-    <Modal title="Reverse settlement entry" onClose={busy ? () => undefined : onClose}>
+    <Modal title="Reverse payment entry" onClose={busy ? () => undefined : onClose}>
       <form className="space-y-4" onSubmit={submit}>
         {error ? <p role="alert" className="rounded border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-3 py-2 text-sm text-[var(--color-danger)]">{error}</p> : null}
         <p className="text-sm text-[var(--color-ink-soft)]">
@@ -1231,6 +1242,7 @@ export default function SettlementDashboard({
     serializeHidden: true,
   });
   const [view, setView] = useState<View>("items");
+  const [queue, setQueue] = useState<QueueFilter>("open");
   const [historySearch, setHistorySearch] = useState("");
   const deferredHistorySearch = useDeferredValue(historySearch);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -1300,16 +1312,35 @@ export default function SettlementDashboard({
     });
   };
 
-  const activeStateFilter = stateFilterMode(grid.filters.state?.selected);
-  const applyStateFilter = (filter: StateFilter) => {
-    if (filter === "all") {
-      grid.setFilter("state", null);
-    } else if (filter === "needs_action") {
-      grid.setFilter("state", { selected: ["open", "partial", "credit"] });
-    } else {
-      grid.setFilter("state", { selected: [filter] });
+  const applyQueue = (next: QueueFilter) => {
+    setQueue(next);
+    setView("items");
+    grid.setFilter("direction", null);
+    if (next === "open") grid.setFilter("state", { selected: ["open", "partial", "credit"] });
+    if (next === "payable") {
+      grid.setFilter("direction", { selected: ["payable"] });
+      grid.setFilter("state", { selected: ["open", "partial"] });
     }
+    if (next === "receivable") {
+      grid.setFilter("direction", { selected: ["receivable"] });
+      grid.setFilter("state", { selected: ["open", "partial"] });
+    }
+    if (next === "reserve") {
+      grid.setFilter("direction", { selected: ["reserve"] });
+      grid.setFilter("state", { selected: ["open", "partial"] });
+    }
+    if (next === "credit") grid.setFilter("state", { selected: ["credit"] });
+    if (next === "completed") grid.setFilter("state", { selected: ["settled"] });
   };
+
+  const selectionAction = useMemo(() => {
+    const directions = new Set(selectedRows.map((row) => row.direction));
+    if (directions.size !== 1) return "Record selected balances";
+    const direction = [...directions][0];
+    if (direction === "payable") return "Record agency payments";
+    if (direction === "receivable") return "Record amounts received";
+    return "Record set-asides";
+  }, [selectedRows]);
 
   const completeAction = (message: string) => {
     setNotice({ tone: "success", message });
@@ -1336,15 +1367,15 @@ export default function SettlementDashboard({
       setNotice({
         tone: blocked > 0 ? "error" : "success",
         message: blocked > 0
-          ? `${blocked} payroll source${blocked === 1 ? " needs" : "s need"} correction before a settlement can be calculated. Open the attention list above.`
+          ? `${blocked} payroll source${blocked === 1 ? " needs" : "s need"} correction before a payment can be calculated. Open the attention list above.`
           : changed > 0
-          ? `Settlement items refreshed: ${result.created} new, ${result.updated} updated, ${result.adjusted} adjusted, ${result.voided} voided.`
-          : "Settlement items are up to date.",
+          ? `Payment items refreshed: ${result.created} new, ${result.updated} updated, ${result.adjusted} adjusted, ${result.voided} voided.`
+          : "Payment items are up to date.",
       });
       setSelected(new Set());
       router.refresh();
     } catch (refreshError) {
-      setNotice({ tone: "error", message: refreshError instanceof Error ? refreshError.message : "Settlement items could not be refreshed." });
+      setNotice({ tone: "error", message: refreshError instanceof Error ? refreshError.message : "Payment items could not be refreshed." });
     } finally {
       setRefreshing(false);
     }
@@ -1352,13 +1383,13 @@ export default function SettlementDashboard({
 
   return (
     <div className="space-y-4">
-      <SummaryBand data={data} />
+      <SummaryBand data={data} active={view === "items" ? queue : null} onSelect={applyQueue} />
       {canManage ? <MissingDeals data={data} /> : null}
       {canManage ? <CheckIssues data={data} /> : null}
 
       {data.freshness.dirty ? (
         <div role="alert" className="rounded border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-3 py-2 text-sm text-[var(--color-danger)]">
-          <p className="font-medium">Refresh required before recording settlement activity.</p>
+          <p className="font-medium">Refresh required before recording payment activity.</p>
           <p className="mt-0.5">Payroll, deal, plan, or rate information changed after these balances were calculated. Payments, credits, and reversals are temporarily blocked.</p>
           {data.freshness.lastRefreshError ? <p className="mt-0.5">{data.freshness.lastRefreshError}</p> : null}
         </div>
@@ -1371,12 +1402,15 @@ export default function SettlementDashboard({
       ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-rule-strong)]">
-        <div role="tablist" aria-label="Settlement views" className="flex gap-1">
-          <button id="settlement-items-tab" type="button" role="tab" aria-selected={view === "items"} aria-controls="settlement-items-panel" onClick={() => setView("items")} className={`border-b-2 px-3 py-2 text-sm font-medium ${view === "items" ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}>
+        <div role="tablist" aria-label="Payment views" className="flex gap-1">
+          <button id="settlement-items-tab" type="button" role="tab" aria-selected={view === "items" && queue !== "completed"} aria-controls="settlement-items-panel" onClick={() => applyQueue(queue === "completed" ? "open" : queue)} className={`border-b-2 px-3 py-2 text-sm font-medium ${view === "items" && queue !== "completed" ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}>
             Items <span className="tnum text-xs text-[var(--color-ink-faint)]">{grid.filtered.length}</span>
           </button>
           <button id="settlement-history-tab" type="button" role="tab" aria-selected={view === "history"} aria-controls="settlement-history-panel" onClick={() => setView("history")} className={`border-b-2 px-3 py-2 text-sm font-medium ${view === "history" ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}>
             History <span className="tnum text-xs text-[var(--color-ink-faint)]">{filteredEvents.length}</span>
+          </button>
+          <button id="settlement-completed-tab" type="button" role="tab" aria-selected={view === "items" && queue === "completed"} aria-controls="settlement-items-panel" onClick={() => applyQueue("completed")} className={`border-b-2 px-3 py-2 text-sm font-medium ${view === "items" && queue === "completed" ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}>
+            Completed
           </button>
         </div>
         {canManage ? <button type="button" disabled={refreshing} onClick={refresh} className="btn btn-sm btn-secondary mb-1">
@@ -1384,34 +1418,25 @@ export default function SettlementDashboard({
         </button> : null}
       </div>
 
-      <section id={view === "items" ? "settlement-items-panel" : "settlement-history-panel"} role="tabpanel" aria-labelledby={view === "items" ? "settlement-items-tab" : "settlement-history-tab"} className="space-y-3">
+      <section id={view === "items" ? "settlement-items-panel" : "settlement-history-panel"} role="tabpanel" aria-labelledby={view === "items" ? queue === "completed" ? "settlement-completed-tab" : "settlement-items-tab" : "settlement-history-tab"} className="space-y-3">
         {view === "items" ? (
           <>
             <Toolbar
               grid={grid}
               searchPlaceholder="Search person, item, check, or date"
               exportEndpoint="/api/grid/export"
-              exportTitle="Settlement obligations"
+              exportTitle="Payment obligations"
               exportFilename="settlements"
               extraActions={canManage ? (
                 <>
                   {selectedRows.length > 0 ? <span className="tnum text-xs font-medium text-[var(--color-primary)]">{selectedRows.length} selected</span> : null}
                   <button type="button" disabled={!canRecord || selectedRows.length === 0} onClick={() => setSettleOpen(true)} className="btn btn-sm btn-primary">
-                    Mark selected settled
+                    {selectionAction}
                   </button>
                 </>
               ) : undefined}
             />
             <FilterBar grid={grid} />
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex flex-wrap gap-1 rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface-muted)] p-1" aria-label="Filter by settlement state">
-                {STATE_FILTERS.map((filter) => (
-                  <button key={filter.value} type="button" onClick={() => applyStateFilter(filter.value)} aria-pressed={activeStateFilter === filter.value} className={`rounded px-2 py-1 text-xs font-medium ${activeStateFilter === filter.value ? "bg-[var(--color-surface)] text-[var(--color-primary)] shadow-sm" : "text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}>
-                    {filter.label}
-                  </button>
-                ))}
-              </div>
-            </div>
             <ItemsTable
               grid={grid}
               rows={grid.sorted}
@@ -1429,7 +1454,7 @@ export default function SettlementDashboard({
         ) : (
           <>
             <label className="block max-w-xl">
-              <span className="sr-only">Search settlement history</span>
+              <span className="sr-only">Search payment history</span>
               <input value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} className="input w-full" placeholder="Search person, reference, note, or actor" />
             </label>
             <HistoryTable events={filteredEvents} canManage={canRecord} onReverse={setReverseEvent} />

@@ -177,7 +177,7 @@ function EmployeePanel({
               <th className="px-2 py-1.5 font-medium">Program</th>
               {canSeeHours ? <th className="px-2 py-1.5 text-right font-medium">Hours</th> : null}
               {canSeeBilledAmounts ? <th className="px-2 py-1.5 text-right font-medium">Billed $</th> : null}
-              {canSeeEmployeeAmounts ? <th className="py-1.5 pl-2 text-right font-medium">Company $</th> : null}
+              {canSeeEmployeeAmounts ? <th className="py-1.5 pl-2 text-right font-medium">Employee base</th> : null}
             </tr>
           </thead>
           <tbody>

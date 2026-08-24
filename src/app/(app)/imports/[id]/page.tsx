@@ -85,15 +85,15 @@ export default async function ImportDetailPage({
           </div>
 
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <Card title="Reconciliation" description="The workbook's own control totals against these rows">
+            <Card title="Source reconciliation" description="Control totals compared with staged activity">
               <dl className="grid grid-cols-2 gap-x-4 gap-y-2 px-5 py-4 text-sm">
-                <dt className="text-[var(--color-ink-faint)]">Agency total (workbook)</dt>
+                <dt className="text-[var(--color-ink-faint)]">Funder billed (source)</dt>
                 <dd className="text-right"><Money value={staging.reconciliation.workbookAgencyGross} /></dd>
-                <dt className="text-[var(--color-ink-faint)]">Agency total (these rows)</dt>
+                <dt className="text-[var(--color-ink-faint)]">Funder billed (staged)</dt>
                 <dd className="text-right"><Money value={staging.reconciliation.importedAgencyGross} /></dd>
-                <dt className="text-[var(--color-ink-faint)]">Employee amount (workbook)</dt>
+                <dt className="text-[var(--color-ink-faint)]">Employee base (source)</dt>
                 <dd className="text-right"><Money value={staging.reconciliation.workbookInternalAmount} /></dd>
-                <dt className="text-[var(--color-ink-faint)]">Employee amount (these rows)</dt>
+                <dt className="text-[var(--color-ink-faint)]">Employee base (staged)</dt>
                 <dd className="text-right"><Money value={staging.reconciliation.importedInternalAmount} /></dd>
               </dl>
               <p className="border-t border-[var(--color-rule)] px-5 py-3 text-sm text-[var(--color-ink-soft)]">

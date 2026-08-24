@@ -33,6 +33,9 @@ export function BarChart({
   ariaLabel,
   tone = "primary",
   legend,
+  domainMaximum,
+  referenceValue,
+  referenceLabel,
 }: {
   data: BarDatum[];
   title?: string;
@@ -40,6 +43,11 @@ export function BarChart({
   ariaLabel?: string;
   tone?: ChartTone;
   legend?: LegendItem[];
+  /** A minimum maximum for the value scale. Percentage charts use 100. */
+  domainMaximum?: number;
+  /** Optional target line, plotted on the same scale as the bars. */
+  referenceValue?: number;
+  referenceLabel?: string;
 }) {
   const VW = 480;
   const rowH = 30;
@@ -53,8 +61,11 @@ export function BarChart({
   const H = padT + padB + Math.max(1, data.length) * rowH;
 
   const values = data.map((d) => toNum(d.value));
-  const max = Math.max(0, ...values);
+  const max = Math.max(0, domainMaximum ?? 0, ...values);
   const barW = (v: number) => (max <= 0 ? 0 : (Math.max(0, v) / max) * trackW);
+  const referenceX = referenceValue === undefined || max <= 0
+    ? null
+    : trackX + (Math.max(0, referenceValue) / max) * trackW;
 
   const summary =
     ariaLabel ??
@@ -69,6 +80,12 @@ export function BarChart({
         preserveAspectRatio="xMinYMin meet"
         style={{ width: "100%", height: "auto", display: "block", overflow: "visible" }}
       >
+        {referenceX !== null ? (
+          <g>
+            <line x1={referenceX} y1={padT} x2={referenceX} y2={H - padB} stroke="var(--color-danger)" strokeWidth={1.5} strokeDasharray="3 3" />
+            {referenceLabel ? <text x={referenceX - 3} y={padT + 8} textAnchor="end" fontSize={10} fontWeight={600} fill="var(--color-danger)">{referenceLabel}</text> : null}
+          </g>
+        ) : null}
         {data.length === 0 ? (
           <text
             x={VW / 2}

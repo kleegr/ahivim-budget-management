@@ -1,5 +1,17 @@
 import Link from "next/link";
-import type { ReactNode } from "react";
+import {
+  AlertCircle,
+  ArrowUpRight,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  CircleDashed,
+  Info,
+  Inbox,
+  TriangleAlert,
+  XCircle,
+} from "lucide-react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { formatMoney, formatHours, dec } from "@/lib/money";
 
 /** Shared presentation pieces. Nothing here fetches or derives a figure. */
@@ -19,12 +31,12 @@ export function Card({
 }) {
   return (
     <section className={`card overflow-hidden ${className}`}>
-      {(title || action) && (
+      {(title || description || action) && (
         <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3.5">
-          <div>
+          <div className="min-w-0">
             {title ? <h2 className="display text-[0.95rem] font-semibold text-[var(--color-ink)]">{title}</h2> : null}
             {description ? (
-              <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">{description}</p>
+              <p className="mt-1 max-w-3xl text-sm text-[var(--color-ink-soft)]">{description}</p>
             ) : null}
           </div>
           {action}
@@ -39,8 +51,61 @@ const TONE_COLOR: Record<string, string> = {
   alert: "var(--color-danger)",
   warn: "var(--color-warn)",
   good: "var(--color-success)",
+  info: "var(--color-info)",
   neutral: "var(--color-ink)",
 };
+
+export type MetricTone = "neutral" | "warn" | "alert" | "good" | "info";
+
+export function Metric({
+  label,
+  value,
+  hint,
+  unavailable,
+  tone = "neutral",
+  href,
+  icon,
+  comparison,
+  className = "",
+}: {
+  label: string;
+  value?: ReactNode;
+  hint?: ReactNode;
+  unavailable?: string;
+  tone?: MetricTone;
+  href?: string;
+  icon?: ReactNode;
+  comparison?: ReactNode;
+  className?: string;
+}) {
+  const body = (
+    <>
+      <div className="flex items-start justify-between gap-3">
+        <p className="eyebrow min-w-0">{label}</p>
+        {icon ? <span className="shrink-0 text-[var(--color-ink-faint)]">{icon}</span> : href ? (
+          <ArrowUpRight aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-ink-faint)]" />
+        ) : null}
+      </div>
+      {unavailable ? (
+        <div className="mt-2">
+          <p className="text-sm font-semibold text-[var(--color-ink-soft)]">Not available</p>
+          <p className="mt-1 text-xs leading-relaxed text-[var(--color-ink-faint)]">{unavailable}</p>
+        </div>
+      ) : (
+        <>
+          <p className="tnum mt-2 text-[1.5rem] font-semibold leading-none" style={{ color: TONE_COLOR[tone] }}>
+            {value ?? "—"}
+          </p>
+          {comparison ? <div className="mt-2 text-xs font-medium text-[var(--color-ink-soft)]">{comparison}</div> : null}
+          {hint ? <div className="mt-1.5 text-xs leading-relaxed text-[var(--color-ink-faint)]">{hint}</div> : null}
+        </>
+      )}
+    </>
+  );
+
+  const classes = `card min-h-[6.75rem] px-4 py-4 ${href ? "card-interactive block" : ""} ${className}`;
+  return href ? <Link href={href} className={classes}>{body}</Link> : <div className={classes}>{body}</div>;
+}
 
 export function StatTile({
   label,
@@ -54,36 +119,11 @@ export function StatTile({
   value?: string;
   hint?: string;
   unavailable?: string;
-  tone?: "neutral" | "warn" | "alert" | "good";
+  tone?: MetricTone;
   /** When set, the whole tile is a link (e.g. into the pre-filtered ledger). */
   href?: string;
 }) {
-  const body = (
-    <>
-      <p className="eyebrow">{label}</p>
-      {unavailable ? (
-        <>
-          <p className="mt-1.5 text-sm font-medium text-[var(--color-ink-faint)]">Not available</p>
-          <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{unavailable}</p>
-        </>
-      ) : (
-        <>
-          <p className="tnum mt-1 text-[1.35rem] font-semibold leading-tight" style={{ color: TONE_COLOR[tone] }}>
-            {value}
-          </p>
-          {hint ? <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{hint}</p> : null}
-        </>
-      )}
-    </>
-  );
-  if (href) {
-    return (
-      <Link href={href} className="card block px-4 py-3.5 transition hover:border-[var(--color-primary)] hover:shadow-md">
-        {body}
-      </Link>
-    );
-  }
-  return <div className="card px-4 py-3.5 transition hover:shadow-md">{body}</div>;
+  return <Metric label={label} value={value} hint={hint} unavailable={unavailable} tone={tone} href={href} />;
 }
 
 export function Money({ value }: { value: string | null | undefined }) {
@@ -111,32 +151,76 @@ export function EmptyState({
   title,
   children,
   action,
+  icon,
+  compact = false,
 }: {
   title: string;
   children?: ReactNode;
   action?: ReactNode;
+  icon?: ReactNode;
+  compact?: boolean;
 }) {
   return (
-    <div className="px-5 py-12 text-center">
-      <p className="display text-[0.95rem] font-semibold">{title}</p>
+    <div className={`px-5 text-center ${compact ? "py-7" : "py-12"}`}>
+      <span className="mx-auto grid h-10 w-10 place-items-center rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-[var(--color-ink-faint)]">
+        {icon ?? <Inbox aria-hidden className="h-5 w-5" />}
+      </span>
+      <h2 className="display mt-3 text-base font-semibold text-[var(--color-ink)]">{title}</h2>
       {children ? (
-        <div className="mx-auto mt-1.5 max-w-prose text-sm text-[var(--color-ink-soft)]">{children}</div>
+        <div className="mx-auto mt-1.5 max-w-prose text-sm leading-relaxed text-[var(--color-ink-soft)]">{children}</div>
       ) : null}
       {action ? <div className="mt-4">{action}</div> : null}
     </div>
   );
 }
 
-export function ErrorPanel({ title, children }: { title: string; children?: ReactNode }) {
+export type NoticeTone = "info" | "success" | "warning" | "error";
+
+const NOTICE_STYLE: Record<NoticeTone, string> = {
+  info: "border-[var(--color-info)] bg-[var(--color-info-soft)] text-[var(--color-info)]",
+  success: "border-[var(--color-success)] bg-[var(--color-success-soft)] text-[var(--color-success)]",
+  warning: "border-[var(--color-warn)] bg-[var(--color-warn-soft)] text-[var(--color-warn)]",
+  error: "border-[var(--color-danger)] bg-[var(--color-danger-soft)] text-[var(--color-danger)]",
+};
+
+const NOTICE_ICON = {
+  info: Info,
+  success: CheckCircle2,
+  warning: TriangleAlert,
+  error: AlertCircle,
+};
+
+export function Notice({
+  tone = "info",
+  title,
+  children,
+  action,
+  className = "",
+}: {
+  tone?: NoticeTone;
+  title?: string;
+  children?: ReactNode;
+  action?: ReactNode;
+  className?: string;
+}) {
+  const Icon = NOTICE_ICON[tone];
   return (
     <div
-      role="alert"
-      className="rounded-xl border border-[var(--color-rule)] border-l-4 border-l-[var(--color-danger)] bg-[var(--color-danger-soft)] px-5 py-4"
+      role={tone === "error" ? "alert" : "status"}
+      className={`flex flex-wrap items-start gap-3 rounded-lg border border-l-4 px-4 py-3 ${NOTICE_STYLE[tone]} ${className}`}
     >
-      <p className="text-sm font-semibold text-[var(--color-danger)]">{title}</p>
-      {children ? <div className="mt-1 text-sm text-[var(--color-ink-soft)]">{children}</div> : null}
+      <Icon aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
+      <div className="min-w-0 flex-1">
+        {title ? <p className="text-sm font-semibold text-[var(--color-ink)]">{title}</p> : null}
+        {children ? <div className={`${title ? "mt-0.5" : ""} text-sm leading-relaxed text-[var(--color-ink-soft)]`}>{children}</div> : null}
+      </div>
+      {action ? <div className="w-full pl-7 sm:w-auto sm:shrink-0 sm:pl-0">{action}</div> : null}
     </div>
   );
+}
+
+export function ErrorPanel({ title, children }: { title: string; children?: ReactNode }) {
+  return <Notice tone="error" title={title}>{children}</Notice>;
 }
 
 // Semantic → (background, text) using the soft tokens; every badge gets a dot.
@@ -156,14 +240,38 @@ const TONE_STYLE: Record<string, string> = {
   muted: "bg-[var(--color-surface-strong)] text-[var(--color-ink-soft)]",
 };
 
-export function Badge({ value, label }: { value: string; label?: string }) {
-  const tone = BADGE_TONES[value] ?? "muted";
+const STATUS_ICON = {
+  good: CheckCircle2,
+  info: Info,
+  warn: TriangleAlert,
+  danger: XCircle,
+  muted: CircleDashed,
+};
+
+export type StatusTone = keyof typeof STATUS_ICON;
+
+export function StatusBadge({
+  tone = "muted",
+  label,
+  className = "",
+}: {
+  tone?: StatusTone;
+  label: string;
+  className?: string;
+}) {
+  const Icon = STATUS_ICON[tone];
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${TONE_STYLE[tone]}`}>
-      <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-      {label ?? value.replace(/_/g, " ")}
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold ${TONE_STYLE[tone]} ${className}`}>
+      <Icon aria-hidden className="h-3 w-3 shrink-0" />
+      {label}
     </span>
   );
+}
+
+export function Badge({ value, label }: { value: string; label?: string }) {
+  const tone = BADGE_TONES[value] ?? "muted";
+  const text = label ?? value.replace(/_/g, " ");
+  return <StatusBadge tone={tone} label={text} />;
 }
 
 /** The pace track: fill is hours used, notch is where the calendar has reached. */
@@ -176,17 +284,22 @@ export function PaceBar({
   timeElapsedPercent: string;
   color?: string;
 }) {
-  const clamp = (v: string) => Math.max(0, Math.min(100, dec(v).times(100).toNumber()));
-  const used = clamp(usagePercent);
-  const elapsed = clamp(timeElapsedPercent);
+  const percent = (v: string) => Math.max(0, dec(v).times(100).toNumber());
+  const usedRaw = percent(usagePercent);
+  const used = Math.min(100, usedRaw);
+  const elapsed = Math.min(100, percent(timeElapsedPercent));
+  const overBy = Math.max(0, usedRaw - 100);
+  const over = overBy > 0;
   return (
     <div
-      className="pace-track"
       role="img"
-      aria-label={`${used.toFixed(1)} percent of authorized hours used; ${elapsed.toFixed(1)} percent of the period elapsed`}
+      aria-label={`${usedRaw.toFixed(1)} percent of authorized hours used; ${elapsed.toFixed(1)} percent of the period elapsed${over ? `; over authorization by ${overBy.toFixed(1)} percent` : ""}`}
     >
-      <div className="pace-fill" style={{ width: `${used}%`, background: color }} />
-      <div className="pace-notch" style={{ left: `${elapsed}%` }} />
+      <div className={`pace-track ${over ? "pace-track-over" : ""}`}>
+        <div className="pace-fill" style={{ width: `${used}%`, background: over ? "var(--color-danger)" : color }} />
+        <div className="pace-notch" style={{ left: `${elapsed}%` }} />
+      </div>
+      {over ? <p className="pace-overflow-label">Over by {overBy.toFixed(overBy < 10 ? 1 : 0)}%</p> : null}
     </div>
   );
 }
@@ -202,7 +315,7 @@ export function Table({
 }) {
   return (
     <div className="scroll-thin overflow-x-auto">
-      <table className="w-full border-collapse text-sm">
+      <table className="min-w-full border-collapse text-sm">
         {caption ? <caption className="sr-only">{caption}</caption> : null}
         <thead>
           <tr className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-left">{head}</tr>
@@ -225,7 +338,7 @@ export function Th({
   return (
     <th
       scope={scope}
-      className={`px-4 py-2.5 text-[0.6875rem] font-semibold tracking-wide text-[var(--color-ink-faint)] uppercase ${
+      className={`px-4 py-2.5 text-xs font-semibold text-[var(--color-ink-soft)] ${
         numeric ? "text-right" : "text-left"
       }`}
     >
@@ -261,23 +374,76 @@ export function PageHeader({
   title,
   description,
   action,
+  meta,
+  className = "",
 }: {
   eyebrow?: string;
   title: string;
   description?: string;
   action?: ReactNode;
+  meta?: ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-      <div>
-        {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
-        <h1 className="display mt-1 text-[1.6rem] font-semibold leading-tight">{title}</h1>
+    <header className={`mb-7 flex flex-wrap items-end justify-between gap-x-6 gap-y-4 border-b border-[var(--color-rule)] pb-4 ${className}`}>
+      <div className="min-w-0 flex-1">
+        {eyebrow ? <p className="eyebrow text-[var(--color-primary)]">{eyebrow}</p> : null}
+        <h1 className="display mt-1 text-[1.75rem] font-semibold leading-tight text-[var(--color-ink)]">{title}</h1>
         {description ? (
-          <p className="mt-1.5 max-w-2xl text-sm text-[var(--color-ink-soft)]">{description}</p>
+          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[var(--color-ink-soft)]">{description}</p>
         ) : null}
+        {meta ? <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--color-ink-faint)]">{meta}</div> : null}
       </div>
-      {action}
-    </div>
+      {action ? <div className="flex shrink-0 flex-wrap items-center gap-2">{action}</div> : null}
+    </header>
+  );
+}
+
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+
+export function Button({
+  children,
+  variant = "secondary",
+  size = "md",
+  className = "",
+  type = "button",
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: ButtonVariant;
+  size?: "sm" | "md";
+}) {
+  return (
+    <button
+      type={type}
+      className={`btn btn-${variant} ${size === "sm" ? "btn-sm" : ""} ${className}`}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+
+export function IconButton({
+  label,
+  children,
+  variant = "ghost",
+  className = "",
+  ...props
+}: Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children" | "aria-label"> & {
+  label: string;
+  children: ReactNode;
+  variant?: ButtonVariant;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={props.title ?? label}
+      className={`btn btn-sm btn-icon btn-${variant} ${className}`}
+      {...props}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -288,7 +454,7 @@ export function ButtonLink({
 }: {
   href: string;
   children: ReactNode;
-  variant?: "primary" | "secondary" | "ghost" | "danger";
+  variant?: ButtonVariant;
 }) {
   return (
     <Link className={`btn btn-sm btn-${variant}`} href={href}>
@@ -329,8 +495,16 @@ export function Pagination({
         {from}–{to} of {total}
       </p>
       <div className="flex gap-2">
-        {offset > 0 ? <ButtonLink href={build(Math.max(0, offset - limit))}>Previous</ButtonLink> : null}
-        {to < total ? <ButtonLink href={build(offset + limit)}>Next</ButtonLink> : null}
+        {offset > 0 ? (
+          <ButtonLink href={build(Math.max(0, offset - limit))}>
+            <ChevronLeft aria-hidden className="h-4 w-4" /> Previous
+          </ButtonLink>
+        ) : null}
+        {to < total ? (
+          <ButtonLink href={build(offset + limit)}>
+            Next <ChevronRight aria-hidden className="h-4 w-4" />
+          </ButtonLink>
+        ) : null}
       </div>
     </nav>
   );

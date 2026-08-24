@@ -15,12 +15,12 @@ export default async function ImportsPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Workbooks"
-        title="Imports (backup)"
-        description="Manual workbook upload is a backup path. The normal workflow syncs Transactions automatically from the Google Sheet."
+        eyebrow="Data source"
+        title="Backup imports"
+        description="Stage and review a manual source file when the automatic sync is unavailable."
       />
 
-      <div className="mb-6 rounded-xl border border-[var(--color-rule)] border-l-4 border-l-[var(--color-primary)] bg-[var(--color-primary-tint)] px-5 py-3.5">
+      <div className="mb-6 rounded-lg border border-[var(--color-rule)] border-l-4 border-l-[var(--color-primary)] bg-[var(--color-primary-tint)] px-5 py-3.5">
         <p className="text-sm text-[var(--color-ink)]">
           Transactions now sync automatically from the Google Sheet.{" "}
           <Link className="font-medium underline underline-offset-2" href="/sync">

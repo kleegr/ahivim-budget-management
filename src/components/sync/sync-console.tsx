@@ -110,7 +110,7 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
       {banner ? (
         <div
           role="status"
-          className={`rounded-xl border px-4 py-3 text-sm ${
+          className={`rounded-lg border px-4 py-3 text-sm ${
             banner.tone === "ok"
               ? "border-[var(--color-success)] bg-[var(--color-success-soft)] text-[var(--color-success)]"
               : "border-[var(--color-danger)] bg-[var(--color-danger-soft)] text-[var(--color-danger)]"
