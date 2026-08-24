@@ -142,6 +142,35 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     expect((await getSettlementDashboard(pool)).rows).toHaveLength(2);
   });
 
+  it("reports an ambiguous direct check number without breaking the dashboard query", async () => {
+    const employee = unwrap(await createEmployee(pool, { displayName: "Leah Rosen" }, ACTOR));
+
+    await pool.query(
+      `INSERT INTO payroll_transactions
+         (employee_id, check_number, check_date, payment_recipient,
+          imported_amount, total_net_pay, transaction_fingerprint)
+       VALUES
+         ($1,'  AMB-1  ','2026-04-01','employee','300','900','settle-ambiguous-check-1'),
+         ($1,'  AMB-1  ','2026-04-02','employee','300','900','settle-ambiguous-check-2'),
+         ($1,'  AMB-1  ',NULL,'employee','300','900','settle-ambiguous-check-3')`,
+      [employee.id],
+    );
+
+    const dashboard = await getSettlementDashboard(pool);
+
+    expect(dashboard.checkIssues).toContainEqual({
+      sourceId: `${employee.id}:ambiguous-check:AMB-1`,
+      employeeId: employee.id,
+      employeeName: "Leah Rosen",
+      checkNumber: "AMB-1",
+      checkDate: "2026-04-01",
+      periodBegin: null,
+      periodEnd: null,
+      transactionCount: 3,
+      issue: "conflicting_check_date",
+    });
+  });
+
   it("snapshots a deal change and creates a delta instead of rewriting actioned history", async () => {
     const employee = unwrap(await createEmployee(pool, { displayName: "Sara Weiss" }, ACTOR));
     const individual = unwrap(await createIndividual(pool, { displayName: "Noah Levy" }, ACTOR));
