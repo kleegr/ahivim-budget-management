@@ -64,6 +64,17 @@ validations pass.
 first, not from gross. Employee cash is the balance after the second cut minus
 the third.
 
+**Employee deals keep the two payment directions separate.** When the agency
+receives the funder payment, its percentage is taken from the base/internal
+amount and the billed-to-base spread remains the agency's. When a self-hire
+employee receives the check directly, any give-back percentage is taken once
+from the whole check net. Gross and withholding are shown for context but are
+never part of that direct-pay deal calculation.
+
+**Settlement history is append-only.** Deal results become obligations; partial
+payments, extra payments/credits, set-asides, and reversals are separate events.
+An actioned amount is never silently replaced when a deal or plan changes.
+
 **Imported values are never silently replaced.** A Self-Hire Respite row at $23
 where the schedule says $18 is preserved exactly, recorded as a rate exception
 with its variance and direction, and still imported.

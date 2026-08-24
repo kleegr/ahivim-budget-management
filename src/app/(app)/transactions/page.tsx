@@ -5,6 +5,7 @@ import { listTransactionsForGrid, type GridTransaction } from "@/lib/data/transa
 import { PageHeader, ErrorPanel, EmptyState, Card } from "@/components/ui";
 import TransactionsGrid from "@/components/transactions/transactions-grid";
 import type { FilterState } from "@/components/data-grid/types";
+import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Transactions — Ahivim Budget Management" };
@@ -101,8 +102,11 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
-    if (!scope.canSeeTransactions) return { denied: true as const, rows: [] as GridTransaction[], canSeeMoney: scope.canSeeMoney };
-    return { denied: false as const, rows: await listTransactionsForGrid(pool, scope), canSeeMoney: scope.canSeeMoney };
+    const visibility = transactionFieldVisibility(scope);
+    if (!scope.canSeeTransactions) {
+      return { denied: true as const, rows: [] as GridTransaction[], visibility, canSeeBudgets: scope.canSeeBudgets };
+    }
+    return { denied: false as const, rows: await listTransactionsForGrid(pool, scope), visibility, canSeeBudgets: scope.canSeeBudgets };
   });
 
   // A user whose access hides Transactions is refused server-side, not just in the nav.
@@ -118,7 +122,6 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   }
 
   const rows = result.ok ? result.data.rows : [];
-  const canSeeMoney = result.ok ? result.data.canSeeMoney : true;
   const seeded = result.ok ? buildInitialFilters(rows, sp) : { filters: {}, label: null };
 
   return (
@@ -141,7 +144,8 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         <TransactionsGrid
           rows={rows}
           canManage={canManage}
-          canSeeMoney={canSeeMoney}
+          visibility={result.data.visibility}
+          canSeeBudgets={result.data.canSeeBudgets}
           initialFilters={seeded.filters}
           contextLabel={seeded.label}
         />

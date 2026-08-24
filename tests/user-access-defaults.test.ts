@@ -1,0 +1,113 @@
+import { describe, expect, it, vi } from "vitest";
+import { createUser, userAccessConfigFromInput } from "@/lib/auth/users";
+import type { PgLikePool } from "@/lib/import/commit";
+
+describe("new user access defaults", () => {
+  it("creates viewers with no implicit people, transaction, hours, or money access", () => {
+    expect(userAccessConfigFromInput({}, "viewer")).toEqual({
+      accessScope: "scoped",
+      seeAllIndividuals: false,
+      seeAllEmployees: false,
+      canSeeTransactions: false,
+      canSeeMoney: false,
+      canSeeHours: false,
+      canSeeBilledAmounts: false,
+      canSeeEmployeeAmounts: false,
+      canSeeAgencySpread: false,
+      canSeeCheckNet: false,
+      canSeeTaxes: false,
+      canSeeBudgets: false,
+      canSeeEmployeeDeals: false,
+      canSeeSettlements: false,
+      individualIds: [],
+      employeeIds: [],
+    });
+  });
+
+  it("honors permissions that an administrator explicitly grants to a viewer", () => {
+    const config = userAccessConfigFromInput({
+      accessScope: "full",
+      canSeeTransactions: true,
+      canSeeMoney: true,
+      canSeeHours: true,
+      canSeeBudgets: true,
+      canSeeEmployeeDeals: true,
+      canSeeSettlements: true,
+      individualIds: ["individual-1"],
+      employeeIds: ["employee-1"],
+    }, "viewer");
+
+    expect(config).toMatchObject({
+      accessScope: "full",
+      canSeeTransactions: true,
+      canSeeMoney: true,
+      canSeeHours: true,
+      canSeeBudgets: true,
+      canSeeEmployeeDeals: true,
+      canSeeSettlements: true,
+      individualIds: ["individual-1"],
+      employeeIds: ["employee-1"],
+    });
+  });
+
+  it("does not grant budgets without the hours they are built from", () => {
+    expect(userAccessConfigFromInput({
+      canSeeBudgets: true,
+      canSeeHours: false,
+    }, "viewer")).toMatchObject({
+      canSeeHours: false,
+      canSeeBudgets: false,
+    });
+  });
+
+  it("preserves the existing permissive defaults for trusted staff roles", () => {
+    expect(userAccessConfigFromInput({}, "manager")).toMatchObject({
+      accessScope: "full",
+      canSeeTransactions: true,
+      canSeeMoney: true,
+      canSeeHours: true,
+      canSeeBilledAmounts: true,
+      canSeeEmployeeAmounts: true,
+      canSeeAgencySpread: true,
+      canSeeCheckNet: true,
+      canSeeTaxes: true,
+      canSeeBudgets: true,
+      canSeeEmployeeDeals: false,
+      canSeeSettlements: false,
+    });
+  });
+
+  it("inserts a viewer closed before the API applies any explicit grants", async () => {
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      void params;
+      if (sql.includes("FROM users") && sql.includes("WHERE email")) return { rows: [] };
+      if (sql.includes("INSERT INTO users")) {
+        return {
+          rows: [{
+            id: "00000000-0000-4000-8000-000000000001",
+            email: "viewer@example.test",
+            display_name: "Viewer",
+            password_hash: "stored-hash",
+            role: "viewer",
+            is_active: true,
+            last_login_at: null,
+            created_at: "2026-08-24T00:00:00.000Z",
+          }],
+        };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+    const pool = { query, connect: vi.fn() } as unknown as PgLikePool;
+
+    const result = await createUser(pool, {
+      email: "viewer@example.test",
+      displayName: "Viewer",
+      password: "a secure password",
+      role: "viewer",
+    }, "00000000-0000-4000-8000-000000000002");
+
+    expect(result.ok).toBe(true);
+    const insert = query.mock.calls.find(([sql]) => sql.includes("INSERT INTO users"));
+    expect(insert?.[1]?.slice(4)).toEqual(["scoped", ...Array(11).fill(false)]);
+  });
+});

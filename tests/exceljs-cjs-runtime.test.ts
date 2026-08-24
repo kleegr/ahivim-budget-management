@@ -83,18 +83,19 @@ suite("ExcelJS loads and parses under a strict CommonJS runtime", () => {
       stdio: ["ignore", "pipe", "pipe"],
     });
     expect(out).toMatch(/ROWS:\d+/);
-  });
+  }, 15_000);
 
   it("resolves ExcelJS's uuid and archiver to CommonJS builds", () => {
     // A direct assertion on the resolved dependency shapes, so the reason the
     // test above passes is legible: both must be requireable CommonJS.
     const out = runStrictCjs(`
-      const path = require.resolve('uuid', { paths: [require.resolve('exceljs')] });
-      const uuidPkg = require('uuid/package.json');
-      const archiverPkg = require('archiver/package.json');
+      const { createRequire } = require('module');
+      const excelRequire = createRequire(require.resolve('exceljs'));
+      const uuidPkg = excelRequire('uuid/package.json');
+      const archiverPkg = excelRequire('archiver/package.json');
       if (uuidPkg.type === 'module') throw new Error('uuid is ESM-only: ' + uuidPkg.version);
       if (archiverPkg.type === 'module') throw new Error('archiver is ESM-only: ' + archiverPkg.version);
-      const { v4 } = require('uuid');
+      const { v4 } = excelRequire('uuid');
       if (typeof v4 !== 'function') throw new Error('uuid.v4 missing');
       process.stdout.write('uuid@' + uuidPkg.version + ' archiver@' + archiverPkg.version);
     `);

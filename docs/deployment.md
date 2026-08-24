@@ -9,6 +9,7 @@
 | `BOOTSTRAP_ADMIN_EMAIL` | first deploy only | Email of the first administrator. |
 | `BOOTSTRAP_ADMIN_PASSWORD` | first deploy only | Password of the first administrator, minimum 10 characters. |
 | `MIGRATION_TOKEN` | optional | Allows `POST /api/admin/migrate` without a signed-in administrator. Needed only for a database that has no administrator yet, or for automated deploys. |
+| `CRON_SECRET` | recommended | Authenticates Vercel Cron calls to `/api/sync/cron`. Use a separate random secret; signed-in administrators may also trigger the endpoint. |
 | `MAX_UPLOAD_BYTES` | optional | Upload ceiling in bytes. Defaults to 20 MiB. |
 | `NEON_WS_PROXY` | local dev only | `host:port` of a WebSocket-to-TCP bridge, so the Neon driver can reach a local PostgreSQL. Never set in production. |
 
@@ -38,8 +39,8 @@ a deployment check can call them.
 The runner is idempotent. Each file in `drizzle/` runs once, inside its own
 transaction, and is recorded in `_ahivim_migrations` with a SHA-256 checksum.
 Re-running skips everything already applied. Editing a migration that has
-already been applied is reported as `checksum_mismatch` rather than silently
-ignored — add a new migration instead.
+already been applied fails migration and health checks immediately rather than
+silently accepting a changed checksum. Add a new migration instead.
 
 Three ways to apply them:
 

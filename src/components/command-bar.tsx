@@ -10,14 +10,15 @@ import { useRouter } from "next/navigation";
  * users: type where you want to go and press Enter.
  */
 
-// `manager` items are hidden from viewers; `tx` items need transaction access.
-type Item = { label: string; href: string; hint?: string; keywords?: string; manager?: boolean; tx?: boolean };
+// Restricted items are offered only when the corresponding server-side scope allows them.
+type Item = { label: string; href: string; hint?: string; keywords?: string; manager?: boolean; tx?: boolean; settlements?: boolean };
 
 const ITEMS: Item[] = [
   { label: "Home", href: "/home", hint: "What needs you today", keywords: "dashboard start", manager: true },
   { label: "Transactions", href: "/transactions", hint: "What was billed — the source of truth", keywords: "ledger billed payroll", tx: true },
   { label: "Individuals", href: "/individuals", hint: "Budgets, usage & people", keywords: "clients participants budget health board" },
   { label: "Employees", href: "/employees", hint: "Activity from the ledger", keywords: "staff workers people" },
+  { label: "Settlements", href: "/settlements", hint: "What is owed, received, and set aside", keywords: "payments givebacks reserves ledger done", settlements: true },
   { label: "Financial", href: "/calculations", hint: "Rates, cuts & net", keywords: "calculations money plan cuts projections", manager: true },
   { label: "Schedule", href: "/schedule", hint: "Plan sessions on a calendar", keywords: "calendar sessions", manager: true },
   { label: "Review", href: "/review", hint: "Clear the inbox", keywords: "exceptions matches aliases reconciliation names rates", manager: true },
@@ -35,9 +36,11 @@ const ITEMS: Item[] = [
 export default function CommandBar({
   role = "admin",
   canSeeTransactions = true,
+  canSeeSettlements = true,
 }: {
   role?: string;
   canSeeTransactions?: boolean;
+  canSeeSettlements?: boolean;
 } = {}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -48,8 +51,12 @@ export default function CommandBar({
   // Only offer destinations this user can actually open.
   const isManager = role === "manager" || role === "admin";
   const available = useMemo(
-    () => ITEMS.filter((i) => (!i.manager || isManager) && (!i.tx || canSeeTransactions)),
-    [isManager, canSeeTransactions],
+    () => ITEMS.filter((i) =>
+      (!i.manager || isManager)
+      && (!i.tx || canSeeTransactions)
+      && (!i.settlements || canSeeSettlements),
+    ),
+    [isManager, canSeeTransactions, canSeeSettlements],
   );
 
   const results = useMemo(() => {

@@ -12,7 +12,7 @@ import {
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
 import { derivePeriodFromRenewal, currentBudgetPeriod, programBudgetPeriod, isCalendarYearProgram, effectiveBilledHours } from "@/lib/business/calculation-strategy";
-import { individualScopeClause, type AccessScope } from "@/lib/auth/access";
+import { individualScopeClause, transactionScopeClause, type AccessScope } from "@/lib/auth/access";
 import {
   type BudgetLineStatus,
   BUDGET_STATUS_RANK,
@@ -482,6 +482,12 @@ export async function listIndividualBudgetBoard(
 ): Promise<IndividualBudgetBoardRow[]> {
   const params: unknown[] = [];
   const scopeClause = scope ? individualScopeClause(scope, "i.id", params) : "";
+  const billedScopeClause = scope
+    ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
+    : "";
+  const billingExistsScopeClause = scope
+    ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
+    : "";
   const { rows } = await pool.query<{
     id: string;
     display_name: string;
@@ -514,7 +520,7 @@ export async function listIndividualBudgetBoard(
             pr.name                  AS program_name,
             l.authorized_hours::text AS authorized_hours,
             COALESCE(b.hrs, 0)::text AS billed_hours,
-            EXISTS (SELECT 1 FROM payroll_transactions t WHERE t.individual_id = i.id) AS has_billing
+             EXISTS (SELECT 1 FROM payroll_transactions t WHERE t.individual_id = i.id${billingExistsScopeClause}) AS has_billing
        FROM individuals i
        LEFT JOIN plan pl ON pl.individual_id = i.id
        LEFT JOIN calculation_strategy_lines l ON l.strategy_id = pl.strategy_id
@@ -522,8 +528,9 @@ export async function listIndividualBudgetBoard(
        LEFT JOIN LATERAL (
          SELECT COALESCE(sum(t.imported_hours), 0) AS hrs
            FROM payroll_transactions t
-          WHERE t.individual_id = i.id
-            AND t.program_id = l.program_id
+           WHERE t.individual_id = i.id
+             AND t.program_id = l.program_id
+             ${billedScopeClause}
             -- Day Hab / Supplemental always use the calendar year; everything
             -- else uses the individual's own renewal window.
             AND t.period_begin >= (CASE WHEN pr.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
@@ -662,11 +669,13 @@ export async function getEmployeeReport(
   );
   if (!people[0]) return null;
 
-  // For a scoped viewer every transaction figure is limited to the individuals
-  // they may see; physical hours / group sessions are employee-level time and
-  // stay whole. The same $2 array param is reused across the subqueries.
+  // For a scoped viewer every transaction figure follows direct ledger grants;
+  // physical hours / group sessions are employee-level time and stay whole.
+  // The same scope params are reused across the subqueries.
   const params: unknown[] = [employeeId];
-  const tScope = scope ? individualScopeClause(scope, "t.individual_id", params) : "";
+  const tScope = scope
+    ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
+    : "";
   const { rows } = await pool.query<Record<string, string>>(
     `SELECT
        (SELECT coalesce(sum(s.physical_hours), 0)
@@ -839,7 +848,12 @@ export interface IndividualBudgetView {
 const budgetLineStatus = (authorized: ReturnType<typeof dec>, used: ReturnType<typeof dec>): BudgetLineStatus =>
   budgetStatusFromHours(authorized.toNumber(), used.toNumber());
 
-export async function getIndividualBudgetView(pool: PgLikePool, individualId: string, strategyId?: string): Promise<IndividualBudgetView> {
+export async function getIndividualBudgetView(
+  pool: PgLikePool,
+  individualId: string,
+  strategyId?: string,
+  scope?: AccessScope,
+): Promise<IndividualBudgetView> {
   // The individual's account status decides whether the renewal auto-rolls.
   const indRes = await pool.query<{ status: string }>(`SELECT status FROM individuals WHERE id = $1`, [individualId]);
   const active = (indRes.rows[0]?.status ?? "active") === "active";
@@ -899,6 +913,10 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
   // always use the calendar year (Jan 1 → Jan 1), so their used/left never mixes
   // with the person's own renewal. When the individual has no renewal window at
   // all, only the calendar-year programs still resolve (the rest are excluded).
+  const billedParams: unknown[] = [individualId, period.start, period.end];
+  const billedScope = scope
+    ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", billedParams)
+    : "";
   const billedRows = (
     await pool.query<{ program_id: string; program_name: string; program_code: string; hours: string; agency: string; internal: string; cnt: number }>(
       `WITH scoped AS (
@@ -915,6 +933,7 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
            FROM payroll_transactions t
            JOIN programs p ON p.id = t.program_id
           WHERE t.individual_id = $1 AND t.program_id IS NOT NULL
+            ${billedScope}
        )
        SELECT program_id, program_name, program_code,
               sum(imported_hours)::text  AS hours,
@@ -924,7 +943,7 @@ export async function getIndividualBudgetView(pool: PgLikePool, individualId: st
          FROM scoped
         WHERE win_start IS NOT NULL AND period_begin >= win_start AND period_begin <= win_end
         GROUP BY program_id, program_name, program_code`,
-      [individualId, period.start, period.end],
+      billedParams,
     )
   ).rows;
 
@@ -1101,10 +1120,18 @@ export async function getIndividualPeriodActivity(
   individualId: string,
   start: string | null,
   end: string | null,
+  scope?: AccessScope,
 ): Promise<IndividualPeriodActivity> {
   if (!start || !end) return { byProgramMonth: [], programsBilled: [], byEmployee: [] };
   const internalExpr =
     "COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount, t.internal_rate_applied * t.imported_hours, 0)";
+  const scopedTransaction = () => {
+    const params: unknown[] = [individualId, start, end];
+    const clause = scope
+      ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
+      : "";
+    return { params, clause };
+  };
 
   // Budget (internal) per-hour rate for each GROUP-session program for this
   // individual — override from the plan if set, else the program's latest default.
@@ -1131,6 +1158,7 @@ export async function getIndividualPeriodActivity(
   const groupRateByProgram = new Map(groupRateRes.rows.map((r) => [r.program_id, r.budget_rate]));
 
   // Program × month, every program the person billed (not just the budgeted ones).
+  const pmScope = scopedTransaction();
   const pmRes = await pool.query<{ month: string; program_id: string | null; program_name: string; program_code: string; hours: string; agency: string; internal: string }>(
     `SELECT to_char(date_trunc('month', t.period_begin), 'YYYY-MM') AS month,
             t.program_id,
@@ -1141,13 +1169,15 @@ export async function getIndividualPeriodActivity(
             sum(${internalExpr})::text   AS internal
        FROM payroll_transactions t
        LEFT JOIN programs p ON p.id = t.program_id
-      WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
+       WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
+         ${pmScope.clause}
       GROUP BY 1, t.program_id, p.name, t.program_raw, p.code
       ORDER BY 1`,
-    [individualId, start, end],
+    pmScope.params,
   );
 
   // Distinct programs billed, most hours first — the column order + totals row.
+  const programScope = scopedTransaction();
   const progRes = await pool.query<{ id: string | null; name: string; code: string; hours: string; agency: string; internal: string }>(
     `SELECT t.program_id AS id,
             COALESCE(p.name, t.program_raw, 'Unknown') AS name,
@@ -1157,13 +1187,15 @@ export async function getIndividualPeriodActivity(
             sum(${internalExpr})::text   AS internal
        FROM payroll_transactions t
        LEFT JOIN programs p ON p.id = t.program_id
-      WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
+       WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
+         ${programScope.clause}
       GROUP BY t.program_id, p.name, t.program_raw, p.code
       ORDER BY sum(t.imported_hours) DESC`,
-    [individualId, start, end],
+    programScope.params,
   );
 
   // Every transaction, so an employee row can expand to its own ledger inline.
+  const transactionScope = scopedTransaction();
   const txRes = await pool.query<{ id: string; emp_id: string | null; emp_name: string; period_begin: string; prog_id: string | null; program_code: string; program_name: string; hours: string; agency: string; internal: string }>(
     `SELECT t.id::text AS id,
             t.employee_id AS emp_id,
@@ -1178,9 +1210,10 @@ export async function getIndividualPeriodActivity(
        FROM payroll_transactions t
        LEFT JOIN employees e ON e.id = t.employee_id
        LEFT JOIN programs p ON p.id = t.program_id
-      WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
+       WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
+         ${transactionScope.clause}
       ORDER BY COALESCE(e.display_name, t.employee_raw, 'Unknown'), t.period_begin`,
-    [individualId, start, end],
+    transactionScope.params,
   );
 
   const empMap = new Map<string, PeriodEmployee>();

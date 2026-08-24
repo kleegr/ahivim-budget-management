@@ -10,6 +10,7 @@ import {
   type IndividualInput,
   type IndividualStatus,
 } from "@/lib/manage/individuals";
+import { refreshSettlementObligations } from "@/lib/manage/settlements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,9 +62,25 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
               ? "discharged"
               : "inactive";
       const result = await setIndividualStatus(pool, id, status, user.id, reason);
-      return resultResponse(result, 200);
+      if (!result.ok) return resultResponse(result);
+      const settlementRefresh = await refreshSettlementObligations(pool, {}, user.id);
+      return NextResponse.json({
+        ok: true,
+        data: result.data,
+        settlements: settlementRefresh.ok ? settlementRefresh.data : null,
+        settlementWarning: settlementRefresh.ok ? null : settlementRefresh.message,
+      });
     }
     const result = await updateIndividual(pool, id, body as unknown as IndividualInput, user.id, reason);
+    if (result.ok && body.status !== undefined) {
+      const settlementRefresh = await refreshSettlementObligations(pool, {}, user.id);
+      return NextResponse.json({
+        ok: true,
+        data: result.data,
+        settlements: settlementRefresh.ok ? settlementRefresh.data : null,
+        settlementWarning: settlementRefresh.ok ? null : settlementRefresh.message,
+      });
+    }
     return resultResponse(result, 200);
   } catch (error) {
     return jsonError(redactError(error), 500);

@@ -1,9 +1,11 @@
 import {
+  type AnyPgColumn,
   pgTable,
   uuid,
   text,
   numeric,
   boolean,
+  bigint,
   integer,
   date,
   timestamp,
@@ -11,7 +13,9 @@ import {
   index,
   uniqueIndex,
   primaryKey,
+  check,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 /**
  * Database schema.
@@ -55,6 +59,16 @@ export const users = pgTable(
     seeAllEmployees: boolean("see_all_employees").default(false).notNull(),
     canSeeTransactions: boolean("can_see_transactions").default(true).notNull(),
     canSeeMoney: boolean("can_see_money").default(true).notNull(),
+    /** Granular visibility (mirror of drizzle/0018_granular_visibility.sql). */
+    canSeeHours: boolean("can_see_hours").default(true).notNull(),
+    canSeeBilledAmounts: boolean("can_see_billed_amounts").default(true).notNull(),
+    canSeeEmployeeAmounts: boolean("can_see_employee_amounts").default(true).notNull(),
+    canSeeAgencySpread: boolean("can_see_agency_spread").default(true).notNull(),
+    canSeeCheckNet: boolean("can_see_check_net").default(true).notNull(),
+    canSeeTaxes: boolean("can_see_taxes").default(true).notNull(),
+    canSeeBudgets: boolean("can_see_budgets").default(true).notNull(),
+    canSeeEmployeeDeals: boolean("can_see_employee_deals").default(false).notNull(),
+    canSeeSettlements: boolean("can_see_settlements").default(false).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -234,6 +248,74 @@ export const programRateSchedules = pgTable(
   },
   (table) => [
     index("program_rate_schedules_program_idx").on(table.programId, table.effectiveFrom),
+  ],
+);
+
+/* -------------------------------------------------------------------------- */
+/* Calculation strategies                                                     */
+/* -------------------------------------------------------------------------- */
+
+/** A fixed annual budget strategy for one individual. */
+export const calculationStrategies = pgTable(
+  "calculation_strategies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    individualId: uuid("individual_id").notNull().references(() => individuals.id),
+    label: text("label").default("1").notNull(),
+    renewalDate: date("renewal_date"),
+    monthDivisor: numeric("month_divisor", { precision: 6, scale: 3 }).default("12").notNull(),
+    cut1Percent: numeric("cut1_percent", { precision: 9, scale: 6 }).default("0").notNull(),
+    cut2Percent: numeric("cut2_percent", { precision: 9, scale: 6 }).default("0").notNull(),
+    clockAdjustment: numeric("clock_adjustment", { precision: 14, scale: 4 }).default("0").notNull(),
+    otherAdjustment: numeric("other_adjustment", { precision: 14, scale: 4 }).default("0").notNull(),
+    afterAll: numeric("after_all", { precision: 14, scale: 4 }),
+    account: text("account"),
+    status: text("status").default("active").notNull(),
+    sortOrder: integer("sort_order").default(0).notNull(),
+    notes: text("notes"),
+    createdByUserId: uuid("created_by_user_id"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [index("calc_strategies_individual_idx").on(table.individualId)],
+);
+
+/** Per-program authorized hours and optional rate override for a strategy. */
+export const calculationStrategyLines = pgTable(
+  "calculation_strategy_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    strategyId: uuid("strategy_id")
+      .notNull()
+      .references(() => calculationStrategies.id, { onDelete: "cascade" }),
+    programId: uuid("program_id").notNull().references(() => programs.id),
+    authorizedHours: numeric("authorized_hours", { precision: 10, scale: 4 }).default("0").notNull(),
+    rateOverride: numeric("rate_override", { precision: 14, scale: 4 }),
+    rateOverrideEffectiveFrom: date("rate_override_effective_from"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("calc_strategy_lines_unique").on(table.strategyId, table.programId),
+  ],
+);
+
+/** Append-only snapshots of prior strategy and line state. */
+export const calculationStrategyRevisions = pgTable(
+  "calculation_strategy_revisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    strategyId: uuid("strategy_id")
+      .notNull()
+      .references(() => calculationStrategies.id, { onDelete: "cascade" }),
+    revision: integer("revision").notNull(),
+    snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
+    reason: text("reason"),
+    createdByUserId: uuid("created_by_user_id"),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index("calc_strategy_revisions_strategy_idx").on(table.strategyId),
   ],
 );
 
@@ -555,6 +637,10 @@ export const payrollTransactions = pgTable(
      * plain uuid (no FK) to avoid a circular reference with service tables.
      */
     serviceSessionId: uuid("service_session_id"),
+    /** Operator-managed payout tracking (0013). */
+    isPaid: boolean("is_paid").default(false).notNull(),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    paidNote: text("paid_note"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -876,3 +962,321 @@ export const appSettings = pgTable("app_settings", {
   updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
   updatedAt: updatedAt(),
 });
+
+/* -------------------------------------------------------------------------- */
+/* Employee deals and settlement ledger (0017)                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Effective-dated terms selected by a payroll transaction's check date.
+ * Direct-paid giveback percentages apply to the whole-check net pay. Agency
+ * cut percentages apply to the base/internal amount routed to the agency.
+ */
+export const employeeDeals = pgTable(
+  "employee_deals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    employeeId: uuid("employee_id").notNull().references(() => employees.id),
+    /** 'keep_all' | 'giveback_percent' | 'giveback_all' */
+    directRule: text("direct_rule").default("keep_all").notNull(),
+    directPercent: numeric("direct_percent", { precision: 9, scale: 6 }).default("0").notNull(),
+    agencyCutPercent: numeric("agency_cut_percent", { precision: 9, scale: 6 })
+      .default("0")
+      .notNull(),
+    effectiveFrom: date("effective_from").notNull(),
+    effectiveTo: date("effective_to"),
+    revision: integer("revision").default(1).notNull(),
+    /** 'active' | 'archived' */
+    status: text("status").default("active").notNull(),
+    notes: text("notes"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    archivedByUserId: uuid("archived_by_user_id").references(() => users.id),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("employee_deals_employee_effective_key").on(
+      table.employeeId,
+      table.effectiveFrom,
+    ),
+    index("employee_deals_effective_idx").on(
+      table.employeeId,
+      table.status,
+      table.effectiveFrom,
+      table.effectiveTo,
+    ),
+    check(
+      "employee_deals_direct_rule_check",
+      sql`${table.directRule} in ('keep_all', 'giveback_percent', 'giveback_all')`,
+    ),
+    check(
+      "employee_deals_direct_percent_check",
+      sql`${table.directPercent} >= 0 and ${table.directPercent} <= 1`,
+    ),
+    check(
+      "employee_deals_agency_cut_percent_check",
+      sql`${table.agencyCutPercent} >= 0 and ${table.agencyCutPercent} <= 1`,
+    ),
+    check(
+      "employee_deals_effective_range_check",
+      sql`${table.effectiveTo} is null or ${table.effectiveTo} >= ${table.effectiveFrom}`,
+    ),
+    check("employee_deals_revision_check", sql`${table.revision} > 0`),
+    check(
+      "employee_deals_status_check",
+      sql`${table.status} in ('active', 'archived')`,
+    ),
+    check(
+      "employee_deals_archive_state_check",
+      sql`(${table.status} = 'archived') = (${table.archivedAt} is not null)`,
+    ),
+  ],
+);
+
+/** Append-only JSON snapshots written before each material deal change. */
+export const employeeDealRevisions = pgTable(
+  "employee_deal_revisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    employeeDealId: uuid("employee_deal_id").notNull().references(() => employeeDeals.id),
+    revision: integer("revision").notNull(),
+    snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
+    reason: text("reason").notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("employee_deal_revisions_deal_revision_key").on(
+      table.employeeDealId,
+      table.revision,
+    ),
+    check("employee_deal_revisions_revision_check", sql`${table.revision} > 0`),
+    check(
+      "employee_deal_revisions_snapshot_check",
+      sql`jsonb_typeof(${table.snapshot}) = 'object'`,
+    ),
+    check(
+      "employee_deal_revisions_reason_check",
+      sql`length(btrim(${table.reason})) > 0`,
+    ),
+  ],
+);
+
+/** One operator action that can create many settlement events atomically. */
+export const settlementBatches = pgTable(
+  "settlement_batches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    idempotencyKey: uuid("idempotency_key").notNull(),
+    action: text("action").notNull(),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`)
+      .notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("settlement_batches_idempotency_key").on(table.idempotencyKey),
+    check("settlement_batches_action_check", sql`length(btrim(${table.action})) > 0`),
+    check(
+      "settlement_batches_metadata_check",
+      sql`jsonb_typeof(${table.metadata}) = 'object'`,
+    ),
+  ],
+);
+
+/**
+ * A positive amount owed, reserved, or payable. Outstanding balance is the
+ * original amount minus signed settlement events. source_key is a stable,
+ * deterministic calculation identity so recalculation remains idempotent.
+ */
+export const settlementObligations = pgTable(
+  "settlement_obligations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sourceKey: text("source_key").notNull(),
+    kind: text("kind").notNull(),
+    /** 'receivable' | 'payable' | 'reserve' */
+    direction: text("direction").notNull(),
+    employeeId: uuid("employee_id").references(() => employees.id),
+    individualId: uuid("individual_id").references(() => individuals.id),
+    employeeDealId: uuid("employee_deal_id").references(() => employeeDeals.id),
+    calculationStrategyId: uuid("calculation_strategy_id").references(
+      () => calculationStrategies.id,
+    ),
+    originalAmount: numeric("original_amount", { precision: 14, scale: 4 }).notNull(),
+    checkNumber: text("check_number"),
+    checkDate: date("check_date"),
+    periodBegin: date("period_begin"),
+    periodEnd: date("period_end"),
+    calculationMetadata: jsonb("calculation_metadata")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`)
+      .notNull(),
+    /** 'active' | 'void' */
+    status: text("status").default("active").notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    voidedByUserId: uuid("voided_by_user_id").references(() => users.id),
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
+    voidReason: text("void_reason"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("settlement_obligations_source_key_key").on(table.sourceKey),
+    index("settlement_obligations_employee_idx").on(
+      table.employeeId,
+      table.status,
+      table.checkDate,
+    ),
+    index("settlement_obligations_individual_idx").on(
+      table.individualId,
+      table.status,
+      table.checkDate,
+    ),
+    index("settlement_obligations_deal_idx").on(table.employeeDealId),
+    index("settlement_obligations_strategy_idx").on(table.calculationStrategyId),
+    check(
+      "settlement_obligations_source_key_check",
+      sql`length(btrim(${table.sourceKey})) > 0`,
+    ),
+    check("settlement_obligations_kind_check", sql`length(btrim(${table.kind})) > 0`),
+    check(
+      "settlement_obligations_direction_check",
+      sql`${table.direction} in ('receivable', 'payable', 'reserve')`,
+    ),
+    check(
+      "settlement_obligations_person_check",
+      sql`(${table.employeeId} is not null) <> (${table.individualId} is not null)`,
+    ),
+    check("settlement_obligations_amount_check", sql`${table.originalAmount} > 0`),
+    check(
+      "settlement_obligations_period_check",
+      sql`${table.periodEnd} is null or ${table.periodBegin} is null or ${table.periodEnd} >= ${table.periodBegin}`,
+    ),
+    check(
+      "settlement_obligations_metadata_check",
+      sql`jsonb_typeof(${table.calculationMetadata}) = 'object'`,
+    ),
+    check(
+      "settlement_obligations_status_check",
+      sql`${table.status} in ('active', 'void')`,
+    ),
+    check(
+      "settlement_obligations_void_state_check",
+      sql`(${table.status} = 'void') = (${table.voidedAt} is not null)`,
+    ),
+  ],
+);
+
+/** Transaction provenance for a generated settlement obligation. */
+export const settlementObligationTransactions = pgTable(
+  "settlement_obligation_transactions",
+  {
+    settlementObligationId: uuid("settlement_obligation_id")
+      .notNull()
+      .references(() => settlementObligations.id),
+    payrollTransactionId: uuid("payroll_transaction_id")
+      .notNull()
+      .references(() => payrollTransactions.id),
+    allocatedAmount: numeric("allocated_amount", { precision: 14, scale: 4 }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    primaryKey({
+      name: "settlement_obligation_transactions_pk",
+      columns: [table.settlementObligationId, table.payrollTransactionId],
+    }),
+    index("settlement_obligation_transactions_transaction_idx").on(
+      table.payrollTransactionId,
+    ),
+    check(
+      "settlement_obligation_transactions_amount_check",
+      sql`${table.allocatedAmount} is null or ${table.allocatedAmount} > 0`,
+    ),
+  ],
+);
+
+/**
+ * Append-only signed ledger activity. Positive amounts reduce an obligation's
+ * balance; negative amounts add to it or explicitly undo prior activity.
+ */
+export const settlementEvents = pgTable(
+  "settlement_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    settlementObligationId: uuid("settlement_obligation_id").references(
+      () => settlementObligations.id,
+    ),
+    settlementBatchId: uuid("settlement_batch_id").references(() => settlementBatches.id),
+    employeeId: uuid("employee_id").references(() => employees.id),
+    individualId: uuid("individual_id").references(() => individuals.id),
+    /** 'payment' | 'set_aside' | 'credit' | 'adjustment' | 'reversal' */
+    eventType: text("event_type").notNull(),
+    amount: numeric("amount", { precision: 14, scale: 4 }).notNull(),
+    occurredOn: date("occurred_on").notNull(),
+    reference: text("reference"),
+    note: text("note"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    reversalOfEventId: uuid("reversal_of_event_id").references(
+      (): AnyPgColumn => settlementEvents.id,
+    ),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index("settlement_events_obligation_idx").on(
+      table.settlementObligationId,
+      table.occurredOn,
+    ),
+    index("settlement_events_employee_idx").on(table.employeeId, table.occurredOn),
+    index("settlement_events_individual_idx").on(table.individualId, table.occurredOn),
+    index("settlement_events_batch_idx").on(table.settlementBatchId),
+    uniqueIndex("settlement_events_one_reversal_key")
+      .on(table.reversalOfEventId)
+      .where(sql`${table.reversalOfEventId} is not null`),
+    check(
+      "settlement_events_type_check",
+      sql`${table.eventType} in ('payment', 'set_aside', 'credit', 'adjustment', 'reversal')`,
+    ),
+    check("settlement_events_amount_check", sql`${table.amount} <> 0`),
+    check(
+      "settlement_events_person_check",
+      sql`(${table.employeeId} is not null) <> (${table.individualId} is not null)`,
+    ),
+    check(
+      "settlement_events_unapplied_check",
+      sql`${table.settlementObligationId} is not null or ${table.eventType} in ('credit', 'reversal')`,
+    ),
+    check(
+      "settlement_events_reversal_check",
+      sql`(${table.eventType} = 'reversal' and ${table.reversalOfEventId} is not null)
+        or (${table.eventType} <> 'reversal' and ${table.reversalOfEventId} is null)`,
+    ),
+  ],
+);
+
+/** Global source version and dated refresh certification for settlement actions. */
+export const settlementLedgerState = pgTable(
+  "settlement_ledger_state",
+  {
+    singleton: boolean("singleton").primaryKey().default(true).notNull(),
+    sourceVersion: bigint("source_version", { mode: "bigint" }).default(sql`1`).notNull(),
+    refreshedVersion: bigint("refreshed_version", { mode: "bigint" }).default(sql`0`).notNull(),
+    dirtySince: timestamp("dirty_since", { withTimezone: true }),
+    lastRefreshedAt: timestamp("last_refreshed_at", { withTimezone: true }),
+    refreshedForDate: date("refreshed_for_date"),
+    lastRefreshError: text("last_refresh_error"),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    check("settlement_ledger_state_singleton_check", sql`${table.singleton}`),
+    check(
+      "settlement_ledger_state_versions_check",
+      sql`${table.sourceVersion} >= 0 and ${table.refreshedVersion} >= 0 and ${table.refreshedVersion} <= ${table.sourceVersion}`,
+    ),
+  ],
+);

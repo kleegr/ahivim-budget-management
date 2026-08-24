@@ -1,8 +1,9 @@
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import { jsonError, readJson, redactError, resultResponse, sameOriginOrFail } from "@/lib/http";
 import { applyChangedConflict, dismissConflict } from "@/lib/sheets/resolve";
+import { refreshSettlementObligations } from "@/lib/manage/settlements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,7 +28,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   try {
     if (action === "apply") {
-      return resultResponse(await applyChangedConflict(getPool(), id, user.id));
+      const pool = getPool();
+      const result = await applyChangedConflict(pool, id, user.id);
+      if (!result.ok) return resultResponse(result);
+      const settlementRefresh = await refreshSettlementObligations(pool, {}, user.id);
+      return NextResponse.json({
+        ok: true,
+        data: result.data,
+        settlements: settlementRefresh.ok ? settlementRefresh.data : null,
+        settlementWarning: settlementRefresh.ok ? null : settlementRefresh.message,
+      });
     }
     if (action === "dismiss") {
       const note = typeof body.note === "string" ? body.note : null;

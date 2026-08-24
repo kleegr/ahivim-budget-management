@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
-import { resolveAccessScope } from "@/lib/auth/access";
+import { hasDirectEmployeeAccess, resolveAccessScope } from "@/lib/auth/access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { listEmployeesManaged, createEmployee, type EmployeeInput } from "@/lib/manage/employees";
 
@@ -22,7 +22,15 @@ export async function GET(request: NextRequest) {
     const pool = getPool();
     const scope = await resolveAccessScope(pool, user);
     const data = await listEmployeesManaged(pool, { status, search, includeArchived, scope });
-    return NextResponse.json({ ok: true, data });
+    return NextResponse.json({
+      ok: true,
+      data: data.map((employee) => {
+        if (scope.canSeeEmployeeDeals && hasDirectEmployeeAccess(scope, employee.id)) return employee;
+        const visible = { ...employee };
+        Reflect.deleteProperty(visible, "payoutCutPercent");
+        return visible;
+      }),
+    });
   } catch (error) {
     return jsonError(redactError(error), 500);
   }

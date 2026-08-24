@@ -127,6 +127,15 @@ function MasserIcon() {
   );
 }
 
+function SettlementIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
+      <path d="M4 7h13M14 4l3 3-3 3" />
+      <path d="M20 17H7M10 14l-3 3 3 3" />
+    </svg>
+  );
+}
+
 function CogIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
@@ -236,12 +245,14 @@ function NavLinks({
   reviewCount,
   role,
   canSeeTransactions,
+  canSeeSettlements,
 }: {
   pathname: string;
   onNavigate?: () => void;
   reviewCount: number;
   role: string;
   canSeeTransactions: boolean;
+  canSeeSettlements: boolean;
 }) {
   // A viewer sees only their people and (if permitted) the ledger; managers and
   // admins see the analysis and admin drawers. Server-side guards enforce this
@@ -318,11 +329,20 @@ function NavLinks({
       {/* Analysis: budgets planning, money and everything you sometimes need.
           Manager+ only — a scoped viewer sees per-individual financials on the
           individual page, not the portfolio-wide analysis screens. */}
-      {isManager ? (
+      {isManager || canSeeSettlements ? (
         <div>
           <p className="eyebrow px-2 pb-1.5">Analysis</p>
           <ul className="space-y-0.5">
-            <li>
+            {canSeeSettlements ? <li>
+              <QuietLink
+                href="/settlements"
+                label="Settlements"
+                icon={<SettlementIcon />}
+                active={isActive("/settlements")}
+                onNavigate={onNavigate}
+              />
+            </li> : null}
+            {isManager ? <li>
               <QuietLink
                 href="/calculations"
                 label="Financial"
@@ -330,8 +350,8 @@ function NavLinks({
                 active={financialActive}
                 onNavigate={onNavigate}
               />
-            </li>
-            <li>
+            </li> : null}
+            {isManager ? <li>
               <QuietLink
                 href="/reports"
                 label="Reports"
@@ -339,8 +359,8 @@ function NavLinks({
                 active={isActive("/reports")}
                 onNavigate={onNavigate}
               />
-            </li>
-            <li>
+            </li> : null}
+            {isManager ? <li>
               <QuietLink
                 href="/schedule"
                 label="Schedule"
@@ -348,8 +368,8 @@ function NavLinks({
                 active={isActive("/schedule")}
                 onNavigate={onNavigate}
               />
-            </li>
-            <li>
+            </li> : null}
+            {isManager ? <li>
               <QuietLink
                 href="/review"
                 label="Review"
@@ -358,7 +378,7 @@ function NavLinks({
                 onNavigate={onNavigate}
                 count={reviewCount}
               />
-            </li>
+            </li> : null}
           </ul>
         </div>
       ) : null}
@@ -405,10 +425,12 @@ export default function AppNav({
   user,
   reviewCount = 0,
   canSeeTransactions = true,
+  canSeeSettlements = true,
 }: {
   user: AuthenticatedUser;
   reviewCount?: number;
   canSeeTransactions?: boolean;
+  canSeeSettlements?: boolean;
 }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
@@ -427,7 +449,11 @@ export default function AppNav({
         Skip to content
       </a>
 
-      <CommandBar role={user.role} canSeeTransactions={canSeeTransactions} />
+      <CommandBar
+        role={user.role}
+        canSeeTransactions={canSeeTransactions}
+        canSeeSettlements={canSeeSettlements}
+      />
 
       {/* Mobile top bar */}
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 md:hidden">
@@ -472,7 +498,14 @@ export default function AppNav({
             ✕
           </button>
         </div>
-        <NavLinks pathname={pathname} onNavigate={() => setOpen(false)} reviewCount={reviewCount} role={user.role} canSeeTransactions={canSeeTransactions} />
+        <NavLinks
+          pathname={pathname}
+          onNavigate={() => setOpen(false)}
+          reviewCount={reviewCount}
+          role={user.role}
+          canSeeTransactions={canSeeTransactions}
+          canSeeSettlements={canSeeSettlements}
+        />
         <UserFooter user={user} />
       </aside>
     </>

@@ -22,6 +22,15 @@ const ACCESS_KEYS = [
   "seeAllEmployees",
   "canSeeTransactions",
   "canSeeMoney",
+  "canSeeHours",
+  "canSeeBilledAmounts",
+  "canSeeEmployeeAmounts",
+  "canSeeAgencySpread",
+  "canSeeCheckNet",
+  "canSeeTaxes",
+  "canSeeBudgets",
+  "canSeeEmployeeDeals",
+  "canSeeSettlements",
   "individualIds",
   "employeeIds",
 ] as const;
@@ -105,6 +114,24 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           typeof body.canSeeTransactions === "boolean" ? body.canSeeTransactions : current?.canSeeTransactions ?? true,
         canSeeMoney:
           typeof body.canSeeMoney === "boolean" ? body.canSeeMoney : current?.canSeeMoney ?? true,
+        canSeeHours:
+          typeof body.canSeeHours === "boolean" ? body.canSeeHours : current?.canSeeHours ?? true,
+        canSeeBilledAmounts:
+          typeof body.canSeeBilledAmounts === "boolean" ? body.canSeeBilledAmounts : current?.canSeeBilledAmounts ?? true,
+        canSeeEmployeeAmounts:
+          typeof body.canSeeEmployeeAmounts === "boolean" ? body.canSeeEmployeeAmounts : current?.canSeeEmployeeAmounts ?? true,
+        canSeeAgencySpread:
+          typeof body.canSeeAgencySpread === "boolean" ? body.canSeeAgencySpread : current?.canSeeAgencySpread ?? true,
+        canSeeCheckNet:
+          typeof body.canSeeCheckNet === "boolean" ? body.canSeeCheckNet : current?.canSeeCheckNet ?? true,
+        canSeeTaxes:
+          typeof body.canSeeTaxes === "boolean" ? body.canSeeTaxes : current?.canSeeTaxes ?? true,
+        canSeeBudgets:
+          typeof body.canSeeBudgets === "boolean" ? body.canSeeBudgets : current?.canSeeBudgets ?? true,
+        canSeeEmployeeDeals:
+          typeof body.canSeeEmployeeDeals === "boolean" ? body.canSeeEmployeeDeals : current?.canSeeEmployeeDeals ?? false,
+        canSeeSettlements:
+          typeof body.canSeeSettlements === "boolean" ? body.canSeeSettlements : current?.canSeeSettlements ?? false,
         individualIds: Array.isArray(body.individualIds) ? body.individualIds.map(String) : current?.individualIds ?? [],
         employeeIds: Array.isArray(body.employeeIds) ? body.employeeIds.map(String) : current?.employeeIds ?? [],
       };

@@ -1,6 +1,6 @@
 import type { PgLikePool } from "@/lib/import/commit";
 import { toMoney, toHours } from "@/lib/money";
-import { individualScopeClause, type AccessScope } from "@/lib/auth/access";
+import { transactionScopeClause, type AccessScope } from "@/lib/auth/access";
 
 /**
  * EMPLOYEE WORKSPACE READ MODELS
@@ -73,7 +73,9 @@ export async function getEmployeePaymentSummary(
   if (!isUuid(employeeId)) return empty;
 
   const params: unknown[] = [employeeId];
-  const scopeClause = scope ? individualScopeClause(scope, "t.individual_id", params) : "";
+  const scopeClause = scope
+    ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
+    : "";
   const { rows } = await pool.query<Record<string, string>>(
     `SELECT
        COALESCE(sum(t.imported_amount), 0)::text                      AS agency_gross,
@@ -135,9 +137,14 @@ export interface EmployeeWithholding {
 export async function getEmployeeWithholding(
   pool: PgLikePool,
   employeeId: string,
+  scope?: AccessScope,
 ): Promise<EmployeeWithholding> {
   const empty: EmployeeWithholding = { withheld: toMoney(0), gross: toMoney(0), net: toMoney(0), checks: 0 };
   if (!isUuid(employeeId)) return empty;
+  const params: unknown[] = [employeeId];
+  const scopeClause = scope
+    ? transactionScopeClause(scope, "individual_id", "employee_id", params)
+    : "";
   const { rows } = await pool.query<{ withheld: string; gross: string; net: string; checks: string }>(
     `WITH ct AS (
        SELECT check_number,
@@ -146,7 +153,7 @@ export async function getEmployeeWithholding(
          FROM payroll_transactions
         WHERE employee_id = $1
           AND check_number IS NOT NULL
-          AND payment_recipient IS DISTINCT FROM 'excellent_staffing'
+          AND payment_recipient IS DISTINCT FROM 'excellent_staffing'${scopeClause}
         GROUP BY check_number
      )
      SELECT COALESCE(sum(GREATEST(cg - cn, 0)), 0)::text AS withheld,
@@ -155,7 +162,7 @@ export async function getEmployeeWithholding(
             count(*)::text                               AS checks
        FROM ct
       WHERE cn IS NOT NULL`,
-    [employeeId],
+    params,
   );
   const r = rows[0];
   if (!r) return empty;
@@ -190,7 +197,9 @@ export async function getEmployeeIndividuals(
 ): Promise<EmployeeIndividualRow[]> {
   if (!isUuid(employeeId)) return [];
   const params: unknown[] = [employeeId];
-  const scopeClause = scope ? individualScopeClause(scope, "t.individual_id", params) : "";
+  const scopeClause = scope
+    ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
+    : "";
   const { rows } = await pool.query<{
     id: string;
     display_name: string;
@@ -251,7 +260,9 @@ export async function getEmployeeUsageByProgram(
 ): Promise<EmployeeProgramRow[]> {
   if (!isUuid(employeeId)) return [];
   const params: unknown[] = [employeeId];
-  const scopeClause = scope ? individualScopeClause(scope, "t.individual_id", params) : "";
+  const scopeClause = scope
+    ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
+    : "";
   const { rows } = await pool.query<{
     program_code: string;
     program_name: string;
@@ -316,7 +327,9 @@ export async function getEmployeeMonthlyPayments(
 ): Promise<EmployeeMonthlyPaymentRow[]> {
   if (!isUuid(employeeId)) return [];
   const params: unknown[] = [employeeId];
-  const scopeClause = scope ? individualScopeClause(scope, "t.individual_id", params) : "";
+  const scopeClause = scope
+    ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
+    : "";
   const { rows } = await pool.query<{
     month: string | null;
     agency_gross: string;

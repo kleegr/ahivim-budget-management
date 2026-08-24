@@ -4,6 +4,7 @@ import type { StagingResult, StagedRow, RateConfig } from "./stage";
 import { evaluateRateException } from "@/lib/business/rate-exceptions";
 import { normalizePersonName } from "@/lib/business/name-matching";
 import { backfillPaymentAttribution } from "@/lib/manage/payment-attribution";
+import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
 
 /**
  * IMPORT COMMIT
@@ -119,6 +120,7 @@ export async function commitStagedImport(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await acquireSettlementSourceLock(client);
 
     // Serialise concurrent commits of the same file. Transaction-scoped, so it
     // is released by COMMIT or ROLLBACK without any explicit unlock.

@@ -10,6 +10,16 @@ suite("migration runner (real PostgreSQL)", () => {
   }, 60_000);
   afterAll(closeTestPool);
 
+  it("serializes concurrent runners without applying a migration twice", async () => {
+    const pool = testPool();
+    await pool.query(`DROP SCHEMA IF EXISTS public CASCADE`);
+    await pool.query(`CREATE SCHEMA public`);
+
+    const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 20]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 20]);
+  }, 60_000);
+
   it("creates the ledger and every expected table", async () => {
     expect(await ledgerExists(testPool())).toBe(true);
     const tables = await listTables(testPool());
@@ -25,16 +35,19 @@ suite("migration runner (real PostgreSQL)", () => {
       "individual_match_reviews",
       "sheet_sync_runs", "sheet_sync_rows", "sheet_sync_conflicts",
       "user_individual_access", "user_employee_access",
+      "employee_deals", "employee_deal_revisions",
+      "settlement_obligations", "settlement_obligation_transactions",
+      "settlement_batches", "settlement_events", "settlement_ledger_state",
     ]) {
       expect(tables, `missing table ${table}`).toContain(table);
     }
-    expect(tables.length).toBe(38);
+    expect(tables.length).toBe(45);
   });
 
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(17);
+    expect(again.skipped).toBe(20);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -42,7 +55,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(17);
+    expect(rows).toHaveLength(20);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -60,6 +73,9 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[14].name).toBe("0014_user_access_scope.sql");
     expect(rows[15].name).toBe("0015_user_hours_only.sql");
     expect(rows[16].name).toBe("0016_financial_dashboard_fields.sql");
+    expect(rows[17].name).toBe("0017_deals_and_settlements.sql");
+    expect(rows[18].name).toBe("0018_granular_visibility.sql");
+    expect(rows[19].name).toBe("0019_settlement_freshness.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 
@@ -97,11 +113,7 @@ suite("migration runner (real PostgreSQL)", () => {
     await testPool().query(
       `UPDATE ${LEDGER_TABLE} SET checksum = 'tampered' WHERE name = '0000_init.sql'`,
     );
-    const result = await runMigrations(testPool());
-    const outcome = result.outcomes.find((o) => o.name === "0000_init.sql");
-    expect(outcome?.status).toBe("checksum_mismatch");
-    expect(outcome?.error).toMatch(/already been applied/i);
-    expect(result.applied).toBe(0);
+    await expect(runMigrations(testPool())).rejects.toThrow(/checksum mismatch/i);
     await resetSchema();
   }, 60_000);
 });

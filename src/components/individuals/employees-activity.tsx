@@ -18,13 +18,19 @@ export default function EmployeesActivity({
   periodStart,
   periodEnd,
   employees,
-  canSeeMoney = true,
+  canSeeHours = true,
+  canSeeBilledAmounts = true,
+  canSeeEmployeeAmounts = true,
+  canSeeTransactions,
 }: {
   individualId: string;
   periodStart: string | null;
   periodEnd: string | null;
   employees: PeriodEmployee[];
-  canSeeMoney?: boolean;
+  canSeeHours?: boolean;
+  canSeeBilledAmounts?: boolean;
+  canSeeEmployeeAmounts?: boolean;
+  canSeeTransactions: boolean;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const toggle = (k: string) =>
@@ -45,31 +51,47 @@ export default function EmployeesActivity({
         return (
           <div key={k}>
             <div className="flex items-center gap-3 px-5 py-2.5">
-              <button
-                type="button"
-                onClick={() => toggle(k)}
-                aria-expanded={isOpen}
-                className="flex flex-1 items-center gap-2 text-left"
-                title={isOpen ? "Hide transactions" : "Show this employee's transactions"}
-              >
-                <span className={`text-[var(--color-ink-faint)] transition-transform ${isOpen ? "rotate-90" : ""}`} aria-hidden>▶</span>
-                <span className="font-medium text-[var(--color-ink)]">{e.name}</span>
-                <span className="text-xs text-[var(--color-ink-faint)]">
-                  {e.txCount} {e.txCount === 1 ? "transaction" : "transactions"}
-                </span>
-              </button>
-              <span className="tnum hidden w-24 text-right text-sm text-[var(--color-ink-soft)] sm:block">{formatHours(e.hours)} h</span>
-              {canSeeMoney ? <span className="tnum w-28 text-right text-sm font-medium">{formatMoney(e.agency)}</span> : null}
-              <Link
+              {canSeeTransactions ? (
+                <button
+                  type="button"
+                  onClick={() => toggle(k)}
+                  aria-expanded={isOpen}
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  title={isOpen ? "Hide transactions" : "Show this employee's transactions"}
+                >
+                  <span className={`shrink-0 text-[var(--color-ink-faint)] transition-transform ${isOpen ? "rotate-90" : ""}`} aria-hidden>▶</span>
+                  <span className="min-w-0 truncate font-medium text-[var(--color-ink)]" title={e.name}>{e.name}</span>
+                  <span className="shrink-0 text-xs text-[var(--color-ink-faint)]">
+                    {e.txCount} {e.txCount === 1 ? "transaction" : "transactions"}
+                  </span>
+                </button>
+              ) : (
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <span className="min-w-0 truncate font-medium text-[var(--color-ink)]" title={e.name}>{e.name}</span>
+                  <span className="shrink-0 text-xs text-[var(--color-ink-faint)]">
+                    {e.txCount} {e.txCount === 1 ? "transaction" : "transactions"}
+                  </span>
+                </div>
+              )}
+              {canSeeHours ? <span className="tnum hidden w-24 text-right text-sm text-[var(--color-ink-soft)] sm:block">{formatHours(e.hours)} h</span> : null}
+              {canSeeBilledAmounts ? <span className="tnum w-28 text-right text-sm font-medium">{formatMoney(e.agency)}</span> : null}
+              {canSeeTransactions ? <Link
                 className="w-16 text-right text-xs text-[var(--color-primary)] hover:underline"
                 href={txLink({ individualId, employeeId: e.id ?? undefined, ...window })}
                 title="Open in the Transactions grid, filtered to this person, employee and period"
               >
                 rows →
-              </Link>
+              </Link> : null}
             </div>
 
-            {isOpen ? <EmployeePanel employee={e} canSeeMoney={canSeeMoney} /> : null}
+            {canSeeTransactions && isOpen ? (
+              <EmployeePanel
+                employee={e}
+                canSeeHours={canSeeHours}
+                canSeeBilledAmounts={canSeeBilledAmounts}
+                canSeeEmployeeAmounts={canSeeEmployeeAmounts}
+              />
+            ) : null}
           </div>
         );
       })}
@@ -78,7 +100,17 @@ export default function EmployeesActivity({
 }
 
 /** The expandable per-employee snippet: a program filter + itemized rows + live totals. */
-function EmployeePanel({ employee, canSeeMoney = true }: { employee: PeriodEmployee; canSeeMoney?: boolean }) {
+function EmployeePanel({
+  employee,
+  canSeeHours = true,
+  canSeeBilledAmounts = true,
+  canSeeEmployeeAmounts = true,
+}: {
+  employee: PeriodEmployee;
+  canSeeHours?: boolean;
+  canSeeBilledAmounts?: boolean;
+  canSeeEmployeeAmounts?: boolean;
+}) {
   const programs = useMemo(() => {
     const set = new Set<string>();
     for (const t of employee.transactions) set.add(t.programName);
@@ -143,13 +175,9 @@ function EmployeePanel({ employee, canSeeMoney = true }: { employee: PeriodEmplo
             <tr className="text-left text-[var(--color-text-soft)]">
               <th className="py-1.5 pr-3 font-medium">Pay period</th>
               <th className="px-2 py-1.5 font-medium">Program</th>
-              <th className="px-2 py-1.5 text-right font-medium">Hours</th>
-              {canSeeMoney ? (
-                <>
-                  <th className="px-2 py-1.5 text-right font-medium">Billed $</th>
-                  <th className="py-1.5 pl-2 text-right font-medium">Company $</th>
-                </>
-              ) : null}
+              {canSeeHours ? <th className="px-2 py-1.5 text-right font-medium">Hours</th> : null}
+              {canSeeBilledAmounts ? <th className="px-2 py-1.5 text-right font-medium">Billed $</th> : null}
+              {canSeeEmployeeAmounts ? <th className="py-1.5 pl-2 text-right font-medium">Company $</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -157,25 +185,17 @@ function EmployeePanel({ employee, canSeeMoney = true }: { employee: PeriodEmplo
               <tr key={t.id} className="border-t border-[var(--color-rule)]">
                 <td className="tnum py-1.5 pr-3 text-[var(--color-ink-soft)]">{t.periodBegin}</td>
                 <td className="px-2 py-1.5">{t.programName}</td>
-                <td className="tnum px-2 py-1.5 text-right">{formatHours(t.hours)}</td>
-                {canSeeMoney ? (
-                  <>
-                    <td className="tnum px-2 py-1.5 text-right">{formatMoney(t.agency)}</td>
-                    <td className="tnum py-1.5 pl-2 text-right text-[var(--color-ink-soft)]">{formatMoney(t.internal)}</td>
-                  </>
-                ) : null}
+                {canSeeHours ? <td className="tnum px-2 py-1.5 text-right">{formatHours(t.hours)}</td> : null}
+                {canSeeBilledAmounts ? <td className="tnum px-2 py-1.5 text-right">{formatMoney(t.agency)}</td> : null}
+                {canSeeEmployeeAmounts ? <td className="tnum py-1.5 pl-2 text-right text-[var(--color-ink-soft)]">{formatMoney(t.internal)}</td> : null}
               </tr>
             ))}
             <tr className="border-t-2 border-[var(--color-rule-strong)] font-semibold">
               <td className="py-1.5 pr-3">Total</td>
               <td className="px-2 py-1.5 text-[var(--color-ink-faint)]">{rows.length} {rows.length === 1 ? "row" : "rows"}</td>
-              <td className="tnum px-2 py-1.5 text-right">{formatHours(totals.hours.toString())}</td>
-              {canSeeMoney ? (
-                <>
-                  <td className="tnum px-2 py-1.5 text-right">{formatMoney(totals.agency.toString())}</td>
-                  <td className="tnum py-1.5 pl-2 text-right">{formatMoney(totals.internal.toString())}</td>
-                </>
-              ) : null}
+              {canSeeHours ? <td className="tnum px-2 py-1.5 text-right">{formatHours(totals.hours.toString())}</td> : null}
+              {canSeeBilledAmounts ? <td className="tnum px-2 py-1.5 text-right">{formatMoney(totals.agency.toString())}</td> : null}
+              {canSeeEmployeeAmounts ? <td className="tnum py-1.5 pl-2 text-right">{formatMoney(totals.internal.toString())}</td> : null}
             </tr>
           </tbody>
         </table>

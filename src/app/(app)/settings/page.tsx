@@ -1,4 +1,5 @@
 import { requireUser } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listUsersWithAccess } from "@/lib/auth/users";
 import { listIndividualsManaged } from "@/lib/manage/individuals";
@@ -22,14 +23,22 @@ export default async function SettingsPage() {
   const user = await requireUser("viewer");
   const isAdmin = user.role === "admin";
 
-  const result = await withDb(async (pool) => ({
-    users: isAdmin ? await listUsersWithAccess(pool) : [],
-    individuals: isAdmin ? (await listIndividualsManaged(pool, {})).map((i) => ({ id: i.id, name: i.displayName })) : [],
-    employees: isAdmin ? (await listEmployeesManaged(pool, {})).map((e) => ({ id: e.id, name: e.displayName })) : [],
-    programs: await listPrograms(pool),
-    programRules: isAdmin ? await listProgramRules(pool) : [],
-    audit: isAdmin ? await listAudit(pool, 40) : [],
-  }));
+  const result = await withDb(async (pool) => {
+    const scope = await resolveAccessScope(pool, user);
+    const programs = await listPrograms(pool);
+    return {
+      users: isAdmin ? await listUsersWithAccess(pool) : [],
+      individuals: isAdmin ? (await listIndividualsManaged(pool, {})).map((i) => ({ id: i.id, name: i.displayName })) : [],
+      employees: isAdmin ? (await listEmployeesManaged(pool, {})).map((e) => ({ id: e.id, name: e.displayName })) : [],
+      programs: programs.map((program) => ({
+        ...program,
+        agencyRate: scope.canSeeBilledAmounts ? program.agencyRate : null,
+        internalRate: scope.canSeeEmployeeAmounts ? program.internalRate : null,
+      })),
+      programRules: isAdmin ? await listProgramRules(pool) : [],
+      audit: isAdmin ? await listAudit(pool, 40) : [],
+    };
+  });
 
   return (
     <>
@@ -79,6 +88,15 @@ export default async function SettingsPage() {
                   seeAllEmployees: u.seeAllEmployees,
                   canSeeTransactions: u.canSeeTransactions,
                   canSeeMoney: u.canSeeMoney,
+                  canSeeHours: u.canSeeHours,
+                  canSeeBilledAmounts: u.canSeeBilledAmounts,
+                  canSeeEmployeeAmounts: u.canSeeEmployeeAmounts,
+                  canSeeAgencySpread: u.canSeeAgencySpread,
+                  canSeeCheckNet: u.canSeeCheckNet,
+                  canSeeTaxes: u.canSeeTaxes,
+                  canSeeBudgets: u.canSeeBudgets,
+                  canSeeEmployeeDeals: u.canSeeEmployeeDeals,
+                  canSeeSettlements: u.canSeeSettlements,
                   individualCount: u.individualCount,
                   employeeCount: u.employeeCount,
                 }))}

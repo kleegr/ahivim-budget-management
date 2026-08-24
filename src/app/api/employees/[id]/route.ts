@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
-import { resolveAccessScope, canViewEmployee } from "@/lib/auth/access";
+import { resolveAccessScope, canViewEmployee, hasDirectEmployeeAccess } from "@/lib/auth/access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import {
   getEmployee,
@@ -26,7 +26,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!canViewEmployee(scope, id)) return jsonError("Not found", 404);
     const record = await getEmployee(pool, id);
     if (!record) return jsonError("Not found", 404);
-    return NextResponse.json({ ok: true, data: record });
+    if (scope.canSeeEmployeeDeals && hasDirectEmployeeAccess(scope, id)) {
+      return NextResponse.json({ ok: true, data: record });
+    }
+    const visible = { ...record };
+    Reflect.deleteProperty(visible, "payoutCutPercent");
+    return NextResponse.json({ ok: true, data: visible });
   } catch (error) {
     return jsonError(redactError(error), 500);
   }

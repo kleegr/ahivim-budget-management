@@ -3,6 +3,7 @@ import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import { readJson, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { backfillPaymentAttribution } from "@/lib/manage/payment-attribution";
+import { refreshSettlementObligations } from "@/lib/manage/settlements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,7 +32,14 @@ export async function POST(request: NextRequest) {
   try {
     const pool = getPool();
     const updated = await backfillPaymentAttribution(pool, { batchId }, user.id);
-    return NextResponse.json({ ok: true, updated, batchId });
+    const settlementRefresh = await refreshSettlementObligations(pool, {}, user.id);
+    return NextResponse.json({
+      ok: true,
+      updated,
+      batchId,
+      settlements: settlementRefresh.ok ? settlementRefresh.data : null,
+      settlementWarning: settlementRefresh.ok ? null : settlementRefresh.message,
+    });
   } catch (error) {
     return jsonError(redactError(error), 500);
   }

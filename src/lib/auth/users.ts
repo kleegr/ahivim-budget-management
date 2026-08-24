@@ -2,6 +2,7 @@ import type { PgLikePool } from "@/lib/import/commit";
 import { getPool } from "@/lib/db";
 import { hashPassword, verifyPassword } from "./crypto";
 import type { Role } from "./session";
+import type { VisibilityPermissions } from "./access";
 
 /**
  * User records and the credential checks performed against them.
@@ -245,13 +246,36 @@ export async function createUser(
   if (await findUserByEmail(pool, email)) return { ok: false, reason: "duplicate_email" };
 
   const passwordHash = await hashPassword(input.password);
+  const trustedStaff = input.role !== "viewer";
   const { rows } = await pool.query<UserRow>(
-    `INSERT INTO users (email, display_name, password_hash, role)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO users (
+       email, display_name, password_hash, role, access_scope,
+       can_see_transactions, can_see_money, can_see_hours, can_see_billed_amounts,
+       can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
+       can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      ON CONFLICT (email) DO NOTHING
      RETURNING id, email, display_name, password_hash, role, is_active,
                last_login_at::text AS last_login_at, created_at::text AS created_at`,
-    [email, input.displayName.trim() || email, passwordHash, input.role],
+    [
+      email,
+      input.displayName.trim() || email,
+      passwordHash,
+      input.role,
+      trustedStaff ? "full" : "scoped",
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      false,
+      false,
+    ],
   );
   if (!rows[0]) return { ok: false, reason: "duplicate_email" };
   await writeAudit(pool, {
@@ -312,42 +336,109 @@ export async function setUserActive(
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
-export interface UserAccessConfig {
+export interface UserAccessConfig extends VisibilityPermissions {
   accessScope: "full" | "scoped";
   seeAllIndividuals: boolean;
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
-  canSeeMoney: boolean;
   individualIds: string[];
   employeeIds: string[];
 }
 
-export interface UserWithAccess extends UserRecord {
+/** Parse a new account's access settings. Viewer omissions always fail closed. */
+export function userAccessConfigFromInput(
+  input: Record<string, unknown>,
+  role: string,
+): UserAccessConfig {
+  const viewer = role === "viewer";
+  const legacyDefault = !viewer;
+  const flag = (key: string, fallback = legacyDefault): boolean => {
+    const value = input[key];
+    return typeof value === "boolean" ? value : fallback;
+  };
+  const canSeeHours = flag("canSeeHours");
+
+  return {
+    accessScope:
+      input.accessScope === "full" || input.accessScope === "scoped"
+        ? input.accessScope
+        : viewer
+          ? "scoped"
+          : "full",
+    seeAllIndividuals: flag("seeAllIndividuals", false),
+    seeAllEmployees: flag("seeAllEmployees", false),
+    canSeeTransactions: flag("canSeeTransactions"),
+    canSeeMoney: flag("canSeeMoney"),
+    canSeeHours,
+    canSeeBilledAmounts: flag("canSeeBilledAmounts"),
+    canSeeEmployeeAmounts: flag("canSeeEmployeeAmounts"),
+    canSeeAgencySpread: flag("canSeeAgencySpread"),
+    canSeeCheckNet: flag("canSeeCheckNet"),
+    canSeeTaxes: flag("canSeeTaxes"),
+    canSeeBudgets: canSeeHours && flag("canSeeBudgets"),
+    canSeeEmployeeDeals: flag("canSeeEmployeeDeals", false),
+    canSeeSettlements: flag("canSeeSettlements", false),
+    individualIds: Array.isArray(input.individualIds) ? input.individualIds.map(String) : [],
+    employeeIds: Array.isArray(input.employeeIds) ? input.employeeIds.map(String) : [],
+  };
+}
+
+export interface UserWithAccess extends UserRecord, VisibilityPermissions {
   accessScope: "full" | "scoped";
   seeAllIndividuals: boolean;
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
-  canSeeMoney: boolean;
   individualCount: number;
   employeeCount: number;
+}
+
+interface VisibilityRow {
+  can_see_money: boolean;
+  can_see_hours: boolean;
+  can_see_billed_amounts: boolean;
+  can_see_employee_amounts: boolean;
+  can_see_agency_spread: boolean;
+  can_see_check_net: boolean;
+  can_see_taxes: boolean;
+  can_see_budgets: boolean;
+  can_see_employee_deals: boolean;
+  can_see_settlements: boolean;
+}
+
+function storedVisibility(row: VisibilityRow): VisibilityPermissions {
+  const canSeeHours = row.can_see_hours !== false;
+  return {
+    canSeeMoney: row.can_see_money !== false,
+    canSeeHours,
+    canSeeBilledAmounts: row.can_see_billed_amounts !== false,
+    canSeeEmployeeAmounts: row.can_see_employee_amounts !== false,
+    canSeeAgencySpread: row.can_see_agency_spread !== false,
+    canSeeCheckNet: row.can_see_check_net !== false,
+    canSeeTaxes: row.can_see_taxes !== false,
+    canSeeBudgets: canSeeHours && row.can_see_budgets !== false,
+    canSeeEmployeeDeals: row.can_see_employee_deals === true,
+    canSeeSettlements: row.can_see_settlements === true,
+  };
 }
 
 /** Users plus a summary of each one's access, for the admin console. */
 export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAccess[]> {
   const { rows } = await pool.query<
-    UserRow & {
+    UserRow & VisibilityRow & {
       access_scope: string;
       see_all_individuals: boolean;
       see_all_employees: boolean;
       can_see_transactions: boolean;
-      can_see_money: boolean;
       individual_count: number;
       employee_count: number;
     }
   >(
     `SELECT u.id, u.email, u.display_name, u.password_hash, u.role, u.is_active,
             u.last_login_at::text AS last_login_at, u.created_at::text AS created_at,
-            u.access_scope, u.see_all_individuals, u.see_all_employees, u.can_see_transactions, u.can_see_money,
+            u.access_scope, u.see_all_individuals, u.see_all_employees, u.can_see_transactions,
+            u.can_see_money, u.can_see_hours, u.can_see_billed_amounts,
+            u.can_see_employee_amounts, u.can_see_agency_spread, u.can_see_check_net,
+            u.can_see_taxes, u.can_see_budgets, u.can_see_employee_deals, u.can_see_settlements,
             (SELECT count(*) FROM user_individual_access a WHERE a.user_id = u.id)::int AS individual_count,
             (SELECT count(*) FROM user_employee_access a WHERE a.user_id = u.id)::int AS employee_count
        FROM users u
@@ -359,7 +450,7 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
     seeAllIndividuals: r.see_all_individuals === true,
     seeAllEmployees: r.see_all_employees === true,
     canSeeTransactions: r.can_see_transactions !== false,
-    canSeeMoney: r.can_see_money !== false,
+    ...storedVisibility(r),
     individualCount: Number(r.individual_count ?? 0),
     employeeCount: Number(r.employee_count ?? 0),
   }));
@@ -370,14 +461,16 @@ export async function getUserAccessConfig(
   pool: PgLikePool,
   userId: string,
 ): Promise<UserAccessConfig | null> {
-  const { rows } = await pool.query<{
+  const { rows } = await pool.query<VisibilityRow & {
     access_scope: string;
     see_all_individuals: boolean;
     see_all_employees: boolean;
     can_see_transactions: boolean;
-    can_see_money: boolean;
   }>(
-    `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions, can_see_money
+    `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions,
+            can_see_money, can_see_hours, can_see_billed_amounts,
+            can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
+            can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements
        FROM users WHERE id = $1`,
     [userId],
   );
@@ -400,7 +493,7 @@ export async function getUserAccessConfig(
     seeAllIndividuals: u.see_all_individuals === true,
     seeAllEmployees: u.see_all_employees === true,
     canSeeTransactions: u.can_see_transactions !== false,
-    canSeeMoney: u.can_see_money !== false,
+    ...storedVisibility(u),
     individualIds,
     employeeIds,
   };
@@ -421,6 +514,8 @@ export async function setUserAccessConfig(
   const scope = config.accessScope === "scoped" ? "scoped" : "full";
   const individualIds = (config.individualIds ?? []).filter((v) => UUID_RE.test(v));
   const employeeIds = (config.employeeIds ?? []).filter((v) => UUID_RE.test(v));
+  const canSeeHours = config.canSeeHours !== false;
+  const canSeeBudgets = canSeeHours && config.canSeeBudgets !== false;
 
   const client = await pool.connect();
   try {
@@ -432,9 +527,34 @@ export async function setUserAccessConfig(
               see_all_employees = $3,
               can_see_transactions = $4,
               can_see_money = $5,
+              can_see_hours = $6,
+              can_see_billed_amounts = $7,
+              can_see_employee_amounts = $8,
+              can_see_agency_spread = $9,
+              can_see_check_net = $10,
+              can_see_taxes = $11,
+              can_see_budgets = $12,
+              can_see_employee_deals = $13,
+              can_see_settlements = $14,
               updated_at = now()
-        WHERE id = $6`,
-      [scope, config.seeAllIndividuals === true, config.seeAllEmployees === true, config.canSeeTransactions !== false, config.canSeeMoney !== false, userId],
+        WHERE id = $15`,
+      [
+        scope,
+        config.seeAllIndividuals === true,
+        config.seeAllEmployees === true,
+        config.canSeeTransactions !== false,
+        config.canSeeMoney !== false,
+        canSeeHours,
+        config.canSeeBilledAmounts !== false,
+        config.canSeeEmployeeAmounts !== false,
+        config.canSeeAgencySpread !== false,
+        config.canSeeCheckNet !== false,
+        config.canSeeTaxes !== false,
+        canSeeBudgets,
+        config.canSeeEmployeeDeals === true,
+        config.canSeeSettlements === true,
+        userId,
+      ],
     );
     await client.query(`DELETE FROM user_individual_access WHERE user_id = $1`, [userId]);
     await client.query(`DELETE FROM user_employee_access WHERE user_id = $1`, [userId]);
@@ -474,6 +594,16 @@ export async function setUserAccessConfig(
       seeAllIndividuals: config.seeAllIndividuals === true,
       seeAllEmployees: config.seeAllEmployees === true,
       canSeeTransactions: config.canSeeTransactions !== false,
+      canSeeMoney: config.canSeeMoney !== false,
+      canSeeHours,
+      canSeeBilledAmounts: config.canSeeBilledAmounts !== false,
+      canSeeEmployeeAmounts: config.canSeeEmployeeAmounts !== false,
+      canSeeAgencySpread: config.canSeeAgencySpread !== false,
+      canSeeCheckNet: config.canSeeCheckNet !== false,
+      canSeeTaxes: config.canSeeTaxes !== false,
+      canSeeBudgets,
+      canSeeEmployeeDeals: config.canSeeEmployeeDeals === true,
+      canSeeSettlements: config.canSeeSettlements === true,
       individuals: individualIds.length,
       employees: employeeIds.length,
     },

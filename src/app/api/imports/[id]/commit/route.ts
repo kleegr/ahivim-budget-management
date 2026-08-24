@@ -5,6 +5,7 @@ import { writeAudit } from "@/lib/auth/users";
 import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
 import { commit } from "@/lib/import/service";
 import { isUuid } from "@/lib/data/app-queries";
+import { refreshSettlementObligations } from "@/lib/manage/settlements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,6 +50,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       },
     }).catch(() => undefined);
 
+    // Settlement calculations are derived and re-runnable, just like payment
+    // attribution. A failure here never changes the successful import; the
+    // dashboard's Refresh action can retry it without duplicating obligations.
+    const settlementRefresh = outcome.result.alreadyCommitted
+      ? null
+      : await refreshSettlementObligations(pool, {}, user.id);
+
     return NextResponse.json({
       ok: true,
       alreadyCommitted: outcome.result.alreadyCommitted,
@@ -57,6 +65,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       counts: outcome.result.counts,
       reconciliation: outcome.result.reconciliation,
       note: outcome.result.note,
+      settlements: settlementRefresh?.ok ? settlementRefresh.data : null,
+      settlementWarning: settlementRefresh && !settlementRefresh.ok
+        ? settlementRefresh.message
+        : null,
     });
   } catch (error) {
     await writeAudit(pool, {

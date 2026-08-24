@@ -10,6 +10,7 @@
  */
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { normalizeMigrationSql } from "../src/lib/db/migration-checksum";
 
 const DIR = join(process.cwd(), "drizzle");
 const OUT = join(process.cwd(), "src", "lib", "db", "migrations.generated.ts");
@@ -19,7 +20,7 @@ const files = readdirSync(DIR)
   .sort();
 
 const entries = files.map((name) => {
-  const sql = readFileSync(join(DIR, name), "utf8");
+  const sql = normalizeMigrationSql(readFileSync(join(DIR, name), "utf8"));
   return `  {\n    name: ${JSON.stringify(name)},\n    sql: ${JSON.stringify(sql)},\n  },`;
 });
 
