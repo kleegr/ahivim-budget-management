@@ -181,6 +181,7 @@ describe("settlement lifecycle and summaries", () => {
 
 describe("settlement refresh certification", () => {
   const clean = {
+    skippedNoDeal: 0,
     skippedMissingCheckIdentity: 0,
     skippedMissingNet: 0,
     skippedInconsistentNet: 0,
@@ -189,10 +190,12 @@ describe("settlement refresh certification", () => {
     skippedUnknownRecipient: 0,
   };
 
-  it("keeps the ledger blocked for unsafe source rows but not for a missing deal", () => {
+  it("keeps the ledger blocked for every source row that cannot be calculated", () => {
     const missingDealOnly = { ...clean, skippedNoDeal: 3 };
     expect(settlementRefreshBlockingIssueMessage(clean)).toBeNull();
-    expect(settlementRefreshBlockingIssueMessage(missingDealOnly)).toBeNull();
+    expect(settlementRefreshBlockingIssueMessage(missingDealOnly)).toBe(
+      "Settlement refresh is blocked by source issues: 3 transactions without an active employee deal. Correct them and refresh again.",
+    );
     expect(settlementRefreshBlockingIssueMessage({
       ...clean,
       skippedMissingNet: 2,
@@ -255,6 +258,111 @@ describe("settlement refresh certification", () => {
     expect(result).toMatchObject({ ok: true, data: { skippedMissingNet: 1 } });
     expect(statements.some((sql) => sql.includes("WHEN source_version = refreshed_version"))).toBe(true);
     expect(statements.some((sql) => sql.includes("SET refreshed_version = source_version"))).toBe(false);
+    expect(statements.at(-1)).toBe("COMMIT");
+  });
+
+  it("preserves an existing obligation when its source temporarily has no deal", async () => {
+    const employeeId = "00000000-0000-4000-8000-000000000002";
+    const transactionId = "00000000-0000-4000-8000-000000000003";
+    const siblingTransactionId = "00000000-0000-4000-8000-000000000005";
+    const dealId = "00000000-0000-4000-8000-000000000004";
+    const statements: string[] = [];
+    const client = {
+      query: vi.fn(async (sql: string) => {
+        statements.push(sql);
+        if (sql.includes("FROM settlement_ledger_state")) {
+          return {
+            rows: [{
+              source_version: "2",
+              refreshed_version: "1",
+              dirty_since: "2026-08-24T00:00:00.000Z",
+              last_refreshed_at: null,
+              refreshed_for_date: null,
+              last_refresh_error: null,
+            }],
+          };
+        }
+        if (sql.includes("FROM payroll_transactions t") && sql.includes("LEFT JOIN LATERAL")) {
+          return {
+            rows: [
+              {
+                id: transactionId,
+                employee_id: employeeId,
+                employee_name: "Test Employee",
+                check_number: "NO-DEAL-1",
+                check_date: "2026-08-15",
+                period_begin: "2026-08-01",
+                period_end: "2026-08-14",
+                effective_date: "2026-08-15",
+                payment_recipient: "employee",
+                billed_amount: "500",
+                base_amount: "400",
+                total_net_pay: "350",
+                deal_id: null,
+                deal_revision: null,
+                direct_rule: null,
+                direct_percent: null,
+                agency_cut_percent: null,
+              },
+              {
+                id: siblingTransactionId,
+                employee_id: employeeId,
+                employee_name: "Test Employee",
+                check_number: "NO-DEAL-1",
+                check_date: "2026-08-15",
+                period_begin: "2026-08-01",
+                period_end: "2026-08-14",
+                effective_date: "2026-08-15",
+                payment_recipient: "employee",
+                billed_amount: "250",
+                base_amount: "200",
+                total_net_pay: "350",
+                deal_id: dealId,
+                deal_revision: 1,
+                direct_rule: "giveback_percent",
+                direct_percent: "0.10",
+                agency_cut_percent: "0.20",
+              },
+            ],
+          };
+        }
+        if (sql.includes("FROM settlement_obligations o") && sql.includes("FOR UPDATE OF o")) {
+          return {
+            rows: [{
+              source_key: "v1:existing-no-deal-obligation",
+              kind: "employee_giveback",
+              direction: "receivable",
+              employee_id: employeeId,
+              individual_id: null,
+              employee_deal_id: dealId,
+              calculation_strategy_id: null,
+              check_number: "NO-DEAL-1",
+              check_date: "2026-08-15",
+              period_begin: "2026-08-01",
+              period_end: "2026-08-14",
+              calculation_metadata: { flow: "direct_employee" },
+              transaction_ids: [transactionId, siblingTransactionId],
+            }],
+          };
+        }
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    };
+    const pool = {
+      query: vi.fn(async () => ({ rows: [] })),
+      connect: vi.fn(async () => client),
+    } as unknown as PgLikePool;
+
+    const result = await refreshSettlementObligations(pool, {}, null);
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { skippedNoDeal: 1, voided: 0, adjusted: 0 },
+    });
+    expect(statements.some((sql) => sql.includes("WHEN source_version = refreshed_version"))).toBe(true);
+    expect(statements.some((sql) => sql.includes("SET refreshed_version = source_version"))).toBe(false);
+    expect(statements.some((sql) => sql.includes("WHERE o.source_key = $1"))).toBe(false);
     expect(statements.at(-1)).toBe("COMMIT");
   });
 
