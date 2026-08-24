@@ -273,4 +273,55 @@ suite("settlement migrations from a populated 0016 database (real PostgreSQL)", 
       [individualId],
     );
   }, 60_000);
+
+  it("commits deferred settlement person checks on both trigger tables", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const obligation = await client.query<{ id: string }>(
+        `INSERT INTO settlement_obligations
+           (source_key, kind, direction, employee_id, original_amount,
+            calculation_metadata)
+         VALUES
+           ('upgrade-trigger-check', 'employee_payout', 'payable', $1, 25,
+            '{"flow":"agency_routed"}'::jsonb)
+         RETURNING id`,
+        [employeeId],
+      );
+      await client.query(
+        `INSERT INTO settlement_events
+           (settlement_obligation_id, employee_id, event_type, amount, occurred_on)
+         VALUES ($1, $2, 'payment', 5, '2026-08-24')`,
+        [obligation.rows[0]!.id, employeeId],
+      );
+      await client.query("COMMIT");
+
+      const secondEmployee = await client.query<{ id: string }>(
+        `INSERT INTO employees (normalized_name, display_name)
+         VALUES ('upgrade trigger second employee', 'Upgrade Trigger Second Employee')
+         RETURNING id`,
+      );
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE settlement_obligations
+            SET employee_id = $2, updated_at = now()
+          WHERE id = $1`,
+        [obligation.rows[0]!.id, secondEmployee.rows[0]!.id],
+      );
+      await expect(client.query("COMMIT")).rejects.toThrow(/person must match at commit/i);
+      await client.query("ROLLBACK").catch(() => undefined);
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const { rows } = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM settlement_obligations
+        WHERE source_key = 'upgrade-trigger-check'`,
+    );
+    expect(rows[0]!.count).toBe("1");
+  }, 60_000);
 });

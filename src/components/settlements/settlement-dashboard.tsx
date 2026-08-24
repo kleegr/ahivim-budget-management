@@ -1362,7 +1362,8 @@ export default function SettlementDashboard({
         : {};
       const result = await postJson<RefreshResult>("/api/settlements/refresh", refreshScope);
       const changed = result.created + result.updated + result.adjusted + result.voided;
-      const blocked = result.skippedMissingCheckIdentity
+      const blocked = result.skippedNoDeal
+        + result.skippedMissingCheckIdentity
         + result.skippedMissingNet
         + result.skippedInconsistentNet
         + result.skippedInconsistentCheck

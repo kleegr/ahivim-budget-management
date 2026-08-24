@@ -202,6 +202,7 @@ export interface RefreshSettlementsResult {
 export function settlementRefreshBlockingIssueMessage(
   result: Pick<
     RefreshSettlementsResult,
+    | "skippedNoDeal"
     | "skippedMissingCheckIdentity"
     | "skippedMissingNet"
     | "skippedInconsistentNet"
@@ -211,6 +212,7 @@ export function settlementRefreshBlockingIssueMessage(
   >,
 ): string | null {
   const issues = [
+    [result.skippedNoDeal, "transactions without an active employee deal"],
     [result.skippedMissingCheckIdentity, "missing check or pay-period identity"],
     [result.skippedMissingNet, "missing whole-check net pay"],
     [result.skippedInconsistentNet, "conflicting whole-check net pay"],
@@ -356,7 +358,7 @@ export function resolveNumberedDirectCheckDates(rows: readonly Pick<
 
   for (const row of rows) {
     const checkNumber = row.check_number?.trim();
-    if (!row.deal_id || row.payment_recipient !== "employee" || !checkNumber) continue;
+    if (row.payment_recipient !== "employee" || !checkNumber) continue;
     const key = `${row.employee_id}:${checkNumber}`;
     const checkRows = numberedChecks.get(key) ?? [];
     checkRows.push(row);
@@ -402,6 +404,7 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
   const protectedSourceKeys = new Set<string>();
   const protectedTransactionIds = new Set<string>();
   const groups = new Map<string, EmployeeTransactionRow[]>();
+  const blockedDirectGroupKeys = new Set<string>();
   const {
     inferredCheckDates,
     ambiguousTransactionIds,
@@ -411,8 +414,25 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
   for (const transactionId of ambiguousTransactionIds) protectedTransactionIds.add(transactionId);
 
   for (const row of rows) {
+    if (row.deal_id || row.payment_recipient !== "employee") continue;
+    const directIdentity = directSettlementCheckIdentity({
+      checkNumber: row.check_number,
+      checkDate: row.check_date ?? inferredCheckDates.get(row.id) ?? null,
+      periodBegin: row.period_begin,
+      periodEnd: row.period_end,
+    });
+    if (!directIdentity) continue;
+    const groupKey = `${row.employee_id}:direct:${directIdentity}`;
+    blockedDirectGroupKeys.add(groupKey);
+    protectedSourceKeys.add(stableKey(["employee", groupKey]));
+  }
+
+  for (const row of rows) {
     if (!row.deal_id) {
       skippedNoDeal++;
+      // A temporarily missing deal must never retire an obligation produced
+      // from this source by a prior valid refresh.
+      protectedTransactionIds.add(row.id);
       continue;
     }
     if (ambiguousTransactionIds.has(row.id)) continue;
@@ -438,6 +458,10 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
     // backdated deal must recalculate this same obligation, not leave a second
     // obligation behind merely because the effective deal row changed.
     const key = `${row.employee_id}:${flow}:${checkIdentity}`;
+    if (flow === "direct" && blockedDirectGroupKeys.has(key)) {
+      protectedTransactionIds.add(row.id);
+      continue;
+    }
     const group = groups.get(key) ?? [];
     group.push(row);
     groups.set(key, group);
