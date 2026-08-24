@@ -6,7 +6,7 @@ import { getSettlementDashboard } from "@/lib/data/settlements";
 import { withDb } from "@/lib/data/pool";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Payments - Ahivim Budget Management" };
+export const metadata = { title: "Money operations - Ahivim Budget Management" };
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
@@ -20,12 +20,15 @@ export default async function SettlementsPage({
   searchParams: Promise<SearchParams>;
 }) {
   const user = await requireUser("viewer");
-  const canManage = user.role !== "viewer";
   const params = await searchParams;
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
-    if (!scope.canSeeSettlements) return { denied: true as const, data: null };
-    return { denied: false as const, data: await getSettlementDashboard(pool, scope) };
+    if (!scope.canSeeSettlements) return { denied: true as const, data: null, canManage: false };
+    return {
+      denied: false as const,
+      data: await getSettlementDashboard(pool, scope),
+      canManage: true,
+    };
   });
 
   const requestedEmployeeId = first(params.employeeId);
@@ -45,22 +48,22 @@ export default async function SettlementsPage({
   return (
     <>
       <PageHeader
-        eyebrow="Payroll"
-        title="Payments"
-        description="Employee payments, give-backs, annual set-asides, credits, and remaining balances."
+        eyebrow="Finance"
+        title="Money operations"
+        description="Employee payments, collections, annual set-asides, credits, and remaining balances."
       />
 
       {!result.ok ? (
-        <ErrorPanel title="Could not load payments">{result.error}</ErrorPanel>
+        <ErrorPanel title="Could not load money operations">{result.error}</ErrorPanel>
       ) : result.data.denied ? (
-        <ErrorPanel title="No access to Payments">
+        <ErrorPanel title="No access to Money operations">
           Your account doesn&rsquo;t include permission to view payment balances. Ask an administrator if you need it.
         </ErrorPanel>
       ) : (
         <SettlementDashboard
           key={requestedPersonId && requestedPersonType ? `${requestedPersonType}:${requestedPersonId}` : "all"}
           data={result.data.data}
-          canManage={canManage}
+          canManage={result.data.canManage}
           initialPersonName={initialPersonName}
           initialPersonId={requestedPersonId}
           initialPersonType={requestedPersonType}

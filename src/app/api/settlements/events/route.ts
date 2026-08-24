@@ -1,6 +1,5 @@
 import { type NextRequest } from "next/server";
-import { apiUser } from "@/lib/auth/session";
-import { getPool } from "@/lib/db";
+import { canOperateSettlementObligations, getSettlementOperator } from "@/lib/auth/settlement-operator";
 import { jsonError, readJson, redactError, resultResponse, sameOriginOrFail } from "@/lib/http";
 import { applySettlementCredit, recordObligationPayment, settleObligations } from "@/lib/manage/settlements";
 
@@ -8,8 +7,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
-  const user = await apiUser("manager");
-  if (!user) return jsonError("You do not have permission to record settlements.", 403);
+  const operator = await getSettlementOperator();
+  if (!operator) return jsonError("You do not have permission to record money activity.", 403);
+  const { user, scope, pool } = operator;
   const cross = sameOriginOrFail(request);
   if (cross) return cross;
   const body = await readJson(request);
@@ -19,7 +19,10 @@ export async function POST(request: NextRequest) {
       const obligationIds = Array.isArray(body.obligationIds)
         ? body.obligationIds.map(String)
         : [];
-      return resultResponse(await settleObligations(getPool(), {
+      if (!await canOperateSettlementObligations(pool, scope, obligationIds)) {
+        return jsonError("You do not have permission to record those balances.", 403);
+      }
+      return resultResponse(await settleObligations(pool, {
         obligationIds,
         occurredOn,
         operationKey: String(body.operationKey ?? ""),
@@ -28,8 +31,12 @@ export async function POST(request: NextRequest) {
       }, user.id));
     }
     if (body.action === "payment") {
-      return resultResponse(await recordObligationPayment(getPool(), {
-        obligationId: String(body.obligationId ?? ""),
+      const obligationId = String(body.obligationId ?? "");
+      if (!await canOperateSettlementObligations(pool, scope, [obligationId])) {
+        return jsonError("You do not have permission to record that balance.", 403);
+      }
+      return resultResponse(await recordObligationPayment(pool, {
+        obligationId,
         amount: String(body.amount ?? ""),
         occurredOn,
         operationKey: String(body.operationKey ?? ""),
@@ -38,9 +45,14 @@ export async function POST(request: NextRequest) {
       }, user.id));
     }
     if (body.action === "apply_credit") {
-      return resultResponse(await applySettlementCredit(getPool(), {
-        sourceObligationId: String(body.sourceObligationId ?? ""),
-        targetObligationId: String(body.targetObligationId ?? ""),
+      const sourceObligationId = String(body.sourceObligationId ?? "");
+      const targetObligationId = String(body.targetObligationId ?? "");
+      if (!await canOperateSettlementObligations(pool, scope, [sourceObligationId, targetObligationId])) {
+        return jsonError("You do not have permission to apply that credit.", 403);
+      }
+      return resultResponse(await applySettlementCredit(pool, {
+        sourceObligationId,
+        targetObligationId,
         amount: String(body.amount ?? ""),
         occurredOn,
         operationKey: String(body.operationKey ?? ""),

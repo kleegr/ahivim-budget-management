@@ -21,10 +21,82 @@ import {
   recordSettlementRefreshFailure,
   settlementApplicationDate,
 } from "@/lib/manage/settlement-freshness";
+import { redactError } from "@/lib/http";
 import { dec, toMoney } from "@/lib/money";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const SAFE_PG_IDENTIFIER = /^[A-Za-z0-9_.-]{1,128}$/;
+
+type SettlementRefreshPhase =
+  | "begin"
+  | "lock-refresh"
+  | "lock-sources"
+  | "read-employee-sources"
+  | "read-individual-plans"
+  | "build-candidates"
+  | "match-existing-sources"
+  | "write-obligations"
+  | "read-reconciliation-roots"
+  | "reconcile-obligations"
+  | "write-audit"
+  | "certify-ledger"
+  | "commit";
+
+export interface SettlementRefreshDiagnostic {
+  phase: SettlementRefreshPhase;
+  message: string;
+  code?: string;
+  table?: string;
+  constraint?: string;
+}
+
+function safeErrorProperty(error: unknown, key: "code" | "table" | "constraint"): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const value = (error as Record<string, unknown>)[key];
+  if (typeof value !== "string") return undefined;
+  if (key === "code") return /^[0-9A-Z]{5}$/i.test(value) ? value : undefined;
+  return SAFE_PG_IDENTIFIER.test(value) ? value : undefined;
+}
+
+function safeSettlementRefreshMessage(error: unknown): string {
+  const message = redactError(error, "Database operation failed.")
+    .split(/\r?\n/, 1)[0]
+    .trim();
+  const groupBy = message.match(
+    /^column "([A-Za-z0-9_.-]{1,128})" must appear in the GROUP BY clause or be used in an aggregate function$/i,
+  );
+  if (groupBy) return `Column "${groupBy[1]}" must be grouped or aggregated.`;
+  if (/canceling statement due to statement timeout/i.test(message)) return "Database statement timed out.";
+  if (/deadlock detected/i.test(message)) return "Database deadlock detected.";
+  if (/could not serialize access/i.test(message)) return "Database serialization conflict.";
+  if (/connection (?:terminated|closed)|server closed the connection/i.test(message)) {
+    return "Database connection ended unexpectedly.";
+  }
+  if (/duplicate key|unique constraint/i.test(message)) return "Database uniqueness constraint was violated.";
+  if (/violates (?:check|foreign key|not-null) constraint/i.test(message)) {
+    return "Database constraint was violated.";
+  }
+  if (/invalid input syntax/i.test(message)) return "Database input had an invalid type or format.";
+  return "Database operation failed; inspect the phase and PostgreSQL metadata.";
+}
+
+export function settlementRefreshDiagnostic(
+  error: unknown,
+  phase: SettlementRefreshPhase,
+): SettlementRefreshDiagnostic {
+  const diagnostic: SettlementRefreshDiagnostic = {
+    phase,
+    message: safeSettlementRefreshMessage(error),
+  };
+  const code = safeErrorProperty(error, "code");
+  const table = safeErrorProperty(error, "table");
+  const constraint = safeErrorProperty(error, "constraint");
+  if (code) diagnostic.code = code;
+  if (table) diagnostic.table = table;
+  if (constraint) diagnostic.constraint = constraint;
+  return diagnostic;
+}
 
 interface EmployeeTransactionRow {
   id: string;
@@ -103,6 +175,10 @@ interface EmployeeSourceRoot {
 export interface RefreshSettlementsInput {
   employeeId?: string | null;
   individualId?: string | null;
+}
+
+export interface RefreshSettlementsOptions {
+  allowGlobalWhenDirty?: boolean;
 }
 
 export interface RefreshSettlementsResult {
@@ -585,24 +661,30 @@ async function attachTransactions(
   actorId: string | null,
   updateExisting = false,
 ) {
+  const transactionIds = candidate.transactionIds ?? [];
   if (updateExisting) {
     await client.query(
       `DELETE FROM settlement_obligation_transactions
         WHERE settlement_obligation_id = $1
           AND NOT (payroll_transaction_id = ANY($2::uuid[]))`,
-      [obligationId, candidate.transactionIds ?? []],
+      [obligationId, transactionIds],
     );
   }
-  for (const transactionId of candidate.transactionIds ?? []) {
-    await client.query(
-      `INSERT INTO settlement_obligation_transactions
-         (settlement_obligation_id, payroll_transaction_id, allocated_amount, created_by_user_id)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (settlement_obligation_id, payroll_transaction_id)
-       ${updateExisting ? "DO UPDATE SET allocated_amount = EXCLUDED.allocated_amount" : "DO NOTHING"}`,
-      [obligationId, transactionId, candidate.allocations?.[transactionId] ?? null, actorId],
-    );
-  }
+  if (transactionIds.length === 0) return;
+  await client.query(
+    `INSERT INTO settlement_obligation_transactions
+       (settlement_obligation_id, payroll_transaction_id, allocated_amount, created_by_user_id)
+     SELECT $1::uuid, source.payroll_transaction_id, source.allocated_amount, $4::uuid
+       FROM unnest($2::uuid[], $3::numeric[]) AS source(payroll_transaction_id, allocated_amount)
+     ON CONFLICT (settlement_obligation_id, payroll_transaction_id)
+     ${updateExisting ? "DO UPDATE SET allocated_amount = EXCLUDED.allocated_amount" : "DO NOTHING"}`,
+    [
+      obligationId,
+      transactionIds,
+      transactionIds.map((transactionId) => candidate.allocations?.[transactionId] ?? null),
+      actorId,
+    ],
+  );
 }
 
 async function insertObligation(
@@ -1000,28 +1082,39 @@ export async function refreshSettlementObligations(
   pool: PgLikePool,
   input: RefreshSettlementsInput,
   actorId: string | null,
+  options: RefreshSettlementsOptions = {},
 ): Promise<Result<RefreshSettlementsResult>> {
   if (input.employeeId && !UUID.test(input.employeeId)) return fail("validation", "Invalid employee.");
   if (input.individualId && !UUID.test(input.individualId)) return fail("validation", "Invalid individual.");
   const applicationDate = settlementApplicationDate();
+  let phase: SettlementRefreshPhase = "begin";
 
   try {
     const result = await inTransaction(pool, async (client) => {
+      phase = "lock-refresh";
       await client.query(`SELECT pg_advisory_xact_lock(hashtext('ahivim:settlement-refresh'))`);
+      phase = "lock-sources";
       const freshness = await lockSettlementSources(client, applicationDate);
+      if (freshness.dirty && options.allowGlobalWhenDirty === false) {
+        phase = "commit";
+        return null;
+      }
       // A dirty global ledger can only be certified by a global pass. Targeted
       // refreshes remain available for clean, diagnostic recalculation.
       const refreshInput: RefreshSettlementsInput = freshness.dirty ? {} : input;
       const readPool = readPoolFromClient(client);
+      phase = "read-employee-sources";
       const employeeRows = refreshInput.individualId && !refreshInput.employeeId
         ? []
         : await loadEmployeeTransactions(client, refreshInput.employeeId);
       const unknownRecipientTransactionIds = refreshInput.individualId && !refreshInput.employeeId
         ? []
         : await loadUnknownRecipientTransactionIds(client, refreshInput.employeeId);
+      phase = "read-individual-plans";
       const individual = refreshInput.employeeId && !refreshInput.individualId
         ? { candidates: [], individualPlans: 0 }
         : await individualCandidates(readPool, refreshInput.individualId, applicationDate);
+      phase = "build-candidates";
       const employee = employeeCandidates(employeeRows);
       const refreshResult: RefreshSettlementsResult = {
         created: 0,
@@ -1041,8 +1134,19 @@ export async function refreshSettlementObligations(
         preservedHistorical: 0,
       };
       const fullRefresh = !refreshInput.employeeId && !refreshInput.individualId;
-      const candidates = [...employee.candidates, ...individual.candidates];
+      // Existing zero-value roots are handled by the bulk reconciliation pass.
+      // Keep ended individual periods on their historical path instead of
+      // accidentally preserving a root that the prior behavior recalculated.
+      const candidates = [...employee.candidates, ...individual.candidates].filter((candidate) => (
+        dec(candidate.amount).greaterThan(0)
+        || Boolean(
+          candidate.individualId
+          && shouldPreserveEndedIndividualPeriod(candidate.periodEnd ?? null, applicationDate),
+        )
+      ));
+      phase = "match-existing-sources";
       await adoptMergedEmployeeSourceKeys(client, candidates);
+      phase = "write-obligations";
       for (const candidate of candidates) {
         const outcome = await ensureObligation(client, candidate, actorId);
         refreshResult[outcome]++;
@@ -1053,7 +1157,9 @@ export async function refreshSettlementObligations(
       }
       const includeEmployees = !(refreshInput.individualId && !refreshInput.employeeId);
       const includeIndividuals = !(refreshInput.employeeId && !refreshInput.individualId);
+      phase = "read-reconciliation-roots";
       const roots = await loadReconciliationRoots(client, refreshInput, includeEmployees, includeIndividuals);
+      phase = "reconcile-obligations";
       for (const root of roots) {
         if (candidateKeys.has(root.source_key) || employee.protectedSourceKeys.has(root.source_key)) continue;
         if (root.transaction_ids.some((id) => employee.protectedTransactionIds.has(id))) continue;
@@ -1064,6 +1170,7 @@ export async function refreshSettlementObligations(
         const outcome = await ensureObligation(client, zeroCandidate(root), actorId);
         refreshResult[outcome]++;
       }
+      phase = "write-audit";
       await recordChange(client, {
         actorId,
         action: "settlements.refreshed",
@@ -1078,6 +1185,7 @@ export async function refreshSettlementObligations(
         },
       });
       if (fullRefresh) {
+        phase = "certify-ledger";
         const blockingIssue = settlementRefreshBlockingIssueMessage(refreshResult);
         if (blockingIssue) {
           await markSettlementRefreshBlocked(client, blockingIssue);
@@ -1085,10 +1193,18 @@ export async function refreshSettlementObligations(
           await markSettlementRefreshComplete(client, true, applicationDate);
         }
       }
+      phase = "commit";
       return refreshResult;
     });
+    if (!result) {
+      return fail(
+        "conflict",
+        "Settlement calculations require a full refresh by an operator with access to all employees and individuals.",
+      );
+    }
     return ok(result);
-  } catch {
+  } catch (error) {
+    console.error("[settlement-refresh] failed", settlementRefreshDiagnostic(error, phase));
     await recordSettlementRefreshFailure(
       pool,
       "Settlement refresh did not complete. Retry from Settlements.",

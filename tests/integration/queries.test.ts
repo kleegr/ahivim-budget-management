@@ -159,6 +159,38 @@ suite("read models over committed data (real PostgreSQL)", () => {
     expect(none.total).toBe(0);
   });
 
+  it("excludes group-member and uncommitted rows from the actionable rate queue", async () => {
+    const { rows: groupTransactions } = await testPool().query<{ id: string }>(
+      `SELECT t.id
+         FROM payroll_transactions t
+         JOIN service_sessions s ON s.id = t.service_session_id
+        WHERE s.group_size > 1
+        LIMIT 1`,
+    );
+    const { rows: inserted } = await testPool().query<{ id: string }>(
+      `INSERT INTO rate_exceptions
+         (payroll_transaction_id, imported_rate, expected_rate,
+          variance_amount, variance_percent, direction, note)
+       VALUES
+         (NULL, '112', '17', '95', '5.588235', 'higher', 'No committed transaction'),
+         ($1, '57', '17', '40', '2.352941', 'higher', 'Combined group rate')
+       RETURNING id`,
+      [groupTransactions[0].id],
+    );
+
+    try {
+      const listed = await listRateExceptions(testPool(), { resolution: "open" });
+      expect(listed.total).toBe(1);
+      expect(dec(listed.rows[0].importedRate).toNumber()).toBe(23);
+      expect((await exceptionCounts(testPool())).rateExceptions).toBe(1);
+      expect((await getDashboardData(testPool())).counts.openRateExceptions).toBe(1);
+    } finally {
+      await testPool().query(`DELETE FROM rate_exceptions WHERE id = ANY($1::uuid[])`, [
+        inserted.map((row) => row.id),
+      ]);
+    }
+  });
+
   it("counts exceptions across every category", async () => {
     const counts = await exceptionCounts(testPool());
     expect(counts.rateExceptions).toBe(1);

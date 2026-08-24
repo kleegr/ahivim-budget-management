@@ -109,8 +109,17 @@ export default async function IndividualDetailPage({
         ? scheduledByProgramForIndividual(pool, id)
         : Promise.resolve<Record<string, { hours: string; internal: string }>>({}),
       canSeeBudgets
-        ? getIndividualPeriodActivity(pool, id, budget.periodStart, budget.periodEnd, scope)
-        : Promise.resolve({ byProgramMonth: [], programsBilled: [], byEmployee: [] }),
+        ? getIndividualPeriodActivity(
+            pool,
+            id,
+            budget.periodStart,
+            budget.periodEnd,
+            scope,
+            budget.lines
+              .filter((line) => line.inPlan)
+              .map((line) => ({ id: line.programId, name: line.programName, code: line.programCode })),
+          )
+        : Promise.resolve({ periods: [], byEmployee: [] }),
       canSeeSettlements ? getPersonSettlementBalance(pool, { individualId: id }) : Promise.resolve({ payable: "0", receivable: "0", reserve: "0", credit: "0", openItems: 0 }),
     ]);
     // The plan the main view describes (matches the budget board), plus any OTHER
@@ -123,17 +132,20 @@ export default async function IndividualDetailPage({
       others.map(async (s) => ({ strategy: s, budget: await getIndividualBudgetView(pool, id, s.id, scope) })),
     );
     const visibleActivity = {
-      byProgramMonth: activity.byProgramMonth.map((row) => ({
-        ...row,
-        hours: scope.canSeeHours ? row.hours : "0",
-        agency: scope.canSeeBilledAmounts ? row.agency : "0",
-        internal: scope.canSeeEmployeeAmounts ? row.internal : "0",
-      })),
-      programsBilled: activity.programsBilled.map((row) => ({
-        ...row,
-        hours: scope.canSeeHours ? row.hours : "0",
-        agency: scope.canSeeBilledAmounts ? row.agency : "0",
-        internal: scope.canSeeEmployeeAmounts ? row.internal : "0",
+      periods: activity.periods.map((period) => ({
+        ...period,
+        byProgramMonth: period.byProgramMonth.map((row) => ({
+          ...row,
+          hours: scope.canSeeHours ? row.hours : "0",
+          agency: scope.canSeeBilledAmounts ? row.agency : "0",
+          internal: scope.canSeeEmployeeAmounts ? row.internal : "0",
+        })),
+        programs: period.programs.map((row) => ({
+          ...row,
+          hours: scope.canSeeHours ? row.hours : "0",
+          agency: scope.canSeeBilledAmounts ? row.agency : "0",
+          internal: scope.canSeeEmployeeAmounts ? row.internal : "0",
+        })),
       })),
       byEmployee: activity.byEmployee.map((employee) => ({
         ...employee,
@@ -191,6 +203,7 @@ export default async function IndividualDetailPage({
   // "bill X h/month to finish" — summed per program, each toward its OWN renewal
   // (Day Hab / Supplemental on the calendar year), computed in the read model.
   const perMonthToFinish = budget.perMonthToFinish ? dec(budget.perMonthToFinish) : null;
+  const employeeActivityPeriod = activity.periods.length === 1 ? activity.periods[0] : null;
 
   const editorLines: BudgetEditorLine[] = budget.lines.map((l) => ({
     programId: l.programId,
@@ -312,6 +325,21 @@ export default async function IndividualDetailPage({
                 ) : (
                   <section className="card px-5 py-5 text-sm text-[var(--color-ink-soft)]">No budget lines are configured.</section>
                 )}
+                {activity.periods.length > 0 ? (
+                  <Card
+                    title="Billing history"
+                    description={activity.periods.length > 1
+                      ? "Each program is shown in the budget year that controls its used and remaining amounts."
+                      : "Monthly service activity for the current budget year."}
+                  >
+                    <BilledByMonth
+                      periods={activity.periods}
+                      canSeeHours={canSeeHours}
+                      canSeeBilledAmounts={canSeeBilledAmounts}
+                      canSeeEmployeeAmounts={canSeeEmployeeAmounts}
+                    />
+                  </Card>
+                ) : null}
                 {otherPlans.map((op) => (
                   <section key={op.strategy.id}>
                     <p className="eyebrow mb-2">Plan · {op.strategy.label}</p>
@@ -339,33 +367,16 @@ export default async function IndividualDetailPage({
             label: "Activity",
             content: (
               <div className="space-y-6">
-                {budget.periodStart && activity.programsBilled.length > 0 ? (
-                  <Card
-                    title="Billed by month"
-                    description={budget.lines.some((line) => line.calendarYear)
-                      ? "Monthly activity by program; calendar-year programs may use a different reporting period."
-                      : "Monthly service activity by program."}
-                  >
-                    <BilledByMonth
-                      periodStart={budget.periodStart}
-                      byProgramMonth={activity.byProgramMonth}
-                      programsBilled={activity.programsBilled}
-                      canSeeHours={canSeeHours}
-                      canSeeBilledAmounts={canSeeBilledAmounts}
-                      canSeeEmployeeAmounts={canSeeEmployeeAmounts}
-                    />
-                  </Card>
-                ) : null}
                 {activity.byEmployee.length > 0 ? (
                   <Card
                     title="Employees working with this individual"
-                    description="Employees with billed activity in the current budget year."
-                    action={canSeeTransactions ? <ButtonLink href={txLink({ individualId: id, pbFrom: budget.periodStart ?? undefined, pbTo: budget.periodEnd ?? undefined })} variant="secondary">All rows →</ButtonLink> : undefined}
+                    description="Employees with billed activity in the current program budget periods."
+                    action={canSeeTransactions ? <ButtonLink href={txLink({ individualId: id, pbFrom: employeeActivityPeriod?.start, pbTo: employeeActivityPeriod?.end })} variant="secondary">All rows →</ButtonLink> : undefined}
                   >
                     <EmployeesActivity
                       individualId={id}
-                      periodStart={budget.periodStart}
-                      periodEnd={budget.periodEnd}
+                      periodStart={employeeActivityPeriod?.start ?? null}
+                      periodEnd={employeeActivityPeriod?.end ?? null}
                       employees={activity.byEmployee}
                       canSeeHours={canSeeHours}
                       canSeeBilledAmounts={canSeeBilledAmounts}
@@ -374,7 +385,7 @@ export default async function IndividualDetailPage({
                     />
                   </Card>
                 ) : null}
-                {activity.programsBilled.length === 0 && activity.byEmployee.length === 0 ? (
+                {activity.periods.every((period) => period.byProgramMonth.length === 0) && activity.byEmployee.length === 0 ? (
                   <section className="card px-5 py-5 text-sm text-[var(--color-ink-soft)]">No activity is recorded for this budget period.</section>
                 ) : null}
               </div>

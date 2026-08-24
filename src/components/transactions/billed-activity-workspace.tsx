@@ -2,37 +2,21 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { FileCheck2, ListTree, Search, TableProperties } from "lucide-react";
+import { FileCheck2, ListTree, RotateCcw, Search, TableProperties } from "lucide-react";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 import type { TransactionFieldVisibility } from "@/lib/auth/money-redaction";
 import type { FilterState } from "@/components/data-grid/types";
 import PeriodControl, { type PeriodRange } from "@/components/period-control";
 import { Card, EmptyState, StatusBadge, Table, Td, Th, Tr } from "@/components/ui";
+import {
+  groupChecks,
+  type CheckRouting,
+  type CheckSummary,
+} from "@/components/transactions/check-grouping";
 import TransactionsGrid from "@/components/transactions/transactions-grid";
 
 type WorkspaceView = "checks" | "rows";
-type Routing = "direct" | "agency" | "review";
-
-interface CheckSummary {
-  key: string;
-  checkNumber: string | null;
-  checkDate: string | null;
-  employee: string | null;
-  employeeId: string | null;
-  payTo: string | null;
-  routing: Routing;
-  periodBegin: string | null;
-  periodEnd: string | null;
-  individuals: string[];
-  programs: string[];
-  hours: string;
-  funderBilled: string;
-  employeeBase: string;
-  agencySpread: string;
-  netPay: string | null;
-  rows: number;
-}
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" });
 
@@ -41,76 +25,36 @@ const dateLabel = (value: string | null): string => {
   return DATE_FORMATTER.format(new Date(`${value}T00:00:00`));
 };
 
-const routingLabel = (routing: Routing) => {
+const routingLabel = (routing: CheckRouting) => {
   if (routing === "direct") return <StatusBadge tone="info" label="Direct to employee" />;
   if (routing === "agency") return <StatusBadge tone="good" label="Agency-routed" />;
   return <StatusBadge tone="warn" label="Routing review" />;
 };
 
-function groupChecks(rows: GridTransaction[]): CheckSummary[] {
-  const groups = new Map<string, GridTransaction[]>();
-  for (const row of rows) {
-    const employeeKey = row.employeeId ?? row.employee ?? "unknown-employee";
-    const key = row.checkNumber
-      ? `${employeeKey}:check:${row.checkNumber}`
-      : `${employeeKey}:row:${row.id}`;
-    const group = groups.get(key);
-    if (group) group.push(row);
-    else groups.set(key, [row]);
+function checkRowsHref(check: CheckSummary): string {
+  const params = new URLSearchParams({ checkNumber: check.checkNumber ?? "" });
+  if (check.employeeId) params.set("employeeId", check.employeeId);
+  else if (check.employee) params.set("employee", check.employee);
+  if (check.checkDate) params.set("period", `${check.checkDate}..${check.checkDate}`);
+  else {
+    if (check.periodBegin) params.set("pbFrom", check.periodBegin);
+    if (check.periodEnd) params.set("pbTo", check.periodEnd);
   }
-
-  return [...groups.entries()].map(([key, group]) => {
-    const first = group[0];
-    let hours = dec(0);
-    let funderBilled = dec(0);
-    let employeeBase = dec(0);
-    let agencySpread = dec(0);
-    const individuals = new Set<string>();
-    const programs = new Set<string>();
-    const recipients = new Set(group.map((row) => row.paymentRecipient).filter(Boolean));
-    const begins = group.map((row) => row.periodBegin).filter((value): value is string => Boolean(value)).sort();
-    const ends = group.map((row) => row.periodEnd).filter((value): value is string => Boolean(value)).sort();
-
-    for (const row of group) {
-      if (row.hours) hours = hours.plus(row.hours);
-      if (row.gross) funderBilled = funderBilled.plus(row.gross);
-      if (row.internalAmount) employeeBase = employeeBase.plus(row.internalAmount);
-      if (row.agencyAdditional) agencySpread = agencySpread.plus(row.agencyAdditional);
-      if (row.individual) individuals.add(row.individual);
-      if (row.program) programs.add(row.program);
-    }
-
-    const routing: Routing = recipients.size === 1 && recipients.has("employee")
-      ? "direct"
-      : recipients.size === 1 && recipients.has("excellent_staffing")
-        ? "agency"
-        : "review";
-
-    return {
-      key,
-      checkNumber: first.checkNumber,
-      checkDate: first.checkDate,
-      employee: first.employee,
-      employeeId: first.employeeId,
-      payTo: first.payTo,
-      routing,
-      periodBegin: begins[0] ?? null,
-      periodEnd: ends.at(-1) ?? null,
-      individuals: [...individuals].sort(),
-      programs: [...programs].sort(),
-      hours: hours.toFixed(2),
-      funderBilled: funderBilled.toFixed(2),
-      employeeBase: employeeBase.toFixed(2),
-      agencySpread: agencySpread.toFixed(2),
-      netPay: routing === "direct" ? first.totalNetPay : null,
-      rows: group.length,
-    };
-  }).sort((a, b) => (b.checkDate ?? "").localeCompare(a.checkDate ?? "") || (a.employee ?? "").localeCompare(b.employee ?? ""));
+  return `/transactions?${params.toString()}`;
 }
 
-function ChecksView({ rows, visibility }: { rows: GridTransaction[]; visibility: TransactionFieldVisibility }) {
+function ChecksView({
+  rows,
+  visibility,
+  onShowRows,
+}: {
+  rows: GridTransaction[];
+  visibility: TransactionFieldVisibility;
+  onShowRows: () => void;
+}) {
   const [query, setQuery] = useState("");
   const [period, setPeriod] = useState<PeriodRange>(null);
+  const [periodControlKey, setPeriodControlKey] = useState(0);
   const checks = useMemo(() => groupChecks(rows), [rows]);
   const filtered = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
@@ -141,10 +85,21 @@ function ChecksView({ rows, visibility }: { rows: GridTransaction[]; visibility:
     hours: dec(0),
   }), [filtered]);
 
+  const clearViewFilters = () => {
+    setQuery("");
+    setPeriod(null);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("period");
+      window.history.replaceState(null, "", url.toString());
+    }
+    setPeriodControlKey((key) => key + 1);
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <PeriodControl onChange={setPeriod} paramKey="period" />
+        <PeriodControl key={periodControlKey} onChange={setPeriod} paramKey="period" />
         <label className="relative block w-full sm:w-72">
           <span className="sr-only">Search checks</span>
           <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-ink-faint)]" />
@@ -169,7 +124,22 @@ function ChecksView({ rows, visibility }: { rows: GridTransaction[]; visibility:
 
       <Card>
         {filtered.length === 0 ? (
-          <EmptyState title="No checks match" compact />
+          <EmptyState
+            title="No checks match this view"
+            compact
+            action={(
+              <div className="flex flex-wrap justify-center gap-2">
+                <button type="button" className="btn btn-sm btn-secondary" onClick={clearViewFilters}>
+                  <RotateCcw aria-hidden className="h-4 w-4" /> Clear period and search
+                </button>
+                <button type="button" className="btn btn-sm btn-ghost" onClick={onShowRows}>
+                  <TableProperties aria-hidden className="h-4 w-4" /> View transaction rows
+                </button>
+              </div>
+            )}
+          >
+            {rows.length.toLocaleString()} committed transaction {rows.length === 1 ? "row is" : "rows are"} loaded, but the current period or search hides them.
+          </EmptyState>
         ) : (
           <Table
             caption="Checks and their billed activity"
@@ -214,7 +184,7 @@ function ChecksView({ rows, visibility }: { rows: GridTransaction[]; visibility:
                 {visibility.canSeeCheckNet ? <Td numeric>{check.netPay ? formatMoney(check.netPay) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
                 <Td>
                   {check.checkNumber ? (
-                    <Link href={`/transactions?checkNumber=${encodeURIComponent(check.checkNumber)}`} className="btn btn-sm btn-ghost whitespace-nowrap">
+                    <Link href={checkRowsHref(check)} className="btn btn-sm btn-ghost whitespace-nowrap">
                       {check.rows.toLocaleString()} {check.rows === 1 ? "row" : "rows"}
                     </Link>
                   ) : (
@@ -275,7 +245,7 @@ export default function BilledActivityWorkspace({
 
       <div role="tabpanel">
         {view === "checks" ? (
-          <ChecksView rows={rows} visibility={visibility} />
+          <ChecksView rows={rows} visibility={visibility} onShowRows={() => setView("rows")} />
         ) : (
           <TransactionsGrid
             rows={rows}

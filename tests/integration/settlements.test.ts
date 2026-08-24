@@ -142,6 +142,48 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     expect((await getSettlementDashboard(pool)).rows).toHaveLength(2);
   });
 
+  it("retires an existing obligation through reconciliation when its derived balance becomes zero", async () => {
+    const employee = unwrap(await createEmployee(pool, { displayName: "Zero Balance Employee" }, ACTOR));
+    unwrap(await saveEmployeeDeal(pool, {
+      employeeId: employee.id,
+      directRule: "giveback_percent",
+      directPercent: "0.10",
+      agencyCutPercent: "0",
+      effectiveFrom: "2026-01-01",
+      reason: "Initial give-back",
+    }, ACTOR));
+    await pool.query(
+      `INSERT INTO payroll_transactions
+         (employee_id, check_number, check_date, period_begin, period_end,
+          payment_recipient, imported_amount, total_net_pay, transaction_fingerprint)
+       VALUES ($1,'ZERO-RETIRE-1','2026-02-15','2026-02-01','2026-02-14',
+               'employee','100','100','settle-zero-retire-1')`,
+      [employee.id],
+    );
+
+    expect(unwrap(await refreshSettlementObligations(pool, { employeeId: employee.id }, ACTOR))).toMatchObject({
+      created: 1,
+      voided: 0,
+    });
+    const original = (await getSettlementDashboard(pool)).rows.find((row) => row.checkNumber === "ZERO-RETIRE-1")!;
+
+    unwrap(await saveEmployeeDeal(pool, {
+      employeeId: employee.id,
+      directRule: "keep_all",
+      directPercent: "0",
+      agencyCutPercent: "0",
+      effectiveFrom: "2026-01-01",
+      reason: "Employee now keeps the full check",
+    }, ACTOR));
+    const refreshed = unwrap(await refreshSettlementObligations(pool, { employeeId: employee.id }, ACTOR));
+
+    expect(refreshed).toMatchObject({ created: 0, updated: 0, adjusted: 0, voided: 1 });
+    expect((await getSettlementDashboard(pool)).rows.find((row) => row.id === original.id)).toMatchObject({
+      state: "void",
+      balance: "0.0000",
+    });
+  });
+
   it("reports an ambiguous direct check number without breaking the dashboard query", async () => {
     const employee = unwrap(await createEmployee(pool, { displayName: "Leah Rosen" }, ACTOR));
 

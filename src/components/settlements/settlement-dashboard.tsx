@@ -10,7 +10,7 @@ import { Toolbar } from "@/components/data-grid/toolbar";
 import { isNumericKind, type ColumnDef, type FilterState } from "@/components/data-grid/types";
 import { useGrid, type UseGridResult } from "@/components/data-grid/use-grid";
 import { Modal } from "@/components/manage/client";
-import { PaceBar } from "@/components/ui";
+import { EmptyState, PaceBar } from "@/components/ui";
 import type {
   DirectCheckIssue,
   SettlementDashboardData,
@@ -20,7 +20,7 @@ import type {
 import { dec, formatMoney, type Decimal } from "@/lib/money";
 
 type View = "items" | "history";
-type QueueFilter = "open" | "payable" | "receivable" | "reserve" | "credit" | "completed";
+type QueueFilter = "all" | "open" | "payable" | "receivable" | "reserve" | "credit" | "completed";
 type Notice = { tone: "success" | "error"; message: string };
 
 interface RefreshResult {
@@ -749,11 +749,6 @@ function ItemsTable({
               </Fragment>
             );
           })}
-          {rows.length === 0 ? (
-            <tr>
-              <td colSpan={grid.visibleColumns.length + utilityColumns} className="px-4 py-12 text-center text-sm text-[var(--color-ink-faint)]">No payment items match these filters.</td>
-            </tr>
-          ) : null}
         </tbody>
       </table>
     </div>
@@ -1315,6 +1310,10 @@ export default function SettlementDashboard({
   const applyQueue = (next: QueueFilter) => {
     setQueue(next);
     setView("items");
+    if (next === "all") {
+      grid.clearFilters();
+      return;
+    }
     grid.setFilter("direction", null);
     if (next === "open") grid.setFilter("state", { selected: ["open", "partial", "credit"] });
     if (next === "payable") {
@@ -1356,7 +1355,12 @@ export default function SettlementDashboard({
     setRefreshing(true);
     setNotice(null);
     try {
-      const result = await postJson<RefreshResult>("/api/settlements/refresh", {});
+      const refreshScope = initialPersonId && initialPersonType
+        ? initialPersonType === "employee"
+          ? { employeeId: initialPersonId }
+          : { individualId: initialPersonId }
+        : {};
+      const result = await postJson<RefreshResult>("/api/settlements/refresh", refreshScope);
       const changed = result.created + result.updated + result.adjusted + result.voided;
       const blocked = result.skippedMissingCheckIdentity
         + result.skippedMissingNet
@@ -1410,7 +1414,7 @@ export default function SettlementDashboard({
             History <span className="tnum text-xs text-[var(--color-ink-faint)]">{filteredEvents.length}</span>
           </button>
           <button id="settlement-completed-tab" type="button" role="tab" aria-selected={view === "items" && queue === "completed"} aria-controls="settlement-items-panel" onClick={() => applyQueue("completed")} className={`border-b-2 px-3 py-2 text-sm font-medium ${view === "items" && queue === "completed" ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}>
-            Completed
+            Completed <span className="tnum text-xs text-[var(--color-ink-faint)]">{data.summary.settledCount}</span>
           </button>
         </div>
         {canManage ? <button type="button" disabled={refreshing} onClick={refresh} className="btn btn-sm btn-secondary mb-1">
@@ -1437,19 +1441,58 @@ export default function SettlementDashboard({
               ) : undefined}
             />
             <FilterBar grid={grid} />
-            <ItemsTable
-              grid={grid}
-              rows={grid.sorted}
-              canManage={canRecord}
-              selected={selected}
-              expanded={expanded}
-              onToggle={toggleSelected}
-              onToggleAll={toggleAllVisible}
-              onToggleExpanded={toggleExpanded}
-              onRecord={setPaymentRow}
-              onUseCredit={setCreditRow}
-              creditTargetsFor={creditTargetsFor}
-            />
+            {grid.sorted.length === 0 ? (
+              <div className="border border-[var(--color-rule-strong)] bg-[var(--color-surface)]">
+                <EmptyState
+                  title={data.rows.length === 0
+                    ? "No payment items yet"
+                    : queue === "completed"
+                      ? "No completed payments yet"
+                      : queue === "open" && data.summary.settledCount > 0
+                        ? "No open payment work"
+                        : "No payment items match this view"}
+                  action={data.rows.length > 0 ? (
+                    <div className="flex flex-wrap justify-center gap-2">
+                      {queue !== "completed" && data.summary.settledCount > 0 ? (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => {
+                            grid.clearFilters();
+                            applyQueue("completed");
+                          }}
+                        >
+                          <BadgeCheck aria-hidden className="h-4 w-4" /> View completed
+                        </button>
+                      ) : null}
+                      <button type="button" className="btn btn-sm btn-ghost" onClick={() => applyQueue("all")}>
+                        <CreditCard aria-hidden className="h-4 w-4" /> Show all {data.rows.length.toLocaleString()} items
+                      </button>
+                    </div>
+                  ) : undefined}
+                >
+                  {data.rows.length === 0
+                    ? "Refresh items to calculate payment obligations from committed payroll and active plans."
+                    : queue === "open" && data.summary.settledCount > 0
+                      ? `${data.summary.settledCount.toLocaleString()} completed payment ${data.summary.settledCount === 1 ? "is" : "items are"} available in Completed.`
+                      : `${data.rows.length.toLocaleString()} payment ${data.rows.length === 1 ? "item exists" : "items exist"}, but the current queue, search, or filters hide them.`}
+                </EmptyState>
+              </div>
+            ) : (
+              <ItemsTable
+                grid={grid}
+                rows={grid.sorted}
+                canManage={canRecord}
+                selected={selected}
+                expanded={expanded}
+                onToggle={toggleSelected}
+                onToggleAll={toggleAllVisible}
+                onToggleExpanded={toggleExpanded}
+                onRecord={setPaymentRow}
+                onUseCredit={setCreditRow}
+                creditTargetsFor={creditTargetsFor}
+              />
+            )}
           </>
         ) : (
           <>

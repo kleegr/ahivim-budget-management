@@ -130,8 +130,12 @@ export async function detectConflicts(
     if (draft.employeeId) {
       const assigned = await pool.query(
         `SELECT 1 FROM assignments WHERE employee_id = $1 AND individual_id = $2
-           AND status = 'active' AND (program_id IS NULL OR program_id = $3) LIMIT 1`,
-        [draft.employeeId, individualId, draft.programId],
+           AND status = 'active' AND archived_at IS NULL
+           AND (program_id IS NULL OR program_id = $3)
+           AND (start_date IS NULL OR start_date <= $4::date)
+           AND (end_date IS NULL OR end_date >= $4::date)
+         LIMIT 1`,
+        [draft.employeeId, individualId, draft.programId, draft.sessionDate],
       );
       if (!assigned.rows[0]) {
         w.push({ code: "not_assigned", severity: "warning", message: `The employee is not assigned to ${name} for this program.` });
@@ -142,37 +146,43 @@ export async function detectConflicts(
       `SELECT ba.authorized_hours::text, bp.start_date::text, bp.end_date::text
        FROM budget_authorizations ba JOIN budget_periods bp ON bp.id = ba.budget_period_id
        WHERE ba.individual_id = $1 AND ba.program_id = $2 AND ba.status = 'active'
-         AND bp.status = 'active'
-       ORDER BY bp.start_date DESC LIMIT 1`,
-      [individualId, draft.programId],
+          AND bp.status = 'active'
+        ORDER BY CASE WHEN $3::date BETWEEN bp.start_date AND bp.end_date THEN 0 ELSE 1 END,
+                 bp.start_date DESC, ba.revision DESC
+        LIMIT 1`,
+      [individualId, draft.programId, draft.sessionDate],
     );
     if (!auth.rows[0]) {
       w.push({ code: "missing_authorization", severity: "warning", message: `${name} has no active authorization for this program.` });
     } else {
       const a = auth.rows[0];
-      if (draft.sessionDate < a.start_date || draft.sessionDate > a.end_date) {
+      const insideAuthorization = draft.sessionDate >= a.start_date && draft.sessionDate <= a.end_date;
+      if (!insideAuthorization) {
         w.push({ code: "outside_authorization_dates", severity: "warning", message: `${draft.sessionDate} is outside ${name}'s authorization period (${a.start_date} to ${a.end_date}).` });
-      }
-      const used = await pool.query<{ h: string }>(
-        `SELECT COALESCE(sum(al.allocation_hours),0)::text AS h
-         FROM service_allocations al JOIN service_sessions ss ON ss.id = al.service_session_id
-         WHERE al.individual_id = $1 AND ss.program_id = $2`,
-        [individualId, draft.programId],
-      );
-      const scheduled = await pool.query<{ h: string }>(
-        `SELECT COALESCE(sum(sa.allocation_hours),0)::text AS h
-         FROM scheduled_allocations sa JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
-         WHERE sa.individual_id = $1 AND s.program_id = $2 AND s.status = 'pending'
-           AND ($3::uuid IS NULL OR s.id <> $3)`,
-        [individualId, draft.programId, excludeSessionId ?? null],
-      );
-      const projected = dec(used.rows[0].h).plus(dec(scheduled.rows[0].h)).plus(hours);
-      if (projected.gt(dec(a.authorized_hours))) {
-        w.push({
-          code: "over_authorized_hours",
-          severity: "warning",
-          message: `Scheduling this would bring ${name} to ${toHours(projected)} h against ${toHours(a.authorized_hours)} authorized.`,
-        });
+      } else {
+        const used = await pool.query<{ h: string }>(
+          `SELECT COALESCE(sum(al.allocation_hours),0)::text AS h
+           FROM service_allocations al JOIN service_sessions ss ON ss.id = al.service_session_id
+           WHERE al.individual_id = $1 AND ss.program_id = $2
+             AND COALESCE(ss.period_begin, ss.period_end) BETWEEN $3::date AND $4::date`,
+          [individualId, draft.programId, a.start_date, a.end_date],
+        );
+        const scheduled = await pool.query<{ h: string }>(
+          `SELECT COALESCE(sum(sa.allocation_hours),0)::text AS h
+           FROM scheduled_allocations sa JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
+           WHERE sa.individual_id = $1 AND s.program_id = $2 AND s.status = 'pending'
+             AND s.session_date BETWEEN $3::date AND $4::date
+             AND ($5::uuid IS NULL OR s.id <> $5)`,
+          [individualId, draft.programId, a.start_date, a.end_date, excludeSessionId ?? null],
+        );
+        const projected = dec(used.rows[0].h).plus(dec(scheduled.rows[0].h)).plus(hours);
+        if (projected.gt(dec(a.authorized_hours))) {
+          w.push({
+            code: "over_authorized_hours",
+            severity: "warning",
+            message: `Scheduling this would bring ${name} to ${toHours(projected)} h against ${toHours(a.authorized_hours)} authorized.`,
+          });
+        }
       }
     }
   }
@@ -258,7 +268,13 @@ export async function previewSession(
       `SELECT display_name FROM individuals WHERE id = $1`,
       [individualId],
     );
-    const f = await individualProgramForecast(pool, individualId, draft.programId, excludeSessionId ?? null);
+    const f = await individualProgramForecast(
+      pool,
+      individualId,
+      draft.programId,
+      excludeSessionId ?? null,
+      draft.sessionDate,
+    );
     const thisHours = duration ?? "0";
     const remainingAfterHours =
       f.remainingAfterScheduleHours === null

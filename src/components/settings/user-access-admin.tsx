@@ -1,8 +1,8 @@
 "use client";
 
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, WalletCards } from "lucide-react";
 
 /**
  * Administrator user + access management.
@@ -174,7 +174,7 @@ const VISIBILITY_OPTIONS: Array<{
   { key: "canSeeTaxes", label: "Taxes and withholding", description: "gross, net and payroll withholding details", requiresMoney: true },
   { key: "canSeeBudgets", label: "Budgets", description: "individual budgets and annual plans; enabling this also enables Hours" },
   { key: "canSeeEmployeeDeals", label: "Employee deals", description: "deal terms and calculated obligations", requiresMoney: true },
-  { key: "canSeeSettlements", label: "Payments and balances", description: "open balances, payments and action history", requiresMoney: true },
+  { key: "canSeeSettlements", label: "Money operations", description: "view balances and record payments, collections, credits, and set-asides", requiresMoney: true },
 ];
 
 /* ------------------------------------------------------------ multi-select */
@@ -256,12 +256,29 @@ function AccessConfig({
   if (role !== "viewer") {
     return (
       <p className="rounded-lg bg-[var(--color-surface-muted)] px-3 py-2 text-sm text-[var(--color-ink-soft)]">
-        {role === "admin" ? "Administrators" : "Managers"} see everything — access scoping applies to the read-only <span className="font-medium">viewer</span> role.
+        {role === "admin" ? "Administrators" : "Managers"} see everything. Custom access applies to the <span className="font-medium">restricted staff</span> role.
       </p>
     );
   }
   const scoped = value.accessScope === "scoped";
   const set = (patch: Partial<AccessState>) => onChange({ ...value, ...patch });
+  const applyMoneyOperatorAccess = () => onChange({
+    ...value,
+    accessScope: "scoped",
+    seeAllIndividuals: true,
+    seeAllEmployees: true,
+    canSeeTransactions: true,
+    canSeeMoney: true,
+    canSeeHours: false,
+    canSeeBilledAmounts: false,
+    canSeeEmployeeAmounts: true,
+    canSeeAgencySpread: false,
+    canSeeCheckNet: true,
+    canSeeTaxes: false,
+    canSeeBudgets: false,
+    canSeeEmployeeDeals: true,
+    canSeeSettlements: true,
+  });
   const setVisibility = (key: VisibilityKey, checked: boolean) => {
     if (key === "canSeeHours" && !checked) {
       set({ canSeeHours: false, canSeeBudgets: false });
@@ -275,6 +292,21 @@ function AccessConfig({
   };
   return (
     <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] pb-3">
+        <div>
+          <p className="text-sm font-medium text-[var(--color-ink)]">Access template</p>
+          <p className="text-xs text-[var(--color-ink-faint)]">Start with the finance collector&rsquo;s operational access, then adjust any field below.</p>
+        </div>
+        <button
+          type="button"
+          onClick={applyMoneyOperatorAccess}
+          className="btn btn-sm btn-secondary"
+          title="Allow collections and set-asides without exposing budgets"
+        >
+          <WalletCards aria-hidden className="h-4 w-4" />
+          Money operator
+        </button>
+      </div>
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
@@ -396,6 +428,7 @@ export default function UserAccessAdmin({
   const [editRole, setEditRole] = useState<string>("viewer");
   const [newPassword, setNewPassword] = useState("");
   const [loadingEdit, setLoadingEdit] = useState(false);
+  const accessLoadRequest = useRef(0);
   // True when the current access couldn't be loaded — we then REFUSE to save,
   // rather than silently overwriting the user's real access with blank defaults.
   const [editLoadFailed, setEditLoadFailed] = useState(false);
@@ -427,6 +460,7 @@ export default function UserAccessAdmin({
 
   function openEdit(u: UserRow) {
     if (editingId === u.id) {
+      accessLoadRequest.current += 1;
       setEditingId(null);
       return;
     }
@@ -435,6 +469,7 @@ export default function UserAccessAdmin({
   }
 
   async function loadAccess(userId: string, role: string) {
+    const requestId = ++accessLoadRequest.current;
     setEditRole(role);
     setNewPassword("");
     setEditAccess(null);
@@ -463,6 +498,7 @@ export default function UserAccessAdmin({
           employeeIds: string[];
         };
       };
+      if (requestId !== accessLoadRequest.current) return;
       if (data.ok && data.access) {
         setEditAccess({
           accessScope: data.access.accessScope,
@@ -488,10 +524,11 @@ export default function UserAccessAdmin({
         setEditLoadFailed(true);
       }
     } catch {
+      if (requestId !== accessLoadRequest.current) return;
       setEditAccess(null);
       setEditLoadFailed(true);
     } finally {
-      setLoadingEdit(false);
+      if (requestId === accessLoadRequest.current) setLoadingEdit(false);
     }
   }
 
@@ -600,7 +637,7 @@ export default function UserAccessAdmin({
             <label className="block text-sm">
               <span className="text-xs font-medium">Role</span>
               <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="input mt-1 w-full text-sm">
-                <option value="viewer">Viewer (read-only)</option>
+                <option value="viewer">Restricted staff</option>
                 <option value="manager">Manager</option>
                 <option value="admin">Administrator</option>
               </select>
@@ -659,7 +696,7 @@ export default function UserAccessAdmin({
                         <label className="block text-sm">
                           <span className="text-xs font-medium">Role</span>
                           <select value={editRole} onChange={(e) => setEditRole(e.target.value)} className="input mt-1 w-full text-sm">
-                            <option value="viewer">Viewer (read-only)</option>
+                            <option value="viewer">Restricted staff</option>
                             <option value="manager">Manager</option>
                             <option value="admin">Administrator</option>
                           </select>

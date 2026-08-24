@@ -8,9 +8,52 @@ import {
   recordObligationPayment,
   refreshSettlementObligations,
   resolveNumberedDirectCheckDates,
+  settlementRefreshDiagnostic,
   settlementRefreshBlockingIssueMessage,
   shouldPreserveEndedIndividualPeriod,
 } from "@/lib/manage/settlements";
+
+describe("settlement refresh diagnostics", () => {
+  it("reports the safe PostgreSQL identity and refresh phase for grouping failures", () => {
+    const error = Object.assign(
+      new Error('column "direct_sources.check_number" must appear in the GROUP BY clause or be used in an aggregate function'),
+      {
+        code: "42803",
+        table: "direct_sources",
+        constraint: "direct_sources_grouping_check",
+      },
+    );
+
+    expect(settlementRefreshDiagnostic(error, "read-employee-sources")).toEqual({
+      phase: "read-employee-sources",
+      message: 'Column "direct_sources.check_number" must be grouped or aggregated.',
+      code: "42803",
+      table: "direct_sources",
+      constraint: "direct_sources_grouping_check",
+    });
+  });
+
+  it("does not expose row values, query text, credentials, or unsafe metadata", () => {
+    const error = Object.assign(
+      new Error("duplicate key value violates unique constraint DETAIL: Key (source_key)=(private-row-value) already exists. postgres://admin:password@db.example.test/main"),
+      {
+        code: "23505",
+        table: "settlement_obligations; private-row-value",
+        constraint: "settlement_obligations_source_key_key",
+        detail: "Failing row contains (private-row-value)",
+        query: "INSERT INTO settlement_obligations VALUES ('private-row-value')",
+      },
+    );
+
+    const serialized = JSON.stringify(settlementRefreshDiagnostic(error, "write-obligations"));
+    expect(serialized).toContain("Database uniqueness constraint was violated.");
+    expect(serialized).toContain("settlement_obligations_source_key_key");
+    expect(serialized).not.toContain("private-row-value");
+    expect(serialized).not.toContain("password");
+    expect(serialized).not.toContain("INSERT");
+    expect(serialized).not.toContain("table");
+  });
+});
 
 describe("settlement source identity", () => {
   it("distinguishes reused check numbers by check date", () => {
@@ -215,6 +258,44 @@ describe("settlement refresh certification", () => {
     expect(statements.at(-1)).toBe("COMMIT");
   });
 
+  it("does not expand a scoped operator refresh to the global ledger when sources are dirty", async () => {
+    const employeeId = "00000000-0000-4000-8000-000000000002";
+    const statements: string[] = [];
+    const client = {
+      query: vi.fn(async (sql: string) => {
+        statements.push(sql);
+        if (sql.includes("FROM settlement_ledger_state")) {
+          return {
+            rows: [{
+              source_version: "2",
+              refreshed_version: "1",
+              dirty_since: "2026-08-24T00:00:00.000Z",
+              last_refreshed_at: null,
+              last_refresh_error: null,
+            }],
+          };
+        }
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    };
+    const pool = {
+      query: vi.fn(async () => ({ rows: [] })),
+      connect: vi.fn(async () => client),
+    } as unknown as PgLikePool;
+
+    const result = await refreshSettlementObligations(
+      pool,
+      { employeeId },
+      null,
+      { allowGlobalWhenDirty: false },
+    );
+
+    expect(result).toMatchObject({ ok: false, code: "conflict" });
+    expect(statements.some((sql) => sql.includes("FROM payroll_transactions t"))).toBe(false);
+    expect(statements.at(-1)).toBe("COMMIT");
+  });
+
   it("blocks a payment before reading or changing an obligation while the ledger is dirty", async () => {
     const statements: string[] = [];
     const client = {
@@ -353,10 +434,67 @@ describe("settlement refresh serialization", () => {
     expect(statements.at(-1)).toBe("COMMIT");
   });
 
-  it("replaces transaction provenance while an obligation is still unactioned", async () => {
+  it("skips per-obligation probes for a newly derived zero balance", async () => {
+    const employeeId = "00000000-0000-4000-8000-000000000001";
+    const statements: string[] = [];
+    const client = {
+      query: vi.fn(async (sql: string) => {
+        statements.push(sql);
+        if (sql.includes("FROM settlement_ledger_state")) {
+          return {
+            rows: [{
+              source_version: "4",
+              refreshed_version: "4",
+              dirty_since: null,
+              last_refreshed_at: null,
+              refreshed_for_date: settlementApplicationDate(),
+              last_refresh_error: null,
+            }],
+          };
+        }
+        if (sql.includes("JOIN employees e ON e.id = t.employee_id") && sql.includes("LEFT JOIN LATERAL")) {
+          return {
+            rows: [{
+              id: "00000000-0000-4000-8000-000000000003",
+              employee_id: employeeId,
+              employee_name: "Keep All Employee",
+              check_number: "ZERO-1",
+              check_date: "2026-08-15",
+              period_begin: "2026-08-01",
+              period_end: "2026-08-14",
+              effective_date: "2026-08-15",
+              payment_recipient: "employee",
+              billed_amount: "100.0000",
+              base_amount: "90.0000",
+              total_net_pay: "100.0000",
+              deal_id: "00000000-0000-4000-8000-000000000002",
+              deal_revision: 1,
+              direct_rule: "keep_all",
+              direct_percent: "0.000000",
+              agency_cut_percent: "0.000000",
+            }],
+          };
+        }
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    };
+    const pool = {
+      query: vi.fn(async () => ({ rows: [] })),
+      connect: vi.fn(async () => client),
+    } as unknown as PgLikePool;
+
+    const result = await refreshSettlementObligations(pool, { employeeId }, null);
+
+    expect(result).toMatchObject({ ok: true, data: { created: 0, unchanged: 0 } });
+    expect(statements.filter((sql) => sql.includes("WHERE o.source_key = $1"))).toHaveLength(0);
+  });
+
+  it("batches and replaces transaction provenance while an obligation is still unactioned", async () => {
     const employeeId = "00000000-0000-4000-8000-000000000001";
     const dealId = "00000000-0000-4000-8000-000000000002";
     const transactionId = "00000000-0000-4000-8000-000000000003";
+    const secondTransactionId = "00000000-0000-4000-8000-000000000005";
     const obligationId = "00000000-0000-4000-8000-000000000004";
     const calls: Array<{ sql: string; params?: unknown[] }> = [];
     const client = {
@@ -376,8 +514,8 @@ describe("settlement refresh serialization", () => {
         }
         if (sql.includes("JOIN employees e ON e.id = t.employee_id") && sql.includes("LEFT JOIN LATERAL")) {
           return {
-            rows: [{
-              id: transactionId,
+            rows: [transactionId, secondTransactionId].map((id) => ({
+              id,
               employee_id: employeeId,
               employee_name: "Test Employee",
               check_number: "SYNC-1",
@@ -386,15 +524,15 @@ describe("settlement refresh serialization", () => {
               period_end: "2026-08-14",
               effective_date: "2026-08-15",
               payment_recipient: "employee",
-              billed_amount: "100.0000",
-              base_amount: "90.0000",
+              billed_amount: "50.0000",
+              base_amount: "45.0000",
               total_net_pay: "100.0000",
               deal_id: dealId,
               deal_revision: 1,
               direct_rule: "giveback_percent",
               direct_percent: "0.100000",
               agency_cut_percent: "0.000000",
-            }],
+            })),
           };
         }
         if (sql.includes("SELECT o.id, o.original_amount::text") && sql.includes("o.source_key = $1")) {
@@ -427,10 +565,17 @@ describe("settlement refresh serialization", () => {
     const deleteCall = calls.find(({ sql }) =>
       sql.includes("DELETE FROM settlement_obligation_transactions"),
     );
-    expect(deleteCall?.params).toEqual([obligationId, [transactionId]]);
-    const upsertCall = calls.find(({ sql }) =>
+    expect(deleteCall?.params).toEqual([obligationId, [transactionId, secondTransactionId]]);
+    const upsertCalls = calls.filter(({ sql }) =>
       sql.includes("INSERT INTO settlement_obligation_transactions"),
     );
-    expect(upsertCall?.params).toEqual([obligationId, transactionId, null, null]);
+    expect(upsertCalls).toHaveLength(1);
+    expect(upsertCalls[0].sql).toContain("unnest($2::uuid[], $3::numeric[])");
+    expect(upsertCalls[0].params).toEqual([
+      obligationId,
+      [transactionId, secondTransactionId],
+      [null, null],
+      null,
+    ]);
   });
 });

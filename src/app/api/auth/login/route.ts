@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
     next = typeof rawNext === "string" ? rawNext : null;
   }
 
-  const destination = safeRedirectPath(next);
+  const destination = safeRedirectPath(next, "/home");
 
   if (!email.trim() || !password) {
     return fail(request, wantsJson, "Enter both an email address and a password.", destination);

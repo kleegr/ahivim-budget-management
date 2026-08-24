@@ -32,18 +32,21 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   let reviewCount = 0;
   let canSeeTransactions = true;
   let canSeeSettlements = isManager;
+  let canSeeBudgets = isManager;
   const loaded = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
     const counts = isManager ? await exceptionCounts(pool) : null;
     return {
       canSeeTransactions: scope.canSeeTransactions,
       canSeeSettlements: scope.canSeeSettlements,
+      canSeeBudgets: scope.canSeeBudgets,
       counts,
     };
   });
   if (loaded.ok) {
     canSeeTransactions = loaded.data.canSeeTransactions;
     canSeeSettlements = loaded.data.canSeeSettlements;
+    canSeeBudgets = loaded.data.canSeeBudgets;
     const c = loaded.data.counts;
     if (c) {
       reviewCount =
@@ -62,6 +65,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         reviewCount={reviewCount}
         canSeeTransactions={canSeeTransactions}
         canSeeSettlements={canSeeSettlements}
+        canSeeBudgets={canSeeBudgets}
       />
       <div className="flex min-h-screen min-w-0 flex-1 flex-col">
         <main id="main" className="mx-auto w-full max-w-[100rem] flex-1 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">

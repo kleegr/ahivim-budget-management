@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import {
   hasTestDatabase, testPool, resetSchema, truncateBusinessTables, closeTestPool, countRows,
 } from "../support/database";
-import { buildWorkbook, ALL_ROWS, EXPECTED_AGENCY_GROSS, EXPECTED_INTERNAL_AMOUNT } from "../support/workbook";
+import { AGENCY_PAYEE, buildWorkbook, ALL_ROWS, EXPECTED_AGENCY_GROSS, EXPECTED_INTERNAL_AMOUNT } from "../support/workbook";
 import { uploadAndStage, commit, discard, loadFile, sha256 } from "@/lib/import/service";
 import { dec } from "@/lib/money";
 
@@ -99,6 +99,38 @@ suite("Excel import workflow end to end (real PostgreSQL)", () => {
     expect(warning!.message).toContain("$23.00");
     expect(warning!.message).toContain("$18.00");
     expect(warning!.severity).toBe("warning");
+  });
+
+  it("routes a suspicious combined group rate to one group review instead of per-row rate exceptions", async () => {
+    const groupRows = ["Group Person One", "Group Person Two"].map((individual) => ({
+      payTo: AGENCY_PAYEE,
+      checkDate: "2025-04-20",
+      checkNumber: "GROUP-112",
+      code: "RG",
+      hours: 13,
+      rate: 112,
+      amount: 728,
+      totalNetPay: 728,
+      periodBegin: "2025-04-01",
+      periodEnd: "2025-04-15",
+      program: "Day Hab",
+      individual,
+      employee: "Group Employee",
+      internalAmount: 651.37,
+    }));
+    const groupBytes = await buildWorkbook(groupRows);
+    const outcome = await uploadAndStage(testPool(), {
+      filename: "group-rate-review.xlsx",
+      bytes: groupBytes,
+      uploadedByUserId: null,
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    expect(outcome.staging.counts.groupsNeedingReview).toBe(1);
+    expect(outcome.staging.counts.rateExceptions).toBe(0);
+    expect(outcome.staging.warnings.filter((warning) => warning.category === "rate_exception")).toHaveLength(0);
+    expect(outcome.staging.warnings.filter((warning) => warning.category === "group_needs_review")).toHaveLength(1);
   });
 
   it("reconciles against the workbook's own control totals", async () => {
@@ -315,6 +347,7 @@ suite("Excel import workflow end to end (real PostgreSQL)", () => {
     expect(second.staging.counts.duplicates).toBe(ALL_ROWS.length);
     expect(second.staging.counts.confirmedDuplicates).toBe(ALL_ROWS.length);
     expect(second.staging.counts.valid).toBe(0);
+    expect(second.staging.counts.rateExceptions).toBe(0);
 
     // A whole-workbook re-import is not a reconciliation failure: nothing new
     // was imported, but the workbook is fully present in the ledger already.
@@ -329,11 +362,13 @@ suite("Excel import workflow end to end (real PostgreSQL)", () => {
     if (!result.ok) return;
     expect(result.result.counts.transactions).toBe(0);
     expect(result.result.counts.duplicateRows).toBe(ALL_ROWS.length);
+    expect(result.result.counts.rateExceptions).toBe(0);
     // Every source row is still preserved, it just did not become a transaction.
     expect(result.result.counts.importRows).toBe(ALL_ROWS.length);
 
     expect(await countRows("payroll_transactions")).toBe(ALL_ROWS.length);
     expect(await countRows("import_rows")).toBe(ALL_ROWS.length * 2);
+    expect(await countRows("rate_exceptions")).toBe(1);
   }, 120_000);
 
   it("produces the same fingerprint before and after the rows exist in the database", async () => {

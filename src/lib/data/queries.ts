@@ -18,6 +18,7 @@ import {
   BUDGET_STATUS_RANK,
   budgetStatusFromHours,
 } from "@/lib/business/budget-status";
+import { actionableRateExceptionSource } from "@/lib/data/rate-exception-scope";
 
 /**
  * READ MODEL
@@ -124,7 +125,9 @@ export async function dashboardSummary(pool: PgLikePool): Promise<DashboardSumma
        (SELECT count(*) FROM payroll_transactions)::text                          AS transactions,
        (SELECT count(*) FROM service_sessions)::text                              AS service_sessions,
        (SELECT count(*) FROM service_sessions WHERE group_size > 1)::text         AS group_sessions,
-       (SELECT count(*) FROM rate_exceptions WHERE resolution = 'open')::text     AS open_rate_exceptions,
+       (SELECT count(*) FROM rate_exceptions x
+         WHERE x.resolution = 'open'
+           AND ${actionableRateExceptionSource("x")})::text                      AS open_rate_exceptions,
        (SELECT count(*) FROM import_rows WHERE status = 'needs_review')::text     AS review_rows,
        (SELECT count(*) FROM import_batches WHERE status = 'committed')::text     AS imports,
        (SELECT coalesce(sum(imported_amount), 0) FROM payroll_transactions)::text AS agency_gross,
@@ -385,7 +388,9 @@ export async function getIndividualReport(
        (SELECT count(DISTINCT s.id)
           FROM service_allocations a JOIN service_sessions s ON s.id = a.service_session_id
          WHERE a.individual_id = $1 AND s.group_size > 1)::text             AS group_sessions,
-       (SELECT count(*) FROM rate_exceptions WHERE individual_id = $1)::text AS rate_exceptions,
+       (SELECT count(*) FROM rate_exceptions x
+         WHERE x.individual_id = $1 AND x.resolution = 'open'
+           AND ${actionableRateExceptionSource("x")})::text                 AS rate_exceptions,
        (SELECT count(*) FROM import_warnings WHERE individual_id = $1)::text AS import_warnings,
        (SELECT count(*) FROM import_rows r
          WHERE r.status = 'needs_review'
@@ -438,11 +443,15 @@ export interface IndividualBudgetSummary {
   usedPct: number | null; // 0–100, total billed ÷ total authorized (period-scoped)
   elapsedPct: number | null; // 0–100
   renews: string | null; // period end / renewal date
+  usedHours: number; // billed hours inside each program's current budget period
   hoursLeft: number | null; // authorized − billed
   plans: number; // programs in the plan
   daysToRenewal: number | null; // renews − today (negative = expired)
   expired: boolean; // the period end is in the past
+  mustUseMonthly: number | null; // per-program remaining pace, summed across renewal cycles
   mustUseWeekly: number | null; // hours to use per week to finish by renewal
+  transactionCount: number; // transactions inside the current program budget periods
+  billedAmount: string; // funder amount billed inside the current program budget periods
 }
 
 export interface IndividualBudgetBoardRow {
@@ -455,6 +464,8 @@ export interface IndividualBudgetBoardRow {
   budget: IndividualBudgetSummary | null;
   /** Has committed transactions — used to flag "billing but no budget on file". */
   hasBilling: boolean;
+  /** Most recent committed pay-period date, independent of whether a budget exists. */
+  lastBilledOn: string | null;
 }
 
 const BUDGET_SEVERITY: Record<UtilizationStatus, number> = {
@@ -471,8 +482,8 @@ const BUDGET_SEVERITY: Record<UtilizationStatus, number> = {
  * The Individuals register, as a budget board. Health, % used, remaining and
  * renewal come from the SAME plan the profile and the Financial page use:
  * authorized hours from the Calculations-tab plan (calculation_strategy_lines),
- * billed hours from payroll_transactions.imported_hours inside the current
- * renewal year (renewal − 12 months → renewal). One source, so the list here can
+ * billed hours from payroll_transactions.imported_hours inside each program's
+ * current budget year. One source, so the list here can
  * never disagree with a person's own page, and both reconcile to the ledger.
  */
 export async function listIndividualBudgetBoard(
@@ -485,7 +496,7 @@ export async function listIndividualBudgetBoard(
   const billedScopeClause = scope
     ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
     : "";
-  const billingExistsScopeClause = scope
+  const latestBillingScopeClause = scope
     ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
     : "";
   const { rows } = await pool.query<{
@@ -496,9 +507,15 @@ export async function listIndividualBudgetBoard(
     archived_at: string | null;
     renewal_date: string | null;
     program_name: string | null;
+    program_code: string | null;
     authorized_hours: string | null;
+    budget_rate: string | null;
     billed_hours: string | null;
+    billed_internal: string | null;
+    billed_amount: string | null;
+    transaction_count: number | null;
     has_billing: boolean;
+    last_billed_on: string | null;
   }>(
     `WITH plan AS (
        SELECT DISTINCT ON (cs.individual_id)
@@ -516,17 +533,38 @@ export async function listIndividualBudgetBoard(
      )
      SELECT i.id, i.display_name, i.preferred_name, i.status,
             i.archived_at::text AS archived_at,
-            to_char(pl.period_end, 'YYYY-MM-DD') AS renewal_date,
-            pr.name                  AS program_name,
-            l.authorized_hours::text AS authorized_hours,
-            COALESCE(b.hrs, 0)::text AS billed_hours,
-             EXISTS (SELECT 1 FROM payroll_transactions t WHERE t.individual_id = i.id${billingExistsScopeClause}) AS has_billing
+             to_char(pl.period_end, 'YYYY-MM-DD') AS renewal_date,
+             pr.name                  AS program_name,
+             pr.code                  AS program_code,
+             l.authorized_hours::text AS authorized_hours,
+             COALESCE(
+               l.rate_override,
+               (SELECT sched.internal_rate
+                  FROM program_rate_schedules sched
+                 WHERE sched.program_id = l.program_id
+                 ORDER BY sched.effective_from DESC
+                 LIMIT 1)
+             )::text AS budget_rate,
+             COALESCE(b.hrs, 0)::text AS billed_hours,
+             COALESCE(b.internal, 0)::text AS billed_internal,
+             COALESCE(b.amount, 0)::text AS billed_amount,
+             COALESCE(b.cnt, 0)::int AS transaction_count,
+             latest.total_count > 0 AS has_billing,
+             to_char(latest.last_billed_on, 'YYYY-MM-DD') AS last_billed_on
        FROM individuals i
        LEFT JOIN plan pl ON pl.individual_id = i.id
        LEFT JOIN calculation_strategy_lines l ON l.strategy_id = pl.strategy_id
        LEFT JOIN programs pr ON pr.id = l.program_id
        LEFT JOIN LATERAL (
-         SELECT COALESCE(sum(t.imported_hours), 0) AS hrs
+         SELECT COALESCE(sum(t.imported_hours), 0) AS hrs,
+                COALESCE(sum(COALESCE(
+                  t.calculated_internal_amount,
+                  t.spreadsheet_internal_amount,
+                  t.internal_rate_applied * t.imported_hours,
+                  0
+                )), 0) AS internal,
+                COALESCE(sum(t.imported_amount), 0) AS amount,
+                count(*)::int AS cnt
            FROM payroll_transactions t
            WHERE t.individual_id = i.id
              AND t.program_id = l.program_id
@@ -540,6 +578,13 @@ export async function listIndividualBudgetBoard(
                                         THEN make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int + 1, 1, 1)
                                         ELSE pl.period_end END)
        ) b ON l.id IS NOT NULL
+       LEFT JOIN LATERAL (
+         SELECT max(t.period_begin)::date AS last_billed_on,
+                count(*)::int AS total_count
+           FROM payroll_transactions t
+          WHERE t.individual_id = i.id
+            ${latestBillingScopeClause}
+       ) latest ON true
       WHERE i.merged_into_id IS NULL${scopeClause}
       ORDER BY i.display_name`,
     params,
@@ -553,8 +598,17 @@ export async function listIndividualBudgetBoard(
     archived: boolean;
     renewal: string | null;
     programs: Set<string>;
-    auths: { authorized: string; billed: string }[];
+    auths: {
+      authorized: string;
+      rawBilledHours: string;
+      billedInternal: string;
+      billedAmount: string;
+      transactionCount: number;
+      programCode: string;
+      budgetRate: string | null;
+    }[];
     hasBilling: boolean;
+    lastBilledOn: string | null;
   };
   const byId = new Map<string, Acc>();
   const today = asOf.toISOString().slice(0, 10);
@@ -571,12 +625,21 @@ export async function listIndividualBudgetBoard(
         programs: new Set<string>(),
         auths: [],
         hasBilling: r.has_billing === true,
+        lastBilledOn: r.last_billed_on,
       };
       byId.set(r.id, acc);
     }
     if (r.program_name && r.authorized_hours !== null) {
       acc.programs.add(r.program_name);
-      acc.auths.push({ authorized: r.authorized_hours, billed: r.billed_hours ?? "0" });
+      acc.auths.push({
+        authorized: r.authorized_hours,
+        rawBilledHours: r.billed_hours ?? "0",
+        billedInternal: r.billed_internal ?? "0",
+        billedAmount: r.billed_amount ?? "0",
+        transactionCount: r.transaction_count ?? 0,
+        programCode: r.program_code ?? "",
+        budgetRate: r.budget_rate,
+      });
     }
   }
 
@@ -589,12 +652,27 @@ export async function listIndividualBudgetBoard(
         period.start && period.end ? calculatePeriodElapsed({ startDate: period.start, endDate: period.end }, asOf) : null;
       let totalAuth = dec(0);
       let totalBilled = dec(0);
+      let totalBilledAmount = dec(0);
+      let transactionCount = 0;
+      let monthlyPace = dec(0);
+      let weeklyPace = dec(0);
       let worst: UtilizationStatus = "not_started";
       for (const a of acc.auths) {
         const auth = dec(a.authorized);
-        const billed = dec(a.billed);
+        const billed = dec(effectiveBilledHours(a.programCode, a.rawBilledHours, a.billedInternal, a.budgetRate));
+        const remaining = auth.minus(billed);
         totalAuth = totalAuth.plus(auth);
         totalBilled = totalBilled.plus(billed);
+        totalBilledAmount = totalBilledAmount.plus(dec(a.billedAmount));
+        transactionCount += a.transactionCount;
+        const linePeriod = programBudgetPeriod(a.programCode, acc.renewal, acc.status === "active", today);
+        if (linePeriod.effectiveRenewal && remaining.greaterThan(0)) {
+          const lineDays = Math.round((Date.parse(`${linePeriod.effectiveRenewal}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / (24 * 60 * 60 * 1000));
+          if (lineDays > 0) {
+            monthlyPace = monthlyPace.plus(remaining.dividedBy(lineDays / 30.4375));
+            weeklyPace = weeklyPace.plus(remaining.dividedBy(lineDays / 7));
+          }
+        }
         if (elapsed) {
           const usage = auth.isZero() ? dec(0) : billed.dividedBy(auth);
           const st = classifyUtilization(usage, elapsed);
@@ -605,18 +683,22 @@ export async function listIndividualBudgetBoard(
       const dayMs = 24 * 60 * 60 * 1000;
       const daysToRenewal = Math.round((Date.parse(`${acc.renewal}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / dayMs);
       const hoursLeft = totalAuth.minus(totalBilled).toNumber();
-      const weeksLeft = daysToRenewal > 0 ? daysToRenewal / 7 : 0;
+      const positiveHoursLeft = Math.max(0, hoursLeft);
       budget = {
         status: worst,
         plainStatus: budgetStatusFromHours(totalAuth.toNumber(), totalBilled.toNumber()),
         usedPct,
         elapsedPct: elapsed ? dec(elapsed.timeElapsedPercent).times(100).toNumber() : null,
         renews: acc.renewal,
+        usedHours: totalBilled.toNumber(),
         hoursLeft,
         plans: acc.auths.length,
         daysToRenewal,
         expired: daysToRenewal < 0,
-        mustUseWeekly: weeksLeft > 0 && hoursLeft > 0 ? hoursLeft / weeksLeft : null,
+        mustUseMonthly: monthlyPace.greaterThan(0) ? Math.min(positiveHoursLeft, monthlyPace.toNumber()) : null,
+        mustUseWeekly: weeklyPace.greaterThan(0) ? Math.min(positiveHoursLeft, weeklyPace.toNumber()) : null,
+        transactionCount,
+        billedAmount: totalBilledAmount.toFixed(2),
       };
     }
     out.push({
@@ -628,6 +710,7 @@ export async function listIndividualBudgetBoard(
       programs: [...acc.programs].sort(),
       budget,
       hasBilling: acc.hasBilling,
+      lastBilledOn: acc.lastBilledOn,
     });
   }
   return out;
@@ -692,7 +775,8 @@ export async function getEmployeeReport(
           FROM payroll_transactions t WHERE t.employee_id = $1${tScope})::text      AS internal_amount,
        (SELECT count(*) FROM rate_exceptions x
           JOIN payroll_transactions t ON t.id = x.payroll_transaction_id
-         WHERE t.employee_id = $1${tScope})::text                                   AS rate_exceptions`,
+         WHERE t.employee_id = $1 AND x.resolution = 'open'
+           AND ${actionableRateExceptionSource("x")}${tScope})::text                AS rate_exceptions`,
     params,
   );
   const r = rows[0] ?? {};
@@ -744,7 +828,9 @@ export async function exceptionCounts(pool: PgLikePool): Promise<ExceptionCounts
        (SELECT count(*) FROM individual_match_reviews WHERE status = 'pending')::text          AS duplicate_individuals,
        ((SELECT count(*) FROM individual_aliases WHERE status = 'pending')
         + (SELECT count(*) FROM employee_aliases WHERE status = 'pending'))::text               AS pending_aliases,
-       (SELECT count(*) FROM rate_exceptions WHERE resolution = 'open')::text                   AS rate_exceptions,
+       (SELECT count(*) FROM rate_exceptions x
+         WHERE x.resolution = 'open'
+           AND ${actionableRateExceptionSource("x")})::text                                  AS rate_exceptions,
        (SELECT count(*) FROM import_warnings WHERE category = 'possible_duplicate')::text       AS duplicate_candidates,
        (SELECT count(*) FROM service_sessions
          WHERE group_detection_status = 'needs_review')::text                                   AS group_review_issues,
@@ -1062,8 +1148,8 @@ export async function getIndividualBudgetView(
 /*                                                                            */
 /* So a coordinator never has to leave the page to see "what was billed this  */
 /* period": one query breaks it down by month (for plan-vs-actual pacing) and  */
-/* one by employee (who did the work). Both windowed to the current 12-month   */
-/* budget period, never the whole history.                                     */
+/* one by employee (who did the work). Each program is windowed to its own     */
+/* current 12-month budget period, never the whole history.                    */
 /* -------------------------------------------------------------------------- */
 
 /** One program's billing in one month — the itemized cell of the by-month grid. */
@@ -1085,6 +1171,19 @@ export interface PeriodProgram {
   agency: string;
   internal: string;
 }
+export interface PlannedPeriodProgram {
+  id: string;
+  name: string;
+  code: string;
+}
+export interface BillingHistoryPeriod {
+  key: "renewal" | "calendar";
+  label: string;
+  start: string;
+  end: string;
+  programs: PeriodProgram[];
+  byProgramMonth: PeriodProgramMonth[];
+}
 /** One billed transaction, shown inline when an employee row is expanded. */
 export interface PeriodEmployeeTx {
   id: string;
@@ -1104,16 +1203,94 @@ export interface PeriodEmployee {
   transactions: PeriodEmployeeTx[];
 }
 export interface IndividualPeriodActivity {
-  byProgramMonth: PeriodProgramMonth[]; // every program billed, per month (itemized)
-  programsBilled: PeriodProgram[]; // distinct programs billed, most hours first
+  periods: BillingHistoryPeriod[]; // renewal-year and calendar-year histories kept separate
   byEmployee: PeriodEmployee[]; // each with its own transactions for this person/period
+}
+
+const periodProgramKey = (program: { id: string | null; name: string }) => program.id ?? `raw:${program.name}`;
+
+/**
+ * Assemble display periods from planned and billed programs. Planned programs
+ * are seeded with zero totals, so a valid budget remains visible before its
+ * first transaction. Calendar-year programs never share a month grid with the
+ * individual's renewal-year programs.
+ */
+export function buildBillingHistoryPeriods({
+  renewalStart,
+  renewalEnd,
+  calendarStart,
+  calendarEnd,
+  plannedPrograms,
+  programsBilled,
+  byProgramMonth,
+}: {
+  renewalStart: string | null;
+  renewalEnd: string | null;
+  calendarStart: string;
+  calendarEnd: string;
+  plannedPrograms: PlannedPeriodProgram[];
+  programsBilled: PeriodProgram[];
+  byProgramMonth: PeriodProgramMonth[];
+}): BillingHistoryPeriod[] {
+  const billedByKey = new Map(programsBilled.map((program) => [periodProgramKey(program), program]));
+  const seen = new Set<string>();
+  const programs: PeriodProgram[] = [];
+
+  for (const planned of plannedPrograms) {
+    const key = periodProgramKey(planned);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    programs.push(billedByKey.get(key) ?? {
+      id: planned.id,
+      name: planned.name,
+      code: planned.code,
+      hours: "0",
+      agency: "0",
+      internal: "0",
+    });
+  }
+  for (const billed of programsBilled) {
+    const key = periodProgramKey(billed);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    programs.push(billed);
+  }
+
+  const renewalPrograms = programs.filter((program) => !isCalendarYearProgram(program.code));
+  const calendarPrograms = programs.filter((program) => isCalendarYearProgram(program.code));
+  const renewalMonths = byProgramMonth.filter((row) => !isCalendarYearProgram(row.programCode));
+  const calendarMonths = byProgramMonth.filter((row) => isCalendarYearProgram(row.programCode));
+  const periods: BillingHistoryPeriod[] = [];
+
+  if (renewalStart && renewalEnd && (renewalPrograms.length > 0 || renewalMonths.length > 0)) {
+    periods.push({
+      key: "renewal",
+      label: "Renewal-year programs",
+      start: renewalStart,
+      end: renewalEnd,
+      programs: renewalPrograms,
+      byProgramMonth: renewalMonths,
+    });
+  }
+  if (calendarPrograms.length > 0 || calendarMonths.length > 0) {
+    periods.push({
+      key: "calendar",
+      label: "Calendar-year programs",
+      start: calendarStart,
+      end: calendarEnd,
+      programs: calendarPrograms,
+      byProgramMonth: calendarMonths,
+    });
+  }
+  return periods;
 }
 
 /**
  * The individual's billed activity inside their current budget year, itemized so
  * the profile can show a real by-program-by-month breakdown (hours don't add up
  * across programs, so the money is what totals) and an expandable per-employee
- * ledger. Every figure is windowed to [start, end] — this renewal year only.
+ * ledger. Renewal-year and calendar-year programs are windowed separately, so
+ * the monthly history reconciles to each program's used/remaining calculation.
  */
 export async function getIndividualPeriodActivity(
   pool: PgLikePool,
@@ -1121,16 +1298,25 @@ export async function getIndividualPeriodActivity(
   start: string | null,
   end: string | null,
   scope?: AccessScope,
+  plannedPrograms: PlannedPeriodProgram[] = [],
 ): Promise<IndividualPeriodActivity> {
-  if (!start || !end) return { byProgramMonth: [], programsBilled: [], byEmployee: [] };
+  const calendarPeriod = programBudgetPeriod("DAY_HAB", null, true);
+  const calendarStart = calendarPeriod.start!;
+  const calendarEnd = calendarPeriod.end!;
   const internalExpr =
     "COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount, t.internal_rate_applied * t.imported_hours, 0)";
   const scopedTransaction = () => {
-    const params: unknown[] = [individualId, start, end];
+    const params: unknown[] = [individualId, start, end, calendarStart, calendarEnd];
     const clause = scope
       ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
       : "";
-    return { params, clause };
+    const periodClause = `AND (
+      (COALESCE(p.code, '') IN ('DAY_HAB','SUPP_GROUP_DAY_HAB') AND t.period_begin >= $4::date AND t.period_begin <= $5::date)
+      OR
+      (COALESCE(p.code, '') NOT IN ('DAY_HAB','SUPP_GROUP_DAY_HAB') AND $2::date IS NOT NULL AND $3::date IS NOT NULL
+       AND t.period_begin >= $2::date AND t.period_begin <= $3::date)
+    )`;
+    return { params, clause, periodClause };
   };
 
   // Budget (internal) per-hour rate for each GROUP-session program for this
@@ -1157,7 +1343,9 @@ export async function getIndividualPeriodActivity(
   );
   const groupRateByProgram = new Map(groupRateRes.rows.map((r) => [r.program_id, r.budget_rate]));
 
-  // Program × month, every program the person billed (not just the budgeted ones).
+  // Program x month. Each program is restricted to its own budget year: the
+  // individual's renewal year for most services, January-January for the two
+  // calendar-year services.
   const pmScope = scopedTransaction();
   const pmRes = await pool.query<{ month: string; program_id: string | null; program_name: string; program_code: string; hours: string; agency: string; internal: string }>(
     `SELECT to_char(date_trunc('month', t.period_begin), 'YYYY-MM') AS month,
@@ -1169,7 +1357,8 @@ export async function getIndividualPeriodActivity(
             sum(${internalExpr})::text   AS internal
        FROM payroll_transactions t
        LEFT JOIN programs p ON p.id = t.program_id
-       WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
+       WHERE t.individual_id = $1
+         ${pmScope.periodClause}
          ${pmScope.clause}
       GROUP BY 1, t.program_id, p.name, t.program_raw, p.code
       ORDER BY 1`,
@@ -1187,7 +1376,8 @@ export async function getIndividualPeriodActivity(
             sum(${internalExpr})::text   AS internal
        FROM payroll_transactions t
        LEFT JOIN programs p ON p.id = t.program_id
-       WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
+       WHERE t.individual_id = $1
+         ${programScope.periodClause}
          ${programScope.clause}
       GROUP BY t.program_id, p.name, t.program_raw, p.code
       ORDER BY sum(t.imported_hours) DESC`,
@@ -1210,7 +1400,8 @@ export async function getIndividualPeriodActivity(
        FROM payroll_transactions t
        LEFT JOIN employees e ON e.id = t.employee_id
        LEFT JOIN programs p ON p.id = t.program_id
-       WHERE t.individual_id = $1 AND t.period_begin >= $2 AND t.period_begin <= $3
+       WHERE t.individual_id = $1
+         ${transactionScope.periodClause}
          ${transactionScope.clause}
       ORDER BY COALESCE(e.display_name, t.employee_raw, 'Unknown'), t.period_begin`,
     transactionScope.params,
@@ -1262,8 +1453,7 @@ export async function getIndividualPeriodActivity(
     // Re-sort by the effective hours so the biggest programs still lead the columns.
     .sort((x, y) => dec(y.hours).minus(dec(x.hours)).toNumber());
 
-  return {
-    byProgramMonth: pmRes.rows.map((r) => ({
+  const byProgramMonth = pmRes.rows.map((r) => ({
       month: r.month,
       programId: r.program_id,
       programName: r.program_name,
@@ -1271,8 +1461,18 @@ export async function getIndividualPeriodActivity(
       hours: effectiveBilledHours(r.program_code, r.hours, r.internal, groupRateByProgram.get(r.program_id ?? "")),
       agency: r.agency,
       internal: r.internal,
-    })),
-    programsBilled,
+    }));
+
+  return {
+    periods: buildBillingHistoryPeriods({
+      renewalStart: start,
+      renewalEnd: end,
+      calendarStart,
+      calendarEnd,
+      plannedPrograms,
+      programsBilled,
+      byProgramMonth,
+    }),
     byEmployee,
   };
 }

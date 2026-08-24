@@ -5,6 +5,7 @@ import { redactTransactionFields } from "@/lib/auth/money-redaction";
 import { calculatePeriodElapsed, type PeriodElapsed } from "@/lib/business/utilization";
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { pickEffectiveRateRow } from "@/lib/business/rate-resolver";
+import { actionableRateExceptionSource } from "@/lib/data/rate-exception-scope";
 
 /**
  * Read models for the application screens.
@@ -94,8 +95,9 @@ export async function getDashboardData(pool: PgLikePool): Promise<DashboardData>
               (SELECT count(*) FROM import_batches)::text        AS imports,
               (SELECT count(*) FROM import_rows
                  WHERE status = 'needs_review')::text            AS review_rows,
-              (SELECT count(*) FROM rate_exceptions
-                 WHERE resolution = 'open')::text                AS rate_exceptions`,
+              (SELECT count(*) FROM rate_exceptions x
+                 WHERE x.resolution = 'open'
+                   AND ${actionableRateExceptionSource("x")})::text AS rate_exceptions`,
     ),
     pool.query<{ c: string }>(
       `SELECT ((SELECT count(*) FROM individual_aliases WHERE status = 'pending')
@@ -689,7 +691,8 @@ export async function listRateExceptions(
     ? options.resolution!
     : null;
 
-  const where = `WHERE ($1::text IS NULL OR x.resolution = $1)`;
+  const where = `WHERE ${actionableRateExceptionSource("x")}
+                   AND ($1::text IS NULL OR x.resolution = $1)`;
   const [countRes, rowsRes] = await Promise.all([
     pool.query<{ c: string }>(`SELECT count(*)::text AS c FROM rate_exceptions x ${where}`, [
       resolution,

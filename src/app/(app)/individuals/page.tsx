@@ -32,8 +32,16 @@ export default async function IndividualsPage() {
     const rows = await listIndividualBudgetBoard(pool, new Date(), scope);
     return rows.map((row) => (
       scope.canSeeBudgets && scope.canSeeHours && hasDirectIndividualAccess(scope, row.id)
-        ? { ...row, insightsVisible: true }
-        : { ...row, programs: [], budget: null, hasBilling: false, insightsVisible: false }
+        ? {
+            ...row,
+            budget: row.budget ? {
+              ...row.budget,
+              transactionCount: scope.canSeeTransactions ? row.budget.transactionCount : null,
+              billedAmount: scope.canSeeBilledAmounts ? row.budget.billedAmount : null,
+            } : null,
+            insightsVisible: true,
+          }
+        : { ...row, programs: [], budget: null, hasBilling: false, lastBilledOn: null, insightsVisible: false }
     ));
   });
 

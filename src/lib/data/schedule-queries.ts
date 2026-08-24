@@ -180,12 +180,14 @@ export interface ProgramForecast {
  *   what authorised hours would remain once the schedule is honoured.
  * `excludeSessionId` drops one pending session from the scheduled total, so an
  * edit preview does not count the session against itself.
+ * Every figure is contained to the authorization that covers `asOfDate`.
  */
 export async function individualProgramForecast(
   pool: PgLikePool,
   individualId: string,
   programId: string,
   excludeSessionId?: string | null,
+  asOfDate: string = new Date().toISOString().slice(0, 10),
 ): Promise<ProgramForecast> {
   const empty: ProgramForecast = {
     authorizedHours: null, authStart: null, authEnd: null,
@@ -199,26 +201,32 @@ export async function individualProgramForecast(
     `SELECT ba.authorized_hours::text, bp.start_date::text AS start_date, bp.end_date::text AS end_date
      FROM budget_authorizations ba JOIN budget_periods bp ON bp.id = ba.budget_period_id
      WHERE ba.individual_id = $1 AND ba.program_id = $2 AND ba.status = 'active' AND bp.status = 'active'
-     ORDER BY bp.start_date DESC LIMIT 1`,
-    [individualId, programId],
+       AND $3::date BETWEEN bp.start_date AND bp.end_date
+     ORDER BY bp.start_date DESC, ba.revision DESC LIMIT 1`,
+    [individualId, programId, asOfDate],
   );
+  const selected = auth.rows[0];
+  if (!selected) return empty;
+
   const actual = await pool.query<{ h: string; amt: string }>(
     `SELECT COALESCE(sum(al.allocation_hours),0)::text AS h,
             COALESCE(sum(al.allocated_amount),0)::text AS amt
      FROM service_allocations al JOIN service_sessions ss ON ss.id = al.service_session_id
-     WHERE al.individual_id = $1 AND ss.program_id = $2`,
-    [individualId, programId],
+     WHERE al.individual_id = $1 AND ss.program_id = $2
+       AND COALESCE(ss.period_begin, ss.period_end) BETWEEN $3::date AND $4::date`,
+    [individualId, programId, selected.start_date, selected.end_date],
   );
   const scheduled = await pool.query<{ h: string; amt: string }>(
     `SELECT COALESCE(sum(sa.allocation_hours),0)::text AS h,
             COALESCE(sum(sa.allocated_amount),0)::text AS amt
      FROM scheduled_allocations sa JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
      WHERE sa.individual_id = $1 AND s.program_id = $2 AND s.status = 'pending'
-       AND ($3::uuid IS NULL OR s.id <> $3)`,
-    [individualId, programId, excludeSessionId ?? null],
+       AND s.session_date BETWEEN $3::date AND $4::date
+       AND ($5::uuid IS NULL OR s.id <> $5)`,
+    [individualId, programId, selected.start_date, selected.end_date, excludeSessionId ?? null],
   );
 
-  const authorizedHours = auth.rows[0]?.authorized_hours ?? null;
+  const authorizedHours = selected.authorized_hours;
   const actualHours = actual.rows[0]?.h ?? "0";
   const scheduledHours = scheduled.rows[0]?.h ?? "0";
   const remaining =
@@ -228,8 +236,8 @@ export async function individualProgramForecast(
 
   return {
     authorizedHours: authorizedHours === null ? null : toHours(authorizedHours),
-    authStart: auth.rows[0]?.start_date ?? null,
-    authEnd: auth.rows[0]?.end_date ?? null,
+    authStart: selected.start_date,
+    authEnd: selected.end_date,
     actualHours: toHours(actualHours),
     actualAmount: toMoney(actual.rows[0]?.amt ?? "0"),
     scheduledHours: toHours(scheduledHours),
@@ -289,6 +297,7 @@ export async function individualScheduleSummary(
   asOf: Date = new Date(),
 ): Promise<ScheduleUtilizationSummary | null> {
   if (!isUuid(individualId)) return null;
+  const asOfDate = asOf.toISOString().slice(0, 10);
   const person = await pool.query<{ display_name: string }>(
     `SELECT display_name FROM individuals WHERE id = $1`,
     [individualId],
@@ -303,8 +312,9 @@ export async function individualScheduleSummary(
             renewal_date::text AS renewal_date
      FROM budget_periods
      WHERE individual_id = $1 AND status = 'active'
+       AND $2::date BETWEEN start_date AND end_date
      ORDER BY start_date DESC LIMIT 1`,
-    [individualId],
+    [individualId, asOfDate],
   );
   const periodRow = periodRes.rows[0] ?? null;
   const elapsed = periodRow
@@ -318,8 +328,9 @@ export async function individualScheduleSummary(
      JOIN budget_periods bp ON bp.id = ba.budget_period_id
      JOIN programs p ON p.id = ba.program_id
      WHERE ba.individual_id = $1 AND ba.status = 'active' AND bp.status = 'active'
+       AND $2::date BETWEEN bp.start_date AND bp.end_date
      ORDER BY p.name`,
-    [individualId],
+    [individualId, asOfDate],
   );
 
   let totalAuth = dec(0);
@@ -329,7 +340,7 @@ export async function individualScheduleSummary(
   const programs: ScheduleUtilizationProgram[] = [];
 
   for (const p of progRes.rows) {
-    const f = await individualProgramForecast(pool, individualId, p.id);
+    const f = await individualProgramForecast(pool, individualId, p.id, null, asOfDate);
     const auth = f.authorizedHours === null ? null : dec(f.authorizedHours);
     const used = dec(f.actualHours);
     const sched = dec(f.scheduledHours);
