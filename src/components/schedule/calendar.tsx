@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import type {
   CalendarSession, SessionWarningFlags, ScheduleUtilizationSummary,
@@ -25,6 +25,8 @@ export interface ScheduleCalendarProps {
   employees: Picker[];
   individuals: Picker[];
   programs: ProgramPicker[];
+  initialDate?: string;
+  initialView?: View;
   initialFilters?: {
     employeeId?: string;
     individualId?: string;
@@ -38,10 +40,14 @@ export interface ScheduleCalendarProps {
  * Main component: view switch, navigation, filters, data load, and modals.
  * ========================================================================= */
 export default function ScheduleCalendar(props: ScheduleCalendarProps) {
-  const { canManage, today, employees, individuals, programs, initialFilters } = props;
+  const {
+    canManage, today, employees, individuals, programs,
+    initialDate, initialView, initialFilters,
+  } = props;
+  const startingDate = initialDate && /^\d{4}-\d{2}-\d{2}$/.test(initialDate) ? initialDate : today;
 
-  const [view, setView] = useState<View>("month");
-  const [anchor, setAnchor] = useState(today);
+  const [view, setView] = useState<View>(initialView ?? "month");
+  const [anchor, setAnchor] = useState(startingDate);
   const [filters, setFilters] = useState({
     employeeId: initialFilters?.employeeId ?? "",
     individualId: initialFilters?.individualId ?? "",
@@ -57,6 +63,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
   const [creating, setCreating] = useState<null | { date: string }>(null);
   const [summary, setSummary] = useState<ScheduleUtilizationSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const loadRequestId = useRef(0);
 
   const range = useMemo(() => {
     if (view === "day") return { from: anchor, to: anchor };
@@ -69,6 +76,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
   }, [view, anchor]);
 
   const load = useCallback(async () => {
+    const requestId = ++loadRequestId.current;
     setLoading(true);
     setError(null);
     const qs = new URLSearchParams({ from: range.from, to: range.to });
@@ -78,6 +86,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
     if (filters.unassigned) qs.set("unassigned", "true");
     if (filters.status) qs.set("status", filters.status);
     const res = await send("GET", `/api/schedule/sessions?${qs.toString()}`);
+    if (requestId !== loadRequestId.current) return;
     setLoading(false);
     if (!res.ok) {
       setError(res.error ?? "Could not load the schedule.");
@@ -92,6 +101,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
 
   useEffect(() => {
     void load();
+    return () => { loadRequestId.current += 1; };
   }, [load]);
 
   // Utilization strip: load the authorized/used/scheduled/remaining picture for
@@ -137,13 +147,12 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
     <div className="space-y-4">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="segmented-control" role="tablist" aria-label="Calendar view">
+        <div className="segmented-control" role="group" aria-label="Calendar view">
           {(["month", "week", "day"] as View[]).map((v) => (
             <button
               key={v}
               type="button"
-              role="tab"
-              aria-selected={view === v}
+              aria-pressed={view === v}
               onClick={() => setView(v)}
               className="capitalize"
             >
@@ -160,7 +169,15 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
         <div className="ml-auto flex items-center gap-2">
           {loading ? <span role="status" className="text-xs text-[var(--color-ink-faint)]">Loading…</span> : null}
           {canManage ? (
-            <button type="button" onClick={() => setCreating({ date: view === "month" ? today : anchor })} className="btn btn-sm btn-primary">
+            <button
+              type="button"
+              onClick={() => setCreating({
+                date: view === "month" && anchor.slice(0, 7) !== today.slice(0, 7)
+                  ? startOfMonth(anchor)
+                  : view === "month" ? today : anchor,
+              })}
+              className="btn btn-sm btn-primary"
+            >
               <Plus aria-hidden className="h-4 w-4" /> New session
             </button>
           ) : null}

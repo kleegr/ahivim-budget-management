@@ -1,9 +1,10 @@
-export type NavigationGate = "manager" | "transactions" | "settlements";
+export type NavigationGate = "manager" | "transactions" | "settlements" | "budgets";
 
 export interface NavigationAccess {
   role: string;
   canSeeTransactions: boolean;
   canSeeSettlements: boolean;
+  canSeeBudgets: boolean;
 }
 
 export interface NavigationDestination {
@@ -57,6 +58,7 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         href: "/individuals",
         hint: "Authorized hours, usage and renewals",
         keywords: "individuals people clients authorizations utilization",
+        gate: "budgets",
       },
       {
         id: "annual-plans",
@@ -78,15 +80,15 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
   },
   {
     id: "payroll",
-    label: "Payroll",
-    hint: "Employee deals, open balances and payment history",
+    label: "Money operations",
+    hint: "Amounts to pay, collect, set aside and reconcile",
     activePrefixes: ["/settlements", "/employees"],
     destinations: [
       {
         id: "open-balances",
-        label: "Open balances",
+        label: "Balances and collections",
         href: "/settlements",
-        hint: "Payouts, give-backs, set-asides and credits",
+        hint: "Payouts, collections, set-asides and credits",
         keywords: "settlements ledger owed receivable payable payment history",
         gate: "settlements",
       },
@@ -115,10 +117,10 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
       },
       {
         id: "schedule",
-        label: "Schedule",
+        label: "Planning",
         href: "/schedule",
-        hint: "Plan one-time and recurring sessions",
-        keywords: "calendar planning sessions",
+        hint: "Work queue, calendar, coverage and future plans",
+        keywords: "calendar planning sessions coverage pace assignments",
         gate: "manager",
       },
       {
@@ -262,7 +264,8 @@ function allowed(gate: NavigationGate | undefined, access: NavigationAccess): bo
   if (!gate) return true;
   if (gate === "manager") return access.role === "manager" || access.role === "admin";
   if (gate === "transactions") return access.canSeeTransactions;
-  return access.canSeeSettlements;
+  if (gate === "settlements") return access.canSeeSettlements;
+  return access.canSeeBudgets;
 }
 
 export function getVisibleWorkspaces(access: NavigationAccess): VisibleNavigationWorkspace[] {

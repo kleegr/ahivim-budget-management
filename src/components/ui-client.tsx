@@ -148,14 +148,31 @@ export function TabPanels({
 }) {
   const [active, setActive] = useState<string>(validTabId(panels, initialId) ?? panels[0]?.id ?? "");
   const current = panels.find((p) => p.id === active) ?? panels[0];
-  const activeIndex = Math.max(0, panels.findIndex((panel) => panel.id === current?.id));
   const baseId = useId();
+  const panelIdKey = panels.map((panel) => panel.id).join("\u0000");
+  const previousInitialId = useRef(initialId);
+  const [visited, setVisited] = useState<Set<string>>(() => new Set(active ? [active] : []));
 
   useEffect(() => {
-    const next = validTabId(panels, initialId);
-    if (next) setActive(next);
-    else if (!panels.some((panel) => panel.id === active)) setActive(panels[0]?.id ?? "");
-  }, [active, initialId, panels]);
+    const panelIds = panelIdKey ? panelIdKey.split("\u0000") : [];
+    const next = initialId && panelIds.includes(initialId) ? initialId : undefined;
+    const initialIdChanged = previousInitialId.current !== initialId;
+    previousInitialId.current = initialId;
+    setActive((currentId) => {
+      if (initialIdChanged && next) return next;
+      return panelIds.includes(currentId) ? currentId : next ?? panelIds[0] ?? "";
+    });
+  }, [initialId, panelIdKey]);
+
+  useEffect(() => {
+    if (!active) return;
+    setVisited((currentIds) => {
+      if (currentIds.has(active)) return currentIds;
+      const nextIds = new Set(currentIds);
+      nextIds.add(active);
+      return nextIds;
+    });
+  }, [active]);
 
   useEffect(() => {
     if (!paramKey) return;
@@ -178,15 +195,19 @@ export function TabPanels({
   return (
     <div>
       <TabList tabs={panels} active={current?.id ?? ""} onSelect={select} baseId={baseId} />
-      <div
-        id={`${baseId}-panel-${activeIndex}`}
-        role="tabpanel"
-        aria-labelledby={`${baseId}-tab-${activeIndex}`}
-        tabIndex={0}
-        className="pt-5 outline-none"
-      >
-        {current?.content}
-      </div>
+      {panels.map((panel, index) => (visited.has(panel.id) || panel.id === current?.id) ? (
+        <div
+          key={panel.id}
+          id={`${baseId}-panel-${index}`}
+          role="tabpanel"
+          aria-labelledby={`${baseId}-tab-${index}`}
+          tabIndex={panel.id === current?.id ? 0 : -1}
+          hidden={panel.id !== current?.id}
+          className="pt-5 outline-none"
+        >
+          {panel.content}
+        </div>
+      ) : null)}
     </div>
   );
 }

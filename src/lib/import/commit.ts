@@ -756,14 +756,15 @@ async function writeImport(client: PgLikeClient, input: CommitInput): Promise<Co
     // exception carries the actual imported and expected rates rather than a
     // re-derived guess.
     const config = input.ratesByProgram[staged.programCode];
-    if (!config) return [];
+    const payrollTransactionId = transactionIds.get(staged.sourceRowNumber) ?? null;
+    if (!config || !payrollTransactionId) return [];
     const evaluated = evaluateRateException({
       importedRate: parsed.rate,
       expectedRate: config.internalRate,
     });
     return [
       {
-        payrollTransactionId: transactionIds.get(staged.sourceRowNumber) ?? null,
+        payrollTransactionId,
         individualId: individuals.get(normalizePersonName(parsed.individual)) ?? null,
         programId: programIds.get(staged.programCode) ?? null,
         importedRate: evaluated.importedRate,

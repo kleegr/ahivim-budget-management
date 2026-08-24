@@ -40,6 +40,8 @@ export interface GroupCandidateRow {
   /** Rate as it appears on the row. For a group row this is the COMBINED rate. */
   rate: MoneyInput;
   amount: MoneyInput;
+  /** Per-person rate ladders for this row's program and service date. */
+  expectedBaseRates?: MoneyInput[];
 }
 
 /**
@@ -161,6 +163,7 @@ export function detectGroup(
   const candidateBases = [
     ...(options.expectedBaseRate !== undefined ? [options.expectedBaseRate] : []),
     ...(options.expectedBaseRates ?? []),
+    ...(rows[0].expectedBaseRates ?? []),
   ];
   if (candidateBases.length > 0 && groupSize > 1) {
     validation.combinedRateReconciles = candidateBases.some((base) =>

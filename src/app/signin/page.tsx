@@ -18,7 +18,7 @@ export default async function SignInPage({
     return Array.isArray(value) ? value[0] : value;
   };
 
-  const next = safeRedirectPath(first("next"));
+  const next = safeRedirectPath(first("next"), "/home");
   if (await currentUser()) redirect(next);
 
   const error = first("error") ?? null;

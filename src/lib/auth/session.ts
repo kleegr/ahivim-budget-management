@@ -6,7 +6,7 @@ import { signSession, readSession, type SessionPayload } from "./crypto";
  * Session cookie: HttpOnly, Secure in production, SameSite=Lax, 12h expiry.
  * Roles: 'admin' | 'manager' | 'viewer'.
  *
- *   viewer   read every screen and report
+ *   viewer   restricted access configured by an administrator
  *   manager  viewer + upload, commit/discard imports, resolve warnings
  *   admin    manager + user management, rate configuration, migrations
  *
@@ -107,9 +107,9 @@ export async function currentUser(): Promise<AuthenticatedUser | null> {
   };
 }
 
-/** The landing screen each role is allowed to see (viewers can't see the dashboard). */
+/** The landing screen each role is allowed to see. */
 export function homePathForRole(role: string | undefined): string {
-  return roleAtLeast(role, "manager") ? "/dashboard" : "/individuals";
+  return roleAtLeast(role, "manager") ? "/dashboard" : "/home";
 }
 
 /** For pages: redirect to sign-in when not authenticated / under-privileged. */

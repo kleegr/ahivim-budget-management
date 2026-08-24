@@ -9,10 +9,12 @@ export default function CommandBar({
   role = "admin",
   canSeeTransactions = true,
   canSeeSettlements = true,
+  canSeeBudgets = true,
 }: {
   role?: string;
   canSeeTransactions?: boolean;
   canSeeSettlements?: boolean;
+  canSeeBudgets?: boolean;
 } = {}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -21,8 +23,8 @@ export default function CommandBar({
   const inputRef = useRef<HTMLInputElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const access = useMemo<NavigationAccess>(
-    () => ({ role, canSeeTransactions, canSeeSettlements }),
-    [role, canSeeTransactions, canSeeSettlements],
+    () => ({ role, canSeeTransactions, canSeeSettlements, canSeeBudgets }),
+    [role, canSeeTransactions, canSeeSettlements, canSeeBudgets],
   );
   const available = useMemo(() => getCommandDestinations(access), [access]);
 

@@ -19,8 +19,11 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui";
 import { type UtilizationStatus } from "@/components/ui-viz";
+import { ColumnChooser } from "@/components/data-grid/toolbar";
+import { useGrid } from "@/components/data-grid/use-grid";
+import type { ColumnDef, SortState } from "@/components/data-grid/types";
 import { BUDGET_STATUS_PRESENT, type BudgetLineStatus } from "@/lib/business/budget-status";
-import { dec, formatHours } from "@/lib/money";
+import { dec, formatHours, formatMoney } from "@/lib/money";
 
 export type IndividualBudget = {
   status: UtilizationStatus;
@@ -28,11 +31,15 @@ export type IndividualBudget = {
   usedPct: number | null;
   elapsedPct: number | null;
   renews: string | null;
+  usedHours: number;
   hoursLeft: number | null;
   plans: number;
   daysToRenewal: number | null;
   expired: boolean;
+  mustUseMonthly: number | null;
   mustUseWeekly: number | null;
+  transactionCount: number | null;
+  billedAmount: string | null;
 };
 
 export type IndividualRow = {
@@ -44,14 +51,16 @@ export type IndividualRow = {
   programs: string[];
   budget: IndividualBudget | null;
   hasBilling: boolean;
+  lastBilledOn: string | null;
   insightsVisible: boolean;
 };
 
 type DecisionFilter = "all" | "attention" | "over" | "behind" | "renewing" | "billing_without_budget" | "no_activity";
-type SortKey = "name" | "programs" | "health" | "used" | "left" | "weekly" | "renews" | "status";
-type SortState = { key: SortKey; dir: "asc" | "desc" };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const LOCKED_COLUMNS: ReadonlySet<string> = new Set(["name"]);
+const DEFAULT_HIDDEN_COLUMNS = ["used", "weekly", "billedHours", "transactions", "billedAmount"];
+const DEFAULT_SORT: SortState = [{ key: "renews", dir: "asc" }];
 
 function formatDate(value: string): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
@@ -106,6 +115,23 @@ function matchesFilter(row: IndividualRow, filter: DecisionFilter): boolean {
   return true;
 }
 
+function healthRank(row: IndividualRow): number {
+  if (!row.insightsVisible) return 99;
+  if (hasBillingWithoutBudget(row)) return 0;
+  if (!row.budget) return hasNoActivity(row) ? 6 : 98;
+  if (row.budget.expired) return 1;
+  const rank: Record<UtilizationStatus, number> = {
+    over_authorization: 0,
+    fully_used: 2,
+    near_exhaustion: 3,
+    behind_pace: 4,
+    not_started: 5,
+    ahead_of_pace: 7,
+    on_pace: 8,
+  };
+  return rank[row.budget.status];
+}
+
 function SummaryMetric({ icon: Icon, label, value, tone = "default" }: {
   icon: LucideIcon;
   label: string;
@@ -139,18 +165,19 @@ function StatusPill({ status }: { status: BudgetLineStatus }) {
 }
 
 function PaceBar({ budget }: { budget: IndividualBudget }) {
-  const used = Math.max(0, Math.min(100, budget.usedPct ?? 0));
+  const rawUsed = Math.max(0, budget.usedPct ?? 0);
+  const used = Math.min(100, rawUsed);
   const color = BUDGET_STATUS_PRESENT[budget.plainStatus].color;
   return (
     <div
-      className="pace-track mt-1.5"
+      className={`pace-track mt-1.5 ${rawUsed > 100 ? "pace-track-over" : ""}`}
       role="img"
-      aria-label={`${Math.round(used)}% of budget hours used`}
+      aria-label={`${Math.round(rawUsed)}% of budget hours used`}
       title={budget.elapsedPct !== null
-        ? `${Math.round(used)}% used; ${Math.round(budget.elapsedPct)}% of the budget period elapsed`
-        : `${Math.round(used)}% of hours used`}
+        ? `${Math.round(rawUsed)}% used; ${Math.round(budget.elapsedPct)}% of the budget period elapsed`
+        : `${Math.round(rawUsed)}% of hours used`}
     >
-      <div className="pace-fill" style={{ width: `${used}%`, background: color }} />
+      <div className="pace-fill" style={{ width: `${used}%`, background: rawUsed > 100 ? "var(--color-danger)" : color }} />
       {budget.elapsedPct !== null ? (
         <div className="pace-notch" style={{ left: `${Math.max(0, Math.min(100, budget.elapsedPct))}%` }} />
       ) : null}
@@ -175,7 +202,7 @@ function Renewal({ budget }: { budget: IndividualBudget }) {
       : "text-[var(--color-ink-soft)]";
   return (
     <div className={tone}>
-      <p className="tnum whitespace-nowrap">{formatDate(budget.renews)}</p>
+      <p className="tnum whitespace-nowrap font-medium">{formatDate(budget.renews)}</p>
       {detail ? <p className="mt-0.5 text-xs font-medium">{detail}</p> : null}
     </div>
   );
@@ -187,37 +214,67 @@ function remainingHours(budget: IndividualBudget): string {
   return `${formatHours(budget.hoursLeft)} h`;
 }
 
-function requiredWeekly(budget: IndividualBudget): string {
+function requiredMonthly(budget: IndividualBudget): string {
   if (budget.expired && (budget.hoursLeft ?? 0) > 0) return "Past renewal";
   if (budget.daysToRenewal === 0 && (budget.hoursLeft ?? 0) > 0) return "Due now";
-  if (budget.mustUseWeekly !== null && budget.mustUseWeekly > 0) {
-    return `${formatHours(budget.mustUseWeekly)} h/week`;
-  }
+  if (budget.mustUseMonthly !== null && budget.mustUseMonthly > 0) return `${formatHours(budget.mustUseMonthly)} h/month`;
   if (budget.hoursLeft !== null && budget.hoursLeft <= 0) return "None";
   return "-";
 }
 
-function SortHead({ column, children, align = "left", sort, onSort }: {
-  column: SortKey;
-  children: string;
-  align?: "left" | "right";
+function requiredWeekly(budget: IndividualBudget): string {
+  if (budget.expired && (budget.hoursLeft ?? 0) > 0) return "Past renewal";
+  if (budget.daysToRenewal === 0 && (budget.hoursLeft ?? 0) > 0) return "Due now";
+  if (budget.mustUseWeekly !== null && budget.mustUseWeekly > 0) return `${formatHours(budget.mustUseWeekly)} h/week`;
+  if (budget.hoursLeft !== null && budget.hoursLeft <= 0) return "None";
+  return "-";
+}
+
+function HealthCell({ row }: { row: IndividualRow }) {
+  if (!row.insightsVisible) return <span className="text-[var(--color-ink-faint)]">-</span>;
+  if (row.budget) {
+    return (
+      <>
+        <StatusPill status={row.budget.plainStatus} />
+        <PaceBar budget={row.budget} />
+      </>
+    );
+  }
+  if (row.hasBilling) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-warn)]">
+        <ReceiptText size={14} aria-hidden /> Billing without budget
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-ink-faint)]">
+      <Clock3 size={14} aria-hidden /> No activity
+    </span>
+  );
+}
+
+function SortHead({ column, sort, onSort }: {
+  column: ColumnDef<IndividualRow>;
   sort: SortState;
-  onSort: (key: SortKey) => void;
+  onSort: (key: string, additive: boolean) => void;
 }) {
-  const active = sort.key === column;
-  const Icon = active ? (sort.dir === "asc" ? ArrowUp : ArrowDown) : ArrowUpDown;
+  const active = sort.find((item) => item.key === column.key);
+  const Icon = active ? (active.dir === "asc" ? ArrowUp : ArrowDown) : ArrowUpDown;
+  const align = column.align ?? "left";
   return (
     <th
-      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+      aria-sort={active ? (active.dir === "asc" ? "ascending" : "descending") : "none"}
       className={`whitespace-nowrap border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 font-semibold ${align === "right" ? "text-right" : "text-left"}`}
+      style={column.width ? { minWidth: column.width } : undefined}
     >
       <button
         type="button"
-        onClick={() => onSort(column)}
+        onClick={(event) => onSort(column.key, event.shiftKey)}
         className={`inline-flex items-center gap-1.5 hover:text-[var(--color-primary)] ${align === "right" ? "flex-row-reverse" : ""}`}
-        title={`Sort by ${children}`}
+        title={`Sort by ${column.label}`}
       >
-        {children}
+        {column.label}
         <Icon size={13} className={active ? "text-[var(--color-primary)]" : "text-[var(--color-ink-faint)]"} aria-hidden />
       </button>
     </th>
@@ -225,10 +282,8 @@ function SortHead({ column, children, align = "left", sort, onSort }: {
 }
 
 export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
-  const [q, setQ] = useState("");
   const [showInactive, setShowInactive] = useState(false);
   const [filter, setFilter] = useState<DecisionFilter>("all");
-  const [sort, setSort] = useState<SortState>({ key: "health", dir: "asc" });
 
   const activeRows = useMemo(
     () => rows.filter((row) => row.status === "active" && !row.archived),
@@ -244,8 +299,8 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
     billing_without_budget: activeRows.filter(hasBillingWithoutBudget).length,
     no_activity: activeRows.filter(hasNoActivity).length,
   }), [activeRows]);
-  const weeklyHoursNeeded = useMemo(
-    () => activeRows.reduce((sum, row) => sum.plus(row.budget?.mustUseWeekly ?? 0), dec(0)).toString(),
+  const monthlyHoursNeeded = useMemo(
+    () => activeRows.reduce((sum, row) => sum.plus(row.budget?.mustUseMonthly ?? 0), dec(0)).toString(),
     [activeRows],
   );
 
@@ -266,78 +321,106 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
     return options;
   }, [hasPortfolioVisibility]);
 
-  const visible = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    let list = rows.filter((row) => (showInactive ? true : row.status === "active" && !row.archived));
-    list = list.filter((row) => matchesFilter(row, filter));
-    if (needle) {
-      list = list.filter((row) => (
-        row.name.toLowerCase().includes(needle)
-        || (row.preferredName ?? "").toLowerCase().includes(needle)
-        || row.programs.some((program) => program.toLowerCase().includes(needle))
-      ));
-    }
+  const portfolioRows = useMemo(
+    () => rows
+      .filter((row) => (showInactive ? true : row.status === "active" && !row.archived))
+      .filter((row) => matchesFilter(row, filter)),
+    [filter, rows, showInactive],
+  );
+  const canShowTransactionCounts = rows.some((row) => row.budget?.transactionCount !== null && row.budget?.transactionCount !== undefined);
+  const canShowBilledAmounts = rows.some((row) => row.budget?.billedAmount !== null && row.budget?.billedAmount !== undefined);
 
-    const healthRank = (row: IndividualRow): number => {
-      if (!row.insightsVisible) return 99;
-      if (hasBillingWithoutBudget(row)) return 0;
-      if (!row.budget) return hasNoActivity(row) ? 6 : 98;
-      if (row.budget.expired) return 1;
-      const rank: Record<UtilizationStatus, number> = {
-        over_authorization: 0,
-        fully_used: 2,
-        near_exhaustion: 3,
-        behind_pace: 4,
-        not_started: 5,
-        ahead_of_pace: 7,
-        on_pace: 8,
-      };
-      return rank[row.budget.status];
-    };
-    const compare = (a: IndividualRow, b: IndividualRow): number => {
-      let difference = 0;
-      switch (sort.key) {
-        case "name":
-          difference = a.name.localeCompare(b.name);
-          break;
-        case "programs":
-          difference = a.programs.join(",").localeCompare(b.programs.join(","));
-          break;
-        case "health":
-          difference = healthRank(a) - healthRank(b);
-          break;
-        case "used":
-          difference = (a.budget?.usedPct ?? -1) - (b.budget?.usedPct ?? -1);
-          break;
-        case "left":
-          difference = (a.budget?.hoursLeft ?? -1) - (b.budget?.hoursLeft ?? -1);
-          break;
-        case "weekly":
-          difference = (a.budget?.mustUseWeekly ?? -1) - (b.budget?.mustUseWeekly ?? -1);
-          break;
-        case "renews":
-          difference = (a.budget?.renews ?? "9999").localeCompare(b.budget?.renews ?? "9999");
-          break;
-        case "status":
-          difference = a.status.localeCompare(b.status);
-          break;
-      }
-      if (difference === 0) difference = a.name.localeCompare(b.name);
-      return sort.dir === "asc" ? difference : -difference;
-    };
-    return list.slice().sort(compare);
-  }, [filter, q, rows, showInactive, sort]);
+  const columns = useMemo<ColumnDef<IndividualRow>[]>(() => [
+    {
+      key: "name", label: "Individual", kind: "text", frozen: true, width: 180,
+      accessor: (row) => `${row.name} ${row.preferredName ?? ""}`.trim(),
+      render: (row) => (
+        <div>
+          <Link className="font-semibold text-[var(--color-primary)] underline-offset-2 hover:underline" href={`/individuals/${row.id}`}>
+            {row.name}
+          </Link>
+          {row.preferredName ? <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">Prefers {row.preferredName}</p> : null}
+        </div>
+      ),
+    },
+    {
+      key: "renews", label: "Renewal", kind: "date", width: 140,
+      accessor: (row) => row.budget?.renews ?? "9999-12-31",
+      render: (row) => row.budget ? <Renewal budget={row.budget} /> : <span className="text-[var(--color-ink-faint)]">-</span>,
+    },
+    {
+      key: "health", label: "Budget health", kind: "int", width: 170,
+      accessor: (row) => String(healthRank(row)),
+      render: (row) => <HealthCell row={row} />,
+    },
+    {
+      key: "left", label: "Hours remaining", kind: "hours", align: "right", width: 125,
+      accessor: (row) => row.budget?.hoursLeft?.toString() ?? null,
+      render: (row) => row.budget ? <span className={`tnum font-medium ${isOver(row) ? "text-[var(--color-danger)]" : ""}`}>{remainingHours(row.budget)}</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
+    },
+    {
+      key: "monthly", label: "Required / month", kind: "hours", align: "right", width: 135,
+      accessor: (row) => row.budget?.mustUseMonthly?.toString() ?? null,
+      render: (row) => row.budget ? <span className="tnum font-medium">{requiredMonthly(row.budget)}</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
+    },
+    {
+      key: "lastBilled", label: "Last billed", kind: "date", width: 125,
+      accessor: (row) => row.lastBilledOn,
+      render: (row) => row.lastBilledOn ? <span className="tnum whitespace-nowrap text-[var(--color-ink-soft)]">{formatDate(row.lastBilledOn)}</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
+    },
+    {
+      key: "programs", label: "Programs", kind: "text", width: 180,
+      accessor: (row) => row.programs.join(", ") || null,
+      render: (row) => <span className="text-[var(--color-ink-soft)]">{row.programs.length ? row.programs.join(", ") : "-"}</span>,
+    },
+    {
+      key: "status", label: "Status", kind: "badge", width: 95,
+      accessor: (row) => row.status,
+      render: (row) => <Badge value={row.status} />,
+    },
+    {
+      key: "used", label: "Used %", kind: "percent", align: "right", width: 90,
+      accessor: (row) => row.budget?.usedPct?.toString() ?? null,
+      render: (row) => row.budget?.usedPct === null || row.budget?.usedPct === undefined ? <span className="text-[var(--color-ink-faint)]">-</span> : <span className="tnum font-medium">{Math.round(row.budget.usedPct)}%</span>,
+    },
+    {
+      key: "weekly", label: "Required / week", kind: "hours", align: "right", width: 130,
+      accessor: (row) => row.budget?.mustUseWeekly?.toString() ?? null,
+      render: (row) => row.budget ? <span className="tnum font-medium">{requiredWeekly(row.budget)}</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
+    },
+    {
+      key: "billedHours", label: "Billed this period", kind: "hours", align: "right", width: 135,
+      accessor: (row) => row.budget?.usedHours.toString() ?? null,
+      render: (row) => row.budget ? <span className="tnum font-medium">{formatHours(row.budget.usedHours)} h</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
+    },
+    ...(canShowTransactionCounts ? [{
+      key: "transactions", label: "Transactions", kind: "int", align: "right", width: 105,
+      accessor: (row) => row.budget?.transactionCount?.toString() ?? null,
+      render: (row) => row.budget?.transactionCount === null || row.budget?.transactionCount === undefined ? <span className="text-[var(--color-ink-faint)]">-</span> : <span className="tnum">{row.budget.transactionCount.toLocaleString()}</span>,
+    } satisfies ColumnDef<IndividualRow>] : []),
+    ...(canShowBilledAmounts ? [{
+      key: "billedAmount", label: "Funder billed", kind: "money", align: "right", width: 120,
+      accessor: (row) => row.budget?.billedAmount ?? null,
+      render: (row) => row.budget?.billedAmount ? <span className="tnum font-medium">{formatMoney(row.budget.billedAmount)}</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
+    } satisfies ColumnDef<IndividualRow>] : []),
+  ], [canShowBilledAmounts, canShowTransactionCounts]);
+
+  const grid = useGrid<IndividualRow>({
+    rows: portfolioRows,
+    columns,
+    gridKey: "individual-budget-portfolio",
+    canManage: false,
+    initialSort: DEFAULT_SORT,
+    initialHidden: DEFAULT_HIDDEN_COLUMNS,
+    searchKeys: ["name", "programs"],
+    serializeHidden: true,
+  });
 
   const inactiveCount = rows.filter((row) => row.status !== "active" || row.archived).length;
-  const hasActiveFilters = q.trim().length > 0 || filter !== "all";
+  const hasActiveFilters = grid.search.trim().length > 0 || filter !== "all";
   const resetFilters = () => {
-    setQ("");
+    grid.setSearch("");
     setFilter("all");
-  };
-  const toggleSort = (key: SortKey) => {
-    setSort((previous) => previous.key === key
-      ? { key, dir: previous.dir === "asc" ? "desc" : "asc" }
-      : { key, dir: ["used", "left", "weekly"].includes(key) ? "desc" : "asc" });
   };
 
   return (
@@ -351,7 +434,7 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
               <SummaryMetric icon={Gauge} label="Over authorization" value={counts.over.toLocaleString()} tone={counts.over > 0 ? "attention" : "success"} />
               <SummaryMetric icon={Activity} label="Behind pace" value={counts.behind.toLocaleString()} tone={counts.behind > 0 ? "attention" : "success"} />
               <SummaryMetric icon={CalendarClock} label="Renewing in 60 days" value={counts.renewing.toLocaleString()} />
-              <SummaryMetric icon={Clock3} label="Weekly hours needed" value={`${formatHours(weeklyHoursNeeded)} h`} />
+              <SummaryMetric icon={Clock3} label="Monthly hours needed" value={`${formatHours(monthlyHoursNeeded)} h`} />
             </>
           ) : null}
         </div>
@@ -362,17 +445,17 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
           <div className="relative w-72 max-w-full">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-ink-faint)]" aria-hidden />
             <input
-              value={q}
-              onChange={(event) => setQ(event.target.value)}
+              value={grid.search}
+              onChange={(event) => grid.setSearch(event.target.value)}
               placeholder="Search individuals or programs"
               className="input w-full pl-9 pr-9"
               aria-label="Search individuals"
             />
-            {q ? (
+            {grid.search ? (
               <button
                 type="button"
-                onClick={() => setQ("")}
-                className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-md text-[var(--color-ink-faint)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
+                onClick={() => grid.setSearch("")}
+                className="btn btn-sm btn-icon btn-ghost absolute right-0 top-1/2 -translate-y-1/2"
                 aria-label="Clear individual search"
                 title="Clear search"
               >
@@ -380,15 +463,16 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
               </button>
             ) : null}
           </div>
+          <ColumnChooser grid={grid} lockedKeys={LOCKED_COLUMNS} />
           {inactiveCount > 0 ? (
-            <label className="flex items-center gap-2 text-sm text-[var(--color-ink-soft)]">
+            <label className="flex min-h-9 items-center gap-2 text-sm text-[var(--color-ink-soft)]">
               <input type="checkbox" checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} />
               Show inactive ({inactiveCount})
             </label>
           ) : null}
           <span className="ml-auto text-sm text-[var(--color-text-soft)]" aria-live="polite">
-            <span className="tnum font-semibold text-[var(--color-ink)]">{visible.length}</span>{" "}
-            {visible.length === 1 ? "person" : "people"}
+            <span className="tnum font-semibold text-[var(--color-ink)]">{grid.resultCount}</span>{" "}
+            {grid.resultCount === 1 ? "person" : "people"}
           </span>
         </div>
 
@@ -401,7 +485,7 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
                 type="button"
                 onClick={() => setFilter(key)}
                 aria-pressed={selected}
-                className={`inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors ${
+                className={`inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors sm:min-h-9 ${
                   selected
                     ? "border-[var(--color-primary)] bg-[var(--color-primary)] text-white"
                     : "border-[var(--color-rule-strong)] bg-[var(--color-surface)] text-[var(--color-ink-soft)] hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]"
@@ -420,66 +504,32 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
         <table className="w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10">
             <tr>
-              <SortHead column="name" sort={sort} onSort={toggleSort}>Individual</SortHead>
-              <SortHead column="programs" sort={sort} onSort={toggleSort}>Programs</SortHead>
-              <SortHead column="health" sort={sort} onSort={toggleSort}>Budget health</SortHead>
-              <SortHead column="used" align="right" sort={sort} onSort={toggleSort}>Used</SortHead>
-              <SortHead column="left" align="right" sort={sort} onSort={toggleSort}>Hours remaining</SortHead>
-              <SortHead column="weekly" align="right" sort={sort} onSort={toggleSort}>Required weekly</SortHead>
-              <SortHead column="renews" sort={sort} onSort={toggleSort}>Renewal</SortHead>
-              <SortHead column="status" sort={sort} onSort={toggleSort}>Status</SortHead>
+              {grid.visibleColumns.map((column) => (
+                <SortHead key={column.key} column={column} sort={grid.sort} onSort={grid.toggleSort} />
+              ))}
             </tr>
           </thead>
           <tbody>
-            {visible.map((row) => (
+            {grid.sorted.map((row) => (
               <tr key={row.id} className={`border-b border-[var(--color-rule)] hover:bg-[var(--color-surface-muted)] ${row.archived ? "opacity-70" : ""}`}>
-                <td className="px-3 py-2.5">
-                  <Link className="font-semibold text-[var(--color-primary)] underline-offset-2 hover:underline" href={`/individuals/${row.id}`}>
-                    {row.name}
-                  </Link>
-                  {row.preferredName ? <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">Prefers {row.preferredName}</p> : null}
-                </td>
-                <td className="max-w-56 px-3 py-2.5 text-[var(--color-ink-soft)]">
-                  {row.programs.length ? row.programs.join(", ") : <span className="text-[var(--color-ink-faint)]">-</span>}
-                </td>
-                <td className="min-w-40 px-3 py-2.5">
-                  {!row.insightsVisible ? (
-                    <span className="text-[var(--color-ink-faint)]">-</span>
-                  ) : row.budget ? (
-                    <>
-                      <StatusPill status={row.budget.plainStatus} />
-                      <PaceBar budget={row.budget} />
-                    </>
-                  ) : row.hasBilling ? (
-                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-warn)]">
-                      <ReceiptText size={14} aria-hidden /> Billing without budget
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-ink-faint)]">
-                      <Clock3 size={14} aria-hidden /> No activity
-                    </span>
-                  )}
-                </td>
-                <td className="tnum px-3 py-2.5 text-right font-medium">
-                  {row.budget?.usedPct === null || row.budget?.usedPct === undefined
-                    ? <span className="text-[var(--color-ink-faint)]">-</span>
-                    : `${Math.round(row.budget.usedPct)}%`}
-                </td>
-                <td className={`tnum px-3 py-2.5 text-right font-medium ${isOver(row) ? "text-[var(--color-danger)]" : ""}`}>
-                  {row.budget ? remainingHours(row.budget) : <span className="text-[var(--color-ink-faint)]">-</span>}
-                </td>
-                <td className="tnum px-3 py-2.5 text-right font-medium">
-                  {row.budget ? requiredWeekly(row.budget) : <span className="text-[var(--color-ink-faint)]">-</span>}
-                </td>
-                <td className="px-3 py-2.5">
-                  {row.budget ? <Renewal budget={row.budget} /> : <span className="text-[var(--color-ink-faint)]">-</span>}
-                </td>
-                <td className="px-3 py-2.5"><Badge value={row.status} /></td>
+                {grid.visibleColumns.map((column) => {
+                  const text = column.accessor(row) ?? "";
+                  const align = column.align ?? "left";
+                  return (
+                    <td
+                      key={column.key}
+                      className={`px-3 py-2.5 ${align === "right" ? "text-right" : "text-left"}`}
+                      style={column.width ? { minWidth: column.width } : undefined}
+                    >
+                      {column.render ? column.render(row, text, { editing: false, canManage: false }) : text || "-"}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
-            {visible.length === 0 ? (
+            {grid.sorted.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-3 py-12 text-center text-[var(--color-text-soft)]">
+                <td colSpan={Math.max(1, grid.visibleColumns.length)} className="px-3 py-12 text-center text-[var(--color-text-soft)]">
                   <p>{rows.length === 0 ? "No individuals yet." : "No individuals match these filters."}</p>
                   {hasActiveFilters ? (
                     <button type="button" onClick={resetFilters} className="mt-2 font-medium text-[var(--color-primary)] hover:underline">

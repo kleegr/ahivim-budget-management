@@ -254,11 +254,13 @@ export default function AppNav({
   reviewCount = 0,
   canSeeTransactions = true,
   canSeeSettlements = true,
+  canSeeBudgets = true,
 }: {
   user: AuthenticatedUser;
   reviewCount?: number;
   canSeeTransactions?: boolean;
   canSeeSettlements?: boolean;
+  canSeeBudgets?: boolean;
 }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
@@ -267,8 +269,8 @@ export default function AppNav({
   const drawerRef = useRef<HTMLElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const access = useMemo<NavigationAccess>(
-    () => ({ role: user.role, canSeeTransactions, canSeeSettlements }),
-    [user.role, canSeeTransactions, canSeeSettlements],
+    () => ({ role: user.role, canSeeTransactions, canSeeSettlements, canSeeBudgets }),
+    [user.role, canSeeTransactions, canSeeSettlements, canSeeBudgets],
   );
 
   const closeDrawer = useCallback(() => setOpen(false), []);
@@ -345,7 +347,7 @@ export default function AppNav({
         Skip to content
       </a>
 
-      <CommandBar role={user.role} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} />
+      <CommandBar role={user.role} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} canSeeBudgets={canSeeBudgets} />
 
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 md:hidden">
         <Wordmark />

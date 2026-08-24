@@ -5,7 +5,6 @@ import { matchPerson, type CanonicalRecord, type AliasRecord } from "@/lib/busin
 import {
   calculateInternalAmount,
   compareInternalAmounts,
-  isIntegerMultiple,
 } from "@/lib/business/internal-rate";
 import { evaluateRateException } from "@/lib/business/rate-exceptions";
 import {
@@ -282,21 +281,19 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
 
     // --- rate exception ----------------------------------------------------
     //
-    // A rate is legitimate when it is a whole-number multiple of either the
-    // configured internal rate or the configured agency rate. The multiple is
-    // the group size: Day Hab at $57 is three individuals at the $19 agency
-    // rate, not an anomaly. Only rates that fit neither ladder are exceptions,
-    // which is what isolates the genuine Self-Hire Respite variances.
+    // At this point a row has not been classified as single or group yet. Only
+    // an exact configured per-person rate is accepted here. Confirmed and
+    // suspected group rows are removed from this queue after group detection,
+    // so a genuine single-person row at 3x the normal rate is not hidden.
     if (rateConfig && p.rate) {
-      const onInternalLadder = isIntegerMultiple(p.rate, rateConfig.internalRate);
-      const onAgencyLadder =
-        rateConfig.agencyRate !== null && isIntegerMultiple(p.rate, rateConfig.agencyRate);
+      const onInternalRate = closeEnough(p.rate, rateConfig.internalRate, "0.005");
+      const onAgencyRate =
+        rateConfig.agencyRate !== null && closeEnough(p.rate, rateConfig.agencyRate, "0.005");
 
       const exception = evaluateRateException({
         importedRate: p.rate,
         expectedRate: rateConfig.internalRate,
-        // Suppress the variance when the row sits on a recognised rate ladder.
-        tolerance: onInternalLadder || onAgencyLadder ? "999999" : undefined,
+        tolerance: onInternalRate || onAgencyRate ? "999999" : undefined,
       });
       if (exception.isException) {
         rateExceptionCount++;
@@ -389,6 +386,9 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
         hours: p.hours,
         rate: p.rate,
         amount: p.amount,
+        expectedBaseRates: rateConfig
+          ? [rateConfig.internalRate, ...(rateConfig.agencyRate ? [rateConfig.agencyRate] : [])]
+          : [],
       });
     }
 
@@ -449,15 +449,26 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
 
   // --- groups --------------------------------------------------------------
   //
-  // Candidate rows are bucketed by composite signature. Both rate ladders are
-  // offered as candidate bases because the workbook prices groups off the
-  // internal rate on some rows and the agency rate on others.
-  const allBases = new Set<string>();
-  for (const cfg of Object.values(ctx.ratesByProgram)) {
-    allBases.add(cfg.internalRate);
-    if (cfg.agencyRate) allBases.add(cfg.agencyRate);
-  }
-  const groups = detectGroups(groupCandidates, { expectedBaseRates: [...allBases] });
+  // Each candidate carries only its own program's rate ladders. A rate from an
+  // unrelated program must never make this group look valid.
+  const groups = detectGroups(groupCandidates);
+  const groupMemberRows = new Set(
+    groups.filter((group) => group.groupSize > 1).flatMap((group) => group.sourceRowRefs),
+  );
+  const duplicateRows = new Set(
+    staged
+      .filter((row) => row.duplicateStatus === "confirmed")
+      .map((row) => row.sourceRowNumber),
+  );
+  const retainedWarnings = warnings.filter((warning) =>
+    warning.category !== "rate_exception"
+    || warning.sourceRowNumber === null
+    || (!groupMemberRows.has(warning.sourceRowNumber) && !duplicateRows.has(warning.sourceRowNumber)),
+  );
+  warnings.length = 0;
+  warnings.push(...retainedWarnings);
+  rateExceptionCount = warnings.filter((warning) => warning.category === "rate_exception").length;
+
   for (const g of groups) {
     if (g.status === "needs_review") {
       warnings.push({

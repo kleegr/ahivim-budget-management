@@ -98,8 +98,9 @@ export async function resolveAccessScope(
   pool: PgLikePool,
   user: { id: string; role: string },
 ): Promise<AccessScope> {
-  // Only the read-only VIEWER role is ever scoped. Admins run the system and
-  // managers are trusted staff, so both always see everything.
+  // Only the restricted VIEWER role is ever scoped. It is view-only by default,
+  // but an administrator can grant narrow operational actions such as recording
+  // payments. Admins and managers always retain full access.
   if (user.role !== "viewer") return fullAccess(user.id, user.role);
 
   const { rows } = await pool.query<{

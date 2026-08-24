@@ -1,8 +1,91 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
+import { ChevronDown, ChevronUp, Columns3 } from "lucide-react";
 import type { GridViewConfig } from "./types";
 import type { UseGridResult } from "./use-grid";
+
+const NO_LOCKED_COLUMNS: ReadonlySet<string> = new Set();
+
+/**
+ * Standalone column visibility/order control. Keeping this separate from the
+ * export and saved-view toolbar lets operational registers offer configurable
+ * columns without inheriting unrelated transaction-export permissions.
+ */
+export function ColumnChooser<Row, T>({
+  grid,
+  lockedKeys = NO_LOCKED_COLUMNS,
+}: {
+  grid: UseGridResult<Row, T>;
+  lockedKeys?: ReadonlySet<string>;
+}) {
+  const [open, setOpen] = useState(false);
+  const hiddenCount = grid.orderedColumns.filter((column) => !lockedKeys.has(column.key) && grid.hidden.has(column.key)).length;
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        className="btn btn-sm btn-secondary"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+      >
+        <Columns3 className="h-4 w-4" aria-hidden />
+        Columns{hiddenCount ? ` (${hiddenCount} hidden)` : ""}
+      </button>
+      {open ? (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden />
+          <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-2 shadow-lg" role="dialog" aria-label="Choose table columns">
+            <p className="mb-1 px-1 text-[0.7rem] font-medium uppercase text-[var(--color-text-soft)]">Show, hide &amp; reorder</p>
+            <div className="scroll-thin max-h-72 space-y-0.5 overflow-auto">
+              {grid.orderedColumns.map((column, index) => {
+                const locked = lockedKeys.has(column.key);
+                return (
+                  <div key={column.key} className="group flex min-h-9 items-center gap-1 rounded px-1 py-0.5 text-sm hover:bg-[var(--color-surface-strong)]">
+                    <label className="flex min-w-0 flex-1 items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={locked || !grid.hidden.has(column.key)}
+                        disabled={locked}
+                        onChange={() => grid.toggleHidden(column.key)}
+                      />
+                      <span className="flex-1 truncate">{column.label || "-"}</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => grid.moveColumn(column.key, -1)}
+                      disabled={locked || index === 0 || lockedKeys.has(grid.orderedColumns[index - 1]?.key ?? "")}
+                      title="Move earlier"
+                      aria-label={`Move ${column.label} earlier`}
+                      className="btn btn-sm btn-icon btn-ghost"
+                    >
+                      <ChevronUp className="h-4 w-4" aria-hidden />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => grid.moveColumn(column.key, 1)}
+                      disabled={locked || index === grid.orderedColumns.length - 1 || lockedKeys.has(grid.orderedColumns[index + 1]?.key ?? "")}
+                      title="Move later"
+                      aria-label={`Move ${column.label} later`}
+                      className="btn btn-sm btn-icon btn-ghost"
+                    >
+                      <ChevronDown className="h-4 w-4" aria-hidden />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <button type="button" className="mt-1 w-full text-xs text-[var(--color-ink-faint)] underline underline-offset-2" onClick={grid.resetHidden}>
+              Reset visible columns
+            </button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
 
 /**
  * The shared grid toolbar: search, a live "X of N" result count, one-click
@@ -26,11 +109,8 @@ export function Toolbar<Row, T>({
   showColumnChooser?: boolean;
   extraActions?: ReactNode;
 }) {
-  const [colsOpen, setColsOpen] = useState(false);
   const [viewsOpen, setViewsOpen] = useState(false);
   const [viewName, setViewName] = useState("");
-
-  const hiddenCount = grid.hidden.size;
 
   return (
     <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -58,54 +138,7 @@ export function Toolbar<Row, T>({
         Reset filters
       </button>
 
-      {showColumnChooser ? (
-        <div className="relative">
-          <button type="button" className="btn btn-sm btn-secondary" onClick={() => setColsOpen((v) => !v)} aria-expanded={colsOpen}>
-            Columns{hiddenCount ? ` (${hiddenCount} hidden)` : ""}
-          </button>
-          {colsOpen ? (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setColsOpen(false)} aria-hidden />
-              <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-2 shadow-lg">
-                <p className="mb-1 px-1 text-[0.7rem] font-medium uppercase tracking-wide text-[var(--color-text-soft)]">Show, hide &amp; reorder</p>
-                <div className="scroll-thin max-h-72 space-y-0.5 overflow-auto">
-                  {grid.orderedColumns.map((c, i) => (
-                    <div key={c.key} className="group flex items-center gap-1 rounded px-1 py-0.5 text-sm hover:bg-[var(--color-surface-strong)]">
-                      <label className="flex flex-1 items-center gap-2 truncate">
-                        <input type="checkbox" checked={!grid.hidden.has(c.key)} onChange={() => grid.toggleHidden(c.key)} />
-                        <span className="flex-1 truncate">{c.label || "—"}</span>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => grid.moveColumn(c.key, -1)}
-                        disabled={i === 0}
-                        title="Move up (earlier)"
-                        aria-label={`Move ${c.label} earlier`}
-                        className="rounded px-1 text-[var(--color-ink-faint)] hover:text-[var(--color-ink)] disabled:opacity-30"
-                      >
-                        ▲
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => grid.moveColumn(c.key, 1)}
-                        disabled={i === grid.orderedColumns.length - 1}
-                        title="Move down (later)"
-                        aria-label={`Move ${c.label} later`}
-                        className="rounded px-1 text-[var(--color-ink-faint)] hover:text-[var(--color-ink)] disabled:opacity-30"
-                      >
-                        ▼
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                <button type="button" className="mt-1 w-full text-xs text-[var(--color-ink-faint)] underline underline-offset-2" onClick={grid.resetHidden}>
-                  Reset visible columns
-                </button>
-              </div>
-            </>
-          ) : null}
-        </div>
-      ) : null}
+      {showColumnChooser ? <ColumnChooser grid={grid} /> : null}
 
       <div className="relative">
         <button type="button" className="btn btn-sm btn-secondary" onClick={() => setViewsOpen((v) => !v)} aria-expanded={viewsOpen}>

@@ -9,7 +9,9 @@ import { addProgramRate } from "@/lib/manage/programs";
 import {
   createSession, createSeries, setSessionStatus, rescheduleSession, duplicateSession, cancelSeries, detectConflicts,
 } from "@/lib/manage/schedule";
-import { listSessions, scheduledByProgramForIndividual, scheduledTotals } from "@/lib/data/schedule-queries";
+import {
+  individualProgramForecast, listSessions, scheduledByProgramForIndividual, scheduledTotals,
+} from "@/lib/data/schedule-queries";
 import { dec } from "@/lib/money";
 
 const suite = hasTestDatabase ? describe : describe.skip;
@@ -110,6 +112,68 @@ suite("scheduling (real PostgreSQL)", () => {
     const stranger = unwrap(await createIndividual(pool, { displayName: "Unassigned Person" }, ACTOR));
     const res = unwrap(await createSession(pool, { employeeId: emp.id, programId: dayHab, individualIds: [stranger.id], sessionDate: "2025-03-10", durationHours: "1", startTime: null, endTime: null }, ACTOR));
     expect(res.warnings.map((w) => w.code)).toContain("not_assigned");
+  });
+
+  it("uses assignment effective dates when checking schedule eligibility", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    await pool.query(
+      `UPDATE assignments SET start_date = '2025-01-01', end_date = '2025-02-28'
+       WHERE employee_id = $1 AND individual_id = $2 AND program_id = $3`,
+      [emp.id, ind.id, dayHab],
+    );
+
+    const during = await detectConflicts(pool, {
+      employeeId: emp.id, programId: dayHab, individualIds: [ind.id],
+      sessionDate: "2025-02-10", durationHours: "1", startTime: null, endTime: null,
+    });
+    expect(during.map((warning) => warning.code)).not.toContain("not_assigned");
+
+    const after = await detectConflicts(pool, {
+      employeeId: emp.id, programId: dayHab, individualIds: [ind.id],
+      sessionDate: "2025-03-10", durationHours: "1", startTime: null, endTime: null,
+    });
+    expect(after.map((warning) => warning.code)).toContain("not_assigned");
+  });
+
+  it("contains actual and scheduled forecasts to the selected authorization period", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    const insideActual = await pool.query<{ id: string }>(
+      `INSERT INTO service_sessions
+         (employee_id, program_id, period_begin, period_end, physical_hours)
+       VALUES ($1, $2, '2025-05-01', '2025-05-15', 20) RETURNING id`,
+      [emp.id, dayHab],
+    );
+    const outsideActual = await pool.query<{ id: string }>(
+      `INSERT INTO service_sessions
+         (employee_id, program_id, period_begin, period_end, physical_hours)
+       VALUES ($1, $2, '2024-05-01', '2024-05-15', 50) RETURNING id`,
+      [emp.id, dayHab],
+    );
+    await pool.query(
+      `INSERT INTO service_allocations
+         (service_session_id, individual_id, allocation_hours, allocated_rate, allocated_amount)
+       VALUES ($1, $3, 20, 17, 340), ($2, $3, 50, 17, 850)`,
+      [insideActual.rows[0].id, outsideActual.rows[0].id, ind.id],
+    );
+    await createSession(pool, {
+      employeeId: emp.id, programId: dayHab, individualIds: [ind.id],
+      sessionDate: "2025-06-10", durationHours: "10", startTime: null, endTime: null,
+    }, ACTOR);
+    await createSession(pool, {
+      employeeId: emp.id, programId: dayHab, individualIds: [ind.id],
+      sessionDate: "2026-06-10", durationHours: "30", startTime: null, endTime: null,
+    }, ACTOR);
+
+    const forecast = await individualProgramForecast(pool, ind.id, dayHab, null, "2025-06-15");
+    expect(dec(forecast.actualHours).toNumber()).toBe(20);
+    expect(dec(forecast.actualAmount).toNumber()).toBe(340);
+    expect(dec(forecast.scheduledHours).toNumber()).toBe(10);
+    expect(dec(forecast.remainingAfterScheduleHours!).toNumber()).toBe(70);
+
+    const withoutAuthorization = await individualProgramForecast(pool, ind.id, dayHab, null, "2026-06-15");
+    expect(withoutAuthorization.authorizedHours).toBeNull();
+    expect(dec(withoutAuthorization.actualHours).toNumber()).toBe(0);
+    expect(dec(withoutAuthorization.scheduledHours).toNumber()).toBe(0);
   });
 
   it("warns when no rate is configured for the program on that date", async () => {

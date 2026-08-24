@@ -153,6 +153,23 @@ describe("group rows priced off either the internal or the agency rate", () => {
     expect(r.validation.combinedRateReconciles).toBe(true);
     expect(r.combinedAmount).toBe("741.0000"); // 13 * 57
   });
+
+  it("uses the candidate program's rates instead of another program's ladder", () => {
+    const dayHab = [
+      memberRow("ind-a", 1, { rate: "46", expectedBaseRates: ["17", "19"] }),
+      memberRow("ind-b", 2, { rate: "46", expectedBaseRates: ["17", "19"] }),
+    ];
+    const unrelated = memberRow("ind-c", 3, {
+      programKey: "other-program",
+      rate: "23",
+      expectedBaseRates: ["23"],
+    });
+
+    const results = detectGroups([...dayHab, unrelated]);
+    const candidate = results.find((result) => result.groupSize === 2)!;
+    expect(candidate.status).toBe("needs_review");
+    expect(candidate.validation.combinedRateReconciles).toBe(false);
+  });
 });
 
 describe("a lone row is not a group", () => {
