@@ -1,5 +1,5 @@
 import { requireUser } from "@/lib/auth/session";
-import { resolveAccessScope } from "@/lib/auth/access";
+import { canAccessPlanning, resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listUsersWithAccess } from "@/lib/auth/users";
 import { listIndividualsManaged } from "@/lib/manage/individuals";
@@ -26,34 +26,45 @@ export default async function SettingsPage() {
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
-    const programs = await listPrograms(pool);
+    const canSeeBilledAmounts = scope.canSeeBilledAmounts;
+    const canSeeEmployeeAmounts = scope.canSeeEmployeeAmounts;
+    const canViewProgramRates = canSeeBilledAmounts || canSeeEmployeeAmounts;
+    const programs = canViewProgramRates ? await listPrograms(pool) : [];
     return {
       users: isAdmin ? await listUsersWithAccess(pool) : [],
       individuals: isAdmin ? (await listIndividualsManaged(pool, {})).map((i) => ({ id: i.id, name: i.displayName })) : [],
       employees: isAdmin ? (await listEmployeesManaged(pool, {})).map((e) => ({ id: e.id, name: e.displayName })) : [],
       programs: programs.map((program) => ({
         ...program,
-        agencyRate: scope.canSeeBilledAmounts ? program.agencyRate : null,
-        internalRate: scope.canSeeEmployeeAmounts ? program.internalRate : null,
+        agencyRate: canSeeBilledAmounts ? program.agencyRate : null,
+        internalRate: canSeeEmployeeAmounts ? program.internalRate : null,
       })),
       programRules: isAdmin ? await listProgramRules(pool) : [],
       audit: isAdmin ? await listAudit(pool, 40) : [],
+      canSeeBilledAmounts,
+      canSeeEmployeeAmounts,
+      canViewProgramRates,
+      canPlan: canAccessPlanning(scope),
     };
   });
+
+  const accountOnly = result.ok && !isAdmin && !result.data.canViewProgramRates;
 
   return (
     <>
       <PageHeader
-        eyebrow="Administration"
-        title="Settings and access"
-        description="Accounts, visibility, program rates, audit history, and system maintenance."
+        eyebrow={accountOnly ? "Account" : "Administration"}
+        title={accountOnly ? "Account settings" : "Settings and access"}
+        description={accountOnly
+          ? "Review your account and update your password."
+          : "Accounts, visibility, program rates, audit history, and system maintenance."}
       />
 
       <div className="space-y-4">
         <nav aria-label="Settings sections" className="scroll-thin sticky top-[var(--shell-header-height,0px)] z-20 -mx-1 flex gap-1 overflow-x-auto border-b border-[var(--color-rule)] bg-[var(--color-paper)] px-1 py-2">
           <Link href="#account" className="btn btn-sm btn-ghost shrink-0">Account</Link>
           {isAdmin ? <Link href="#access" className="btn btn-sm btn-ghost shrink-0">User access</Link> : null}
-          <Link href="#programs" className="btn btn-sm btn-ghost shrink-0">Programs</Link>
+          {result.ok && result.data.canViewProgramRates ? <Link href="#programs" className="btn btn-sm btn-ghost shrink-0">Programs</Link> : null}
           {isAdmin ? <Link href="#activity" className="btn btn-sm btn-ghost shrink-0">Activity</Link> : null}
           {isAdmin ? <Link href="#system" className="btn btn-sm btn-ghost shrink-0">System</Link> : null}
         </nav>
@@ -70,7 +81,9 @@ export default async function SettingsPage() {
             <dd className="text-[var(--color-ink-soft)]">
               {user.role === "admin"
                 ? "Full access, including user management and migrations."
-                : user.role === "manager"
+                : result.ok && result.data.canPlan && !result.data.canViewProgramRates
+                  ? "Planning access for schedules, assignments, and authorized hours."
+                  : user.role === "manager"
                   ? "Read everything; upload, commit and discard imports."
                   : "Read-only."}
             </dd>
@@ -106,21 +119,16 @@ export default async function SettingsPage() {
                   canSeeBudgets: u.canSeeBudgets,
                   canSeeEmployeeDeals: u.canSeeEmployeeDeals,
                   canSeeSettlements: u.canSeeSettlements,
+                  canPlan: u.canPlan,
                   individualCount: u.individualCount,
                   employeeCount: u.employeeCount,
                 }))}
                 individuals={result.data.individuals}
                 employees={result.data.employees}
               /></section>
-            ) : (
-              <Card title="User access">
-                <EmptyState title="Administrators manage accounts">
-                  <p>Your role is {user.role}, so this section is not available to you.</p>
-                </EmptyState>
-              </Card>
-            )}
+            ) : null}
 
-            <section id="programs" className="scroll-mt-24 space-y-4"><Card
+            {result.data.canViewProgramRates ? <section id="programs" className="scroll-mt-24 space-y-4"><Card
               title="Programs and rates"
               description={
                 isAdmin
@@ -157,13 +165,13 @@ export default async function SettingsPage() {
               {result.data.programs.length === 0 ? (
                 <EmptyState title="No programs are configured" />
               ) : (
-                <Table head={<><Th>Code</Th><Th>Program</Th><Th numeric>Funder rate</Th><Th numeric>Employee base rate</Th><Th>Effective from</Th><Th>Group</Th><Th>Active</Th>{isAdmin ? <Th>Actions</Th> : null}</>}>
+                <Table head={<><Th>Code</Th><Th>Program</Th>{result.data.canSeeBilledAmounts ? <Th numeric>Funder rate</Th> : null}{result.data.canSeeEmployeeAmounts ? <Th numeric>Employee base rate</Th> : null}<Th>Effective from</Th><Th>Group</Th><Th>Active</Th>{isAdmin ? <Th>Actions</Th> : null}</>}>
                   {result.data.programs.map((p) => (
                     <Tr key={p.id}>
                       <Td><code className="text-xs">{p.code}</code></Td>
                       <Td>{p.name}</Td>
-                      <Td numeric><Money value={p.agencyRate} /></Td>
-                      <Td numeric><Money value={p.internalRate} /></Td>
+                      {result.data.canSeeBilledAmounts ? <Td numeric><Money value={p.agencyRate} /></Td> : null}
+                      {result.data.canSeeEmployeeAmounts ? <Td numeric><Money value={p.internalRate} /></Td> : null}
                       <Td><Plain value={p.effectiveFrom} /></Td>
                       <Td>{p.isGroupCapable ? "Yes" : "No"}</Td>
                       <Td>{p.isActive ? "Yes" : "No"}</Td>
@@ -210,7 +218,7 @@ export default async function SettingsPage() {
               )}
             </Card>
 
-            {isAdmin ? <ProgramRules programs={result.data.programRules} /> : null}</section>
+            {isAdmin ? <ProgramRules programs={result.data.programRules} /> : null}</section> : null}
 
             {isAdmin ? (
               <>

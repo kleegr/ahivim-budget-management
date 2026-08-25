@@ -43,15 +43,10 @@ export default function SessionDetail({
           <dt className="text-[var(--color-ink-faint)]">Employee</dt><dd className="col-span-2">{session.employeeName ?? <span className="text-[var(--color-pace-near)]">Unassigned</span>}</dd>
           <dt className="text-[var(--color-ink-faint)]">{session.isGroup ? `Individuals (group of ${session.groupSize})` : "Individual"}</dt><dd className="col-span-2">{session.individualNames.join(", ")}</dd>
           <dt className="text-[var(--color-ink-faint)]">Status</dt><dd className="col-span-2"><span className={`rounded border-l-2 px-1.5 py-0.5 text-xs ${STATUS_STYLE[session.status]}`}>{STATUS_LABEL[session.status] ?? session.status}</span></dd>
-          <dt className="text-[var(--color-ink-faint)]">Expected</dt>
-          <dd className="col-span-2 tnum">
-            {session.expectedInternalAmount ? `Internal $${session.expectedInternalAmount}` : "—"}
-            {session.expectedAgencyGross ? ` · Agency $${session.expectedAgencyGross}` : ""}
-          </dd>
           {session.warningCount > 0 ? (
             <>
               <dt className="text-[var(--color-pace-near)]">Warnings</dt>
-              <dd className="col-span-2 text-[var(--color-pace-near)]">{session.warningCount} — this session was flagged when saved.</dd>
+              <dd className="col-span-2 text-[var(--color-pace-near)]">{session.warningCount} current planning {session.warningCount === 1 ? "warning" : "warnings"}.</dd>
             </>
           ) : null}
         </dl>
@@ -66,10 +61,10 @@ export default function SessionDetail({
             {mode === null ? (
               <div className="flex flex-wrap gap-2 pt-1">
                 {session.status !== "completed" ? <button type="button" disabled={busy} onClick={() => act({ action: "status", status: "completed" })} className="rounded bg-[var(--color-pace-on)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60">Mark completed</button> : null}
-                {session.status !== "no_show" ? <button type="button" disabled={busy} onClick={() => act({ action: "status", status: "no_show" })} className="rounded border border-[var(--color-pace-over)] px-3 py-1.5 text-xs font-medium text-[var(--color-pace-over)] disabled:opacity-60">No-show</button> : null}
+                {session.canChangeSchedule && session.status !== "no_show" ? <button type="button" disabled={busy} onClick={() => act({ action: "status", status: "no_show" })} className="rounded border border-[var(--color-pace-over)] px-3 py-1.5 text-xs font-medium text-[var(--color-pace-over)] disabled:opacity-60">No-show</button> : null}
                 {session.status !== "pending" ? <button type="button" disabled={busy} onClick={() => act({ action: "status", status: "pending" })} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs disabled:opacity-60">Reopen</button> : null}
-                {session.status !== "cancelled" ? <button type="button" disabled={busy} onClick={() => act({ action: "cancel" })} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs disabled:opacity-60">Cancel</button> : null}
-                <button type="button" onClick={() => setMode("reschedule")} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs">Reschedule</button>
+                {session.canChangeSchedule && session.status !== "cancelled" ? <button type="button" disabled={busy} onClick={() => act({ action: "cancel" })} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs disabled:opacity-60">Cancel</button> : null}
+                {session.canChangeSchedule ? <button type="button" onClick={() => setMode("reschedule")} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs">Reschedule</button> : null}
                 <button type="button" onClick={() => setMode("duplicate")} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs">Duplicate</button>
               </div>
             ) : mode === "reschedule" ? (
@@ -95,6 +90,9 @@ export default function SessionDetail({
                 </div>
               </div>
             )}
+            {!session.canChangeSchedule ? (
+              <p className="text-xs text-[var(--color-ink-faint)]">Date, time, cancellation, and no-show are locked to preserve recorded service history.</p>
+            ) : null}
           </>
         ) : (
           <p className="text-xs text-[var(--color-ink-faint)]">You have read-only access. Managers can change sessions.</p>

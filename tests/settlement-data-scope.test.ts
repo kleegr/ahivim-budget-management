@@ -89,7 +89,11 @@ describe("settlement history SQL scope", () => {
   });
 
   it("groups the same normalized check number used by ambiguous source ids", async () => {
-    const query = vi.fn(async (_sql: string) => ({ rows: [] }));
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      void sql;
+      void params;
+      return { rows: [] };
+    });
     const pool = { query, connect: vi.fn() } as unknown as PgLikePool;
 
     await getSettlementDashboard(pool);

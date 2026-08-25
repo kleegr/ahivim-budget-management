@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { currentUser, roleAtLeast } from "@/lib/auth/session";
-import { resolveAccessScope } from "@/lib/auth/access";
+import { canAccessPlanning, resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +18,7 @@ export default async function HomePage() {
 
   const access = await withDb((pool) => resolveAccessScope(pool, user));
   if (access.ok) {
+    if (canAccessPlanning(access.data)) redirect("/schedule");
     if (access.data.canSeeBudgets) redirect("/individuals");
     if (access.data.canSeeSettlements) redirect("/settlements");
     if (access.data.canSeeTransactions) redirect("/transactions");

@@ -94,6 +94,7 @@ suite("phase 4D — additional reports (real PostgreSQL)", () => {
           endTime: null,
         },
         ACTOR,
+        "authorization setup omitted for variance fixture",
       ),
     );
 

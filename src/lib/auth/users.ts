@@ -252,9 +252,10 @@ export async function createUser(
        email, display_name, password_hash, role, access_scope,
        can_see_transactions, can_see_money, can_see_hours, can_see_billed_amounts,
        can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
-       can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements
+       can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements,
+       can_plan
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      ON CONFLICT (email) DO NOTHING
      RETURNING id, email, display_name, password_hash, role, is_active,
                last_login_at::text AS last_login_at, created_at::text AS created_at`,
@@ -275,6 +276,7 @@ export async function createUser(
       trustedStaff,
       false,
       false,
+      trustedStaff,
     ],
   );
   if (!rows[0]) return { ok: false, reason: "duplicate_email" };
@@ -341,6 +343,7 @@ export interface UserAccessConfig extends VisibilityPermissions {
   seeAllIndividuals: boolean;
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
+  canPlan: boolean;
   individualIds: string[];
   employeeIds: string[];
 }
@@ -368,6 +371,7 @@ export function userAccessConfigFromInput(
     seeAllIndividuals: flag("seeAllIndividuals", false),
     seeAllEmployees: flag("seeAllEmployees", false),
     canSeeTransactions: flag("canSeeTransactions"),
+    canPlan: flag("canPlan"),
     canSeeMoney: flag("canSeeMoney"),
     canSeeHours,
     canSeeBilledAmounts: flag("canSeeBilledAmounts"),
@@ -388,6 +392,7 @@ export interface UserWithAccess extends UserRecord, VisibilityPermissions {
   seeAllIndividuals: boolean;
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
+  canPlan: boolean;
   individualCount: number;
   employeeCount: number;
 }
@@ -403,6 +408,7 @@ interface VisibilityRow {
   can_see_budgets: boolean;
   can_see_employee_deals: boolean;
   can_see_settlements: boolean;
+  can_plan: boolean;
 }
 
 function storedVisibility(row: VisibilityRow): VisibilityPermissions {
@@ -439,6 +445,7 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
             u.can_see_money, u.can_see_hours, u.can_see_billed_amounts,
             u.can_see_employee_amounts, u.can_see_agency_spread, u.can_see_check_net,
             u.can_see_taxes, u.can_see_budgets, u.can_see_employee_deals, u.can_see_settlements,
+            u.can_plan,
             (SELECT count(*) FROM user_individual_access a WHERE a.user_id = u.id)::int AS individual_count,
             (SELECT count(*) FROM user_employee_access a WHERE a.user_id = u.id)::int AS employee_count
        FROM users u
@@ -450,6 +457,7 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
     seeAllIndividuals: r.see_all_individuals === true,
     seeAllEmployees: r.see_all_employees === true,
     canSeeTransactions: r.can_see_transactions !== false,
+    canPlan: r.can_plan === true,
     ...storedVisibility(r),
     individualCount: Number(r.individual_count ?? 0),
     employeeCount: Number(r.employee_count ?? 0),
@@ -470,7 +478,8 @@ export async function getUserAccessConfig(
     `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions,
             can_see_money, can_see_hours, can_see_billed_amounts,
             can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
-            can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements
+            can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements,
+            can_plan
        FROM users WHERE id = $1`,
     [userId],
   );
@@ -493,6 +502,7 @@ export async function getUserAccessConfig(
     seeAllIndividuals: u.see_all_individuals === true,
     seeAllEmployees: u.see_all_employees === true,
     canSeeTransactions: u.can_see_transactions !== false,
+    canPlan: u.can_plan === true,
     ...storedVisibility(u),
     individualIds,
     employeeIds,
@@ -536,8 +546,9 @@ export async function setUserAccessConfig(
               can_see_budgets = $12,
               can_see_employee_deals = $13,
               can_see_settlements = $14,
+              can_plan = $15,
               updated_at = now()
-        WHERE id = $15`,
+        WHERE id = $16`,
       [
         scope,
         config.seeAllIndividuals === true,
@@ -553,6 +564,7 @@ export async function setUserAccessConfig(
         canSeeBudgets,
         config.canSeeEmployeeDeals === true,
         config.canSeeSettlements === true,
+        config.canPlan === true,
         userId,
       ],
     );
@@ -604,6 +616,7 @@ export async function setUserAccessConfig(
       canSeeBudgets,
       canSeeEmployeeDeals: config.canSeeEmployeeDeals === true,
       canSeeSettlements: config.canSeeSettlements === true,
+      canPlan: config.canPlan === true,
       individuals: individualIds.length,
       employees: employeeIds.length,
     },

@@ -16,8 +16,8 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`CREATE SCHEMA public`);
 
     const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
-    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 21]);
-    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 21]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 24]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 24]);
   }, 60_000);
 
   it("creates the ledger and every expected table", async () => {
@@ -29,7 +29,7 @@ suite("migration runner (real PostgreSQL)", () => {
       "program_rate_schedules", "payroll_transactions", "service_sessions",
       "service_allocations", "rate_exceptions", "import_batches", "import_rows",
       "import_warnings", "imported_files", "audit_logs", "assignments",
-      "schedule_series", "scheduled_sessions", "scheduled_allocations",
+      "schedule_series", "schedule_series_individuals", "scheduled_sessions", "scheduled_allocations",
       "budget_calculations", "app_settings",
       "calculation_strategies", "calculation_strategy_lines", "calculation_strategy_revisions",
       "individual_match_reviews",
@@ -41,13 +41,13 @@ suite("migration runner (real PostgreSQL)", () => {
     ]) {
       expect(tables, `missing table ${table}`).toContain(table);
     }
-    expect(tables.length).toBe(45);
+    expect(tables.length).toBe(46);
   });
 
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(21);
+    expect(again.skipped).toBe(24);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -55,7 +55,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(21);
+    expect(rows).toHaveLength(24);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -77,6 +77,9 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[18].name).toBe("0018_granular_visibility.sql");
     expect(rows[19].name).toBe("0019_settlement_freshness.sql");
     expect(rows[20].name).toBe("0020_settlement_trigger_fix.sql");
+    expect(rows[21].name).toBe("0021_planner_access.sql");
+    expect(rows[22].name).toBe("0022_schedule_series_individuals.sql");
+    expect(rows[23].name).toBe("0023_schedule_series_versioning.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 

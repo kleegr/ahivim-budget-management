@@ -6,15 +6,19 @@ import { Search, X } from "lucide-react";
 import { getCommandDestinations, type NavigationAccess } from "@/lib/nav/app-navigation";
 
 export default function CommandBar({
-  role = "admin",
-  canSeeTransactions = true,
-  canSeeSettlements = true,
-  canSeeBudgets = true,
+  role = "viewer",
+  accessResolved = false,
+  canSeeTransactions = false,
+  canSeeSettlements = false,
+  canSeeBudgets = false,
+  canPlan = false,
 }: {
   role?: string;
+  accessResolved?: boolean;
   canSeeTransactions?: boolean;
   canSeeSettlements?: boolean;
   canSeeBudgets?: boolean;
+  canPlan?: boolean;
 } = {}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -23,8 +27,8 @@ export default function CommandBar({
   const inputRef = useRef<HTMLInputElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const access = useMemo<NavigationAccess>(
-    () => ({ role, canSeeTransactions, canSeeSettlements, canSeeBudgets }),
-    [role, canSeeTransactions, canSeeSettlements, canSeeBudgets],
+    () => ({ role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan }),
+    [role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan],
   );
   const available = useMemo(() => getCommandDestinations(access), [access]);
 

@@ -2,7 +2,8 @@
 
 import { useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Eye, EyeOff, WalletCards } from "lucide-react";
+import { CalendarClock, Eye, EyeOff, WalletCards } from "lucide-react";
+import { BUDGET_PLANNER_ACCESS } from "@/lib/auth/access-presets";
 
 /**
  * Administrator user + access management.
@@ -88,6 +89,7 @@ interface UserRow {
   canSeeBudgets: boolean;
   canSeeEmployeeDeals: boolean;
   canSeeSettlements: boolean;
+  canPlan: boolean;
   individualCount: number;
   employeeCount: number;
 }
@@ -107,6 +109,7 @@ interface AccessState {
   canSeeBudgets: boolean;
   canSeeEmployeeDeals: boolean;
   canSeeSettlements: boolean;
+  canPlan: boolean;
   individualIds: Set<string>;
   employeeIds: Set<string>;
 }
@@ -126,6 +129,7 @@ const emptyAccess = (): AccessState => ({
   canSeeBudgets: false,
   canSeeEmployeeDeals: false,
   canSeeSettlements: false,
+  canPlan: false,
   individualIds: new Set(),
   employeeIds: new Set(),
 });
@@ -145,6 +149,7 @@ const accessToBody = (a: AccessState) => ({
   canSeeBudgets: a.canSeeBudgets && a.canSeeHours,
   canSeeEmployeeDeals: a.canSeeEmployeeDeals,
   canSeeSettlements: a.canSeeSettlements,
+  canPlan: a.canPlan,
   individualIds: [...a.individualIds],
   employeeIds: [...a.employeeIds],
 });
@@ -278,6 +283,13 @@ function AccessConfig({
     canSeeBudgets: false,
     canSeeEmployeeDeals: true,
     canSeeSettlements: true,
+    canPlan: false,
+  });
+  const applyBudgetPlannerAccess = () => onChange({
+    ...value,
+    ...BUDGET_PLANNER_ACCESS,
+    individualIds: new Set(),
+    employeeIds: new Set(),
   });
   const setVisibility = (key: VisibilityKey, checked: boolean) => {
     if (key === "canSeeHours" && !checked) {
@@ -295,17 +307,28 @@ function AccessConfig({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] pb-3">
         <div>
           <p className="text-sm font-medium text-[var(--color-ink)]">Access template</p>
-          <p className="text-xs text-[var(--color-ink-faint)]">Start with the finance collector&rsquo;s operational access, then adjust any field below.</p>
+          <p className="text-xs text-[var(--color-ink-faint)]">Choose an operational profile, then adjust any field below.</p>
         </div>
-        <button
-          type="button"
-          onClick={applyMoneyOperatorAccess}
-          className="btn btn-sm btn-secondary"
-          title="Allow collections and set-asides without exposing budgets"
-        >
-          <WalletCards aria-hidden className="h-4 w-4" />
-          Money operator
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={applyBudgetPlannerAccess}
+            className="btn btn-sm btn-secondary"
+            title="Allow schedules and hour budgets without transactions or money"
+          >
+            <CalendarClock aria-hidden className="h-4 w-4" />
+            Budget planner
+          </button>
+          <button
+            type="button"
+            onClick={applyMoneyOperatorAccess}
+            className="btn btn-sm btn-secondary"
+            title="Allow collections and set-asides without exposing budgets"
+          >
+            <WalletCards aria-hidden className="h-4 w-4" />
+            Money operator
+          </button>
+        </div>
       </div>
       <div className="flex flex-wrap gap-2">
         <button
@@ -364,6 +387,11 @@ function AccessConfig({
         <input type="checkbox" checked={value.canSeeTransactions} onChange={(e) => set({ canSeeTransactions: e.target.checked })} />
         <span>Can see Transactions</span>
         <span className="text-xs text-[var(--color-ink-faint)]">— the billing ledger and every drill-through into it</span>
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={value.canPlan} onChange={(e) => set({ canPlan: e.target.checked })} />
+        <span>Can manage Planning</span>
+        <span className="text-xs text-[var(--color-ink-faint)]">recurring schedules and hour-based coverage; requires all people</span>
       </label>
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={value.canSeeMoney} onChange={(e) => set({ canSeeMoney: e.target.checked })} />
@@ -494,6 +522,7 @@ export default function UserAccessAdmin({
           canSeeBudgets: boolean;
           canSeeEmployeeDeals: boolean;
           canSeeSettlements: boolean;
+          canPlan: boolean;
           individualIds: string[];
           employeeIds: string[];
         };
@@ -515,6 +544,7 @@ export default function UserAccessAdmin({
           canSeeBudgets: data.access.canSeeBudgets !== false && data.access.canSeeHours !== false,
           canSeeEmployeeDeals: data.access.canSeeEmployeeDeals === true,
           canSeeSettlements: data.access.canSeeSettlements === true,
+          canPlan: data.access.canPlan === true,
           individualIds: new Set(data.access.individualIds),
           employeeIds: new Set(data.access.employeeIds),
         });
@@ -584,6 +614,7 @@ export default function UserAccessAdmin({
     }
     if (!u.canSeeTransactions) parts.push("no transactions");
     if (!u.canSeeMoney) parts.push("hours only");
+    if (u.canPlan) parts.push("planning");
     const visibleCategories = VISIBILITY_OPTIONS.filter(
       (option) => u[option.key] && (!option.requiresMoney || u.canSeeMoney),
     ).length;

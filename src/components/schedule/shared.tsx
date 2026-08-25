@@ -1,6 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
+import { X } from "lucide-react";
 import type { CalendarSession } from "@/lib/data/schedule-queries";
 
 /* ---------------------------------------------------------------------------
@@ -161,7 +162,7 @@ export const EVENT_TONE_COLOR: Record<EventTone, string> = {
 
 export const EVENT_TONE_LABEL: Record<EventTone, string> = {
   on_track: "On track",
-  flagged: "Conflict / flagged",
+  flagged: "Needs review",
   over_risk: "Over-budget risk",
   completed: "Completed",
   cancelled: "Cancelled",
@@ -188,12 +189,69 @@ export function ModalShell({
   children: ReactNode;
   wide?: boolean;
 }) {
+  const titleId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const frame = window.requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      const initial = panel?.querySelector<HTMLElement>(
+        "input:not([disabled]), select:not([disabled]), textarea:not([disabled])",
+      ) ?? panel?.querySelector<HTMLElement>("button:not([disabled])");
+      initial?.focus();
+    });
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !panelRef.current) return;
+      const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(
+        "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      )).filter((element) => element.offsetParent !== null);
+      if (focusable.length === 0) return;
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+      window.requestAnimationFrame(() => previousFocus?.focus());
+    };
+  }, []);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 p-4 sm:p-8" role="dialog" aria-modal="true" aria-label={title}>
-      <div className={`mt-6 w-full ${wide ? "max-w-2xl" : "max-w-lg"} rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] shadow-xl`}>
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 p-4 sm:p-8"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div ref={panelRef} className={`mt-6 w-full ${wide ? "max-w-2xl" : "max-w-lg"} rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] shadow-xl`}>
         <div className="flex items-center justify-between border-b border-[var(--color-rule)] px-5 py-3">
-          <h2 className="display text-base font-medium">{title}</h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded px-2 py-1 text-sm text-[var(--color-ink-faint)] hover:bg-[var(--color-paper)]">✕</button>
+          <h2 id={titleId} className="display text-base font-medium">{title}</h2>
+          <button type="button" onClick={onClose} aria-label="Close" title="Close" className="btn btn-icon btn-ghost h-8 w-8"><X aria-hidden className="h-4 w-4" /></button>
         </div>
         <div className="px-5 py-4">{children}</div>
       </div>

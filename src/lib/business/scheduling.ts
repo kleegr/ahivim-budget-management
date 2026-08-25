@@ -110,22 +110,36 @@ export interface RecurrenceInput {
   weekdays?: number[];
   startDate: string; // YYYY-MM-DD
   endDate: string;
+  /** Emit on/after this date while retaining the recurrence phase anchored at startDate. */
+  fromDate?: string;
   /** Safety cap so a bad range can't generate an unbounded series. */
   max?: number;
 }
+
+export const MAX_SERIES_OCCURRENCES = 400;
 
 /** Expand a recurrence into concrete ISO dates (inclusive of both ends). */
 export function generateOccurrences(input: RecurrenceInput): string[] {
   const start = parseISO(input.startDate);
   const end = parseISO(input.endDate);
   if (!start || !end || end < start) return [];
+  const requestedFrom = input.fromDate ? parseISO(input.fromDate) : null;
+  if (input.fromDate && !requestedFrom) return [];
+  const from = requestedFrom && requestedFrom > start ? requestedFrom : start;
+  if (from > end) return [];
   const interval = Math.max(1, Math.floor(input.interval ?? 1));
-  const cap = Math.max(1, Math.min(input.max ?? 400, 400));
+  // Validation may ask for one extra occurrence so it can distinguish an
+  // exact 400-visit series from a range that would otherwise be truncated.
+  const cap = Math.max(1, Math.min(input.max ?? MAX_SERIES_OCCURRENCES, MAX_SERIES_OCCURRENCES + 1));
   const weekdays = new Set((input.weekdays ?? []).filter((d) => d >= 0 && d <= 6));
 
   const out: string[] = [];
   if (input.frequency === "daily") {
-    for (let d = new Date(start); d <= end && out.length < cap; d.setUTCDate(d.getUTCDate() + interval)) {
+    const elapsedDays = Math.floor((from.getTime() - start.getTime()) / 86_400_000);
+    const offset = Math.ceil(elapsedDays / interval) * interval;
+    const first = new Date(start);
+    first.setUTCDate(first.getUTCDate() + offset);
+    for (let d = first; d <= end && out.length < cap; d.setUTCDate(d.getUTCDate() + interval)) {
       out.push(isoOf(d));
     }
     return out;
@@ -134,7 +148,7 @@ export function generateOccurrences(input: RecurrenceInput): string[] {
   // anchor week, emitting the selected weekdays.
   if (weekdays.size === 0) weekdays.add(start.getUTCDay());
   const anchorWeek = weekIndex(start);
-  for (let d = new Date(start); d <= end && out.length < cap; d.setUTCDate(d.getUTCDate() + 1)) {
+  for (let d = new Date(from); d <= end && out.length < cap; d.setUTCDate(d.getUTCDate() + 1)) {
     if (!weekdays.has(d.getUTCDay())) continue;
     if ((weekIndex(d) - anchorWeek) % interval !== 0) continue;
     out.push(isoOf(d));

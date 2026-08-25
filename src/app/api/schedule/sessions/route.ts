@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiUser } from "@/lib/auth/session";
+import { apiPlanningUser } from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { createSession, type CreateSessionInput } from "@/lib/manage/schedule";
 import { listSessions, listSessionWarningFlags, type CalendarFilter } from "@/lib/data/schedule-queries";
@@ -22,10 +22,10 @@ function defaultRange(): { from: string; to: string } {
   return { from: first.toISOString().slice(0, 10), to: last.toISOString().slice(0, 10) };
 }
 
-/** List planned sessions in a date range with optional view filters. Any role reads. */
+/** List planned sessions in a date range with optional view filters. */
 export async function GET(request: NextRequest) {
-  const user = await apiUser("manager");
-  if (!user) return jsonError("Manager role required", 403);
+  const planning = await apiPlanningUser();
+  if (!planning) return jsonError("Planning access required", 403);
 
   const sp = request.nextUrl.searchParams;
   const range = defaultRange();
@@ -45,25 +45,29 @@ export async function GET(request: NextRequest) {
 
   try {
     const pool = getPool();
-    // warningFlags is additive: it classifies each session's stored warnings so
-    // the calendar can colour conflicts vs budget risk. listSessions is unchanged.
     const [sessions, warningFlags] = await Promise.all([
       listSessions(pool, filter),
       listSessionWarningFlags(pool, filter),
     ]);
-    return NextResponse.json({ ok: true, data: { from, to, sessions, warningFlags } });
+    const warningCountById = new Map(warningFlags.map((row) => [row.id, row.warningCount]));
+    const liveSessions = sessions.map((session) => ({
+      ...session,
+      warningCount: warningCountById.get(session.id) ?? session.warningCount,
+    }));
+    return NextResponse.json({ ok: true, data: { from, to, sessions: liveSessions, warningFlags } });
   } catch (error) {
     return jsonError(redactError(error), 500);
   }
 }
 
-/** Schedule a single session. Manager or admin only. */
+/** Schedule a single session for an account with Planning access. */
 export async function POST(request: NextRequest) {
   const origin = sameOriginOrFail(request);
   if (origin) return origin;
 
-  const user = await apiUser("manager");
-  if (!user) return jsonError("Manager role required", 403);
+  const planning = await apiPlanningUser();
+  if (!planning) return jsonError("Planning access required", 403);
+  const { user } = planning;
 
   const body = await readJson(request);
   const input: CreateSessionInput = {
@@ -83,6 +87,9 @@ export async function POST(request: NextRequest) {
   try {
     const pool = getPool();
     const result = await createSession(pool, input, user.id, reason);
+    if (result.ok) {
+      result.data.warnings = result.data.warnings.filter((warning) => warning.code !== "missing_rate");
+    }
     return resultResponse(result, 201);
   } catch (error) {
     return jsonError(redactError(error), 500);

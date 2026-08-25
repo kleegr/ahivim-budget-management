@@ -1,9 +1,10 @@
 import SettlementDashboard from "@/components/settlements/settlement-dashboard";
 import { ErrorPanel, PageHeader } from "@/components/ui";
-import { resolveAccessScope } from "@/lib/auth/access";
+import { isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
 import { requireUser } from "@/lib/auth/session";
 import { getSettlementDashboard } from "@/lib/data/settlements";
 import { withDb } from "@/lib/data/pool";
+import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Money operations - Ahivim Budget Management" };
@@ -23,13 +24,23 @@ export default async function SettlementsPage({
   const params = await searchParams;
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
-    if (!scope.canSeeSettlements) return { denied: true as const, data: null, canManage: false };
+    if (!scope.canSeeSettlements) {
+      return {
+        denied: true as const,
+        planningOnly: isPlanningOnlyAccess(scope),
+        data: null,
+        canManage: false,
+      };
+    }
     return {
       denied: false as const,
+      planningOnly: false,
       data: await getSettlementDashboard(pool, scope),
       canManage: true,
     };
   });
+
+  if (result.ok && result.data.planningOnly) redirect("/schedule");
 
   const requestedEmployeeId = first(params.employeeId);
   const requestedIndividualId = first(params.individualId);

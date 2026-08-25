@@ -1,5 +1,6 @@
 import { requireUser } from "@/lib/auth/session";
-import { resolveAccessScope } from "@/lib/auth/access";
+import { isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
+import { redirect } from "next/navigation";
 import { withDb } from "@/lib/data/pool";
 import { listTransactionsForGrid, type GridTransaction } from "@/lib/data/transactions-grid";
 import { PageHeader, ErrorPanel, EmptyState, Card } from "@/components/ui";
@@ -104,10 +105,24 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     const scope = await resolveAccessScope(pool, user);
     const visibility = transactionFieldVisibility(scope);
     if (!scope.canSeeTransactions) {
-      return { denied: true as const, rows: [] as GridTransaction[], visibility, canSeeBudgets: scope.canSeeBudgets };
+      return {
+        denied: true as const,
+        planningOnly: isPlanningOnlyAccess(scope),
+        rows: [] as GridTransaction[],
+        visibility,
+        canSeeBudgets: scope.canSeeBudgets,
+      };
     }
-    return { denied: false as const, rows: await listTransactionsForGrid(pool, scope), visibility, canSeeBudgets: scope.canSeeBudgets };
+    return {
+      denied: false as const,
+      planningOnly: false,
+      rows: await listTransactionsForGrid(pool, scope),
+      visibility,
+      canSeeBudgets: scope.canSeeBudgets,
+    };
   });
+
+  if (result.ok && result.data.planningOnly) redirect("/schedule");
 
   // A user whose access hides Transactions is refused server-side, not just in the nav.
   if (result.ok && result.data.denied) {

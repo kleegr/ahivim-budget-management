@@ -132,7 +132,7 @@ suite("phase 3 — reconciliation + import corrections (real PostgreSQL)", () =>
     const { dayHab, emp } = await fixture();
     const a = unwrap(await createIndividual(pool, { displayName: "B One" }, ACTOR));
     const b = unwrap(await createIndividual(pool, { displayName: "B Two" }, ACTOR));
-    unwrap(await createSession(pool, { employeeId: emp.id, programId: dayHab, individualIds: [a.id, b.id], sessionDate: "2025-05-05", durationHours: "4", startTime: null, endTime: null }, ACTOR));
+    unwrap(await createSession(pool, { employeeId: emp.id, programId: dayHab, individualIds: [a.id, b.id], sessionDate: "2025-05-05", durationHours: "4", startTime: null, endTime: null }, ACTOR, "group fixture intentionally lacks setup"));
     await insertTransaction({ individualId: a.id, programId: dayHab, periodBegin: "2025-05-01", periodEnd: "2025-05-31", hours: "4", amount: "68" });
     const res = unwrap(await autoReconcile(pool, { from: "2025-05-01", to: "2025-05-31" }, ACTOR));
     expect(res.matched).toBe(0); // group sessions are skipped

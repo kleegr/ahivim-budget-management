@@ -53,6 +53,7 @@ describe("settlement balances", () => {
     expect(settlementState("120", "145")).toBe("credit");
     expect(settlementState("120", "50", true)).toBe("void");
     expect(settlementBalance("120", "145")).toBe("-25.0000");
+    expect(settlementBalance("120", "50", true)).toBe("0.0000");
   });
 
   it("creates signed append-only deltas when recalculated targets change direction", () => {

@@ -252,15 +252,19 @@ function SidebarBody({
 export default function AppNav({
   user,
   reviewCount = 0,
-  canSeeTransactions = true,
-  canSeeSettlements = true,
-  canSeeBudgets = true,
+  accessResolved = false,
+  canSeeTransactions = false,
+  canSeeSettlements = false,
+  canSeeBudgets = false,
+  canPlan = false,
 }: {
   user: AuthenticatedUser;
   reviewCount?: number;
+  accessResolved?: boolean;
   canSeeTransactions?: boolean;
   canSeeSettlements?: boolean;
   canSeeBudgets?: boolean;
+  canPlan?: boolean;
 }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
@@ -269,8 +273,8 @@ export default function AppNav({
   const drawerRef = useRef<HTMLElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const access = useMemo<NavigationAccess>(
-    () => ({ role: user.role, canSeeTransactions, canSeeSettlements, canSeeBudgets }),
-    [user.role, canSeeTransactions, canSeeSettlements, canSeeBudgets],
+    () => ({ role: user.role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan }),
+    [user.role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan],
   );
 
   const closeDrawer = useCallback(() => setOpen(false), []);
@@ -347,7 +351,7 @@ export default function AppNav({
         Skip to content
       </a>
 
-      <CommandBar role={user.role} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} canSeeBudgets={canSeeBudgets} />
+      <CommandBar role={user.role} accessResolved={accessResolved} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} canSeeBudgets={canSeeBudgets} canPlan={canPlan} />
 
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 md:hidden">
         <Wordmark />

@@ -18,6 +18,7 @@ import { BigStat, ProgressBar, UtilizationBadge } from "@/components/ui-viz";
 import { dec, formatHours, formatPercent } from "@/lib/money";
 
 type FlagMap = Map<string, SessionFlags>;
+type Perspective = "all" | "employee" | "individual";
 
 export interface ScheduleCalendarProps {
   canManage: boolean;
@@ -48,6 +49,9 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
 
   const [view, setView] = useState<View>(initialView ?? "month");
   const [anchor, setAnchor] = useState(startingDate);
+  const [perspective, setPerspective] = useState<Perspective>(
+    initialFilters?.individualId ? "individual" : initialFilters?.employeeId ? "employee" : "all",
+  );
   const [filters, setFilters] = useState({
     employeeId: initialFilters?.employeeId ?? "",
     individualId: initialFilters?.individualId ?? "",
@@ -60,7 +64,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<CalendarSession | null>(null);
-  const [creating, setCreating] = useState<null | { date: string }>(null);
+  const [creating, setCreating] = useState<null | { date: string; mode: "one_time" | "recurring" }>(null);
   const [summary, setSummary] = useState<ScheduleUtilizationSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const loadRequestId = useRef(0);
@@ -135,10 +139,51 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
     return map;
   }, [sessions]);
 
+  const rangeSummary = useMemo(() => {
+    let serviceHours = dec(0);
+    let budgetHours = dec(0);
+    let scheduledSessions = 0;
+    let excludedSessions = 0;
+    const employeeIds = new Set<string>();
+    const individualIds = new Set<string>();
+    let flaggedSessions = 0;
+    for (const session of sessions) {
+      if (session.status === "cancelled" || session.status === "no_show") {
+        excludedSessions += 1;
+        continue;
+      }
+      scheduledSessions += 1;
+      serviceHours = serviceHours.plus(session.durationHours);
+      budgetHours = budgetHours.plus(dec(session.durationHours).times(Math.max(1, session.individualIds.length)));
+      if (session.employeeId) employeeIds.add(session.employeeId);
+      for (const id of session.individualIds) individualIds.add(id);
+      if (session.warningCount > 0) flaggedSessions += 1;
+    }
+    return {
+      sessions: scheduledSessions,
+      excludedSessions,
+      serviceHours: formatHours(serviceHours),
+      budgetHours: formatHours(budgetHours),
+      employees: employeeIds.size,
+      individuals: individualIds.size,
+      flaggedSessions,
+    };
+  }, [sessions]);
+
   function step(dir: number) {
     if (view === "day") setAnchor(addDays(anchor, dir));
     else if (view === "week") setAnchor(addDays(anchor, dir * 7));
     else setAnchor(addDays(startOfMonth(anchor), dir > 0 ? 32 : -1));
+  }
+
+  function changePerspective(next: Perspective) {
+    setPerspective(next);
+    setFilters((current) => ({
+      ...current,
+      employeeId: next === "employee" ? current.employeeId : "",
+      individualId: next === "individual" ? current.individualId : "",
+      unassigned: next === "all" ? current.unassigned : false,
+    }));
   }
 
   const label = view === "month" ? monthLabel(anchor) : view === "week" ? `Week of ${humanDate(startOfWeek(anchor))}` : humanDate(anchor);
@@ -175,10 +220,11 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
                 date: view === "month" && anchor.slice(0, 7) !== today.slice(0, 7)
                   ? startOfMonth(anchor)
                   : view === "month" ? today : anchor,
+                mode: "recurring",
               })}
               className="btn btn-sm btn-primary"
             >
-              <Plus aria-hidden className="h-4 w-4" /> New session
+              <Plus aria-hidden className="h-4 w-4" /> New schedule
             </button>
           ) : null}
         </div>
@@ -186,14 +232,30 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2 border-y border-[var(--color-rule)] py-3 text-sm">
-        <select aria-label="Filter by employee" value={filters.employeeId} onChange={(e) => setFilters((f) => ({ ...f, employeeId: e.target.value, unassigned: false }))} className="select">
-          <option value="">All employees</option>
-          {employees.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
-        </select>
-        <select aria-label="Filter by individual" value={filters.individualId} onChange={(e) => setFilters((f) => ({ ...f, individualId: e.target.value }))} className="select">
-          <option value="">All individuals</option>
-          {individuals.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
-        </select>
+        <div className="segmented-control" role="group" aria-label="Schedule perspective">
+          {(["all", "employee", "individual"] as Perspective[]).map((option) => (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={perspective === option}
+              onClick={() => changePerspective(option)}
+            >
+              {option === "all" ? "All schedules" : option === "employee" ? "By employee" : "By individual"}
+            </button>
+          ))}
+        </div>
+        {perspective === "employee" ? (
+          <select aria-label="Choose employee" value={filters.employeeId} onChange={(e) => setFilters((f) => ({ ...f, employeeId: e.target.value, unassigned: false }))} className="select min-w-48">
+            <option value="">Choose employee</option>
+            {employees.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
+          </select>
+        ) : null}
+        {perspective === "individual" ? (
+          <select aria-label="Choose individual" value={filters.individualId} onChange={(e) => setFilters((f) => ({ ...f, individualId: e.target.value }))} className="select min-w-48">
+            <option value="">Choose individual</option>
+            {individuals.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
+          </select>
+        ) : null}
         <select aria-label="Filter by program" value={filters.programId} onChange={(e) => setFilters((f) => ({ ...f, programId: e.target.value }))} className="select">
           <option value="">All programs</option>
           {programs.map((p) => <option key={p.id} value={p.id}>{p.code}</option>)}
@@ -205,16 +267,30 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
           <option value="cancelled">Cancelled</option>
           <option value="no_show">No-show</option>
         </select>
-        <label className="inline-flex items-center gap-1">
-          <input type="checkbox" checked={filters.unassigned} onChange={(e) => setFilters((f) => ({ ...f, unassigned: e.target.checked, employeeId: e.target.checked ? "" : f.employeeId }))} />
-          Unassigned only
-        </label>
+        {perspective === "all" ? (
+          <label className="inline-flex items-center gap-1">
+            <input type="checkbox" checked={filters.unassigned} onChange={(e) => setFilters((f) => ({ ...f, unassigned: e.target.checked, employeeId: e.target.checked ? "" : f.employeeId }))} />
+            Employee needed
+          </label>
+        ) : null}
         {(filters.employeeId || filters.individualId || filters.programId || filters.status || filters.unassigned) ? (
-          <button type="button" onClick={() => setFilters({ employeeId: "", individualId: "", programId: "", unassigned: false, status: "" })} className="btn btn-sm btn-ghost">
+          <button type="button" onClick={() => { setPerspective("all"); setFilters({ employeeId: "", individualId: "", programId: "", unassigned: false, status: "" }); }} className="btn btn-sm btn-ghost">
             <X aria-hidden className="h-4 w-4" /> Clear filters
           </button>
         ) : null}
       </div>
+
+      <RangeSummary
+        summary={rangeSummary}
+        label={
+          perspective === "employee" && filters.employeeId
+            ? employees.find((employee) => employee.id === filters.employeeId)?.label ?? "Employee"
+            : perspective === "individual" && filters.individualId
+              ? individuals.find((individual) => individual.id === filters.individualId)?.label ?? "Individual"
+              : label
+        }
+        perspective={perspective}
+      />
 
       {/* Utilization strip: budget headroom for the individual in focus. */}
       {filters.individualId ? (
@@ -228,11 +304,11 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
       ) : null}
 
       {view === "month" ? (
-        <MonthGrid anchor={anchor} today={today} byDate={byDate} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d }) : undefined} />
+        <MonthGrid anchor={anchor} today={today} byDate={byDate} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d, mode: "one_time" }) : undefined} />
       ) : view === "week" ? (
-        <WeekList anchor={anchor} today={today} byDate={byDate} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d }) : undefined} />
+        <WeekList anchor={anchor} today={today} byDate={byDate} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d, mode: "one_time" }) : undefined} />
       ) : (
-        <DayList date={anchor} today={today} sessions={byDate.get(anchor) ?? []} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d }) : undefined} />
+        <DayList date={anchor} today={today} sessions={byDate.get(anchor) ?? []} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d, mode: "one_time" }) : undefined} />
       )}
 
       {selected ? (
@@ -250,11 +326,59 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
           employees={employees}
           individuals={individuals}
           programs={programs}
+          initialMode={creating.mode}
+          initialEmployeeId={filters.employeeId}
+          initialIndividualId={filters.individualId}
+          initialProgramId={filters.programId}
           onClose={() => setCreating(null)}
           onCreated={() => { setCreating(null); void load(); }}
         />
       ) : null}
     </div>
+  );
+}
+
+function RangeSummary({
+  summary,
+  label,
+  perspective,
+}: {
+  summary: {
+    sessions: number;
+    excludedSessions: number;
+    serviceHours: string;
+    budgetHours: string;
+    employees: number;
+    individuals: number;
+    flaggedSessions: number;
+  };
+  label: string;
+  perspective: Perspective;
+}) {
+  const hours = perspective === "employee" ? summary.serviceHours : summary.budgetHours;
+  const items = [
+    {
+      label: "Sessions",
+      value: String(summary.sessions),
+      detail: summary.excludedSessions > 0
+        ? `${label}; ${summary.excludedSessions} cancelled/no-show excluded`
+        : label,
+    },
+    { label: "Scheduled hours", value: `${hours} h`, detail: perspective === "employee" ? "employee time" : "individual budget hours" },
+    { label: "Individuals", value: String(summary.individuals), detail: "receiving service" },
+    { label: "Employees", value: String(summary.employees), detail: "scheduled to work" },
+    { label: "Needs review", value: String(summary.flaggedSessions), detail: "conflict or budget risk" },
+  ];
+  return (
+    <dl className="grid divide-y divide-[var(--color-rule)] border-b border-[var(--color-rule)] sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-5">
+      {items.map((item) => (
+        <div key={item.label} className="min-w-0 px-3 py-2.5 first:pl-0 last:pr-0">
+          <dt className="eyebrow">{item.label}</dt>
+          <dd className={`tnum mt-1 text-base font-semibold ${item.label === "Needs review" && summary.flaggedSessions > 0 ? "text-[var(--color-danger)]" : ""}`}>{item.value}</dd>
+          <p className="mt-0.5 truncate text-[11px] text-[var(--color-ink-faint)]" title={item.detail}>{item.detail}</p>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -297,7 +421,7 @@ function MonthGrid({
                   <span className={`tnum text-xs ${isToday ? "rounded bg-[var(--color-primary)] px-1.5 py-0.5 font-semibold text-white" : inMonth ? "text-[var(--color-ink)]" : "text-[var(--color-ink-faint)]"}`}>
                     {Number(d.slice(8, 10))}
                   </span>
-                  {onAdd ? <button type="button" onClick={() => onAdd(d)} aria-label={`Add session on ${d}`} className="text-xs text-[var(--color-ink-faint)] hover:text-[var(--color-primary)]">+</button> : null}
+                  {onAdd ? <button type="button" onClick={() => onAdd(d)} aria-label={`Add session on ${d}`} title="Add one-time session" className="btn btn-icon btn-ghost h-6 w-6"><Plus aria-hidden className="h-3.5 w-3.5" /></button> : null}
                 </div>
                 <div className="space-y-0.5">
                   {list.slice(0, 4).map((s) => <SessionChip key={s.id} s={s} flags={flags.get(s.id)} onSelect={onSelect} />)}
@@ -333,7 +457,7 @@ function WeekList({
         <div key={d} className={`rounded-lg border p-2 ${d === today ? "border-[var(--color-primary)]" : "border-[var(--color-rule)]"} bg-[var(--color-surface)]`}>
           <div className="mb-1 flex items-center justify-between">
             <span className="text-xs font-semibold">{WEEKDAYS[weekday(d)]} {Number(d.slice(8, 10))}</span>
-            {onAdd ? <button type="button" onClick={() => onAdd(d)} className="text-xs text-[var(--color-ink-faint)] hover:text-[var(--color-primary)]">+</button> : null}
+            {onAdd ? <button type="button" onClick={() => onAdd(d)} aria-label={`Add session on ${d}`} title="Add one-time session" className="btn btn-icon btn-ghost h-6 w-6"><Plus aria-hidden className="h-3.5 w-3.5" /></button> : null}
           </div>
           <div className="space-y-1">
             {(byDate.get(d) ?? []).map((s) => <SessionChip key={s.id} s={s} flags={flags.get(s.id)} onSelect={onSelect} />)}
@@ -357,10 +481,10 @@ function DayList({
 }) {
   const sorted = [...sessions].sort((a, b) => (a.startTime ?? "").localeCompare(b.startTime ?? ""));
   return (
-    <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)]">
-      <div className="flex items-center justify-between border-b border-[var(--color-rule)] px-4 py-2">
-        <span className="text-sm font-medium">{humanDate(date)}{date === today ? " · today" : ""}</span>
-        {onAdd ? <button type="button" onClick={() => onAdd(date)} className="rounded border border-[var(--color-rule-strong)] px-2 py-1 text-xs">Add session</button> : null}
+    <div className="min-w-0 overflow-hidden rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)]">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] px-3 py-2 sm:px-4">
+        <span className="min-w-0 text-sm font-medium">{humanDate(date)}{date === today ? " · today" : ""}</span>
+        {onAdd ? <button type="button" onClick={() => onAdd(date)} className="inline-flex min-h-11 shrink-0 items-center rounded border border-[var(--color-rule-strong)] px-3 text-xs">Add session</button> : null}
       </div>
       {sorted.length === 0 ? (
         <p className="px-4 py-8 text-center text-sm text-[var(--color-ink-faint)]">Nothing scheduled.</p>
@@ -376,22 +500,32 @@ function DayList({
                 <button
                   type="button"
                   onClick={() => onSelect(s)}
-                  className="flex w-full items-center gap-3 border-l-[3px] px-4 py-2 text-left hover:bg-[var(--color-paper)]"
+                  className="grid min-h-11 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 border-l-[3px] px-3 py-3 text-left hover:bg-[var(--color-paper)] sm:grid-cols-[6rem_auto_minmax(0,1fr)_minmax(7rem,12rem)] sm:items-center sm:gap-y-0 sm:px-4 sm:py-2"
                   style={{ borderLeftColor: color }}
                 >
-                  <span className="tnum w-24 text-xs text-[var(--color-ink-soft)]">{s.startTime ? `${prettyTime(s.startTime)}${s.endTime ? `–${prettyTime(s.endTime)}` : ""}` : "—"}</span>
-                  <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium" style={{ color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}>
+                  <span className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 sm:col-span-1 sm:block">
+                    <span className="tnum text-xs text-[var(--color-ink-soft)]">{s.startTime ? `${prettyTime(s.startTime)}${s.endTime ? `–${prettyTime(s.endTime)}` : ""}` : "—"}</span>
+                    <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium sm:hidden" style={{ color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}>
+                      <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
+                      {STATUS_LABEL[s.status] ?? s.status}
+                    </span>
+                  </span>
+                  <span className="hidden items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium sm:inline-flex" style={{ color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}>
                     <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
                     {STATUS_LABEL[s.status] ?? s.status}
                   </span>
-                  <span className="text-sm">{s.programName}</span>
-                  <span className="text-xs text-[var(--color-ink-soft)]">{s.individualNames.join(", ")}</span>
-                  <span className="ml-auto text-xs text-[var(--color-ink-faint)]">{s.employeeName ?? "Unassigned"}</span>
-                  {flagged ? (
-                    <span className="text-xs font-semibold" style={{ color }} title={`${s.warningCount} warning(s)`}>
-                      {tone === "over_risk" ? "Budget risk" : "Conflict"}
-                    </span>
-                  ) : null}
+                  <span className="col-span-2 min-w-0 sm:col-span-1">
+                    <span className="block break-words text-sm font-medium sm:truncate">{s.programName}</span>
+                    <span className="block break-words text-xs text-[var(--color-ink-soft)] sm:truncate">{s.individualNames.join(", ")}</span>
+                  </span>
+                  <span className="col-span-2 flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs sm:col-span-1 sm:flex-col sm:items-end sm:justify-center sm:gap-0.5">
+                    <span className="min-w-0 break-words text-[var(--color-ink-faint)] sm:max-w-full sm:truncate">{s.employeeName ?? "Unassigned"}</span>
+                    {flagged ? (
+                      <span className="shrink-0 font-semibold sm:max-w-full sm:truncate" style={{ color }} title={`${s.warningCount} warning(s)`}>
+                        {tone === "over_risk" ? "Budget risk" : "Needs review"}
+                      </span>
+                    ) : null}
+                  </span>
                 </button>
               </li>
             );
@@ -454,7 +588,7 @@ function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSu
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <BigStat label="Authorized" value={`${formatHours(summary.authorizedHours)} h`} hint="this budget period" />
         <BigStat label="Used" value={`${formatHours(summary.usedHours)} h`} tone={bigTone} hint={`${formatPercent(summary.usagePercent)} of authorized`} />
-        <BigStat label="Scheduled" value={`${formatHours(summary.scheduledHours)} h`} tone={dec(summary.scheduledHours).isZero() ? "muted" : "info"} hint="pending, not yet billed" />
+        <BigStat label="Scheduled" value={`${formatHours(summary.scheduledHours)} h`} tone={dec(summary.scheduledHours).isZero() ? "muted" : "info"} hint="future sessions" />
         <BigStat
           label="Unscheduled remaining"
           value={`${formatHours(summary.remainingAfterHours)} h`}

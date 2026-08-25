@@ -174,7 +174,7 @@ export async function budgetUtilizationReport(
        FROM scheduled_allocations sca
        JOIN scheduled_sessions scs ON scs.id = sca.scheduled_session_id
        WHERE sca.individual_id = ba.individual_id AND scs.program_id = ba.program_id
-         AND scs.status = 'pending'
+         AND scs.status = 'pending' AND scs.matched_transaction_id IS NULL
      ) sched
      WHERE ba.status = 'active' AND bp.status = 'active'
        AND ($1::text IS NULL OR bp.period_type = $1)
@@ -599,7 +599,8 @@ export async function dashboardReportMetrics(pool: PgLikePool): Promise<Dashboar
                  FROM scheduled_allocations sca
                  JOIN scheduled_sessions scs ON scs.id = sca.scheduled_session_id
                 WHERE sca.individual_id = ba.individual_id AND scs.program_id = ba.program_id
-                  AND scs.status = 'pending') AS sched
+                  AND scs.status = 'pending'
+                  AND scs.matched_transaction_id IS NULL) AS sched
        FROM budget_authorizations ba
        JOIN budget_periods bp ON bp.id = ba.budget_period_id
        WHERE ba.status = 'active' AND bp.status = 'active'

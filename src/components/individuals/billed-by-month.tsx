@@ -16,11 +16,13 @@ function PeriodTable({
   canSeeHours,
   canSeeBilledAmounts,
   canSeeEmployeeAmounts,
+  canSeeTransactions,
 }: {
   period: BillingHistoryPeriod;
   canSeeHours: boolean;
   canSeeBilledAmounts: boolean;
   canSeeEmployeeAmounts: boolean;
+  canSeeTransactions: boolean;
 }) {
   const named = period.programs.slice(0, MAX_COLS);
   const namedIds = new Set(named.map((program) => program.id ?? program.name));
@@ -81,7 +83,7 @@ function PeriodTable({
           <h4 id={`billing-period-${period.key}`} className="font-semibold text-[var(--color-ink)]">{period.label}</h4>
           <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">{shortDate(period.start)} to {shortDate(period.end)}</p>
         </div>
-        {period.byProgramMonth.length === 0 ? <span className="badge bg-[var(--color-surface-strong)] text-[var(--color-ink-soft)]">No billing yet</span> : null}
+        {period.byProgramMonth.length === 0 ? <span className="badge bg-[var(--color-surface-strong)] text-[var(--color-ink-soft)]">{canSeeTransactions ? "No billing yet" : "No recorded service yet"}</span> : null}
       </div>
       <div className="overflow-x-auto px-5 pb-4 pt-2">
         <table className="w-full border-collapse text-sm">
@@ -89,7 +91,7 @@ function PeriodTable({
             <tr className="text-left text-[var(--color-text-soft)]">
               <th className="py-2 pr-3 font-medium">Month</th>
               {visibleColumns.map((column) => (
-                <th key={column.id} className="px-2 py-2 text-right font-medium" title={`${column.label} hours billed`}>
+                <th key={column.id} className="px-2 py-2 text-right font-medium" title={`${column.label} ${canSeeTransactions ? "hours billed" : "recorded hours"}`}>
                   {column.label}<span className="ml-0.5 text-[0.7rem] font-normal text-[var(--color-ink-faint)]">h</span>
                 </th>
               ))}
@@ -150,7 +152,9 @@ function PeriodTable({
         </table>
         {canSeeHours && hasGroup ? (
           <p className="mt-3 text-xs text-[var(--color-ink-faint)]">
-            Group-session hours are calculated from the employee-base amount at the budget rate, matching the budget totals above.
+            {canSeeEmployeeAmounts
+              ? "Group-session hours are calculated from the employee-base amount at the budget rate, matching the budget totals above."
+              : "Each individual receives the full service hours for a group session."}
           </p>
         ) : null}
       </div>
@@ -163,11 +167,13 @@ export default function BilledByMonth({
   canSeeHours = true,
   canSeeBilledAmounts = true,
   canSeeEmployeeAmounts = true,
+  canSeeTransactions = true,
 }: {
   periods: BillingHistoryPeriod[];
   canSeeHours?: boolean;
   canSeeBilledAmounts?: boolean;
   canSeeEmployeeAmounts?: boolean;
+  canSeeTransactions?: boolean;
 }) {
   return (
     <div>
@@ -178,6 +184,7 @@ export default function BilledByMonth({
           canSeeHours={canSeeHours}
           canSeeBilledAmounts={canSeeBilledAmounts}
           canSeeEmployeeAmounts={canSeeEmployeeAmounts}
+          canSeeTransactions={canSeeTransactions}
         />
       ))}
     </div>

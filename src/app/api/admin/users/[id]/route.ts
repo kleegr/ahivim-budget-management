@@ -31,6 +31,7 @@ const ACCESS_KEYS = [
   "canSeeBudgets",
   "canSeeEmployeeDeals",
   "canSeeSettlements",
+  "canPlan",
   "individualIds",
   "employeeIds",
 ] as const;
@@ -132,6 +133,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           typeof body.canSeeEmployeeDeals === "boolean" ? body.canSeeEmployeeDeals : current?.canSeeEmployeeDeals ?? false,
         canSeeSettlements:
           typeof body.canSeeSettlements === "boolean" ? body.canSeeSettlements : current?.canSeeSettlements ?? false,
+        canPlan:
+          typeof body.canPlan === "boolean" ? body.canPlan : current?.canPlan ?? false,
         individualIds: Array.isArray(body.individualIds) ? body.individualIds.map(String) : current?.individualIds ?? [],
         employeeIds: Array.isArray(body.employeeIds) ? body.employeeIds.map(String) : current?.employeeIds ?? [],
       };

@@ -1,8 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 import { createUser, userAccessConfigFromInput } from "@/lib/auth/users";
+import { BUDGET_PLANNER_ACCESS } from "@/lib/auth/access-presets";
 import type { PgLikePool } from "@/lib/import/commit";
 
 describe("new user access defaults", () => {
+  it("keeps the budget planner profile hours-only and outside financial operations", () => {
+    expect(BUDGET_PLANNER_ACCESS).toMatchObject({
+      accessScope: "full",
+      canPlan: true,
+      canSeeHours: true,
+      canSeeBudgets: true,
+      canSeeTransactions: false,
+      canSeeMoney: false,
+      canSeeBilledAmounts: false,
+      canSeeEmployeeAmounts: false,
+      canSeeAgencySpread: false,
+      canSeeCheckNet: false,
+      canSeeTaxes: false,
+      canSeeEmployeeDeals: false,
+      canSeeSettlements: false,
+    });
+  });
+
   it("creates viewers with no implicit people, transaction, hours, or money access", () => {
     expect(userAccessConfigFromInput({}, "viewer")).toEqual({
       accessScope: "scoped",
@@ -19,6 +38,7 @@ describe("new user access defaults", () => {
       canSeeBudgets: false,
       canSeeEmployeeDeals: false,
       canSeeSettlements: false,
+      canPlan: false,
       individualIds: [],
       employeeIds: [],
     });
@@ -33,6 +53,7 @@ describe("new user access defaults", () => {
       canSeeBudgets: true,
       canSeeEmployeeDeals: true,
       canSeeSettlements: true,
+      canPlan: true,
       individualIds: ["individual-1"],
       employeeIds: ["employee-1"],
     }, "viewer");
@@ -45,6 +66,7 @@ describe("new user access defaults", () => {
       canSeeBudgets: true,
       canSeeEmployeeDeals: true,
       canSeeSettlements: true,
+      canPlan: true,
       individualIds: ["individual-1"],
       employeeIds: ["employee-1"],
     });
@@ -74,6 +96,7 @@ describe("new user access defaults", () => {
       canSeeBudgets: true,
       canSeeEmployeeDeals: false,
       canSeeSettlements: false,
+      canPlan: true,
     });
   });
 
@@ -108,6 +131,6 @@ describe("new user access defaults", () => {
 
     expect(result.ok).toBe(true);
     const insert = query.mock.calls.find(([sql]) => sql.includes("INSERT INTO users"));
-    expect(insert?.[1]?.slice(4)).toEqual(["scoped", ...Array(11).fill(false)]);
+    expect(insert?.[1]?.slice(4)).toEqual(["scoped", ...Array(12).fill(false)]);
   });
 });

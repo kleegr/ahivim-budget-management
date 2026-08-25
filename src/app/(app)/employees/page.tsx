@@ -1,5 +1,6 @@
 import { requireUser } from "@/lib/auth/session";
-import { resolveAccessScope } from "@/lib/auth/access";
+import { redirect } from "next/navigation";
+import { isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listEmployeeDirectory } from "@/lib/data/employee-directory";
 import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
@@ -26,8 +27,10 @@ export default async function EmployeesPage() {
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
-    return listEmployeeDirectory(pool, scope);
+    if (isPlanningOnlyAccess(scope)) return { planningOnly: true as const, rows: [] };
+    return { planningOnly: false as const, rows: await listEmployeeDirectory(pool, scope) };
   });
+  if (result.ok && result.data.planningOnly) redirect("/schedule?view=schedules");
 
   return (
     <>
@@ -44,7 +47,7 @@ export default async function EmployeesPage() {
 
       {!result.ok ? (
         <ErrorPanel title="Could not load employees">{result.error}</ErrorPanel>
-      ) : result.data.length === 0 ? (
+      ) : result.data.rows.length === 0 ? (
         <Card>
           <EmptyState title="No employees yet">
             <p>Employees appear here once a workbook is committed{canEdit ? ", or add one with “New employee”." : "."}</p>
@@ -52,7 +55,7 @@ export default async function EmployeesPage() {
         </Card>
       ) : (
         <EmployeesList
-          rows={result.data.map<EmployeeRow>((r) => ({
+          rows={result.data.rows.map<EmployeeRow>((r) => ({
             id: r.id,
             name: r.displayName,
             externalRef: r.externalRef,

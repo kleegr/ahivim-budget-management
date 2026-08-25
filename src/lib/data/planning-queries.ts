@@ -52,6 +52,8 @@ export interface PlanningCoverageRow {
 
 export type PlanningSeriesIssue =
   | "unassigned"
+  | "conflict"
+  | "over_budget"
   | "assignment_gap"
   | "authorization_gap"
   | "no_future_occurrences"
@@ -59,6 +61,8 @@ export type PlanningSeriesIssue =
 
 export interface PlanningSeriesRow {
   id: string;
+  supersedesSeriesId: string | null;
+  successorSeriesId: string | null;
   employeeId: string | null;
   employeeName: string | null;
   programId: string | null;
@@ -68,7 +72,12 @@ export interface PlanningSeriesRow {
   weekdays: number[];
   startDate: string;
   endDate: string;
+  startTime: string | null;
+  endTime: string | null;
   durationHours: string;
+  serviceType: string | null;
+  notes: string | null;
+  participantIds: string[];
   participantNames: string[];
   futureOccurrenceCount: number;
   nextOccurrenceDate: string | null;
@@ -85,7 +94,7 @@ export interface PlanningAuthorizationGap {
   startDate: string;
   endDate: string;
   employeeNames: string[];
-  gap: "no_assignment" | "starts_uncovered" | "ends_uncovered" | "boundary_gaps";
+  gap: "no_assignment" | "starts_uncovered" | "ends_uncovered" | "boundary_gaps" | "coverage_gap";
 }
 
 export interface PlanningAssignmentRow {
@@ -110,6 +119,8 @@ export interface PlanningWorkspaceData {
   authorizationGaps: PlanningAuthorizationGap[];
   assignments: PlanningAssignmentRow[];
   summary: {
+    activeSchedules: number;
+    scheduledNextSevenDaysHours: string;
     unassignedSessions: number;
     conflictedSessions: number;
     overBudgetSessions: number;
@@ -131,6 +142,12 @@ const CONFLICT_WARNING_CODES = new Set([
 const BUDGET_WARNING_CODES = new Set(["over_authorized_hours"]);
 const ASSIGNMENT_WARNING_CODES = new Set(["not_assigned"]);
 const AUTHORIZATION_WARNING_CODES = new Set(["missing_authorization", "outside_authorization_dates"]);
+const LIVE_WARNING_CODES = new Set([
+  ...CONFLICT_WARNING_CODES,
+  ...BUDGET_WARNING_CODES,
+  ...ASSIGNMENT_WARNING_CODES,
+  ...AUTHORIZATION_WARNING_CODES,
+]);
 
 function storedWarnings(value: unknown): Array<{ code: string; message: string | null }> {
   if (!Array.isArray(value)) return [];
@@ -138,6 +155,7 @@ function storedWarnings(value: unknown): Array<{ code: string; message: string |
     if (!candidate || typeof candidate !== "object") return [];
     const warning = candidate as StoredWarning;
     if (typeof warning.code !== "string") return [];
+    if (warning.code === "missing_rate" || LIVE_WARNING_CODES.has(warning.code)) return [];
     return [{
       code: warning.code,
       message: typeof warning.message === "string" ? warning.message : null,
@@ -154,7 +172,7 @@ export async function getPlanningWorkspace(
   pool: PgLikePool,
   asOf: string,
 ): Promise<PlanningWorkspaceData> {
-  const [workRes, coverageRes, seriesRes, authorizationGapRes, assignmentRes] = await Promise.all([
+  const [workRes, coverageRes, seriesRes, authorizationGapRes, assignmentRes, weekRes] = await Promise.all([
     pool.query<{
       id: string; session_date: string; start_time: string | null; duration_hours: string;
       employee_id: string | null; employee_name: string | null; program_id: string; program_name: string;
@@ -259,6 +277,7 @@ export async function getPlanningWorkspace(
                         WHERE planned_a.individual_id = target.individual_id
                           AND planned_s.program_id = s.program_id
                           AND planned_s.status = 'pending'
+                          AND planned_s.matched_transaction_id IS NULL
                           AND planned_s.session_date BETWEEN bp.start_date AND bp.end_date
                       ), 0)
                     ) > ba.authorized_hours
@@ -266,29 +285,30 @@ export async function getPlanningWorkspace(
          FROM scheduled_sessions s
          LEFT JOIN employees e ON e.id = s.employee_id
          JOIN programs p ON p.id = s.program_id
-         WHERE s.status = 'pending' AND s.archived_at IS NULL
+         WHERE s.status = 'pending' AND s.matched_transaction_id IS NULL
+           AND s.archived_at IS NULL
        ), attention AS (
          SELECT *
          FROM base
          WHERE employee_id IS NULL OR session_date::date < $1::date
             OR assignment_gap OR authorization_gap OR has_conflict OR over_budget
-            OR COALESCE(jsonb_array_length(
-                 CASE WHEN jsonb_typeof(warnings) = 'array' THEN warnings ELSE '[]'::jsonb END
-               ), 0) > 0
+            OR EXISTS (
+                 SELECT 1
+                 FROM jsonb_array_elements(
+                   CASE WHEN jsonb_typeof(warnings) = 'array' THEN warnings ELSE '[]'::jsonb END
+                 ) stored_warning
+                  WHERE stored_warning->>'code' NOT IN (
+                    'missing_rate', 'employee_double_booked', 'individual_double_booked',
+                    'individual_two_employees_one_to_one', 'over_authorized_hours',
+                    'not_assigned', 'missing_authorization', 'outside_authorization_dates'
+                  )
+               )
        )
        SELECT attention.*,
               count(*) OVER()::text AS total_count,
               count(*) FILTER (WHERE employee_id IS NULL) OVER()::text AS unassigned_count,
-              count(*) FILTER (
-                WHERE has_conflict
-                   OR COALESCE(warnings, '[]'::jsonb) @> '[{"code":"employee_double_booked"}]'::jsonb
-                   OR COALESCE(warnings, '[]'::jsonb) @> '[{"code":"individual_double_booked"}]'::jsonb
-                   OR COALESCE(warnings, '[]'::jsonb) @> '[{"code":"individual_two_employees_one_to_one"}]'::jsonb
-              ) OVER()::text AS conflict_count,
-              count(*) FILTER (
-                WHERE over_budget
-                   OR COALESCE(warnings, '[]'::jsonb) @> '[{"code":"over_authorized_hours"}]'::jsonb
-              ) OVER()::text AS over_budget_count
+               count(*) FILTER (WHERE has_conflict) OVER()::text AS conflict_count,
+               count(*) FILTER (WHERE over_budget) OVER()::text AS over_budget_count
        FROM attention
        ORDER BY (session_date::date < $1::date) DESC,
                 (employee_id IS NULL) DESC,
@@ -337,6 +357,7 @@ export async function getPlanningWorkspace(
                 WHERE planned_a.individual_id = ca.individual_id
                   AND planned_s.program_id = ca.program_id
                   AND planned_s.status = 'pending'
+                  AND planned_s.matched_transaction_id IS NULL
                   AND planned_s.session_date BETWEEN ca.start_date AND ca.end_date
               ), 0)::text AS scheduled_hours,
               (
@@ -356,6 +377,7 @@ export async function getPlanningWorkspace(
                 WHERE planned_a.individual_id = ca.individual_id
                   AND planned_s.program_id = ca.program_id
                   AND planned_s.status = 'pending'
+                  AND planned_s.matched_transaction_id IS NULL
                   AND planned_s.session_date BETWEEN $1::date AND ca.end_date
               ) AS next_scheduled_date
        FROM current_auth ca
@@ -365,39 +387,58 @@ export async function getPlanningWorkspace(
       [asOf],
     ),
     pool.query<{
-      id: string; employee_id: string | null; employee_name: string | null;
+      id: string; supersedes_series_id: string | null; successor_series_id: string | null;
+      employee_id: string | null; employee_name: string | null;
       program_id: string | null; program_name: string | null; frequency: string; interval: number;
-      weekdays: unknown; start_date: string; end_date: string; duration_hours: string;
-      participant_names: string[] | null; future_occurrence_count: string;
+      weekdays: unknown; start_date: string; end_date: string; start_time: string | null;
+      end_time: string | null; duration_hours: string; service_type: string | null; notes: string | null;
+      participant_ids: string[] | null; participant_names: string[] | null; future_occurrence_count: string;
       next_occurrence_date: string | null; assignment_gap: boolean; authorization_gap: boolean;
-      warning_count: string;
+      has_conflict: boolean; over_budget: boolean; warning_count: string;
     }>(
-      `SELECT series.id, series.employee_id, e.display_name AS employee_name,
+      `SELECT series.id, series.supersedes_series_id,
+              (
+                SELECT successor.id
+                FROM schedule_series successor
+                WHERE successor.supersedes_series_id = series.id
+                  AND successor.archived_at IS NULL
+              ) AS successor_series_id,
+              series.employee_id, e.display_name AS employee_name,
               series.program_id, p.name AS program_name, series.frequency, series.interval,
               series.weekdays, series.start_date::text AS start_date,
-              series.end_date::text AS end_date, series.duration_hours::text AS duration_hours,
+              series.end_date::text AS end_date, series.start_time, series.end_time,
+              series.duration_hours::text AS duration_hours, series.service_type, series.notes,
               ARRAY(
-                SELECT DISTINCT i.display_name
-                FROM scheduled_sessions all_s
-                JOIN scheduled_allocations all_a ON all_a.scheduled_session_id = all_s.id
-                JOIN individuals i ON i.id = all_a.individual_id
-                WHERE all_s.series_id = series.id
-                ORDER BY i.display_name
+                SELECT member.individual_id::text
+                FROM schedule_series_individuals member
+                JOIN individuals member_individual ON member_individual.id = member.individual_id
+                WHERE member.series_id = series.id
+                ORDER BY member_individual.display_name, member.individual_id::text
+              ) AS participant_ids,
+              ARRAY(
+                SELECT i.display_name
+                FROM schedule_series_individuals member
+                JOIN individuals i ON i.id = member.individual_id
+                WHERE member.series_id = series.id
+                ORDER BY i.display_name, i.id
               ) AS participant_names,
               (
                 SELECT count(*)::text FROM scheduled_sessions future_s
                 WHERE future_s.series_id = series.id AND future_s.status = 'pending'
+                  AND future_s.matched_transaction_id IS NULL
                   AND future_s.session_date >= $1::date
               ) AS future_occurrence_count,
               (
                 SELECT min(future_s.session_date)::text FROM scheduled_sessions future_s
                 WHERE future_s.series_id = series.id AND future_s.status = 'pending'
+                  AND future_s.matched_transaction_id IS NULL
                   AND future_s.session_date >= $1::date
               ) AS next_occurrence_date,
               (
                 EXISTS (
                   SELECT 1 FROM scheduled_sessions future_s
                   WHERE future_s.series_id = series.id AND future_s.status = 'pending'
+                    AND future_s.matched_transaction_id IS NULL
                     AND future_s.session_date >= $1::date AND future_s.employee_id IS NULL
                 )
                 OR EXISTS (
@@ -405,6 +446,7 @@ export async function getPlanningWorkspace(
                   FROM scheduled_sessions future_s
                   JOIN scheduled_allocations future_a ON future_a.scheduled_session_id = future_s.id
                   WHERE future_s.series_id = series.id AND future_s.status = 'pending'
+                    AND future_s.matched_transaction_id IS NULL
                     AND future_s.session_date >= $1::date
                     AND NOT EXISTS (
                       SELECT 1 FROM assignments a
@@ -422,6 +464,7 @@ export async function getPlanningWorkspace(
                 FROM scheduled_sessions future_s
                 JOIN scheduled_allocations future_a ON future_a.scheduled_session_id = future_s.id
                 WHERE future_s.series_id = series.id AND future_s.status = 'pending'
+                  AND future_s.matched_transaction_id IS NULL
                   AND future_s.session_date >= $1::date
                   AND NOT EXISTS (
                     SELECT 1
@@ -433,14 +476,97 @@ export async function getPlanningWorkspace(
                       AND future_s.session_date BETWEEN bp.start_date AND bp.end_date
                   )
               ) AS authorization_gap,
+              EXISTS (
+                SELECT 1
+                FROM scheduled_sessions future_s
+                WHERE future_s.series_id = series.id AND future_s.status = 'pending'
+                  AND future_s.matched_transaction_id IS NULL
+                  AND future_s.session_date >= $1::date
+                  AND (
+                    (
+                      future_s.employee_id IS NOT NULL
+                      AND EXISTS (
+                        SELECT 1 FROM scheduled_sessions other
+                        WHERE other.id <> future_s.id
+                          AND other.employee_id = future_s.employee_id
+                          AND other.session_date = future_s.session_date
+                          AND other.status IN ('pending', 'completed')
+                          AND (
+                            future_s.start_time IS NULL OR future_s.end_time IS NULL
+                            OR other.start_time IS NULL OR other.end_time IS NULL
+                            OR (future_s.start_time < other.end_time AND other.start_time < future_s.end_time)
+                          )
+                      )
+                    )
+                    OR EXISTS (
+                      SELECT 1
+                      FROM scheduled_allocations target
+                      JOIN scheduled_allocations other_a ON other_a.individual_id = target.individual_id
+                      JOIN scheduled_sessions other ON other.id = other_a.scheduled_session_id
+                      WHERE target.scheduled_session_id = future_s.id
+                        AND other.id <> future_s.id
+                        AND other.session_date = future_s.session_date
+                        AND other.status IN ('pending', 'completed')
+                        AND (
+                          future_s.start_time IS NULL OR future_s.end_time IS NULL
+                          OR other.start_time IS NULL OR other.end_time IS NULL
+                          OR (future_s.start_time < other.end_time AND other.start_time < future_s.end_time)
+                        )
+                    )
+                  )
+              ) AS has_conflict,
+              EXISTS (
+                SELECT 1
+                FROM scheduled_sessions future_s
+                JOIN scheduled_allocations future_a ON future_a.scheduled_session_id = future_s.id
+                JOIN budget_authorizations ba
+                  ON ba.individual_id = future_a.individual_id
+                 AND ba.program_id = future_s.program_id AND ba.status = 'active'
+                JOIN budget_periods bp
+                  ON bp.id = ba.budget_period_id AND bp.status = 'active'
+                 AND future_s.session_date BETWEEN bp.start_date AND bp.end_date
+                WHERE future_s.series_id = series.id AND future_s.status = 'pending'
+                  AND future_s.matched_transaction_id IS NULL
+                  AND future_s.session_date >= $1::date
+                  AND (
+                    COALESCE((
+                      SELECT sum(actual_a.allocation_hours)
+                      FROM service_allocations actual_a
+                      JOIN service_sessions actual_s ON actual_s.id = actual_a.service_session_id
+                      WHERE actual_a.individual_id = future_a.individual_id
+                        AND actual_s.program_id = future_s.program_id
+                        AND COALESCE(actual_s.period_begin, actual_s.period_end)
+                            BETWEEN bp.start_date AND bp.end_date
+                    ), 0)
+                    + COALESCE((
+                      SELECT sum(planned_a.allocation_hours)
+                      FROM scheduled_allocations planned_a
+                      JOIN scheduled_sessions planned_s ON planned_s.id = planned_a.scheduled_session_id
+                      WHERE planned_a.individual_id = future_a.individual_id
+                        AND planned_s.program_id = future_s.program_id
+                        AND planned_s.status = 'pending'
+                        AND planned_s.matched_transaction_id IS NULL
+                        AND planned_s.session_date BETWEEN bp.start_date AND bp.end_date
+                    ), 0)
+                  ) > ba.authorized_hours
+              ) AS over_budget,
               (
                 SELECT count(*)::text FROM scheduled_sessions future_s
                 WHERE future_s.series_id = series.id AND future_s.status = 'pending'
+                  AND future_s.matched_transaction_id IS NULL
                   AND future_s.session_date >= $1::date
-                  AND COALESCE(jsonb_array_length(
-                    CASE WHEN jsonb_typeof(future_s.warnings) = 'array'
-                         THEN future_s.warnings ELSE '[]'::jsonb END
-                  ), 0) > 0
+                  AND EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(
+                      CASE WHEN jsonb_typeof(future_s.warnings) = 'array'
+                           THEN future_s.warnings ELSE '[]'::jsonb END
+                    ) stored_warning
+                    WHERE stored_warning->>'code' NOT IN (
+                      'missing_rate', 'employee_double_booked', 'individual_double_booked',
+                      'individual_two_employees_one_to_one', 'over_authorized_hours',
+                      'not_assigned', 'missing_authorization', 'outside_authorization_dates'
+                    )
+                  )
               ) AS warning_count
        FROM schedule_series series
        LEFT JOIN employees e ON e.id = series.employee_id
@@ -454,6 +580,7 @@ export async function getPlanningWorkspace(
       authorization_id: string; individual_id: string; individual_name: string;
       program_id: string; program_name: string; period_label: string; start_date: string; end_date: string;
       employee_names: string[] | null; covers_start: boolean; covers_end: boolean;
+      has_coverage_gap: boolean;
     }>(
       `WITH active_auth AS (
          SELECT DISTINCT ON (ba.budget_period_id, ba.program_id)
@@ -499,28 +626,36 @@ export async function getPlanningWorkspace(
                   AND (a.program_id IS NULL OR a.program_id = aa.program_id)
                   AND (a.start_date IS NULL OR a.start_date <= aa.end_date)
                   AND (a.end_date IS NULL OR a.end_date >= aa.end_date)
-              ) AS covers_end
+              ) AS covers_end,
+              EXISTS (
+                SELECT 1
+                FROM generate_series(aa.start_date, aa.end_date, INTERVAL '1 day') coverage_day
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM assignments a
+                  JOIN employees e ON e.id = a.employee_id AND e.status = 'active'
+                  WHERE a.individual_id = aa.individual_id
+                    AND a.status = 'active' AND a.archived_at IS NULL
+                    AND (a.program_id IS NULL OR a.program_id = aa.program_id)
+                    AND (a.start_date IS NULL OR a.start_date <= coverage_day::date)
+                    AND (a.end_date IS NULL OR a.end_date >= coverage_day::date)
+                )
+              ) AS has_coverage_gap
        FROM active_auth aa
        JOIN individuals i ON i.id = aa.individual_id
        JOIN programs p ON p.id = aa.program_id
-       WHERE NOT EXISTS (
-               SELECT 1 FROM assignments a
-               JOIN employees e ON e.id = a.employee_id AND e.status = 'active'
-               WHERE a.individual_id = aa.individual_id
-                 AND a.status = 'active' AND a.archived_at IS NULL
-                 AND (a.program_id IS NULL OR a.program_id = aa.program_id)
-                 AND (a.start_date IS NULL OR a.start_date <= aa.start_date)
-                 AND (a.end_date IS NULL OR a.end_date >= aa.start_date)
-             )
-          OR NOT EXISTS (
-               SELECT 1 FROM assignments a
-               JOIN employees e ON e.id = a.employee_id AND e.status = 'active'
-               WHERE a.individual_id = aa.individual_id
-                 AND a.status = 'active' AND a.archived_at IS NULL
-                 AND (a.program_id IS NULL OR a.program_id = aa.program_id)
-                 AND (a.start_date IS NULL OR a.start_date <= aa.end_date)
-                 AND (a.end_date IS NULL OR a.end_date >= aa.end_date)
-             )
+        WHERE EXISTS (
+                SELECT 1
+                FROM generate_series(aa.start_date, aa.end_date, INTERVAL '1 day') coverage_day
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM assignments a
+                  JOIN employees e ON e.id = a.employee_id AND e.status = 'active'
+                  WHERE a.individual_id = aa.individual_id
+                    AND a.status = 'active' AND a.archived_at IS NULL
+                    AND (a.program_id IS NULL OR a.program_id = aa.program_id)
+                    AND (a.start_date IS NULL OR a.start_date <= coverage_day::date)
+                    AND (a.end_date IS NULL OR a.end_date >= coverage_day::date)
+                )
+              )
        ORDER BY aa.start_date, i.display_name, p.name`,
       [asOf],
     ),
@@ -542,6 +677,15 @@ export async function getPlanningWorkspace(
          AND (a.end_date IS NULL OR a.end_date >= $1::date)
        ORDER BY (a.start_date > $1::date) DESC,
                 a.start_date NULLS FIRST, i.display_name, e.display_name`,
+      [asOf],
+    ),
+    pool.query<{ hours: string }>(
+      `SELECT COALESCE(sum(a.allocation_hours), 0)::text AS hours
+       FROM scheduled_allocations a
+       JOIN scheduled_sessions s ON s.id = a.scheduled_session_id
+       WHERE s.status = 'pending' AND s.matched_transaction_id IS NULL
+         AND s.archived_at IS NULL
+         AND s.session_date BETWEEN $1::date AND ($1::date + INTERVAL '6 days')`,
       [asOf],
     ),
   ]);
@@ -620,12 +764,16 @@ export async function getPlanningWorkspace(
     const issueCodes: PlanningSeriesIssue[] = [];
     const futureOccurrenceCount = Number(row.future_occurrence_count);
     if (!row.employee_id) issueCodes.push("unassigned");
+    if (row.has_conflict) issueCodes.push("conflict");
+    if (row.over_budget) issueCodes.push("over_budget");
     if (row.assignment_gap) issueCodes.push("assignment_gap");
     if (row.authorization_gap) issueCodes.push("authorization_gap");
     if (futureOccurrenceCount === 0) issueCodes.push("no_future_occurrences");
     if (Number(row.warning_count) > 0) issueCodes.push("session_warning");
     return {
       id: row.id,
+      supersedesSeriesId: row.supersedes_series_id,
+      successorSeriesId: row.successor_series_id,
       employeeId: row.employee_id,
       employeeName: row.employee_name,
       programId: row.program_id,
@@ -637,7 +785,12 @@ export async function getPlanningWorkspace(
         : [],
       startDate: row.start_date,
       endDate: row.end_date,
+      startTime: row.start_time,
+      endTime: row.end_time,
       durationHours: toHours(row.duration_hours),
+      serviceType: row.service_type,
+      notes: row.notes,
+      participantIds: row.participant_ids ?? [],
       participantNames: row.participant_names ?? [],
       futureOccurrenceCount,
       nextOccurrenceDate: row.next_occurrence_date,
@@ -652,7 +805,8 @@ export async function getPlanningWorkspace(
     if (employeeNames.length === 0) gap = "no_assignment";
     else if (!row.covers_start && !row.covers_end) gap = "boundary_gaps";
     else if (!row.covers_start) gap = "starts_uncovered";
-    else gap = "ends_uncovered";
+    else if (!row.covers_end) gap = "ends_uncovered";
+    else gap = "coverage_gap";
     return {
       authorizationId: row.authorization_id,
       individualId: row.individual_id,
@@ -696,6 +850,8 @@ export async function getPlanningWorkspace(
     authorizationGaps,
     assignments,
     summary: {
+      activeSchedules: series.length,
+      scheduledNextSevenDaysHours: toHours(weekRes.rows[0]?.hours ?? "0"),
       unassignedSessions: Number(workRes.rows[0]?.unassigned_count ?? 0),
       conflictedSessions: Number(workRes.rows[0]?.conflict_count ?? 0),
       overBudgetSessions: Number(workRes.rows[0]?.over_budget_count ?? 0),

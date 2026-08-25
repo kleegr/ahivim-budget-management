@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  expectedBilling, timesOverlap, durationBetween, minutesOf, generateOccurrences,
+  expectedBilling, timesOverlap, durationBetween, minutesOf, generateOccurrences, MAX_SERIES_OCCURRENCES,
 } from "@/lib/business/scheduling";
 import { dec } from "@/lib/money";
 
@@ -65,7 +65,22 @@ describe("recurrence", () => {
     const days = generateOccurrences({ frequency: "daily", startDate: "2025-01-01", endDate: "2025-01-05" });
     expect(days).toHaveLength(5);
     const capped = generateOccurrences({ frequency: "daily", startDate: "2020-01-01", endDate: "2030-01-01" });
-    expect(capped.length).toBeLessThanOrEqual(400);
+    expect(capped).toHaveLength(MAX_SERIES_OCCURRENCES);
+    const overflowProbe = generateOccurrences({
+      frequency: "daily", startDate: "2020-01-01", endDate: "2030-01-01", max: MAX_SERIES_OCCURRENCES + 1,
+    });
+    expect(overflowProbe).toHaveLength(MAX_SERIES_OCCURRENCES + 1);
+  });
+
+  it("starts a future expansion without resetting the recurrence phase", () => {
+    expect(generateOccurrences({
+      frequency: "daily", interval: 2, startDate: "2025-01-01", endDate: "2025-01-10",
+      fromDate: "2025-01-04",
+    })).toEqual(["2025-01-05", "2025-01-07", "2025-01-09"]);
+    expect(generateOccurrences({
+      frequency: "weekly", interval: 2, weekdays: [1], startDate: "2025-01-06", endDate: "2025-02-03",
+      fromDate: "2025-01-13",
+    })).toEqual(["2025-01-20", "2025-02-03"]);
   });
 
   it("returns nothing for an inverted range", () => {

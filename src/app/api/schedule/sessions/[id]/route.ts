@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiUser } from "@/lib/auth/session";
+import { apiPlanningUser } from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import {
   setSessionStatus,
@@ -17,10 +17,10 @@ const asString = (v: unknown): string | undefined => (typeof v === "string" && v
 const SESSION_STATUSES = ["pending", "completed", "cancelled", "no_show"] as const;
 type SessionStatus = (typeof SESSION_STATUSES)[number];
 
-/** Read one planned session. Any signed-in role. */
+/** Read one planned session for an account with Planning access. */
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await apiUser("manager");
-  if (!user) return jsonError("Manager role required", 403);
+  const planning = await apiPlanningUser();
+  if (!planning) return jsonError("Planning access required", 403);
 
   const { id } = await params;
   try {
@@ -39,14 +39,15 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
  *   cancel     — shorthand for status = cancelled
  *   reschedule — move date and/or times (re-runs conflict detection)
  *   duplicate  — copy the session onto another date
- * Manager or admin only.
+ * Planning access is required.
  */
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const origin = sameOriginOrFail(request);
   if (origin) return origin;
 
-  const user = await apiUser("manager");
-  if (!user) return jsonError("Manager role required", 403);
+  const planning = await apiPlanningUser();
+  if (!planning) return jsonError("Planning access required", 403);
+  const { user } = planning;
 
   const { id } = await params;
   const body = await readJson(request);
@@ -69,8 +70,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
 
     if (action === "reschedule") {
-      return resultResponse(
-        await rescheduleSession(
+      const result = await rescheduleSession(
           pool,
           id,
           {
@@ -80,15 +80,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           },
           user.id,
           reason,
-        ),
-        200,
-      );
+        );
+      if (result.ok) {
+        result.data.warnings = result.data.warnings.filter((warning) => warning.code !== "missing_rate");
+      }
+      return resultResponse(result, 200);
     }
 
     if (action === "duplicate") {
       const toDate = asString(body.toDate) ?? asString(body.sessionDate);
       if (!toDate) return jsonError("Provide the date to duplicate onto.", 400);
-      return resultResponse(await duplicateSession(pool, id, toDate, user.id, reason), 201);
+      const result = await duplicateSession(pool, id, toDate, user.id, reason);
+      if (result.ok) {
+        result.data.warnings = result.data.warnings.filter((warning) => warning.code !== "missing_rate");
+      }
+      return resultResponse(result, 201);
     }
 
     return jsonError("Unknown action.", 400);

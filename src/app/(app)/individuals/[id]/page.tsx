@@ -152,6 +152,7 @@ export default async function IndividualDetailPage({
         hours: scope.canSeeHours ? employee.hours : "0",
         agency: scope.canSeeBilledAmounts ? employee.agency : "0",
         internal: scope.canSeeEmployeeAmounts ? employee.internal : "0",
+        txCount: scope.canSeeTransactions ? employee.txCount : 0,
         transactions: scope.canSeeTransactions
           ? employee.transactions.map((row) => ({
               ...row,
@@ -176,7 +177,13 @@ export default async function IndividualDetailPage({
       programs: strategies.programs, // program list with default per-hour rates, for the editor
       assignments: assignments.filter((a) => a.status === "active" && canViewEmployee(scope, a.employeeId)),
       aliases: aliasesAll.filter((a) => a.canonicalId === id),
-      scheduled: Object.entries(scheduledByProgram),
+      scheduled: Object.entries(scheduledByProgram).map(([code, scheduled]) => [
+        code,
+        {
+          hours: scope.canSeeHours ? scheduled.hours : "0",
+          internal: scope.canSeeEmployeeAmounts ? scheduled.internal : "0",
+        },
+      ] as [string, { hours: string; internal: string }]),
     };
   });
 
@@ -292,7 +299,7 @@ export default async function IndividualDetailPage({
               <section className="card px-5 py-5">
                 <p className="eyebrow">Budget</p>
                 <p className="mt-1 text-lg font-semibold">No budget is configured</p>
-                {budget.money.txCount > 0 ? (
+                {canSeeTransactions && budget.money.txCount > 0 ? (
                   <p className="mt-1 text-sm text-[var(--color-ink-soft)]">{budget.money.txCount.toLocaleString()} billed transactions are already on file.</p>
                 ) : null}
               </section>
@@ -327,7 +334,7 @@ export default async function IndividualDetailPage({
                 )}
                 {activity.periods.length > 0 ? (
                   <Card
-                    title="Billing history"
+                    title={canSeeTransactions ? "Billing history" : "Service history"}
                     description={activity.periods.length > 1
                       ? "Each program is shown in the budget year that controls its used and remaining amounts."
                       : "Monthly service activity for the current budget year."}
@@ -337,6 +344,7 @@ export default async function IndividualDetailPage({
                       canSeeHours={canSeeHours}
                       canSeeBilledAmounts={canSeeBilledAmounts}
                       canSeeEmployeeAmounts={canSeeEmployeeAmounts}
+                      canSeeTransactions={canSeeTransactions}
                     />
                   </Card>
                 ) : null}
@@ -370,7 +378,9 @@ export default async function IndividualDetailPage({
                 {activity.byEmployee.length > 0 ? (
                   <Card
                     title="Employees working with this individual"
-                    description="Employees with billed activity in the current program budget periods."
+                    description={canSeeTransactions
+                      ? "Employees with billed activity in the current program budget periods."
+                      : "Employees with recorded service activity in the current program budget periods."}
                     action={canSeeTransactions ? <ButtonLink href={txLink({ individualId: id, pbFrom: employeeActivityPeriod?.start, pbTo: employeeActivityPeriod?.end })} variant="secondary">All rows →</ButtonLink> : undefined}
                   >
                     <EmployeesActivity
@@ -532,7 +542,7 @@ function MoreDetails({
 
         {scheduled.length > 0 ? (
           <div>
-            <p className="eyebrow mb-2">Scheduled, not yet billed</p>
+            <p className="eyebrow mb-2">Scheduled hours</p>
             <Table head={<><Th>Program</Th>{canSeeHours ? <Th numeric>Hours</Th> : null}{canSeeEmployeeAmounts ? <Th numeric>Expected employee base</Th> : null}</>}>
               {scheduled.map(([code, sc]) => (
                 <Tr key={code}><Td>{code}</Td>{canSeeHours ? <Td numeric><Hours value={sc.hours} /></Td> : null}{canSeeEmployeeAmounts ? <Td numeric><Money value={sc.internal} /></Td> : null}</Tr>

@@ -372,6 +372,72 @@ export async function getEmployeeMonthlyPayments(
 /* Schedule — delivered vs scheduled, plus upcoming pending sessions          */
 /* -------------------------------------------------------------------------- */
 
+/** Hours-only employee summary for the dedicated planner profile. */
+export interface EmployeePlanningSummary {
+  recordedServiceHours: string;
+  groupSessions: number;
+  pendingHours: string;
+  pendingSessions: number;
+  completedPlannedHours: string;
+  completedPlannedSessions: number;
+}
+
+export async function getEmployeePlanningSummary(
+  pool: PgLikePool,
+  employeeId: string,
+): Promise<EmployeePlanningSummary> {
+  const empty: EmployeePlanningSummary = {
+    recordedServiceHours: toHours(0),
+    groupSessions: 0,
+    pendingHours: toHours(0),
+    pendingSessions: 0,
+    completedPlannedHours: toHours(0),
+    completedPlannedSessions: 0,
+  };
+  if (!isUuid(employeeId)) return empty;
+
+  const [service, planned] = await Promise.all([
+    pool.query<{ recorded_hours: string; group_sessions: string }>(
+      `SELECT COALESCE(sum(physical_hours), 0)::text AS recorded_hours,
+              count(*) FILTER (WHERE group_size > 1)::text AS group_sessions
+         FROM service_sessions
+        WHERE employee_id = $1`,
+      [employeeId],
+    ),
+    pool.query<{
+      pending_hours: string;
+      pending_sessions: string;
+      completed_hours: string;
+      completed_sessions: string;
+    }>(
+      `SELECT COALESCE(sum(duration_hours) FILTER (
+                WHERE status = 'pending' AND matched_transaction_id IS NULL
+              ), 0)::text AS pending_hours,
+              count(*) FILTER (
+                WHERE status = 'pending' AND matched_transaction_id IS NULL
+              )::text AS pending_sessions,
+              COALESCE(sum(duration_hours) FILTER (
+                WHERE status = 'completed' OR matched_transaction_id IS NOT NULL
+              ), 0)::text AS completed_hours,
+              count(*) FILTER (
+                WHERE status = 'completed' OR matched_transaction_id IS NOT NULL
+              )::text AS completed_sessions
+         FROM scheduled_sessions
+        WHERE employee_id = $1`,
+      [employeeId],
+    ),
+  ]);
+
+  return {
+    recordedServiceHours: toHours(service.rows[0]?.recorded_hours ?? 0),
+    groupSessions: Number(service.rows[0]?.group_sessions ?? 0),
+    pendingHours: toHours(planned.rows[0]?.pending_hours ?? 0),
+    pendingSessions: Number(planned.rows[0]?.pending_sessions ?? 0),
+    completedPlannedHours: toHours(planned.rows[0]?.completed_hours ?? 0),
+    completedPlannedSessions: Number(planned.rows[0]?.completed_sessions ?? 0),
+  };
+}
+
 export interface EmployeeScheduleSummary {
   pendingSessions: number;
   pendingHours: string;
@@ -426,10 +492,10 @@ export async function getEmployeeSchedule(
   const [summaryRes, upcomingRes] = await Promise.all([
     pool.query<Record<string, string>>(
       `SELECT
-         count(*) FILTER (WHERE s.status = 'pending')::text                   AS pending_sessions,
-         COALESCE(sum(s.duration_hours) FILTER (WHERE s.status = 'pending'), 0)::text   AS pending_hours,
-         count(*) FILTER (WHERE s.status = 'completed')::text                 AS completed_sessions,
-         COALESCE(sum(s.duration_hours) FILTER (WHERE s.status = 'completed'), 0)::text AS completed_hours,
+         count(*) FILTER (WHERE s.status = 'pending' AND s.matched_transaction_id IS NULL)::text AS pending_sessions,
+         COALESCE(sum(s.duration_hours) FILTER (WHERE s.status = 'pending' AND s.matched_transaction_id IS NULL), 0)::text AS pending_hours,
+         count(*) FILTER (WHERE s.status = 'completed' OR s.matched_transaction_id IS NOT NULL)::text AS completed_sessions,
+         COALESCE(sum(s.duration_hours) FILTER (WHERE s.status = 'completed' OR s.matched_transaction_id IS NOT NULL), 0)::text AS completed_hours,
          count(*) FILTER (WHERE s.status = 'cancelled')::text                 AS cancelled_sessions,
          count(*) FILTER (WHERE s.status = 'no_show')::text                   AS no_show_sessions
        FROM scheduled_sessions s
@@ -462,7 +528,7 @@ export async function getEmployeeSchedule(
          LEFT JOIN scheduled_allocations a ON a.scheduled_session_id = s.id
          LEFT JOIN individuals i ON i.id = a.individual_id
         WHERE s.employee_id = $1
-          AND s.status = 'pending'
+          AND s.status = 'pending' AND s.matched_transaction_id IS NULL
           AND s.session_date >= CURRENT_DATE
         GROUP BY s.id, p.name
         ORDER BY s.session_date, s.start_time NULLS LAST

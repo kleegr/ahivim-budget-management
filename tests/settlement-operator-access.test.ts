@@ -18,6 +18,7 @@ function financeScope(overrides: Partial<AccessScope> = {}): AccessScope {
     canSeeBudgets: false,
     canSeeEmployeeDeals: false,
     canSeeSettlements: true,
+    canPlan: false,
     allIndividuals: false,
     allEmployees: false,
     individualIds: [],

@@ -68,9 +68,6 @@ export default function EmployeesActivity({
               ) : (
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <span className="min-w-0 truncate font-medium text-[var(--color-ink)]" title={e.name}>{e.name}</span>
-                  <span className="shrink-0 text-xs text-[var(--color-ink-faint)]">
-                    {e.txCount} {e.txCount === 1 ? "transaction" : "transactions"}
-                  </span>
                 </div>
               )}
               {canSeeHours ? <span className="tnum hidden w-24 text-right text-sm text-[var(--color-ink-soft)] sm:block">{formatHours(e.hours)} h</span> : null}

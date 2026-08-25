@@ -605,7 +605,7 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
       personName: row.employee_name ?? row.individual_name ?? "Unknown person",
       originalAmount: toMoney(row.original_amount),
       appliedAmount: toMoney(row.applied_amount),
-      balance: settlementBalance(row.original_amount, row.applied_amount),
+      balance: settlementBalance(row.original_amount, row.applied_amount, row.status === "void"),
       state: settlementState(row.original_amount, row.applied_amount, row.status === "void"),
       checkNumber: row.check_number,
       checkDate: row.check_date,

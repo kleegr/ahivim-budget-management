@@ -96,7 +96,7 @@ suite("phase 4 — calculations + program-rule conflicts (real PostgreSQL)", () 
     unwrap(await createAssignment(pool, { employeeId: e1.id, individualId: ind.id, programId: respite }, ACTOR));
     unwrap(await createAssignment(pool, { employeeId: e2.id, individualId: ind.id, programId: respite }, ACTOR));
 
-    await createSession(pool, { employeeId: e1.id, programId: respite, individualIds: [ind.id], sessionDate: "2025-03-10", startTime: "09:00", endTime: "11:00", durationHours: "2" }, ACTOR);
+    await createSession(pool, { employeeId: e1.id, programId: respite, individualIds: [ind.id], sessionDate: "2025-03-10", startTime: "09:00", endTime: "11:00", durationHours: "2" }, ACTOR, "authorization setup omitted for rule test");
     const second = await detectConflicts(pool, { employeeId: e2.id, programId: respite, individualIds: [ind.id], sessionDate: "2025-03-10", startTime: "10:00", endTime: "12:00", durationHours: "2" });
     expect(second.map((w) => w.code)).toContain("individual_two_employees_one_to_one");
   });
@@ -104,7 +104,7 @@ suite("phase 4 — calculations + program-rule conflicts (real PostgreSQL)", () 
   it("stores the agency additional on a scheduled session (agency 19 vs internal 17 -> 2/h)", async () => {
     const ind = unwrap(await createIndividual(pool, { displayName: "Split Kid" }, ACTOR));
     const dayHab = await programId("DAY_HAB");
-    const s = unwrap(await createSession(pool, { programId: dayHab, individualIds: [ind.id], sessionDate: "2025-03-10", durationHours: "10", employeeId: null, startTime: null, endTime: null }, ACTOR));
+    const s = unwrap(await createSession(pool, { programId: dayHab, individualIds: [ind.id], sessionDate: "2025-03-10", durationHours: "10", employeeId: null, startTime: null, endTime: null }, ACTOR, "authorization setup omitted for amount test"));
     const add = await scalar<string>(`SELECT expected_agency_additional::text FROM scheduled_sessions WHERE id=$1`, [s.id]);
     expect(dec(add).toNumber()).toBe(20); // (19-17) * 10
   });

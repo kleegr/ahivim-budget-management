@@ -120,7 +120,12 @@ export function settlementState(
   return "open";
 }
 
-export function settlementBalance(originalAmount: MoneyInput, appliedAmount: MoneyInput): string {
+export function settlementBalance(
+  originalAmount: MoneyInput,
+  appliedAmount: MoneyInput,
+  voided = false,
+): string {
+  if (voided) return toMoney(0);
   return toMoney(rounded(dec(originalAmount).minus(dec(appliedAmount))));
 }
 

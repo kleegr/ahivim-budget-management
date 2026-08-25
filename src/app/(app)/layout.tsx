@@ -1,5 +1,5 @@
 import { requireUser, roleAtLeast } from "@/lib/auth/session";
-import { resolveAccessScope } from "@/lib/auth/access";
+import { canAccessPlanning, resolveAccessScope } from "@/lib/auth/access";
 import AppNav from "@/components/app-nav";
 import { withDb } from "@/lib/data/pool";
 import { exceptionCounts } from "@/lib/data/queries";
@@ -27,28 +27,37 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // (rate exceptions, possible-duplicate rows that already imported, group-session
   // grouping, over-budget individuals) are shown on their own screens, not counted
   // here — so the badge means "there is something for you to resolve", not noise.
-  // We also read the user's access scope so the nav can hide Transactions from a
-  // viewer who isn't permitted to see it.
+  // We also read the user's access scope so the nav only exposes destinations
+  // after their capabilities have been resolved successfully.
   let reviewCount = 0;
-  let canSeeTransactions = true;
-  let canSeeSettlements = isManager;
-  let canSeeBudgets = isManager;
-  const loaded = await withDb(async (pool) => {
+  let accessResolved = false;
+  let canSeeTransactions = false;
+  let canSeeSettlements = false;
+  let canSeeBudgets = false;
+  let canPlan = false;
+  const access = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
-    const counts = isManager ? await exceptionCounts(pool) : null;
     return {
       canSeeTransactions: scope.canSeeTransactions,
       canSeeSettlements: scope.canSeeSettlements,
       canSeeBudgets: scope.canSeeBudgets,
-      counts,
+      canPlan: canAccessPlanning(scope),
     };
   });
-  if (loaded.ok) {
-    canSeeTransactions = loaded.data.canSeeTransactions;
-    canSeeSettlements = loaded.data.canSeeSettlements;
-    canSeeBudgets = loaded.data.canSeeBudgets;
-    const c = loaded.data.counts;
-    if (c) {
+  if (access.ok) {
+    accessResolved = true;
+    canSeeTransactions = access.data.canSeeTransactions;
+    canSeeSettlements = access.data.canSeeSettlements;
+    canSeeBudgets = access.data.canSeeBudgets;
+    canPlan = access.data.canPlan;
+  }
+
+  // Badge availability must not affect authorization. If this query fails, the
+  // user keeps their successfully resolved navigation with an empty badge.
+  if (isManager) {
+    const counts = await withDb((pool) => exceptionCounts(pool));
+    if (counts.ok) {
+      const c = counts.data;
       reviewCount =
         c.unmatchedNames +
         c.duplicateIndividuals +
@@ -63,9 +72,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <AppNav
         user={user}
         reviewCount={reviewCount}
+        accessResolved={accessResolved}
         canSeeTransactions={canSeeTransactions}
         canSeeSettlements={canSeeSettlements}
         canSeeBudgets={canSeeBudgets}
+        canPlan={canPlan}
       />
       <div className="flex min-h-screen min-w-0 flex-1 flex-col">
         <main id="main" className="mx-auto w-full max-w-[100rem] flex-1 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">

@@ -1,10 +1,13 @@
-export type NavigationGate = "manager" | "transactions" | "settlements" | "budgets";
+export type NavigationGate = "manager" | "transactions" | "settlements" | "budgets" | "planning" | "employees";
 
 export interface NavigationAccess {
   role: string;
   canSeeTransactions: boolean;
   canSeeSettlements: boolean;
   canSeeBudgets: boolean;
+  canPlan: boolean;
+  /** Every gated destination stays hidden until capability lookup succeeds. */
+  accessResolved: boolean;
 }
 
 export interface NavigationDestination {
@@ -98,6 +101,7 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         href: "/employees",
         hint: "Deals, checks, activity and people served",
         keywords: "staff workers deal terms checks",
+        gate: "employees",
       },
     ],
   },
@@ -121,7 +125,7 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         href: "/schedule",
         hint: "Work queue, calendar, coverage and future plans",
         keywords: "calendar planning sessions coverage pace assignments",
-        gate: "manager",
+        gate: "planning",
       },
       {
         id: "schedule-matching",
@@ -262,9 +266,14 @@ const REPORT_COMMANDS: readonly NavigationDestination[] = [
 
 function allowed(gate: NavigationGate | undefined, access: NavigationAccess): boolean {
   if (!gate) return true;
+  if (!access.accessResolved) return false;
   if (gate === "manager") return access.role === "manager" || access.role === "admin";
   if (gate === "transactions") return access.canSeeTransactions;
   if (gate === "settlements") return access.canSeeSettlements;
+  if (gate === "planning") return access.canPlan;
+  if (gate === "employees") {
+    return access.role === "manager" || access.role === "admin" || !access.canPlan || access.canSeeTransactions || access.canSeeSettlements;
+  }
   return access.canSeeBudgets;
 }
 

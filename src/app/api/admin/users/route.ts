@@ -49,6 +49,7 @@ export async function GET() {
         canSeeBudgets: u.canSeeBudgets,
         canSeeEmployeeDeals: u.canSeeEmployeeDeals,
         canSeeSettlements: u.canSeeSettlements,
+        canPlan: u.canPlan,
         individualCount: u.individualCount,
         employeeCount: u.employeeCount,
       })),

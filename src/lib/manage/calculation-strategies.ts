@@ -362,7 +362,8 @@ async function attachStrategyAnalytics(
             COALESCE(sum(sa.allocated_amount),0)::text AS internal
        FROM scheduled_allocations sa
        JOIN scheduled_sessions ss ON ss.id = sa.scheduled_session_id
-      WHERE sa.individual_id = ANY($1::uuid[]) AND ss.status = 'pending' AND ss.program_id IS NOT NULL
+      WHERE sa.individual_id = ANY($1::uuid[]) AND ss.status = 'pending'
+        AND ss.matched_transaction_id IS NULL AND ss.program_id IS NOT NULL
       GROUP BY sa.individual_id, ss.program_id`,
     [individualIds],
   );

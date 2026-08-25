@@ -69,6 +69,8 @@ export const users = pgTable(
     canSeeBudgets: boolean("can_see_budgets").default(true).notNull(),
     canSeeEmployeeDeals: boolean("can_see_employee_deals").default(false).notNull(),
     canSeeSettlements: boolean("can_see_settlements").default(false).notNull(),
+    /** Operational planning permission (mirror of drizzle/0021_planner_access.sql). */
+    canPlan: boolean("can_plan").default(false).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -810,6 +812,12 @@ export const scheduleSeries = pgTable(
     interval: integer("interval").default(1).notNull(),
     /** JSON array of weekday numbers, 0=Sunday..6=Saturday */
     weekdays: jsonb("weekdays"),
+    /** Recurrence phase anchor; may precede a future version's effective start. */
+    recurrenceAnchorDate: date("recurrence_anchor_date").notNull(),
+    supersedesSeriesId: uuid("supersedes_series_id").references(
+      (): AnyPgColumn => scheduleSeries.id,
+      { onDelete: "set null" },
+    ),
     startDate: date("start_date").notNull(),
     endDate: date("end_date").notNull(),
     startTime: text("start_time"),
@@ -824,6 +832,32 @@ export const scheduleSeries = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
+  (table) => [
+    uniqueIndex("schedule_series_one_live_successor_key")
+      .on(table.supersedesSeriesId)
+      .where(sql`${table.supersedesSeriesId} is not null and ${table.archivedAt} is null`),
+  ],
+);
+
+/** The current participant roster owned by a recurring schedule series. */
+export const scheduleSeriesIndividuals = pgTable(
+  "schedule_series_individuals",
+  {
+    seriesId: uuid("series_id")
+      .notNull()
+      .references(() => scheduleSeries.id, { onDelete: "cascade" }),
+    individualId: uuid("individual_id")
+      .notNull()
+      .references(() => individuals.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    primaryKey({
+      name: "schedule_series_individuals_pk",
+      columns: [table.seriesId, table.individualId],
+    }),
+    index("schedule_series_individuals_individual_idx").on(table.individualId),
+  ],
 );
 
 /**
@@ -899,6 +933,7 @@ export const scheduledAllocations = pgTable(
   (table) => [
     index("scheduled_allocations_session_idx").on(table.scheduledSessionId),
     index("scheduled_allocations_individual_idx").on(table.individualId),
+    uniqueIndex("scheduled_allocations_one_individual_key").on(table.scheduledSessionId, table.individualId),
   ],
 );
 

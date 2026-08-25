@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   fullAccess,
+  canAccessPlanning,
+  isPlanningOnlyAccess,
   hasDirectEmployeeAccess,
   hasDirectIndividualAccess,
   resolveAccessScope,
@@ -36,6 +38,7 @@ function scoped(overrides: Partial<AccessScope> = {}): AccessScope {
     canSeeBudgets: true,
     canSeeEmployeeDeals: false,
     canSeeSettlements: false,
+    canPlan: false,
     allIndividuals: false,
     allEmployees: false,
     individualIds: [],
@@ -47,6 +50,20 @@ function scoped(overrides: Partial<AccessScope> = {}): AccessScope {
 }
 
 describe("transaction access scope", () => {
+  it("only enables portfolio-wide Planning for full-roster access", () => {
+    expect(canAccessPlanning(scoped({ canPlan: true }))).toBe(false);
+    expect(canAccessPlanning(scoped({ canPlan: true, allIndividuals: true, allEmployees: true }))).toBe(true);
+    expect(canAccessPlanning(fullAccess("manager-1", "manager"))).toBe(true);
+    expect(isPlanningOnlyAccess(scoped({
+      canPlan: true,
+      allIndividuals: true,
+      allEmployees: true,
+      canSeeTransactions: false,
+      canSeeMoney: false,
+    }))).toBe(true);
+    expect(isPlanningOnlyAccess(fullAccess("manager-1", "manager"))).toBe(false);
+  });
+
   it("does not let an employee grant expose coworker rows through connected individuals", () => {
     const scope = scoped({
       // The connected individual belongs in navigation, but is not a ledger grant.
@@ -134,6 +151,7 @@ describe("transaction access scope", () => {
             can_see_budgets: true,
             can_see_employee_deals: true,
             can_see_settlements: false,
+            can_plan: true,
           }],
         };
       }
@@ -169,6 +187,7 @@ describe("transaction access scope", () => {
       canSeeBudgets: false,
       canSeeEmployeeDeals: true,
       canSeeSettlements: false,
+      canPlan: true,
     });
   });
 
@@ -187,6 +206,7 @@ describe("transaction access scope", () => {
       canSeeBudgets: false,
       canSeeEmployeeDeals: false,
       canSeeSettlements: false,
+      canPlan: false,
       individualIds: [],
       employeeIds: [],
     });

@@ -1,4 +1,4 @@
-import { requireUser } from "@/lib/auth/session";
+import { requirePlanningUser } from "@/lib/auth/planning-access";
 import { withDb } from "@/lib/data/pool";
 import { listIndividualsManaged } from "@/lib/manage/individuals";
 import { listEmployeesManaged } from "@/lib/manage/employees";
@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Planning — Ahivim Budget Management" };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const PLANNING_VIEWS = new Set(["queue", "calendar", "coverage", "future"]);
+const PLANNING_VIEWS = new Set(["schedules", "calendar", "coverage", "queue", "future"]);
 const CALENDAR_VIEWS = new Set<View>(["month", "week", "day"]);
 
 export default async function SchedulePage({
@@ -20,13 +20,13 @@ export default async function SchedulePage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const user = await requireUser("manager");
-  const canManage = user.role !== "viewer";
+  await requirePlanningUser();
+  const canManage = true;
   const today = new Date().toISOString().slice(0, 10);
   const sp = await searchParams;
   const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
   const requestedView = one(sp.view);
-  const initialView = requestedView && PLANNING_VIEWS.has(requestedView) ? requestedView : "queue";
+  const initialView = requestedView && PLANNING_VIEWS.has(requestedView) ? requestedView : "schedules";
   const requestedDate = one(sp.date);
   const initialCalendarDate = requestedDate && ISO_DATE.test(requestedDate) ? requestedDate : today;
   const requestedCalendarView = one(sp.calendarView);
@@ -34,7 +34,7 @@ export default async function SchedulePage({
     ? requestedCalendarView as View
     : requestedDate
       ? "day"
-      : "month";
+      : "week";
   const initialFilters = {
     employeeId: one(sp.employeeId),
     individualId: one(sp.individualId),
@@ -58,7 +58,7 @@ export default async function SchedulePage({
       <PageHeader
         eyebrow="Operations"
         title="Planning"
-        description="Resolve schedule risks, cover current authorizations, and keep future service plans ready."
+        description="Plan employee and individual service hours, protect authorizations, and resolve schedule conflicts."
       />
 
       {!result.ok ? (

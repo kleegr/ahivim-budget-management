@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiUser } from "@/lib/auth/session";
+import { apiPlanningUser } from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { createSeries, type CreateSeriesInput } from "@/lib/manage/schedule";
 
@@ -22,13 +22,14 @@ function asWeekdays(v: unknown): number[] {
   return out;
 }
 
-/** Create a recurring series and expand it into sessions. Manager or admin only. */
+/** Create a recurring series and expand it into sessions. */
 export async function POST(request: NextRequest) {
   const origin = sameOriginOrFail(request);
   if (origin) return origin;
 
-  const user = await apiUser("manager");
-  if (!user) return jsonError("Manager role required", 403);
+  const planning = await apiPlanningUser();
+  if (!planning) return jsonError("Planning access required", 403);
+  const { user } = planning;
 
   const body = await readJson(request);
   const frequency = asString(body.frequency) === "daily" ? "daily" : "weekly";

@@ -6,12 +6,11 @@ import {
   CircleAlert,
   Clock3,
   Gauge,
-  ListChecks,
-  Repeat2,
   UserRoundX,
   UsersRound,
 } from "lucide-react";
 import ScheduleCalendar, { type ScheduleCalendarProps } from "@/components/schedule/calendar";
+import ServiceSchedules from "@/components/schedule/service-schedules";
 import { TabPanels } from "@/components/ui-client";
 import { EmptyState, Hours, PaceBar, StatusBadge, Table, Td, Th, Tr } from "@/components/ui";
 import type {
@@ -19,8 +18,6 @@ import type {
   PlanningAuthorizationGap,
   PlanningCoverageRow,
   PlanningReasonCode,
-  PlanningSeriesIssue,
-  PlanningSeriesRow,
   PlanningWorkspaceData,
 } from "@/lib/data/planning-queries";
 import { formatHours, formatPercent } from "@/lib/money";
@@ -55,24 +52,15 @@ const COVERAGE_STATUS: Record<PlanningCoverageRow["status"], { label: string; to
   covered: { label: "Covered by schedule", tone: "info" },
   on_pace: { label: "On pace", tone: "good" },
 };
-
-const SERIES_ISSUE: Record<PlanningSeriesIssue, { label: string; tone: "danger" | "warn" | "info" }> = {
-  unassigned: { label: "Unassigned", tone: "danger" },
-  assignment_gap: { label: "Assignment gap", tone: "warn" },
-  authorization_gap: { label: "Authorization gap", tone: "warn" },
-  no_future_occurrences: { label: "No future sessions", tone: "danger" },
-  session_warning: { label: "Session warning", tone: "info" },
-};
-
-const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
 
 function dateLabel(value: string): string {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(new Date(`${value}T00:00:00Z`));
+  return DATE_FORMATTER.format(new Date(`${value}T00:00:00Z`));
 }
 
 function timeLabel(value: string | null): string {
@@ -93,7 +81,7 @@ function SummaryMetric({
   tone = "neutral",
 }: {
   label: string;
-  value: number;
+  value: number | string;
   detail: string;
   icon: ReactNode;
   tone?: "neutral" | "warn" | "danger";
@@ -152,6 +140,7 @@ export default function PlanningWorkspace({
   individuals,
   programs,
 }: PlanningWorkspaceProps) {
+  const unassignedSchedules = data.series.filter((row) => !row.employeeId).length;
   const calendar = (
     <ScheduleCalendar
       canManage={canManage}
@@ -169,32 +158,30 @@ export default function PlanningWorkspace({
     <div className="space-y-6">
       <div className="grid divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)] sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-4">
         <SummaryMetric
-          label="Work queue"
-          value={data.workQueueTotal}
-          detail="planned sessions needing a decision"
-          icon={<ListChecks aria-hidden className="h-4 w-4" />}
-          tone={data.workQueueTotal > 0 ? "warn" : "neutral"}
+          label="Active schedules"
+          value={data.summary.activeSchedules}
+          detail="recurring employee and individual plans"
+          icon={<CalendarDays aria-hidden className="h-4 w-4" />}
         />
         <SummaryMetric
-          label="Unassigned"
-          value={data.summary.unassignedSessions}
-          detail="sessions without an employee"
+          label="Next 7 days"
+          value={`${formatHours(data.summary.scheduledNextSevenDaysHours)} h`}
+          detail="individual budget hours scheduled"
+          icon={<Clock3 aria-hidden className="h-4 w-4" />}
+        />
+        <SummaryMetric
+          label="Employee needed"
+          value={unassignedSchedules}
+          detail="recurring schedules not staffed"
           icon={<UserRoundX aria-hidden className="h-4 w-4" />}
-          tone={data.summary.unassignedSessions > 0 ? "danger" : "neutral"}
+          tone={unassignedSchedules > 0 ? "danger" : "neutral"}
         />
         <SummaryMetric
-          label="Coverage gaps"
+          label="Budget attention"
           value={data.summary.coverageGaps}
-          detail="current authorizations behind or uncovered"
+          detail="hour budgets behind, uncovered, or over"
           icon={<Gauge aria-hidden className="h-4 w-4" />}
           tone={data.summary.coverageGaps > 0 ? "warn" : "neutral"}
-        />
-        <SummaryMetric
-          label="Future gaps"
-          value={data.summary.futurePlanGaps}
-          detail="authorization or recurring-plan gaps"
-          icon={<CalendarDays aria-hidden className="h-4 w-4" />}
-          tone={data.summary.futurePlanGaps > 0 ? "warn" : "neutral"}
         />
       </div>
 
@@ -202,10 +189,26 @@ export default function PlanningWorkspace({
         paramKey="view"
         initialId={initialView}
         panels={[
-          { id: "queue", label: "Work queue", badge: data.workQueueTotal || undefined, content: <WorkQueue data={data} /> },
+          {
+            id: "schedules",
+            label: "Service schedules",
+            badge: data.summary.activeSchedules || undefined,
+            content: (
+              <ServiceSchedules
+                rows={data.series}
+                today={today}
+                canManage={canManage}
+                employees={employees}
+                individuals={individuals}
+                programs={programs}
+                initialFilters={initialFilters}
+              />
+            ),
+          },
           { id: "calendar", label: "Calendar", content: calendar },
-          { id: "coverage", label: "Coverage & pace", badge: data.summary.coverageGaps || undefined, content: <CoverageTable rows={data.coverage} /> },
-          { id: "future", label: "Future plans", badge: data.summary.futurePlanGaps || undefined, content: <FuturePlans data={data} /> },
+          { id: "coverage", label: "Budgets & pace", badge: data.summary.coverageGaps || undefined, content: <CoverageTable rows={data.coverage} /> },
+          { id: "queue", label: "Attention", badge: data.workQueueTotal || undefined, content: <WorkQueue data={data} /> },
+          { id: "future", label: "Assignments", badge: data.authorizationGaps.length || undefined, content: <FuturePlans data={data} /> },
         ]}
       />
     </div>
@@ -379,7 +382,6 @@ function FuturePlans({ data }: { data: PlanningWorkspaceData }) {
   return (
     <div className="space-y-8">
       <AuthorizationGaps rows={data.authorizationGaps} />
-      <SeriesPlans rows={data.series} />
       <AssignmentPlans rows={data.assignments} />
     </div>
   );
@@ -390,6 +392,7 @@ const AUTH_GAP_LABEL: Record<PlanningAuthorizationGap["gap"], string> = {
   starts_uncovered: "Start not covered",
   ends_uncovered: "End not covered",
   boundary_gaps: "Start and end not covered",
+  coverage_gap: "Gap inside period",
 };
 
 function AuthorizationGaps({ rows }: { rows: PlanningAuthorizationGap[] }) {
@@ -397,11 +400,11 @@ function AuthorizationGaps({ rows }: { rows: PlanningAuthorizationGap[] }) {
     <section>
       <SectionHeading
         title="Authorization assignment gaps"
-        description="Current and upcoming authorization boundaries without an effective employee assignment."
+        description="Current and upcoming authorization dates without continuous employee assignment coverage."
         icon={<UsersRound aria-hidden className="h-4 w-4" />}
       />
       {rows.length === 0 ? (
-        <EmptyState compact title="Authorization boundaries are covered" icon={<CheckCircle2 aria-hidden className="h-5 w-5" />} />
+        <EmptyState compact title="Authorization dates are covered" icon={<CheckCircle2 aria-hidden className="h-5 w-5" />} />
       ) : (
         <div className="border-y border-[var(--color-rule)]">
           <Table
@@ -420,63 +423,6 @@ function AuthorizationGaps({ rows }: { rows: PlanningAuthorizationGap[] }) {
                 </Td>
                 <Td>{row.employeeNames.join(", ") || <span className="text-[var(--color-ink-faint)]">None</span>}</Td>
                 <Td><StatusBadge label={AUTH_GAP_LABEL[row.gap]} tone="warn" /></Td>
-              </Tr>
-            ))}
-          </Table>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function recurrenceLabel(row: PlanningSeriesRow): string {
-  const interval = row.interval > 1 ? `Every ${row.interval} ${row.frequency === "daily" ? "days" : "weeks"}` : row.frequency === "daily" ? "Daily" : "Weekly";
-  const days = row.weekdays.map((day) => WEEKDAY[day]).filter(Boolean).join(", ");
-  return days ? `${interval} / ${days}` : interval;
-}
-
-function SeriesPlans({ rows }: { rows: PlanningSeriesRow[] }) {
-  return (
-    <section>
-      <SectionHeading
-        title="Recurring plans"
-        description="Active series and the readiness of their remaining occurrences."
-        icon={<Repeat2 aria-hidden className="h-4 w-4" />}
-      />
-      {rows.length === 0 ? (
-        <EmptyState compact title="No active recurring plans" icon={<Repeat2 aria-hidden className="h-5 w-5" />} />
-      ) : (
-        <div className="border-y border-[var(--color-rule)]">
-          <Table
-            caption="Active recurring schedule series"
-            head={<><Th>Series</Th><Th>People</Th><Th>Employee</Th><Th>Range</Th><Th>Next</Th><Th>Readiness</Th></>}
-          >
-            {rows.map((row) => (
-              <Tr key={row.id}>
-                <Td>
-                  <p className="font-semibold">{row.programName}</p>
-                  <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">{recurrenceLabel(row)} / {formatHours(row.durationHours)} h</p>
-                </Td>
-                <Td><p className="max-w-56">{row.participantNames.join(", ") || "No participants"}</p></Td>
-                <Td>
-                  {row.employeeId ? (
-                    <Link href={`/employees/${row.employeeId}`} className="hover:text-[var(--color-primary)] hover:underline">{row.employeeName ?? "Employee"}</Link>
-                  ) : <span className="font-medium text-[var(--color-danger)]">Unassigned</span>}
-                </Td>
-                <Td><p className="whitespace-nowrap text-xs">{dateLabel(row.startDate)} to {dateLabel(row.endDate)}</p></Td>
-                <Td>
-                  <p>{row.nextOccurrenceDate ? dateLabel(row.nextOccurrenceDate) : "None"}</p>
-                  <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">{row.futureOccurrenceCount} remaining</p>
-                </Td>
-                <Td>
-                  {row.issueCodes.length === 0 ? (
-                    <StatusBadge label="Ready" tone="good" />
-                  ) : (
-                    <div className="flex max-w-72 flex-wrap gap-1.5">
-                      {row.issueCodes.map((code) => <StatusBadge key={code} label={SERIES_ISSUE[code].label} tone={SERIES_ISSUE[code].tone} />)}
-                    </div>
-                  )}
-                </Td>
               </Tr>
             ))}
           </Table>

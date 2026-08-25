@@ -1,7 +1,13 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/session";
-import { resolveAccessScope, canViewEmployee, canViewIndividual, hasDirectEmployeeAccess } from "@/lib/auth/access";
+import {
+  canViewEmployee,
+  canViewIndividual,
+  hasDirectEmployeeAccess,
+  isPlanningOnlyAccess,
+  resolveAccessScope,
+} from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { getEmployeeReport } from "@/lib/data/queries";
 import { isUuid, listTransactions } from "@/lib/data/app-queries";
@@ -10,6 +16,7 @@ import {
   getEmployeeIndividuals,
   getEmployeeUsageByProgram,
   getEmployeeMonthlyPayments,
+  getEmployeePlanningSummary,
   getEmployeeSchedule,
   getEmployeeWithholding,
 } from "@/lib/data/employee-queries";
@@ -36,6 +43,19 @@ export const metadata = { title: "Employee — Ahivim Budget Management" };
 const EMPTY_SCHEDULE: Awaited<ReturnType<typeof getEmployeeSchedule>> = {
   summary: { pendingSessions: 0, pendingHours: "0", completedSessions: 0, completedHours: "0", cancelledSessions: 0, noShowSessions: 0 },
   upcoming: [],
+};
+
+const EMPTY_PAYMENT: Awaited<ReturnType<typeof getEmployeePaymentSummary>> = {
+  agencyGross: "0.00",
+  internalAmount: "0.00",
+  agencyAdditional: "0.00",
+  totalPayment: "0.00",
+  paidToEmployee: "0.00",
+  payableByAgency: "0.00",
+  unknownRecipient: "0.00",
+  transactionCount: 0,
+  attributedCount: 0,
+  checkCount: 0,
 };
 
 /*
@@ -79,13 +99,14 @@ export default async function EmployeeDetailPage({
     // shown about that employee is limited to the individuals they may see.
     const scope = await resolveAccessScope(pool, user);
     if (!canViewEmployee(scope, id)) return null;
+    const planningOnly = isPlanningOnlyAccess(scope);
     const directAccess = hasDirectEmployeeAccess(scope, id);
     const canSeeEmployeeDeals = scope.canSeeEmployeeDeals && directAccess;
     const canSeeSettlements = scope.canSeeSettlements && directAccess;
     const canSeeCheckNet = scope.canSeeCheckNet && directAccess;
     const canSeeTaxes = scope.canSeeTaxes && directAccess;
-    const [report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, gridRows, deals, settlement] = await Promise.all([
-      getEmployeeReport(pool, id, scope),
+    const [report, assignments, recent, payment, individualsServed, usageByProgram, monthly, schedule, withholding, gridRows, deals, settlement, planningSummary] = await Promise.all([
+      planningOnly ? Promise.resolve(null) : getEmployeeReport(pool, id, scope),
       listAssignments(pool, { employeeId: id, includeInactive: true }),
       scope.canSeeTransactions
         ? listTransactions(pool, { employeeId: id, limit: 25, scope })
@@ -94,10 +115,10 @@ export default async function EmployeeDetailPage({
             total: 0,
             totals: { agencyGross: "0.00", internalAmount: "0.00", agencyRetention: "0.00" },
           }),
-      getEmployeePaymentSummary(pool, id, scope),
-      getEmployeeIndividuals(pool, id, scope),
-      getEmployeeUsageByProgram(pool, id, scope),
-      getEmployeeMonthlyPayments(pool, id, scope),
+      planningOnly ? Promise.resolve(EMPTY_PAYMENT) : getEmployeePaymentSummary(pool, id, scope),
+      planningOnly ? Promise.resolve([]) : getEmployeeIndividuals(pool, id, scope),
+      planningOnly ? Promise.resolve([]) : getEmployeeUsageByProgram(pool, id, scope),
+      planningOnly ? Promise.resolve([]) : getEmployeeMonthlyPayments(pool, id, scope),
       // The schedule (a manager surface, and its upcoming list names individuals)
       // is not shown to viewers.
       canEdit ? getEmployeeSchedule(pool, id) : Promise.resolve(EMPTY_SCHEDULE),
@@ -106,6 +127,7 @@ export default async function EmployeeDetailPage({
       scope.canSeeTransactions ? listTransactionsForGrid(pool, scope, { employeeId: id }) : Promise.resolve([]),
       canSeeEmployeeDeals ? listEmployeeDeals(pool, id) : Promise.resolve([]),
       canSeeSettlements ? getPersonSettlementBalance(pool, { employeeId: id }) : Promise.resolve({ payable: "0", receivable: "0", reserve: "0", credit: "0", openItems: 0 }),
+      planningOnly ? getEmployeePlanningSummary(pool, id) : Promise.resolve(null),
     ]);
     const activeAssignments = assignments
       .filter((a) => a.status === "active")
@@ -113,7 +135,7 @@ export default async function EmployeeDetailPage({
     return {
       employee, report, assignments: activeAssignments, recent, payment,
       individualsServed, usageByProgram, monthly, schedule, withholding,
-      gridRows, deals, settlement,
+      gridRows, deals, settlement, planningSummary, planningOnly,
       canSeeTransactions: scope.canSeeTransactions,
       canSeeHours: scope.canSeeHours,
       canSeeBilledAmounts: scope.canSeeBilledAmounts,
@@ -141,6 +163,7 @@ export default async function EmployeeDetailPage({
   const {
     employee, report, assignments, recent, payment, individualsServed,
     usageByProgram, monthly, schedule, withholding, gridRows, deals, settlement,
+    planningSummary, planningOnly,
     canSeeTransactions, canSeeHours, canSeeBilledAmounts,
     canSeeEmployeeAmounts, canSeeAgencySpread, canSeeCheckNet, canSeeTaxes,
     canSeeBudgets, canSeeEmployeeDeals, canSeeSettlements, transactionVisibility,
@@ -156,7 +179,9 @@ export default async function EmployeeDetailPage({
   const agencyPercent = currentDeal ? dec(currentDeal.agencyCutPercent).times(100).toDecimalPlaces(2).toString() : "";
   const today = new Date().toISOString().slice(0, 10);
 
-  const headerActions = canEdit ? (
+  const headerActions = planningOnly ? (
+    <ButtonLink href={`/schedule?view=schedules&employeeId=${id}`}>Open service schedules</ButtonLink>
+  ) : canEdit ? (
     <div className="flex flex-wrap gap-2">
       <CreateButton
         label="Edit"
@@ -216,7 +241,7 @@ export default async function EmployeeDetailPage({
 
   return (
     <>
-      <PageHeader eyebrow="Employee" title={employee.displayName} action={headerActions} />
+      <PageHeader eyebrow={planningOnly ? "Planning" : "Employee"} title={employee.displayName} action={headerActions} />
       <TabPanels
         initialId={initialView}
         paramKey="view"
@@ -224,7 +249,27 @@ export default async function EmployeeDetailPage({
           {
             id: "overview",
             label: "Overview",
-            content: hasActivity && report ? (
+            content: planningOnly && planningSummary ? (
+              <section className="card fade-in-up px-5 py-5">
+                <p className="eyebrow">Service hours</p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <MoneyTile label="Recorded service" value={`${formatHours(planningSummary.recordedServiceHours)} h`} plain />
+                  <MoneyTile
+                    label="Scheduled next"
+                    value={`${formatHours(planningSummary.pendingHours)} h`}
+                    sub={`${planningSummary.pendingSessions} pending session${planningSummary.pendingSessions === 1 ? "" : "s"}`}
+                    plain
+                  />
+                  <MoneyTile label="Active assignments" value={assignments.length.toLocaleString()} plain />
+                </div>
+                <p className="mt-4 text-sm text-[var(--color-ink-soft)]">
+                  {planningSummary.groupSessions > 0
+                    ? `${planningSummary.groupSessions.toLocaleString()} recorded group session${planningSummary.groupSessions === 1 ? "" : "s"}. `
+                    : ""}
+                  Use Planning to review the employee&rsquo;s recurring schedule and authorization coverage.
+                </p>
+              </section>
+            ) : hasActivity && report ? (
               <section className="card fade-in-up px-5 py-5">
                 <p className="eyebrow">Service activity</p>
                 <p className="mt-1 text-2xl font-semibold leading-tight">
@@ -266,7 +311,7 @@ export default async function EmployeeDetailPage({
               </section>
             ),
           },
-          {
+          ...(planningOnly ? [] : [{
             id: "checks",
             label: "Checks/Activity",
             content: (
@@ -325,7 +370,7 @@ export default async function EmployeeDetailPage({
                 {!hasCheckActivity ? <section className="card px-5 py-5 text-sm text-[var(--color-ink-soft)]">No check or service activity is recorded.</section> : null}
               </div>
             ),
-          },
+          }]),
           ...(canSeeEmployeeDeals || canSeeSettlements ? [{
             id: "deal",
             label: "Deal & Payments",

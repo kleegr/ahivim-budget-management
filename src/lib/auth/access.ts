@@ -49,6 +49,8 @@ export interface AccessScope extends VisibilityPermissions {
   full: boolean;
   /** May the Transactions surface (grid, drill-throughs, exports) be shown. */
   canSeeTransactions: boolean;
+  /** May this account read and manage the operational Planning workspace. */
+  canPlan: boolean;
   /** No individual filter (full, or the see-all-individuals override). */
   allIndividuals: boolean;
   /** No employee filter (full, or the see-all-employees override). */
@@ -80,6 +82,7 @@ export function fullAccess(userId: string, role: string): AccessScope {
     canSeeBudgets: true,
     canSeeEmployeeDeals: true,
     canSeeSettlements: true,
+    canPlan: true,
     allIndividuals: true,
     allEmployees: true,
     individualIds: [],
@@ -87,6 +90,28 @@ export function fullAccess(userId: string, role: string): AccessScope {
     grantedIndividualIds: [],
     grantedEmployeeIds: [],
   };
+}
+
+/**
+ * Planning currently operates across the whole employee/individual roster.
+ * Keep a partially scoped account out until schedule queries can enforce both
+ * axes themselves; this prevents a narrow people grant from widening through
+ * the portfolio-wide calendar APIs.
+ */
+export function canAccessPlanning(
+  scope: Pick<AccessScope, "canPlan" | "full" | "allIndividuals" | "allEmployees">,
+): boolean {
+  return scope.canPlan && (scope.full || (scope.allIndividuals && scope.allEmployees));
+}
+
+/** Dedicated planner profile: Planning and hours, without ledger or money access. */
+export function isPlanningOnlyAccess(
+  scope: Pick<
+    AccessScope,
+    "canPlan" | "full" | "allIndividuals" | "allEmployees" | "canSeeTransactions" | "canSeeMoney"
+  >,
+): boolean {
+  return canAccessPlanning(scope) && !scope.canSeeTransactions && !scope.canSeeMoney;
 }
 
 /**
@@ -118,11 +143,12 @@ export async function resolveAccessScope(
     can_see_budgets: boolean;
     can_see_employee_deals: boolean;
     can_see_settlements: boolean;
+    can_plan: boolean;
   }>(
     `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions, can_see_money,
             can_see_hours, can_see_billed_amounts, can_see_employee_amounts,
             can_see_agency_spread, can_see_check_net, can_see_taxes,
-            can_see_budgets, can_see_employee_deals, can_see_settlements
+            can_see_budgets, can_see_employee_deals, can_see_settlements, can_plan
        FROM users WHERE id = $1`,
     [user.id],
   );
@@ -145,6 +171,7 @@ export async function resolveAccessScope(
       canSeeBudgets: false,
       canSeeEmployeeDeals: false,
       canSeeSettlements: false,
+      canPlan: false,
       allIndividuals: false,
       allEmployees: false,
       individualIds: [],
@@ -168,6 +195,7 @@ export async function resolveAccessScope(
     canSeeEmployeeDeals: canSeeMoney && u.can_see_employee_deals === true,
     canSeeSettlements: canSeeMoney && u.can_see_settlements === true,
   };
+  const canPlan = u.can_plan === true;
 
   if (u.access_scope !== "scoped") {
     // Full-access user: sees all data, but the transactions / money toggles still apply.
@@ -175,6 +203,7 @@ export async function resolveAccessScope(
       ...fullAccess(user.id, user.role),
       canSeeTransactions: u.can_see_transactions !== false,
       ...visibility,
+      canPlan,
     };
   }
 
@@ -234,6 +263,7 @@ export async function resolveAccessScope(
     full: false,
     canSeeTransactions: u.can_see_transactions === true,
     ...visibility,
+    canPlan,
     allIndividuals: seeAllIndividuals,
     allEmployees: seeAllEmployees,
     individualIds: [...individualIds],
