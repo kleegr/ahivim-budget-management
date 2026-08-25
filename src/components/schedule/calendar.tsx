@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import type {
-  CalendarSession, SessionWarningFlags, ScheduleUtilizationSummary,
+  CalendarSession, ScheduleUtilizationProgram, SessionWarningFlags, ScheduleUtilizationSummary,
 } from "@/lib/data/schedule-queries";
 import {
   send, SessionChip, addDays, weekday, startOfWeek, startOfMonth, monthGridStart,
@@ -559,6 +559,45 @@ function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSu
     );
   }
 
+  const periodContext = summary.period
+    ? `${summary.period.label} · ${summary.period.startDate} → ${summary.period.endDate}`
+    : `${summary.periodCount} active authorization periods`;
+
+  if (
+    summary.totalsAmbiguous
+    || summary.authorizedHours === null
+    || summary.usedHours === null
+    || summary.scheduledHours === null
+    || summary.remainingAfterHours === null
+    || summary.usagePercent === null
+    || summary.committedPercent === null
+    || summary.timeElapsedPercent === null
+    || summary.status === null
+  ) {
+    return (
+      <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-4">
+        <div className="mb-3">
+          <p className="eyebrow">Budget utilization</p>
+          <p className="display text-sm font-medium">
+            {summary.individualName}
+            <span className="ml-2 text-xs font-normal text-[var(--color-ink-faint)]">{periodContext}</span>
+          </p>
+        </div>
+        <p
+          className="rounded border px-3 py-2 text-sm text-[var(--color-ink-soft)]"
+          role="alert"
+          style={{
+            borderColor: "var(--color-pace-near)",
+            background: "color-mix(in srgb, var(--color-pace-near) 8%, transparent)",
+          }}
+        >
+          {summary.ambiguityMessage ?? "Overlapping authorizations need review before utilization can be combined."}
+        </p>
+        <AuthorizationPaceRows programs={summary.programs} />
+      </div>
+    );
+  }
+
   const usagePctNum = dec(summary.usagePercent).times(100).toNumber();
   const committedPctNum = dec(summary.committedPercent).times(100).toNumber();
   const elapsedNum = dec(summary.timeElapsedPercent).times(100).toNumber();
@@ -567,10 +606,10 @@ function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSu
   const barTone: "good" | "warn" | "danger" = overBudget ? "danger" : usagePctNum >= 90 ? "warn" : "good";
   const bigTone: "good" | "warn" | "danger" = overBudget ? "danger" : committedPctNum >= 100 ? "warn" : "good";
 
-  // Pace to fully utilize the remaining, unscheduled hours before the period ends.
   const days = summary.daysRemaining;
-  const weeksLeft = days !== null && days > 0 ? days / 7 : null;
-  const requiredWeekly = weeksLeft && remaining.gt(0) ? remaining.dividedBy(weeksLeft) : null;
+  const requiredWeekly = summary.requiredWeeklyHours === null
+    ? null
+    : dec(summary.requiredWeeklyHours);
 
   return (
     <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-4">
@@ -579,7 +618,7 @@ function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSu
           <p className="eyebrow">Budget utilization</p>
           <p className="display text-sm font-medium">
             {summary.individualName}
-            {summary.period ? <span className="ml-2 text-xs font-normal text-[var(--color-ink-faint)]">{summary.period.label} · {summary.period.startDate} → {summary.period.endDate}</span> : null}
+            <span className="ml-2 text-xs font-normal text-[var(--color-ink-faint)]">{periodContext}</span>
           </p>
         </div>
         <UtilizationBadge status={summary.status} />
@@ -598,41 +637,65 @@ function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSu
       </div>
 
       <div className="mt-3">
-        <ProgressBar percent={usagePctNum} tone={barTone} target={elapsedNum} label="Hours used vs. period elapsed" />
+        <ProgressBar
+          percent={usagePctNum}
+          tone={barTone}
+          target={elapsedNum}
+          label={summary.periodCount > 1 ? "Hours used vs. weighted period elapsed" : "Hours used vs. period elapsed"}
+        />
         <p className="mt-2 text-xs text-[var(--color-ink-faint)]">
-          The marker is how far the budget period has elapsed. {formatPercent(summary.committedPercent)} committed once scheduled work is counted.
+          The marker is {summary.periodCount > 1 ? "authorized-hours-weighted across each active period" : "how far the budget period has elapsed"}. {formatPercent(summary.committedPercent)} committed once scheduled work is counted.
           {overBudget
             ? ` Scheduling exceeds the authorization by ${formatHours(remaining.abs())} h — reduce or reallocate.`
-            : requiredWeekly
-              ? ` ${formatHours(summary.remainingAfterHours)} h remain unscheduled with ${days} day${days === 1 ? "" : "s"} left — about ${formatHours(requiredWeekly)} h/week to fully utilize.`
+            : requiredWeekly && requiredWeekly.gt(0)
+              ? days !== null
+                ? ` ${formatHours(summary.remainingAfterHours)} h remain unscheduled with ${days} day${days === 1 ? "" : "s"} left — about ${formatHours(requiredWeekly)} h/week to fully utilize.`
+                : ` Across the active periods, about ${formatHours(requiredWeekly)} h/week must still be scheduled to fully utilize them.`
               : days !== null && days <= 0
                 ? " The budget period has ended."
                 : ` ${formatHours(summary.remainingAfterHours)} h remain unscheduled.`}
         </p>
       </div>
 
-      {summary.programs.length > 1 ? (
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          {summary.programs.map((p) => {
-            const pOver = p.remainingAfterHours !== null && dec(p.remainingAfterHours).isNegative();
-            const pColor = EVENT_TONE_COLOR[pOver ? "over_risk" : dec(p.usagePercent).gte("0.9") ? "flagged" : "on_track"];
-            return (
-              <div key={p.programId} className="rounded border border-[var(--color-rule)] px-3 py-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-xs font-medium">{p.programName}</span>
-                  <span className="tnum text-xs" style={{ color: pColor }}>{p.remainingAfterHours === null ? "—" : `${formatHours(p.remainingAfterHours)} h left`}</span>
-                </div>
-                <div className="mt-1.5">
-                  <PaceBar usagePercent={p.usagePercent} timeElapsedPercent={summary.timeElapsedPercent} color={pColor} />
-                </div>
-                <p className="mt-1 text-[11px] text-[var(--color-ink-faint)]">
-                  {formatHours(p.usedHours)} used · {formatHours(p.scheduledHours)} scheduled · {formatHours(p.authorizedHours ?? "0")} authorized
-                </p>
+      {summary.programs.length > 1 ? <AuthorizationPaceRows programs={summary.programs} /> : null}
+    </div>
+  );
+}
+
+function AuthorizationPaceRows({ programs }: { programs: ScheduleUtilizationProgram[] }) {
+  return (
+    <div className="mt-3 divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)]">
+      {programs.map((program) => {
+        const over = program.remainingAfterHours !== null && dec(program.remainingAfterHours).isNegative();
+        const color = EVENT_TONE_COLOR[over ? "over_risk" : dec(program.usagePercent).gte("0.9") ? "flagged" : "on_track"];
+        return (
+          <div key={program.authorizationId} className="grid gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,1.2fr)] sm:items-center sm:gap-4">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium">{program.programName}</span>
+                {program.authorizationAmbiguous ? (
+                  <span className="text-[11px] font-semibold" style={{ color: "var(--color-pace-near)" }}>Overlapping authorization</span>
+                ) : null}
+                <UtilizationBadge status={program.status} />
               </div>
-            );
-          })}
-        </div>
-      ) : null}
+              <p className="mt-1 break-words text-[11px] text-[var(--color-ink-faint)]">
+                {program.periodLabel} · {program.startDate} → {program.endDate}
+              </p>
+              <p className="mt-1 text-[11px] text-[var(--color-ink-faint)]">
+                {formatHours(program.usedHours)} used · {formatHours(program.scheduledHours)} scheduled · {formatHours(program.authorizedHours ?? "0")} authorized
+                {program.requiredWeeklyHours !== null ? ` · ${formatHours(program.requiredWeeklyHours)} h/week still needed` : ""}
+              </p>
+            </div>
+            <div className="min-w-0">
+              <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                <span className="text-[var(--color-ink-faint)]">{formatPercent(program.timeElapsedPercent)} elapsed</span>
+                <span className="tnum" style={{ color }}>{program.remainingAfterHours === null ? "—" : `${formatHours(program.remainingAfterHours)} h left`}</span>
+              </div>
+              <PaceBar usagePercent={program.usagePercent} timeElapsedPercent={program.timeElapsedPercent} color={color} />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

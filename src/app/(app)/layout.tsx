@@ -1,5 +1,5 @@
 import { requireUser, roleAtLeast } from "@/lib/auth/session";
-import { canAccessPlanning, resolveAccessScope } from "@/lib/auth/access";
+import { canAccessPlanning, isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
 import AppNav from "@/components/app-nav";
 import { withDb } from "@/lib/data/pool";
 import { exceptionCounts } from "@/lib/data/queries";
@@ -35,6 +35,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   let canSeeSettlements = false;
   let canSeeBudgets = false;
   let canPlan = false;
+  let canSeeClassFinancials = false;
+  let canSeeEmployees = false;
+  let canEditDocuments = false;
   const access = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
     return {
@@ -42,6 +45,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       canSeeSettlements: scope.canSeeSettlements,
       canSeeBudgets: scope.canSeeBudgets,
       canPlan: canAccessPlanning(scope),
+      canSeeClassFinancials: scope.canSeeClassFinancials,
+      canSeeEmployees:
+        !isPlanningOnlyAccess(scope)
+        && (scope.full || scope.allEmployees || scope.employeeIds.length > 0),
+      canEditDocuments: scope.canEditDocuments,
     };
   });
   if (access.ok) {
@@ -50,6 +58,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     canSeeSettlements = access.data.canSeeSettlements;
     canSeeBudgets = access.data.canSeeBudgets;
     canPlan = access.data.canPlan;
+    canSeeClassFinancials = access.data.canSeeClassFinancials;
+    canSeeEmployees = access.data.canSeeEmployees;
+    canEditDocuments = access.data.canEditDocuments;
   }
 
   // Badge availability must not affect authorization. If this query fails, the
@@ -77,6 +88,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         canSeeSettlements={canSeeSettlements}
         canSeeBudgets={canSeeBudgets}
         canPlan={canPlan}
+        canSeeClassFinancials={canSeeClassFinancials}
+        canSeeEmployees={canSeeEmployees}
+        canEditDocuments={canEditDocuments}
       />
       <div className="flex min-h-screen min-w-0 flex-1 flex-col">
         <main id="main" className="mx-auto w-full max-w-[100rem] flex-1 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">

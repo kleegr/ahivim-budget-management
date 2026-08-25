@@ -257,6 +257,9 @@ export default function AppNav({
   canSeeSettlements = false,
   canSeeBudgets = false,
   canPlan = false,
+  canSeeClassFinancials = false,
+  canSeeEmployees = false,
+  canEditDocuments = false,
 }: {
   user: AuthenticatedUser;
   reviewCount?: number;
@@ -265,6 +268,9 @@ export default function AppNav({
   canSeeSettlements?: boolean;
   canSeeBudgets?: boolean;
   canPlan?: boolean;
+  canSeeClassFinancials?: boolean;
+  canSeeEmployees?: boolean;
+  canEditDocuments?: boolean;
 }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
@@ -273,8 +279,8 @@ export default function AppNav({
   const drawerRef = useRef<HTMLElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const access = useMemo<NavigationAccess>(
-    () => ({ role: user.role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan }),
-    [user.role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan],
+    () => ({ role: user.role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments }),
+    [user.role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments],
   );
 
   const closeDrawer = useCallback(() => setOpen(false), []);
@@ -351,7 +357,7 @@ export default function AppNav({
         Skip to content
       </a>
 
-      <CommandBar role={user.role} accessResolved={accessResolved} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} canSeeBudgets={canSeeBudgets} canPlan={canPlan} />
+      <CommandBar role={user.role} accessResolved={accessResolved} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} canSeeBudgets={canSeeBudgets} canPlan={canPlan} canSeeClassFinancials={canSeeClassFinancials} canSeeEmployees={canSeeEmployees} canEditDocuments={canEditDocuments} />
 
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 md:hidden">
         <Wordmark />

@@ -138,8 +138,10 @@ export async function addProgramRate(
   }
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO program_rate_schedules
-       (program_id, effective_from, agency_rate, internal_rate, notes, created_by_user_id)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+     (program_id, effective_from, agency_rate, internal_rate, notes, created_by_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (program_id, effective_from) DO NOTHING
+     RETURNING id`,
     [
       programId,
       input.effectiveFrom,
@@ -149,6 +151,7 @@ export async function addProgramRate(
       actorId,
     ],
   );
+  if (!rows[0]) return fail("conflict", "A rate already starts on that date. Choose another effective date.");
   await recordChange(pool, {
     actorId,
     action: "program_rate_added",

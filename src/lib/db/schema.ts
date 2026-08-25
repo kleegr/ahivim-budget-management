@@ -71,6 +71,11 @@ export const users = pgTable(
     canSeeSettlements: boolean("can_see_settlements").default(false).notNull(),
     /** Operational planning permission (mirror of drizzle/0021_planner_access.sql). */
     canPlan: boolean("can_plan").default(false).notNull(),
+    /** Class revenue is financial and remains separate from hours-only planning. */
+    canSeeClassFinancials: boolean("can_see_class_financials").default(false).notNull(),
+    canManageClassInvoices: boolean("can_manage_class_invoices").default(false).notNull(),
+    /** May use the source-preserving PDF editing workspace. */
+    canEditDocuments: boolean("can_edit_documents").default(false).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -249,7 +254,7 @@ export const programRateSchedules = pgTable(
     updatedAt: updatedAt(),
   },
   (table) => [
-    index("program_rate_schedules_program_idx").on(table.programId, table.effectiveFrom),
+    uniqueIndex("program_rate_schedules_program_effective_key").on(table.programId, table.effectiveFrom),
   ],
 );
 
@@ -1314,4 +1319,247 @@ export const settlementLedgerState = pgTable(
       sql`${table.sourceVersion} >= 0 and ${table.refreshedVersion} >= 0 and ${table.refreshedVersion} <= ${table.sourceVersion}`,
     ),
   ],
+);
+
+/* -------------------------------------------------------------------------- */
+/* Class revenue and invoicing (0025)                                         */
+/* -------------------------------------------------------------------------- */
+
+export const classActivities = pgTable(
+  "class_activities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    code: text("code").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    defaultUnitPrice: numeric("default_unit_price", { precision: 14, scale: 4 })
+      .default("150")
+      .notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    sortOrder: integer("sort_order").default(0).notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("class_activities_code_key").on(sql`lower(${table.code})`),
+    index("class_activities_active_idx").on(table.isActive, table.sortOrder, table.name),
+    check("class_activities_code_check", sql`length(btrim(${table.code})) > 0`),
+    check("class_activities_name_check", sql`length(btrim(${table.name})) > 0`),
+    check("class_activities_price_check", sql`${table.defaultUnitPrice} >= 0`),
+  ],
+);
+
+export const classBudgetPeriods = pgTable(
+  "class_budget_periods",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    individualId: uuid("individual_id").notNull().references(() => individuals.id),
+    label: text("label").notNull(),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    authorizedAmount: numeric("authorized_amount", { precision: 14, scale: 4 }).notNull(),
+    /** 'active' | 'closed' */
+    status: text("status").default("active").notNull(),
+    notes: text("notes"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("class_budget_periods_exact_active_key")
+      .on(table.individualId, table.startDate, table.endDate)
+      .where(sql`${table.status} = 'active'`),
+    index("class_budget_periods_individual_idx").on(
+      table.individualId,
+      table.status,
+      table.startDate,
+      table.endDate,
+    ),
+    check("class_budget_periods_label_check", sql`length(btrim(${table.label})) > 0`),
+    check("class_budget_periods_range_check", sql`${table.endDate} >= ${table.startDate}`),
+    check("class_budget_periods_amount_check", sql`${table.authorizedAmount} >= 0`),
+    check("class_budget_periods_status_check", sql`${table.status} in ('active', 'closed')`),
+  ],
+);
+
+export const classInvoices = pgTable(
+  "class_invoices",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    classBudgetPeriodId: uuid("class_budget_period_id")
+      .notNull()
+      .references(() => classBudgetPeriods.id),
+    individualId: uuid("individual_id").notNull().references(() => individuals.id),
+    invoiceNumber: text("invoice_number").notNull(),
+    invoiceDate: date("invoice_date").notNull(),
+    servicePeriodStart: date("service_period_start").notNull(),
+    servicePeriodEnd: date("service_period_end").notNull(),
+    billToName: text("bill_to_name").notNull(),
+    billToAddressLine1: text("bill_to_address_line_1"),
+    billToAddressLine2: text("bill_to_address_line_2"),
+    billToCityStateZip: text("bill_to_city_state_zip"),
+    purpose: text("purpose").default("CLASSES").notNull(),
+    notes: text("notes"),
+    /** 'draft' | 'issued' | 'void' */
+    status: text("status").default("draft").notNull(),
+    subtotal: numeric("subtotal", { precision: 14, scale: 4 }).default("0").notNull(),
+    discountTotal: numeric("discount_total", { precision: 14, scale: 4 }).default("0").notNull(),
+    totalAmount: numeric("total_amount", { precision: 14, scale: 4 }).default("0").notNull(),
+    budgetAuthorizedSnapshot: numeric("budget_authorized_snapshot", { precision: 14, scale: 4 }),
+    budgetConsumedBeforeSnapshot: numeric("budget_consumed_before_snapshot", { precision: 14, scale: 4 }),
+    budgetOverageSnapshot: numeric("budget_overage_snapshot", { precision: 14, scale: 4 }),
+    overBudgetOverrideReason: text("over_budget_override_reason"),
+    issuedByUserId: uuid("issued_by_user_id").references(() => users.id),
+    issuedAt: timestamp("issued_at", { withTimezone: true }),
+    voidedByUserId: uuid("voided_by_user_id").references(() => users.id),
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
+    voidReason: text("void_reason"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("class_invoices_number_key").on(sql`lower(${table.invoiceNumber})`),
+    index("class_invoices_individual_idx").on(table.individualId, table.status, table.invoiceDate),
+    index("class_invoices_budget_idx").on(table.classBudgetPeriodId, table.status, table.invoiceDate),
+    check("class_invoices_number_check", sql`length(btrim(${table.invoiceNumber})) > 0`),
+    check("class_invoices_bill_to_check", sql`length(btrim(${table.billToName})) > 0`),
+    check("class_invoices_purpose_check", sql`length(btrim(${table.purpose})) > 0`),
+    check("class_invoices_date_check", sql`extract(dow from ${table.invoiceDate}) <> 6`),
+    check("class_invoices_period_check", sql`${table.servicePeriodEnd} >= ${table.servicePeriodStart}`),
+    check(
+      "class_invoices_totals_check",
+      sql`${table.subtotal} >= 0 and ${table.discountTotal} >= 0 and ${table.totalAmount} >= 0
+        and ${table.totalAmount} = ${table.subtotal} - ${table.discountTotal}`,
+    ),
+    check("class_invoices_status_check", sql`${table.status} in ('draft', 'issued', 'void')`),
+    check(
+      "class_invoices_lifecycle_check",
+      sql`(${table.status} = 'draft' and ${table.issuedAt} is null and ${table.voidedAt} is null)
+        or (${table.status} = 'issued' and ${table.issuedAt} is not null
+          and ${table.issuedByUserId} is not null and ${table.voidedAt} is null
+          and ${table.voidedByUserId} is null and ${table.voidReason} is null
+          and ${table.budgetAuthorizedSnapshot} is not null
+          and ${table.budgetConsumedBeforeSnapshot} is not null
+          and ${table.budgetOverageSnapshot} is not null)
+        or (${table.status} = 'void' and ${table.issuedAt} is not null
+          and ${table.issuedByUserId} is not null and ${table.voidedAt} is not null
+          and ${table.voidedByUserId} is not null and length(btrim(${table.voidReason})) > 0
+          and ${table.budgetAuthorizedSnapshot} is not null
+          and ${table.budgetConsumedBeforeSnapshot} is not null
+          and ${table.budgetOverageSnapshot} is not null)`,
+    ),
+  ],
+);
+
+export const classInvoiceLines = pgTable(
+  "class_invoice_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    classInvoiceId: uuid("class_invoice_id").notNull().references(() => classInvoices.id),
+    classActivityId: uuid("class_activity_id").references(() => classActivities.id),
+    serviceDate: date("service_date").notNull(),
+    description: text("description").notNull(),
+    quantity: numeric("quantity", { precision: 10, scale: 4 }).default("1").notNull(),
+    unitPrice: numeric("unit_price", { precision: 14, scale: 4 }).default("150").notNull(),
+    discountAmount: numeric("discount_amount", { precision: 14, scale: 4 }).default("0").notNull(),
+    lineTotal: numeric("line_total", { precision: 14, scale: 4 }).notNull(),
+    sortOrder: integer("sort_order").default(0).notNull(),
+    notes: text("notes"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("class_invoice_lines_invoice_idx").on(table.classInvoiceId, table.sortOrder, table.serviceDate),
+    index("class_invoice_lines_activity_idx").on(table.classActivityId),
+    check("class_invoice_lines_description_check", sql`length(btrim(${table.description})) > 0`),
+    check("class_invoice_lines_saturday_check", sql`extract(dow from ${table.serviceDate}) <> 6`),
+    check("class_invoice_lines_quantity_check", sql`${table.quantity} > 0`),
+    check("class_invoice_lines_price_check", sql`${table.unitPrice} >= 0`),
+    check(
+      "class_invoice_lines_discount_check",
+      sql`${table.discountAmount} >= 0 and ${table.discountAmount} <= round(${table.quantity} * ${table.unitPrice}, 4)`,
+    ),
+    check(
+      "class_invoice_lines_total_check",
+      sql`${table.lineTotal} = round(${table.quantity} * ${table.unitPrice} - ${table.discountAmount}, 4)
+        and ${table.lineTotal} >= 0`,
+    ),
+  ],
+);
+
+export const classBudgetLedger = pgTable(
+  "class_budget_ledger",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    classBudgetPeriodId: uuid("class_budget_period_id")
+      .notNull()
+      .references(() => classBudgetPeriods.id),
+    classInvoiceId: uuid("class_invoice_id").notNull().references(() => classInvoices.id),
+    /** 'issue' | 'void' */
+    eventType: text("event_type").notNull(),
+    amount: numeric("amount", { precision: 14, scale: 4 }).notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("class_budget_ledger_invoice_event_key").on(table.classInvoiceId, table.eventType),
+    index("class_budget_ledger_budget_idx").on(table.classBudgetPeriodId, table.createdAt),
+    check("class_budget_ledger_event_check", sql`${table.eventType} in ('issue', 'void')`),
+    check(
+      "class_budget_ledger_sign_check",
+      sql`(${table.eventType} = 'issue' and ${table.amount} > 0)
+        or (${table.eventType} = 'void' and ${table.amount} < 0)`,
+    ),
+  ],
+);
+
+export const classReimbursementProfiles = pgTable(
+  "class_reimbursement_profiles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    individualId: uuid("individual_id")
+      .notNull()
+      .references(() => individuals.id, { onDelete: "cascade" }),
+    mailingName: text("mailing_name"),
+    addressLine1: text("address_line_1"),
+    addressLine2: text("address_line_2"),
+    cityStateZip: text("city_state_zip"),
+    phone: text("phone"),
+    dateOfBirth: date("date_of_birth"),
+    medicaidId: text("medicaid_id"),
+    fiscalIntermediary: text("fiscal_intermediary").default("Ahivim").notNull(),
+    payableTo: text("payable_to").default("Xcellent Staffing").notNull(),
+    lifePlanConfirmed: boolean("life_plan_confirmed").default(false).notNull(),
+    budgetCategory: text("budget_category").default("Community classes").notNull(),
+    formCompletedBy: text("form_completed_by"),
+    relationship: text("relationship"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("class_reimbursement_profiles_individual_key").on(table.individualId),
+    index("class_reimbursement_profiles_individual_idx").on(table.individualId),
+    check("class_reimbursement_profiles_fi_check", sql`length(btrim(${table.fiscalIntermediary})) > 0`),
+    check("class_reimbursement_profiles_payable_check", sql`length(btrim(${table.payableTo})) > 0`),
+    check("class_reimbursement_profiles_category_check", sql`length(btrim(${table.budgetCategory})) > 0`),
+  ],
+);
+
+export const classCoverSheetSnapshots = pgTable(
+  "class_cover_sheet_snapshots",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    classInvoiceId: uuid("class_invoice_id").notNull().references(() => classInvoices.id),
+    profileSnapshot: jsonb("profile_snapshot").$type<Record<string, unknown>>().notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (table) => [uniqueIndex("class_cover_sheet_snapshots_invoice_key").on(table.classInvoiceId)],
 );

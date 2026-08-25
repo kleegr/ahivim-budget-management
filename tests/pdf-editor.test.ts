@@ -1,0 +1,167 @@
+import { describe, expect, it } from "vitest";
+import { PDFDocument } from "pdf-lib";
+import {
+  EMPTY_PDF_HISTORY,
+  commitPdfHistory,
+  createCoverOverlay,
+  createImageOverlay,
+  createSourceTextReplacement,
+  createTextOverlay,
+  hasPdfEditorChanges,
+  moveOverlay,
+  normalizePdfEditorSourcePath,
+  redoPdfHistory,
+  resizeOverlay,
+  rotateOverlayPosition,
+  undoPdfHistory,
+} from "@/lib/documents/pdf-editor";
+import { exportPdfWithOverlays } from "@/lib/documents/pdf-export";
+import {
+  buildPdfFromRasterPages,
+  planSecureRasterWorkload,
+  requiresSecureRasterExport,
+} from "@/lib/documents/pdf-secure-export";
+
+const ONE_PIXEL_PNG = Uint8Array.from(Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+));
+
+describe("PDF editor history", () => {
+  it("undoes and redoes complete editing gestures", () => {
+    const text = createTextOverlay(1, { text: "Replacement" });
+    const withText = commitPdfHistory(EMPTY_PDF_HISTORY, [text]);
+    const moved = moveOverlay(text, 0.2, 0.1);
+    const withMove = commitPdfHistory(withText, [moved]);
+
+    expect(withMove.present[0]).toMatchObject({ x: text.x + 0.2, y: text.y + 0.1 });
+    expect(undoPdfHistory(withMove).present).toEqual([text]);
+    expect(redoPdfHistory(undoPdfHistory(withMove)).present).toEqual([moved]);
+  });
+
+  it("keeps moved and resized overlays inside page bounds", () => {
+    const cover = createCoverOverlay(1);
+    const moved = moveOverlay(cover, 2, -2);
+    const resized = resizeOverlay(moved, 2, -2);
+
+    expect(moved.x).toBeLessThanOrEqual(1 - moved.width);
+    expect(moved.y).toBe(0);
+    expect(resized.width).toBeLessThanOrEqual(1);
+    expect(resized.height).toBeGreaterThanOrEqual(0.02);
+    expect(resized.x + resized.width).toBeLessThanOrEqual(1);
+    expect(resized.y + resized.height).toBeLessThanOrEqual(1);
+  });
+
+  it("keeps an overlay on-page through clockwise and counterclockwise rotation", () => {
+    const original = createTextOverlay(1, { x: 0.1, y: 0.2, width: 0.3, height: 0.08 });
+    const clockwise = rotateOverlayPosition(original, "clockwise");
+    const restored = rotateOverlayPosition(clockwise, "counterclockwise");
+
+    expect(clockwise.x).toBeCloseTo(0.72);
+    expect(clockwise).toMatchObject({ y: 0.1, width: 0.08, height: 0.3 });
+    expect(restored.x).toBeCloseTo(0.1);
+    expect(restored.y).toBeCloseTo(0.2);
+    expect(restored).toMatchObject({ width: 0.3, height: 0.08 });
+  });
+
+  it("creates a white cover behind editable replacement text as one snapshot", () => {
+    const [cover, text] = createSourceTextReplacement(2, {
+      text: "Original label",
+      x: 0.2,
+      y: 0.3,
+      width: 0.24,
+      height: 0.04,
+      fontSize: 12,
+    });
+    const history = commitPdfHistory(EMPTY_PDF_HISTORY, [cover, text]);
+
+    expect(history.present.map((overlay) => overlay.kind)).toEqual(["cover", "text"]);
+    expect(cover).toMatchObject({ page: 2, color: "#ffffff" });
+    expect(cover.x).toBeLessThan(text.x);
+    expect(cover.y).toBeLessThan(text.y);
+    expect(cover.x + cover.width).toBeGreaterThan(text.x + text.width);
+    expect(cover.y + cover.height).toBeGreaterThan(text.y + text.height);
+    expect(text).toMatchObject({ text: "Original label", fontSize: 12 });
+    expect(undoPdfHistory(history).present).toEqual([]);
+  });
+
+  it("treats page rotations as unsaved work", () => {
+    expect(hasPdfEditorChanges([], {})).toBe(false);
+    expect(hasPdfEditorChanges([], { 1: 90 })).toBe(true);
+    expect(hasPdfEditorChanges([], { 1: 360 })).toBe(false);
+    expect(hasPdfEditorChanges([createCoverOverlay(1)], {})).toBe(true);
+  });
+
+  it("only accepts generated class cover sheets for editor handoff", () => {
+    const source = "/api/classes/invoices/123e4567-e89b-42d3-a456-426614174000/cover-sheet";
+    expect(normalizePdfEditorSourcePath(source)).toBe(source);
+    expect(normalizePdfEditorSourcePath("https://example.com/document.pdf")).toBeNull();
+    expect(normalizePdfEditorSourcePath("/api/classes/invoices/../../admin/cover-sheet")).toBeNull();
+    expect(normalizePdfEditorSourcePath("/api/classes/invoices/not-a-uuid/cover-sheet")).toBeNull();
+  });
+});
+
+describe("PDF overlay export", () => {
+  it("preserves the source bytes and every source page while flattening a multi-page copy", async () => {
+    const sourceDocument = await PDFDocument.create();
+    sourceDocument.addPage([612, 792]);
+    sourceDocument.addPage([792, 612]);
+    const source = await sourceDocument.save();
+    const sourceSnapshot = source.slice();
+
+    const output = await exportPdfWithOverlays(source, [
+      createCoverOverlay(1),
+      createImageOverlay(1, "signature"),
+      createTextOverlay(2, {
+        text: "Approved cover sheet",
+        x: 0.1,
+        y: 0.2,
+        width: 0.4,
+        height: 0.08,
+        alignment: "center",
+      }),
+    ], [], [{ id: "signature", bytes: ONE_PIXEL_PNG, mimeType: "image/png" }]);
+
+    expect(source).toEqual(sourceSnapshot);
+    expect(output).not.toEqual(source);
+    const exported = await PDFDocument.load(output);
+    expect(exported.getPageCount()).toBe(2);
+    expect(exported.getPage(0).node.Contents()).toBeDefined();
+    expect(exported.getPage(1).node.Contents()).toBeDefined();
+  });
+
+  it("builds a new PDF from sanitized raster pages without carrying source objects", async () => {
+    const output = await buildPdfFromRasterPages([
+      { pngBytes: ONE_PIXEL_PNG, width: 612, height: 792 },
+      { pngBytes: ONE_PIXEL_PNG, width: 792, height: 612 },
+    ]);
+    const rebuilt = await PDFDocument.load(output);
+
+    expect(rebuilt.getPageCount()).toBe(2);
+    expect(rebuilt.getForm().getFields()).toEqual([]);
+    expect(requiresSecureRasterExport("secure", {})).toBe(true);
+    expect(requiresSecureRasterExport("standard", { 1: 90 })).toBe(true);
+    expect(requiresSecureRasterExport("standard", { 1: 0 })).toBe(false);
+  });
+
+  it("adapts secure resolution to a total pixel budget and rejects unsafe workloads", () => {
+    const pages = Array.from({ length: 10 }, () => ({ width: 612, height: 792 }));
+    const plan = planSecureRasterWorkload(pages, {
+      maxPages: 20,
+      totalPixelBudget: 10_000_000,
+      maxPixelsPerPage: 2_000_000,
+      maxScale: 2,
+    });
+
+    expect(plan.pageCount).toBe(10);
+    expect(plan.scale).toBeGreaterThanOrEqual(1);
+    expect(plan.scale).toBeLessThan(2);
+    expect(plan.estimatedPixels).toBeLessThanOrEqual(10_000_001);
+    expect(() => planSecureRasterWorkload(pages, {
+      maxPages: 5,
+      totalPixelBudget: 10_000_000,
+      maxPixelsPerPage: 2_000_000,
+      maxScale: 2,
+    })).toThrow(/too large to flatten securely/i);
+  });
+});

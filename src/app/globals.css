@@ -215,6 +215,12 @@ body {
   color: var(--color-ink);
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
+.input-leading-icon {
+  padding-left: 2.25rem;
+}
+.input-trailing-action {
+  padding-right: 2.25rem;
+}
 .input:focus,
 .select:focus {
   outline: none;

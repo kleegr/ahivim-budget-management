@@ -8,7 +8,7 @@ import {
   createIndividual, updateIndividual, setIndividualStatus, listIndividualsManaged,
 } from "@/lib/manage/individuals";
 import { createEmployee, updateEmployee, setEmployeeStatus } from "@/lib/manage/employees";
-import { createAssignment, setAssignmentStatus } from "@/lib/manage/assignments";
+import { createAssignment, setAssignmentStatus, updateAssignment } from "@/lib/manage/assignments";
 import {
   createBudgetPeriod, createAuthorization, reviseAuthorization, cancelAuthorization,
 } from "@/lib/manage/authorizations";
@@ -257,6 +257,57 @@ suite("editable operations service layer (real PostgreSQL)", () => {
       );
     });
 
+    it("serializes concurrent overlapping assignment creates", async () => {
+      const { employeeId, individualId, programId } = await pair();
+      const blocker = await testPool().connect();
+      let committed = false;
+      let attempts!: Promise<Array<Awaited<ReturnType<typeof createAssignment>>>>;
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+          `assignment:${employeeId}:${individualId}:${programId}`,
+        ]);
+        attempts = Promise.all([
+          createAssignment(pool, {
+            employeeId,
+            individualId,
+            programId,
+            startDate: "2025-01-01",
+            endDate: "2025-06-30",
+          }, ACTOR),
+          createAssignment(pool, {
+            employeeId,
+            individualId,
+            programId,
+            startDate: "2025-06-15",
+            endDate: "2025-12-31",
+          }, ACTOR),
+        ]);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        await blocker.query("COMMIT");
+        committed = true;
+      } finally {
+        if (!committed) await blocker.query("ROLLBACK").catch(() => undefined);
+        blocker.release();
+      }
+
+      const results = await attempts;
+      expect(results.filter((result) => result.ok)).toHaveLength(1);
+      expect(results.filter((result) => !result.ok && result.code === "conflict")).toHaveLength(1);
+      expect(await scalar<number>(
+        `SELECT count(*)::int FROM assignments
+          WHERE employee_id = $1 AND individual_id = $2 AND program_id = $3`,
+        [employeeId, individualId, programId],
+      )).toBe(1);
+      expect(await scalar<number>(
+        `SELECT count(*)::int FROM audit_logs
+          WHERE action = 'assignment_created'
+            AND metadata->'next'->>'employeeId' = $1
+            AND metadata->'next'->>'individualId' = $2`,
+        [employeeId, individualId],
+      )).toBe(1);
+    }, 15_000);
+
     it("permits re-creating the same triple once the prior assignment is ended", async () => {
       const { employeeId, individualId, programId } = await pair();
       const first = expectOk(await createAssignment(pool, { employeeId, individualId, programId }, ACTOR));
@@ -267,6 +318,92 @@ suite("editable operations service layer (real PostgreSQL)", () => {
       const second = expectOk(await createAssignment(pool, { employeeId, individualId, programId }, ACTOR));
       expect(second.status).toBe("active");
       expect(second.id).not.toBe(first.id);
+    });
+
+    it("blocks restoring an ended assignment when its replacement overlaps", async () => {
+      const { employeeId, individualId, programId } = await pair();
+      const first = expectOk(await createAssignment(pool, {
+        employeeId,
+        individualId,
+        programId,
+        startDate: "2025-01-01",
+        endDate: "2025-12-31",
+      }, ACTOR));
+      expectOk(await setAssignmentStatus(pool, first.id, "ended", ACTOR));
+      expectOk(await createAssignment(pool, {
+        employeeId,
+        individualId,
+        programId,
+        startDate: "2025-07-01",
+        endDate: "2026-06-30",
+      }, ACTOR));
+
+      expectFail(await setAssignmentStatus(pool, first.id, "active", ACTOR), "conflict");
+    });
+
+    it("supports date-disjoint assignment periods and blocks overlapping edits", async () => {
+      const { employeeId, individualId, programId } = await pair();
+      const first = expectOk(await createAssignment(pool, {
+        employeeId,
+        individualId,
+        programId,
+        startDate: "2025-01-01",
+        endDate: "2025-06-30",
+      }, ACTOR));
+      const second = expectOk(await createAssignment(pool, {
+        employeeId,
+        individualId,
+        programId,
+        startDate: "2025-07-01",
+        endDate: "2025-12-31",
+      }, ACTOR));
+      expect(first.id).not.toBe(second.id);
+
+      expectFail(await updateAssignment(pool, second.id, {
+        startDate: "2025-06-15",
+      }, ACTOR), "conflict");
+    });
+
+    it("rolls back an assignment mutation when its audit write fails", async () => {
+      const { employeeId, individualId, programId } = await pair();
+      const assignment = expectOk(await createAssignment(pool, {
+        employeeId,
+        individualId,
+        programId,
+        notes: "Original note",
+      }, ACTOR));
+
+      await expect(updateAssignment(
+        pool,
+        assignment.id,
+        { notes: "Must roll back" },
+        "00000000-0000-4000-8000-000000000099",
+      )).rejects.toThrow();
+
+      expect(await scalar<string>(`SELECT notes FROM assignments WHERE id = $1`, [assignment.id]))
+        .toBe("Original note");
+      expect(await scalar<number>(
+        `SELECT count(*)::int FROM audit_logs
+          WHERE action = 'assignment_updated' AND entity_id = $1`,
+        [assignment.id],
+      )).toBe(0);
+    });
+
+    it("normalizes allowed hours and rejects negative capacity", async () => {
+      const { employeeId, individualId, programId } = await pair();
+      const assignment = expectOk(await createAssignment(pool, {
+        employeeId,
+        individualId,
+        programId,
+        allowedHours: "12.5",
+      }, ACTOR));
+      expect(assignment.allowedHours).toBe("12.5000");
+
+      expectFail(await createAssignment(pool, {
+        employeeId,
+        individualId,
+        allowedHours: "-1",
+      }, ACTOR), "validation");
     });
 
     it("rejects an end date that precedes the start date", async () => {
@@ -522,6 +659,15 @@ suite("editable operations service layer (real PostgreSQL)", () => {
       ).rows[0];
       expect(Number(row.internal_rate)).toBe(20);
       expect(row.effective_from).toBe("2025-01-01");
+      expectFail(
+        await addProgramRate(
+          pool,
+          program.id,
+          { effectiveFrom: "2025-01-01", internalRate: "21", agencyRate: "23" },
+          ACTOR,
+        ),
+        "conflict",
+      );
     });
   });
 });

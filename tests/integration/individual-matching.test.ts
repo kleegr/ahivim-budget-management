@@ -12,6 +12,15 @@ import {
 } from "@/lib/manage/individual-merge";
 import { scorePair } from "@/lib/business/individual-matching";
 import { listStrategies, updateStrategy } from "@/lib/manage/calculation-strategies";
+import {
+  createClassBudget,
+  createClassInvoiceDraft,
+  issueClassInvoice,
+} from "@/lib/manage/class-invoices";
+import {
+  createClassCoverSheetSnapshot,
+  saveClassReimbursementProfile,
+} from "@/lib/manage/class-reimbursement-profiles";
 
 const suite = hasTestDatabase ? describe : describe.skip;
 const ACTOR = "00000000-0000-4000-8000-000000000001";
@@ -32,6 +41,7 @@ async function addTx(individualId: string, fp: string, amount = "100") {
 suite("individual matching + merge (real PostgreSQL)", () => {
   beforeAll(async () => { await resetSchema(); pool = testPool(); }, 60_000);
   beforeEach(async () => {
+    await pool.query(`TRUNCATE class_budget_periods, class_reimbursement_profiles CASCADE`);
     await pool.query(`DELETE FROM individual_match_reviews`);
     await pool.query(`DELETE FROM calculation_strategy_lines`);
     await pool.query(`DELETE FROM calculation_strategies`);
@@ -180,5 +190,78 @@ suite("individual matching + merge (real PostgreSQL)", () => {
       const left = await pool.query<{ c: string }>(`SELECT count(*)::text c FROM ${table} WHERE individual_id = $1`, [gone.id]);
       expect(Number(left.rows[0]!.c)).toBe(0);
     }
+  });
+
+  it("preserves issued class billing, its ledger, profile, and frozen cover sheet through a merge", async () => {
+    const keep = unwrap(await createIndividual(pool, { displayName: "Canonical Class Person" }, ACTOR));
+    const duplicate = unwrap(await createIndividual(pool, { displayName: "Duplicate Class Person" }, ACTOR));
+    const budget = unwrap(await createClassBudget(pool, {
+      individualId: duplicate.id,
+      label: "2026 classes",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+      authorizedAmount: "20000",
+    }, ACTOR));
+    const activity = await pool.query<{ id: string }>(
+      `SELECT id FROM class_activities WHERE code = 'ART'`,
+    );
+    const draft = unwrap(await createClassInvoiceDraft(pool, {
+      classBudgetPeriodId: budget.id,
+      invoiceNumber: "MERGE-CLASS-1",
+      invoiceDate: "2026-08-02",
+      servicePeriodStart: "2026-07-01",
+      servicePeriodEnd: "2026-07-31",
+      lines: [{ activityId: activity.rows[0]!.id, serviceDate: "2026-07-01" }],
+    }, ACTOR));
+    const issued = unwrap(await issueClassInvoice(pool, draft.id, ACTOR));
+    const profile = unwrap(await saveClassReimbursementProfile(pool, duplicate.id, {
+      mailingName: "Canonical Class Person",
+      medicaidId: "MERGE-SNAPSHOT-ID",
+      lifePlanConfirmed: true,
+    }, ACTOR));
+    unwrap(await createClassCoverSheetSnapshot(pool, issued.id, profile, ACTOR));
+
+    const result = unwrap(await mergeIndividuals(pool, {
+      keepId: keep.id,
+      mergeId: duplicate.id,
+    }, ACTOR, "Confirmed duplicate"));
+    expect(result.repointed).toMatchObject({
+      class_budget_periods: 1,
+      class_invoices: 1,
+      class_reimbursement_profiles: 1,
+    });
+    expect((await pool.query<{ individual_id: string; status: string }>(
+      `SELECT individual_id, status FROM class_invoices WHERE id = $1`,
+      [issued.id],
+    )).rows[0]).toEqual({ individual_id: keep.id, status: "issued" });
+    expect((await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM class_budget_ledger WHERE class_invoice_id = $1`,
+      [issued.id],
+    )).rows[0]?.count).toBe("1");
+    expect((await pool.query<{ individual_id: string }>(
+      `SELECT individual_id FROM class_reimbursement_profiles WHERE individual_id = $1`,
+      [keep.id],
+    )).rows[0]?.individual_id).toBe(keep.id);
+    expect((await pool.query<{ snapshot: { medicaidId?: string } }>(
+      `SELECT profile_snapshot AS snapshot FROM class_cover_sheet_snapshots WHERE class_invoice_id = $1`,
+      [issued.id],
+    )).rows[0]?.snapshot.medicaidId).toBe("MERGE-SNAPSHOT-ID");
+  });
+
+  it("blocks a merge when reimbursement profiles disagree", async () => {
+    const keep = unwrap(await createIndividual(pool, { displayName: "Profile One" }, ACTOR));
+    const duplicate = unwrap(await createIndividual(pool, { displayName: "Profile Two" }, ACTOR));
+    unwrap(await saveClassReimbursementProfile(pool, keep.id, {
+      medicaidId: "PROFILE-A",
+      lifePlanConfirmed: true,
+    }, ACTOR));
+    unwrap(await saveClassReimbursementProfile(pool, duplicate.id, {
+      medicaidId: "PROFILE-B",
+      lifePlanConfirmed: true,
+    }, ACTOR));
+
+    await expect(mergeIndividuals(pool, { keepId: keep.id, mergeId: duplicate.id }, ACTOR))
+      .resolves.toMatchObject({ ok: false, code: "conflict" });
+    expect(await loadIndividualsForMatch(pool)).toHaveLength(2);
   });
 });

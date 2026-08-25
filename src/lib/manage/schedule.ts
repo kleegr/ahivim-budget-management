@@ -179,46 +179,57 @@ export async function detectConflicts(
       }
     }
     // Authorization: within dates and within remaining hours.
-    const auth = await pool.query<{ authorized_hours: string; start_date: string; end_date: string }>(
-      `SELECT ba.authorized_hours::text, bp.start_date::text, bp.end_date::text
-       FROM budget_authorizations ba JOIN budget_periods bp ON bp.id = ba.budget_period_id
-       WHERE ba.individual_id = $1 AND ba.program_id = $2 AND ba.status = 'active'
-          AND bp.status = 'active'
-        ORDER BY CASE WHEN $3::date BETWEEN bp.start_date AND bp.end_date THEN 0 ELSE 1 END,
-                 bp.start_date DESC, ba.revision DESC
-        LIMIT 1`,
+    const auth = await pool.query<{ start_date: string; end_date: string }>(
+      `SELECT ea.start_date::text, ea.end_date::text
+         FROM effective_budget_authorizations_at($3::date) ea
+        WHERE ea.individual_id = $1 AND ea.program_id = $2
+        ORDER BY ea.start_date, ea.end_date, ea.authorization_id`,
       [individualId, draft.programId, draft.sessionDate],
     );
-    if (!auth.rows[0]) {
-      w.push({ code: "missing_authorization", severity: "warning", message: `${name} has no active authorization for this program.` });
-    } else {
-      const a = auth.rows[0];
-      const insideAuthorization = draft.sessionDate >= a.start_date && draft.sessionDate <= a.end_date;
-      if (!insideAuthorization) {
-        w.push({ code: "outside_authorization_dates", severity: "warning", message: `${draft.sessionDate} is outside ${name}'s authorization period (${a.start_date} to ${a.end_date}).` });
+    if (auth.rows.length === 0) {
+      const explicitPeriods = await pool.query<{ start_date: string; end_date: string }>(
+        `SELECT bp.start_date::text, bp.end_date::text
+           FROM budget_authorizations ba
+           JOIN budget_periods bp ON bp.id = ba.budget_period_id
+          WHERE ba.individual_id = $1 AND ba.program_id = $2
+            AND ba.status = 'active' AND ba.archived_at IS NULL
+            AND bp.status = 'active'
+          ORDER BY bp.start_date, bp.end_date, ba.id`,
+        [individualId, draft.programId],
+      );
+      if (explicitPeriods.rows.length > 0) {
+        const ranges = explicitPeriods.rows
+          .map((period) => `${period.start_date} to ${period.end_date}`)
+          .join(", ");
+        w.push({
+          code: "outside_authorization_dates",
+          severity: "warning",
+          message: `${draft.sessionDate} is outside ${name}'s authorization period${explicitPeriods.rows.length === 1 ? "" : "s"} (${ranges}).`,
+        });
       } else {
-        const used = await pool.query<{ h: string }>(
-          `SELECT COALESCE(sum(al.allocation_hours),0)::text AS h
-           FROM service_allocations al JOIN service_sessions ss ON ss.id = al.service_session_id
-           WHERE al.individual_id = $1 AND ss.program_id = $2
-             AND COALESCE(ss.period_begin, ss.period_end) BETWEEN $3::date AND $4::date`,
-          [individualId, draft.programId, a.start_date, a.end_date],
-        );
-        const scheduled = await pool.query<{ h: string }>(
-          `SELECT COALESCE(sum(sa.allocation_hours),0)::text AS h
-           FROM scheduled_allocations sa JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
-           WHERE sa.individual_id = $1 AND s.program_id = $2 AND s.status = 'pending'
-             AND s.matched_transaction_id IS NULL
-             AND s.session_date BETWEEN $3::date AND $4::date
-             AND ($5::uuid IS NULL OR s.id <> $5)`,
-          [individualId, draft.programId, a.start_date, a.end_date, excludeSessionId ?? null],
-        );
-        const projected = dec(used.rows[0].h).plus(dec(scheduled.rows[0].h)).plus(hours);
-        if (projected.gt(dec(a.authorized_hours))) {
+        w.push({ code: "missing_authorization", severity: "warning", message: `${name} has no active authorization for this program.` });
+      }
+    } else {
+      const forecast = await individualProgramForecast(
+        pool,
+        individualId,
+        draft.programId,
+        excludeSessionId ?? null,
+        draft.sessionDate,
+      );
+      if (forecast.authorizationAmbiguous) {
+        w.push({
+          code: "ambiguous_authorization",
+          severity: "warning",
+          message: `${name} has ${forecast.authorizationCount} overlapping authorizations for this program. Review the authorization periods before scheduling.`,
+        });
+      } else {
+        const projected = dec(forecast.actualHours).plus(forecast.scheduledHours).plus(hours);
+        if (forecast.authorizedHours !== null && projected.gt(forecast.authorizedHours)) {
           w.push({
             code: "over_authorized_hours",
             severity: "warning",
-            message: `Scheduling this would bring ${name} to ${toHours(projected)} h against ${toHours(a.authorized_hours)} authorized.`,
+            message: `Scheduling this would bring ${name} to ${toHours(projected)} h against ${toHours(forecast.authorizedHours)} authorized.`,
           });
         }
       }
@@ -263,6 +274,8 @@ export interface SessionForecastRow {
   scheduledHours: string;
   thisHours: string;
   remainingAfterHours: string | null;
+  authorizationCount: number;
+  authorizationAmbiguous: boolean;
 }
 
 export interface SessionPreview {
@@ -320,6 +333,8 @@ export async function previewSession(
       scheduledHours: f.scheduledHours,
       thisHours: toHours(thisHours),
       remainingAfterHours,
+      authorizationCount: f.authorizationCount,
+      authorizationAmbiguous: f.authorizationAmbiguous,
     });
   }
 

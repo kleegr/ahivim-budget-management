@@ -7,7 +7,15 @@ import {
   type UtilizationStatus,
 } from "@/lib/business/utilization";
 
+type ScheduleQueryPool = Pick<PgLikePool, "query">;
+
 const isUuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
+
+function nextIsoDate(value: string): string {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
 
 const LIVE_WARNING_CODES = new Set([
   "employee_double_booked",
@@ -17,6 +25,7 @@ const LIVE_WARNING_CODES = new Set([
   "not_assigned",
   "missing_authorization",
   "outside_authorization_dates",
+  "ambiguous_authorization",
 ]);
 
 function plannerWarnings(value: unknown): Array<{ code?: unknown }> {
@@ -212,6 +221,125 @@ export interface ProgramForecast {
   scheduledHours: string;
   scheduledAmount: string;
   remainingAfterScheduleHours: string | null;
+  authorizationCount: number;
+  authorizationAmbiguous: boolean;
+  authorizations: Array<{
+    authorizationId: string;
+    periodId: string;
+    periodLabel: string;
+    startDate: string;
+    endDate: string;
+    authorizedHours: string;
+  }>;
+}
+
+interface EffectiveAuthorizationRow {
+  authorization_id: string;
+  period_id: string;
+  period_label: string;
+  program_id: string;
+  program_code: string;
+  program_name: string;
+  start_date: string;
+  end_date: string;
+  authorized_hours: string;
+  internal_rate: string;
+  is_explicit: boolean;
+}
+
+interface AuthorizationUsage {
+  actualHours: string;
+  actualAmount: string;
+  scheduledHours: string;
+  scheduledAmount: string;
+}
+
+async function activeAuthorizations(
+  pool: ScheduleQueryPool,
+  individualId: string,
+  asOfDate: string,
+  programId?: string,
+): Promise<EffectiveAuthorizationRow[]> {
+  const { rows } = await pool.query<EffectiveAuthorizationRow>(
+    `SELECT ea.authorization_id::text, ea.period_id::text, ea.period_label,
+            ea.program_id::text, p.code AS program_code, p.name AS program_name,
+            ea.start_date::text, ea.end_date::text, ea.authorized_hours::text,
+            ea.internal_rate::text,
+            EXISTS (
+              SELECT 1 FROM budget_authorizations ba
+               WHERE ba.id = ea.authorization_id
+            ) AS is_explicit
+       FROM effective_budget_authorizations_at($2::date) ea
+       JOIN programs p ON p.id = ea.program_id
+      WHERE ea.individual_id = $1
+        AND ($3::uuid IS NULL OR ea.program_id = $3)
+      ORDER BY p.name, ea.start_date, ea.end_date, ea.authorization_id`,
+    [individualId, asOfDate, programId ?? null],
+  );
+  return rows;
+}
+
+async function authorizationUsage(
+  pool: ScheduleQueryPool,
+  individualId: string,
+  authorization: EffectiveAuthorizationRow,
+  excludeSessionId?: string | null,
+): Promise<AuthorizationUsage> {
+  const actual = authorization.is_explicit
+    ? await pool.query<{ h: string; amt: string }>(
+        `SELECT COALESCE(sum(al.allocation_hours),0)::text AS h,
+                COALESCE(sum(al.allocated_amount),0)::text AS amt
+           FROM service_allocations al
+           JOIN service_sessions ss ON ss.id = al.service_session_id
+          WHERE al.individual_id = $1 AND ss.program_id = $2
+            AND COALESCE(ss.period_begin, ss.period_end) BETWEEN $3::date AND $4::date`,
+        [individualId, authorization.program_id, authorization.start_date, authorization.end_date],
+      )
+    : await pool.query<{ h: string; amt: string }>(
+        `SELECT effective_billed_hours($1, $2, $3::date, $4::date, $5::numeric)::text AS h,
+                COALESCE((
+                  SELECT sum(COALESCE(
+                    t.calculated_internal_amount,
+                    t.spreadsheet_internal_amount,
+                    t.internal_rate_applied * t.imported_hours,
+                    0
+                  ))
+                    FROM payroll_transactions t
+                   WHERE t.individual_id = $1 AND t.program_id = $2
+                     AND t.period_begin BETWEEN $3::date AND $4::date
+                ), 0)::text AS amt`,
+        [
+          individualId,
+          authorization.program_id,
+          authorization.start_date,
+          authorization.end_date,
+          authorization.internal_rate,
+        ],
+      );
+  const scheduled = await pool.query<{ h: string; amt: string }>(
+    `SELECT COALESCE(sum(sa.allocation_hours),0)::text AS h,
+            COALESCE(sum(sa.allocated_amount),0)::text AS amt
+       FROM scheduled_allocations sa
+       JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
+      WHERE sa.individual_id = $1 AND s.program_id = $2 AND s.status = 'pending'
+        AND s.matched_transaction_id IS NULL
+        AND s.session_date BETWEEN $3::date AND $4::date
+        AND ($5::uuid IS NULL OR s.id <> $5)`,
+    [
+      individualId,
+      authorization.program_id,
+      authorization.start_date,
+      authorization.end_date,
+      excludeSessionId ?? null,
+    ],
+  );
+
+  return {
+    actualHours: actual.rows[0]?.h ?? "0",
+    actualAmount: actual.rows[0]?.amt ?? "0",
+    scheduledHours: scheduled.rows[0]?.h ?? "0",
+    scheduledAmount: scheduled.rows[0]?.amt ?? "0",
+  };
 }
 
 /**
@@ -223,7 +351,7 @@ export interface ProgramForecast {
  * Every figure is contained to the authorization that covers `asOfDate`.
  */
 export async function individualProgramForecast(
-  pool: PgLikePool,
+  pool: ScheduleQueryPool,
   individualId: string,
   programId: string,
   excludeSessionId?: string | null,
@@ -234,73 +362,83 @@ export async function individualProgramForecast(
     actualHours: toHours("0"), actualAmount: toMoney("0"),
     scheduledHours: toHours("0"), scheduledAmount: toMoney("0"),
     remainingAfterScheduleHours: null,
+    authorizationCount: 0,
+    authorizationAmbiguous: false,
+    authorizations: [],
   };
   if (!isUuid(individualId) || !isUuid(programId)) return empty;
 
-  const auth = await pool.query<{ authorized_hours: string; start_date: string; end_date: string }>(
-    `SELECT ba.authorized_hours::text, bp.start_date::text AS start_date, bp.end_date::text AS end_date
-     FROM budget_authorizations ba JOIN budget_periods bp ON bp.id = ba.budget_period_id
-     WHERE ba.individual_id = $1 AND ba.program_id = $2 AND ba.status = 'active' AND bp.status = 'active'
-       AND $3::date BETWEEN bp.start_date AND bp.end_date
-     ORDER BY bp.start_date DESC, ba.revision DESC LIMIT 1`,
-    [individualId, programId, asOfDate],
-  );
-  const selected = auth.rows[0];
-  if (!selected) return empty;
+  const authorizations = await activeAuthorizations(pool, individualId, asOfDate, programId);
+  if (authorizations.length === 0) return empty;
 
-  const actual = await pool.query<{ h: string; amt: string }>(
-    `SELECT COALESCE(sum(al.allocation_hours),0)::text AS h,
-            COALESCE(sum(al.allocated_amount),0)::text AS amt
-     FROM service_allocations al JOIN service_sessions ss ON ss.id = al.service_session_id
-     WHERE al.individual_id = $1 AND ss.program_id = $2
-       AND COALESCE(ss.period_begin, ss.period_end) BETWEEN $3::date AND $4::date`,
-    [individualId, programId, selected.start_date, selected.end_date],
-  );
-  const scheduled = await pool.query<{ h: string; amt: string }>(
-    `SELECT COALESCE(sum(sa.allocation_hours),0)::text AS h,
-            COALESCE(sum(sa.allocated_amount),0)::text AS amt
-     FROM scheduled_allocations sa JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
-     WHERE sa.individual_id = $1 AND s.program_id = $2 AND s.status = 'pending'
-       AND s.matched_transaction_id IS NULL
-       AND s.session_date BETWEEN $3::date AND $4::date
-       AND ($5::uuid IS NULL OR s.id <> $5)`,
-    [individualId, programId, selected.start_date, selected.end_date, excludeSessionId ?? null],
-  );
+  const publicAuthorizations = authorizations.map((authorization) => ({
+    authorizationId: authorization.authorization_id,
+    periodId: authorization.period_id,
+    periodLabel: authorization.period_label,
+    startDate: authorization.start_date,
+    endDate: authorization.end_date,
+    authorizedHours: toHours(authorization.authorized_hours),
+  }));
+  const first = authorizations[0]!;
+  const safelyCombined = authorizations.every((authorization) =>
+    authorization.start_date === first.start_date
+      && authorization.end_date === first.end_date
+      && authorization.internal_rate === first.internal_rate
+      && authorization.is_explicit === first.is_explicit);
+  if (!safelyCombined) {
+    return {
+      ...empty,
+      authorizationCount: authorizations.length,
+      authorizationAmbiguous: true,
+      authorizations: publicAuthorizations,
+    };
+  }
 
-  const authorizedHours = selected.authorized_hours;
-  const actualHours = actual.rows[0]?.h ?? "0";
-  const scheduledHours = scheduled.rows[0]?.h ?? "0";
-  const remaining =
-    authorizedHours === null
-      ? null
-      : dec(authorizedHours).minus(dec(actualHours)).minus(dec(scheduledHours));
+  const usage = await authorizationUsage(pool, individualId, first, excludeSessionId);
+  const authorizedHours = authorizations.reduce(
+    (total, authorization) => total.plus(authorization.authorized_hours),
+    dec(0),
+  );
+  const actualHours = usage.actualHours;
+  const scheduledHours = usage.scheduledHours;
+  const remaining = authorizedHours.minus(dec(actualHours)).minus(dec(scheduledHours));
 
   return {
-    authorizedHours: authorizedHours === null ? null : toHours(authorizedHours),
-    authStart: selected.start_date,
-    authEnd: selected.end_date,
+    authorizedHours: toHours(authorizedHours),
+    authStart: first.start_date,
+    authEnd: first.end_date,
     actualHours: toHours(actualHours),
-    actualAmount: toMoney(actual.rows[0]?.amt ?? "0"),
+    actualAmount: toMoney(usage.actualAmount),
     scheduledHours: toHours(scheduledHours),
-    scheduledAmount: toMoney(scheduled.rows[0]?.amt ?? "0"),
-    remainingAfterScheduleHours: remaining === null ? null : toHours(remaining),
+    scheduledAmount: toMoney(usage.scheduledAmount),
+    remainingAfterScheduleHours: toHours(remaining),
+    authorizationCount: authorizations.length,
+    authorizationAmbiguous: false,
+    authorizations: publicAuthorizations,
   };
 }
 
 /* ===========================================================================
  * ADDITIVE: utilisation summary for the schedule planner strip.
  *
- * Aggregates the schedule domain's own view of authorised / used / scheduled /
- * remaining-after-schedule hours across every active authorisation for one
- * individual, plus the pace (used vs time elapsed) against their current budget
- * period. Reuses individualProgramForecast so the figures match the modal
- * preview and the individual-detail page exactly; nothing here re-derives the
- * money/billing maths.
+ * Keeps every active authorization and evaluates each against its own period.
+ * Totals use an authorized-hours-weighted clock when programs are distinct;
+ * same-program overlaps stay separate and suppress unsafe combined figures.
  * ========================================================================= */
 export interface ScheduleUtilizationProgram {
+  authorizationId: string;
+  periodId: string;
   programId: string;
   programCode: string;
   programName: string;
+  periodLabel: string;
+  startDate: string;
+  endDate: string;
+  renewalDate: string;
+  timeElapsedPercent: string;
+  daysRemaining: number;
+  requiredWeeklyHours: string | null;
+  authorizationAmbiguous: boolean;
   authorizedHours: string | null;
   usedHours: string;
   scheduledHours: string;
@@ -317,18 +455,22 @@ export interface ScheduleUtilizationSummary {
   individualName: string;
   hasAuthorization: boolean;
   period: { label: string; startDate: string; endDate: string; renewalDate: string | null } | null;
-  /** Fraction of the budget period elapsed; "0" when there is no active period. */
-  timeElapsedPercent: string;
-  /** Whole days from today to the period end; null when there is no active period. */
+  periodCount: number;
+  /** Authorized-hours-weighted elapsed fraction; null when totals are ambiguous. */
+  timeElapsedPercent: string | null;
+  /** Whole days to period end, only when every authorization uses one period. */
   daysRemaining: number | null;
-  authorizedHours: string;
-  usedHours: string;
-  scheduledHours: string;
+  requiredWeeklyHours: string | null;
+  totalsAmbiguous: boolean;
+  ambiguityMessage: string | null;
+  authorizedHours: string | null;
+  usedHours: string | null;
+  scheduledHours: string | null;
   /** authorized − used − scheduled: the hours still available AND unplanned. */
-  remainingAfterHours: string;
-  usagePercent: string;
-  committedPercent: string;
-  status: UtilizationStatus;
+  remainingAfterHours: string | null;
+  usagePercent: string | null;
+  committedPercent: string | null;
+  status: UtilizationStatus | null;
   programs: ScheduleUtilizationProgram[];
 }
 
@@ -345,97 +487,119 @@ export async function individualScheduleSummary(
   );
   if (!person.rows[0]) return null;
 
-  // The current active budget period drives pace and renewal messaging.
-  const periodRes = await pool.query<{
-    label: string; start_date: string; end_date: string; renewal_date: string | null;
-  }>(
-    `SELECT label, start_date::text AS start_date, end_date::text AS end_date,
-            renewal_date::text AS renewal_date
-     FROM budget_periods
-     WHERE individual_id = $1 AND status = 'active'
-       AND $2::date BETWEEN start_date AND end_date
-     ORDER BY start_date DESC LIMIT 1`,
-    [individualId, asOfDate],
-  );
-  const periodRow = periodRes.rows[0] ?? null;
-  const elapsed = periodRow
-    ? calculatePeriodElapsed({ startDate: periodRow.start_date, endDate: periodRow.end_date }, asOf)
-    : null;
-
-  // Programs this individual has an active authorisation for.
-  const progRes = await pool.query<{ id: string; code: string; name: string }>(
-    `SELECT DISTINCT p.id, p.code, p.name
-     FROM budget_authorizations ba
-     JOIN budget_periods bp ON bp.id = ba.budget_period_id
-     JOIN programs p ON p.id = ba.program_id
-     WHERE ba.individual_id = $1 AND ba.status = 'active' AND bp.status = 'active'
-       AND $2::date BETWEEN bp.start_date AND bp.end_date
-     ORDER BY p.name`,
-    [individualId, asOfDate],
-  );
+  const authorizationRows = await activeAuthorizations(pool, individualId, asOfDate);
+  const programCounts = new Map<string, number>();
+  for (const row of authorizationRows) {
+    programCounts.set(row.program_id, (programCounts.get(row.program_id) ?? 0) + 1);
+  }
+  const ambiguousProgramNames = [...new Set(
+    authorizationRows
+      .filter((row) => (programCounts.get(row.program_id) ?? 0) > 1)
+      .map((row) => row.program_name),
+  )];
+  const totalsAmbiguous = ambiguousProgramNames.length > 0;
 
   let totalAuth = dec(0);
   let totalUsed = dec(0);
   let totalSched = dec(0);
-  let hasAuthorization = false;
+  let weightedElapsed = dec(0);
+  let totalRequiredWeekly = dec(0);
   const programs: ScheduleUtilizationProgram[] = [];
 
-  for (const p of progRes.rows) {
-    const f = await individualProgramForecast(pool, individualId, p.id, null, asOfDate);
-    const auth = f.authorizedHours === null ? null : dec(f.authorizedHours);
-    const used = dec(f.actualHours);
-    const sched = dec(f.scheduledHours);
-    if (auth !== null) {
-      hasAuthorization = true;
+  for (const authorization of authorizationRows) {
+    const facts = await authorizationUsage(pool, individualId, authorization);
+    const auth = dec(authorization.authorized_hours);
+    const used = dec(facts.actualHours);
+    const sched = dec(facts.scheduledHours);
+    const elapsed = calculatePeriodElapsed(
+      { startDate: authorization.start_date, endDate: authorization.end_date },
+      asOf,
+    );
+    const remaining = auth.minus(used).minus(sched);
+    const usage = auth.isZero() ? dec(0) : used.dividedBy(auth);
+    const committed = auth.isZero() ? dec(0) : used.plus(sched).dividedBy(auth);
+    const requiredWeekly = elapsed.remainingDays > 0 && remaining.gt(0)
+      ? remaining.times(7).dividedBy(elapsed.remainingDays)
+      : null;
+
+    if (!totalsAmbiguous) {
       totalAuth = totalAuth.plus(auth);
+      totalUsed = totalUsed.plus(used);
+      totalSched = totalSched.plus(sched);
+      weightedElapsed = weightedElapsed.plus(auth.times(elapsed.timeElapsedPercent));
+      if (requiredWeekly) totalRequiredWeekly = totalRequiredWeekly.plus(requiredWeekly);
     }
-    totalUsed = totalUsed.plus(used);
-    totalSched = totalSched.plus(sched);
-    const usage = auth && !auth.isZero() ? used.dividedBy(auth) : dec(0);
-    const committed = auth && !auth.isZero() ? used.plus(sched).dividedBy(auth) : dec(0);
     programs.push({
-      programId: p.id,
-      programCode: p.code,
-      programName: p.name,
-      authorizedHours: f.authorizedHours,
-      usedHours: f.actualHours,
-      scheduledHours: f.scheduledHours,
-      remainingAfterHours: f.remainingAfterScheduleHours,
+      authorizationId: authorization.authorization_id,
+      periodId: authorization.period_id,
+      programId: authorization.program_id,
+      programCode: authorization.program_code,
+      programName: authorization.program_name,
+      periodLabel: authorization.period_label,
+      startDate: authorization.start_date,
+      endDate: authorization.end_date,
+      renewalDate: nextIsoDate(authorization.end_date),
+      timeElapsedPercent: elapsed.timeElapsedPercent,
+      daysRemaining: elapsed.remainingDays,
+      requiredWeeklyHours: requiredWeekly ? toHours(requiredWeekly) : null,
+      authorizationAmbiguous: (programCounts.get(authorization.program_id) ?? 0) > 1,
+      authorizedHours: toHours(auth),
+      usedHours: toHours(used),
+      scheduledHours: toHours(sched),
+      remainingAfterHours: toHours(remaining),
       usagePercent: usage.toFixed(6),
       committedPercent: committed.toFixed(6),
-      status: classifyUtilization(usage, elapsed ?? NOT_STARTED_ELAPSED),
+      status: classifyUtilization(usage, elapsed),
     });
   }
 
+  const periodRows = new Map<string, EffectiveAuthorizationRow>();
+  for (const row of authorizationRows) periodRows.set(`${row.start_date}:${row.end_date}`, row);
+  const sharedPeriod = periodRows.size === 1 ? [...periodRows.values()][0]! : null;
+  const sharedLabels = new Set(authorizationRows.map((row) => row.period_label));
+  const aggregateElapsedPercent = totalAuth.isZero()
+    ? dec(0)
+    : weightedElapsed.dividedBy(totalAuth);
   const remainingAfter = totalAuth.minus(totalUsed).minus(totalSched);
   const usagePercent = totalAuth.isZero() ? dec(0) : totalUsed.dividedBy(totalAuth);
   const committedPercent = totalAuth.isZero() ? dec(0) : totalUsed.plus(totalSched).dividedBy(totalAuth);
-
-  let daysRemaining: number | null = null;
-  if (periodRow) {
-    const MS_PER_DAY = 24 * 60 * 60 * 1000;
-    const todayUtc = Date.UTC(asOf.getUTCFullYear(), asOf.getUTCMonth(), asOf.getUTCDate());
-    daysRemaining = Math.round(
-      (new Date(`${periodRow.end_date}T00:00:00Z`).getTime() - todayUtc) / MS_PER_DAY,
-    );
-  }
+  const aggregateElapsed: PeriodElapsed = {
+    ...NOT_STARTED_ELAPSED,
+    timeElapsedPercent: aggregateElapsedPercent.toFixed(6),
+    hasStarted: authorizationRows.length > 0,
+  };
+  const sharedElapsed = sharedPeriod
+    ? calculatePeriodElapsed({ startDate: sharedPeriod.start_date, endDate: sharedPeriod.end_date }, asOf)
+    : null;
+  const ambiguityMessage = totalsAmbiguous
+    ? `Multiple active authorizations overlap for ${ambiguousProgramNames.join(", ")}. Combined totals are hidden because used and scheduled hours cannot be assigned safely between them.`
+    : null;
 
   return {
     individualId,
     individualName: person.rows[0].display_name,
-    hasAuthorization,
-    period: periodRow
-      ? { label: periodRow.label, startDate: periodRow.start_date, endDate: periodRow.end_date, renewalDate: periodRow.renewal_date }
+    hasAuthorization: authorizationRows.length > 0,
+    period: sharedPeriod
+      ? {
+          label: sharedLabels.size === 1 ? sharedPeriod.period_label : "Shared authorization period",
+          startDate: sharedPeriod.start_date,
+          endDate: sharedPeriod.end_date,
+          renewalDate: nextIsoDate(sharedPeriod.end_date),
+        }
       : null,
-    timeElapsedPercent: elapsed ? elapsed.timeElapsedPercent : "0",
-    daysRemaining,
-    authorizedHours: toHours(totalAuth),
-    usedHours: toHours(totalUsed),
-    scheduledHours: toHours(totalSched),
-    remainingAfterHours: toHours(remainingAfter),
-    usagePercent: usagePercent.toFixed(6),
-    committedPercent: committedPercent.toFixed(6),
-    status: classifyUtilization(usagePercent, elapsed ?? NOT_STARTED_ELAPSED),
+    periodCount: periodRows.size,
+    timeElapsedPercent: totalsAmbiguous ? null : aggregateElapsedPercent.toFixed(6),
+    daysRemaining: totalsAmbiguous ? null : sharedElapsed?.remainingDays ?? null,
+    requiredWeeklyHours: totalsAmbiguous ? null : toHours(totalRequiredWeekly),
+    totalsAmbiguous,
+    ambiguityMessage,
+    authorizedHours: totalsAmbiguous ? null : toHours(totalAuth),
+    usedHours: totalsAmbiguous ? null : toHours(totalUsed),
+    scheduledHours: totalsAmbiguous ? null : toHours(totalSched),
+    remainingAfterHours: totalsAmbiguous ? null : toHours(remainingAfter),
+    usagePercent: totalsAmbiguous ? null : usagePercent.toFixed(6),
+    committedPercent: totalsAmbiguous ? null : committedPercent.toFixed(6),
+    status: totalsAmbiguous ? null : classifyUtilization(usagePercent, aggregateElapsed),
     programs,
   };
 }
@@ -509,33 +673,42 @@ export async function listSessionWarningFlags(
                 FROM scheduled_allocations target
                 WHERE target.scheduled_session_id = s.id
                   AND (
-                    NOT EXISTS (
+                    (
+                      SELECT count(*)
+                      FROM effective_budget_authorizations_at(s.session_date) ea
+                      WHERE ea.individual_id = target.individual_id
+                        AND ea.program_id = s.program_id
+                    ) > 1
+                    OR NOT EXISTS (
                       SELECT 1
-                      FROM budget_authorizations ba
-                      JOIN budget_periods bp ON bp.id = ba.budget_period_id
-                      WHERE ba.individual_id = target.individual_id
-                        AND ba.program_id = s.program_id
-                        AND ba.status = 'active' AND bp.status = 'active'
-                        AND s.session_date BETWEEN bp.start_date AND bp.end_date
+                      FROM effective_budget_authorizations_at(s.session_date) ea
+                      WHERE ea.individual_id = target.individual_id
+                        AND ea.program_id = s.program_id
                     )
                     OR EXISTS (
                       SELECT 1
-                      FROM budget_authorizations ba
-                      JOIN budget_periods bp ON bp.id = ba.budget_period_id
-                      WHERE ba.individual_id = target.individual_id
-                        AND ba.program_id = s.program_id
-                        AND ba.status = 'active' AND bp.status = 'active'
-                        AND s.session_date BETWEEN bp.start_date AND bp.end_date
+                      FROM effective_budget_authorizations_at(s.session_date) ea
+                      WHERE ea.individual_id = target.individual_id
+                        AND ea.program_id = s.program_id
                         AND (
-                          COALESCE((
-                            SELECT sum(actual_a.allocation_hours)
-                            FROM service_allocations actual_a
-                            JOIN service_sessions actual_s ON actual_s.id = actual_a.service_session_id
-                            WHERE actual_a.individual_id = target.individual_id
-                              AND actual_s.program_id = s.program_id
-                              AND COALESCE(actual_s.period_begin, actual_s.period_end)
-                                  BETWEEN bp.start_date AND bp.end_date
-                          ), 0)
+                          CASE
+                            WHEN EXISTS (
+                              SELECT 1 FROM budget_authorizations explicit_auth
+                               WHERE explicit_auth.id = ea.authorization_id
+                            ) THEN COALESCE((
+                              SELECT sum(actual_a.allocation_hours)
+                              FROM service_allocations actual_a
+                              JOIN service_sessions actual_s ON actual_s.id = actual_a.service_session_id
+                              WHERE actual_a.individual_id = target.individual_id
+                                AND actual_s.program_id = s.program_id
+                                AND COALESCE(actual_s.period_begin, actual_s.period_end)
+                                    BETWEEN ea.start_date AND ea.end_date
+                            ), 0)
+                            ELSE effective_billed_hours(
+                              target.individual_id, s.program_id,
+                              ea.start_date, ea.end_date, ea.internal_rate
+                            )
+                          END
                           + COALESCE((
                             SELECT sum(planned_a.allocation_hours)
                             FROM scheduled_allocations planned_a
@@ -544,9 +717,9 @@ export async function listSessionWarningFlags(
                               AND planned_s.program_id = s.program_id
                               AND planned_s.status = 'pending'
                               AND planned_s.matched_transaction_id IS NULL
-                              AND planned_s.session_date BETWEEN bp.start_date AND bp.end_date
+                              AND planned_s.session_date BETWEEN ea.start_date AND ea.end_date
                           ), 0)
-                        ) > ba.authorized_hours
+                        ) > ea.authorized_hours
                     )
                   )
               )

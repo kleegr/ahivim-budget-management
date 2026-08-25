@@ -1,4 +1,5 @@
-import type { PgLikePool } from "@/lib/import/commit";
+import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
+import { dec, toHours } from "@/lib/money";
 import { recordChange } from "./audit";
 import { ok, fail, type Result } from "./errors";
 
@@ -65,6 +66,81 @@ const toRecord = (r: Row): AssignmentRecord => ({
 
 const isUuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
 
+type Queryable = Pick<PgLikePool, "query"> | Pick<PgLikeClient, "query">;
+
+async function inAssignmentTransaction<T>(
+  pool: PgLikePool,
+  operation: (client: PgLikeClient) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await operation(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function assignmentScopeKey(input: {
+  employeeId: string;
+  individualId: string;
+  programId: string | null;
+}): string {
+  return `assignment:${input.employeeId}:${input.individualId}:${input.programId ?? "no-program"}`;
+}
+
+async function lockAssignmentScope(
+  client: PgLikeClient,
+  input: { employeeId: string; individualId: string; programId: string | null },
+): Promise<void> {
+  await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [assignmentScopeKey(input)]);
+}
+
+async function hasOverlappingAssignment(
+  pool: Queryable,
+  input: {
+    employeeId: string;
+    individualId: string;
+    programId: string | null;
+    startDate: string | null;
+    endDate: string | null;
+    excludeId?: string | null;
+  },
+): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT id
+       FROM assignments
+      WHERE employee_id = $1 AND individual_id = $2
+        AND program_id IS NOT DISTINCT FROM $3::uuid
+        AND status = 'active' AND archived_at IS NULL
+        AND ($6::uuid IS NULL OR id <> $6::uuid)
+        AND daterange(
+              COALESCE(start_date, '-infinity'::date),
+              COALESCE(end_date, 'infinity'::date),
+              '[]'
+            ) && daterange(
+              COALESCE($4::date, '-infinity'::date),
+              COALESCE($5::date, 'infinity'::date),
+              '[]'
+            )
+      LIMIT 1`,
+    [
+      input.employeeId,
+      input.individualId,
+      input.programId,
+      input.startDate,
+      input.endDate,
+      input.excludeId ?? null,
+    ],
+  );
+  return rows.length > 0;
+}
+
 export interface AssignmentInput {
   employeeId: string;
   individualId: string;
@@ -88,48 +164,68 @@ export async function createAssignment(
   if (input.startDate && input.endDate && input.endDate < input.startDate) {
     return fail("validation", "The end date is before the start date.");
   }
-
-  // No duplicate ACTIVE assignment for the same employee + individual + program.
-  const dup = await pool.query(
-    `SELECT id FROM assignments
-      WHERE employee_id = $1 AND individual_id = $2
-        AND (program_id IS NOT DISTINCT FROM $3) AND status = 'active'`,
-    [input.employeeId, input.individualId, input.programId ?? null],
-  );
-  if (dup.rows[0]) {
-    return fail("conflict", "That employee is already assigned to this individual for this program.");
+  let allowedHours: string | null = null;
+  if (input.allowedHours !== null && input.allowedHours !== undefined && input.allowedHours !== "") {
+    try {
+      const value = dec(input.allowedHours);
+      if (!value.isFinite() || value.isNegative()) throw new Error("invalid hours");
+      allowedHours = toHours(value);
+    } catch {
+      return fail("validation", "Allowed hours must be zero or greater.");
+    }
   }
 
-  const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO assignments
-       (employee_id, individual_id, program_id, start_date, end_date, allowed_hours, notes, created_by_user_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-    [
-      input.employeeId,
-      input.individualId,
-      input.programId ?? null,
-      input.startDate || null,
-      input.endDate || null,
-      input.allowedHours || null,
-      input.notes?.trim() || null,
+  const assignmentInput = {
+    employeeId: input.employeeId,
+    individualId: input.individualId,
+    programId: input.programId ?? null,
+    startDate: input.startDate || null,
+    endDate: input.endDate || null,
+  };
+  return inAssignmentTransaction(pool, async (client) => {
+    await lockAssignmentScope(client, assignmentInput);
+    if (await hasOverlappingAssignment(client, assignmentInput)) {
+      return fail("conflict", "That employee already has an overlapping assignment for this individual and program.");
+    }
+
+    const { rows } = await client.query<{ id: string }>(
+      `INSERT INTO assignments
+         (employee_id, individual_id, program_id, start_date, end_date, allowed_hours, notes, created_by_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      [
+        input.employeeId,
+        input.individualId,
+        input.programId ?? null,
+        input.startDate || null,
+        input.endDate || null,
+        allowedHours,
+        input.notes?.trim() || null,
+        actorId,
+      ],
+    );
+    const record = await getAssignment(client, rows[0]!.id);
+    await recordChange(client, {
       actorId,
-    ],
-  );
-  const record = await getAssignment(pool, rows[0]!.id);
-  await recordChange(pool, {
-    actorId,
-    action: "assignment_created",
-    entityType: "assignment",
-    entityId: rows[0]!.id,
-    next: record,
-    reason,
+      action: "assignment_created",
+      entityType: "assignment",
+      entityId: rows[0]!.id,
+      next: record,
+      reason,
+    });
+    return ok(record!);
   });
-  return ok(record!);
 }
 
-export async function getAssignment(pool: PgLikePool, id: string): Promise<AssignmentRecord | null> {
+export async function getAssignment(
+  pool: Queryable,
+  id: string,
+  lock = false,
+): Promise<AssignmentRecord | null> {
   if (!isUuid(id)) return null;
-  const { rows } = await pool.query<Row>(`${SELECT} WHERE a.id = $1`, [id]);
+  const { rows } = await pool.query<Row>(
+    `${SELECT} WHERE a.id = $1${lock ? " FOR UPDATE OF a" : ""}`,
+    [id],
+  );
   return rows[0] ? toRecord(rows[0]) : null;
 }
 
@@ -140,31 +236,66 @@ export async function updateAssignment(
   actorId: string | null,
   reason?: string | null,
 ): Promise<Result<AssignmentRecord>> {
-  const before = await getAssignment(pool, id);
-  if (!before) return fail("not_found", "That assignment no longer exists.");
-  const { rows } = await pool.query<Row>(
-    `UPDATE assignments SET
-       start_date = $2, end_date = $3, allowed_hours = $4, notes = $5, updated_at = now()
-     WHERE id = $1 RETURNING id`,
-    [
-      id,
-      input.startDate === undefined ? before.startDate : input.startDate || null,
-      input.endDate === undefined ? before.endDate : input.endDate || null,
-      input.allowedHours === undefined ? before.allowedHours : input.allowedHours || null,
-      input.notes === undefined ? before.notes : input.notes?.trim() || null,
-    ],
-  );
-  const after = await getAssignment(pool, rows[0]!.id);
-  await recordChange(pool, {
-    actorId,
-    action: "assignment_updated",
-    entityType: "assignment",
-    entityId: id,
-    previous: before,
-    next: after,
-    reason,
+  return inAssignmentTransaction(pool, async (client) => {
+    const scope = await getAssignment(client, id);
+    if (!scope) return fail("not_found", "That assignment no longer exists.");
+    await lockAssignmentScope(client, scope);
+    const before = await getAssignment(client, id, true);
+    if (!before) return fail("not_found", "That assignment no longer exists.");
+
+    const startDate = input.startDate === undefined ? before.startDate : input.startDate || null;
+    const endDate = input.endDate === undefined ? before.endDate : input.endDate || null;
+    if (startDate && endDate && endDate < startDate) {
+      return fail("validation", "The end date is before the start date.");
+    }
+    let allowedHours = before.allowedHours;
+    if (input.allowedHours !== undefined) {
+      if (input.allowedHours === null || input.allowedHours === "") {
+        allowedHours = null;
+      } else {
+        try {
+          const value = dec(input.allowedHours);
+          if (!value.isFinite() || value.isNegative()) throw new Error("invalid hours");
+          allowedHours = toHours(value);
+        } catch {
+          return fail("validation", "Allowed hours must be zero or greater.");
+        }
+      }
+    }
+    if (await hasOverlappingAssignment(client, {
+      employeeId: before.employeeId,
+      individualId: before.individualId,
+      programId: before.programId,
+      startDate,
+      endDate,
+      excludeId: id,
+    })) {
+      return fail("conflict", "Those dates overlap another active assignment for this employee, individual, and program.");
+    }
+    const { rows } = await client.query<Row>(
+      `UPDATE assignments SET
+         start_date = $2, end_date = $3, allowed_hours = $4, notes = $5, updated_at = now()
+       WHERE id = $1 RETURNING id`,
+      [
+        id,
+        startDate,
+        endDate,
+        allowedHours,
+        input.notes === undefined ? before.notes : input.notes?.trim() || null,
+      ],
+    );
+    const after = await getAssignment(client, rows[0]!.id);
+    await recordChange(client, {
+      actorId,
+      action: "assignment_updated",
+      entityType: "assignment",
+      entityId: id,
+      previous: before,
+      next: after,
+      reason,
+    });
+    return ok(after!);
   });
-  return ok(after!);
 }
 
 export async function setAssignmentStatus(
@@ -174,24 +305,40 @@ export async function setAssignmentStatus(
   actorId: string | null,
   reason?: string | null,
 ): Promise<Result<AssignmentRecord>> {
-  const before = await getAssignment(pool, id);
-  if (!before) return fail("not_found", "That assignment no longer exists.");
-  const archivedAt = status === "archived" ? "now()" : "NULL";
-  await pool.query(
-    `UPDATE assignments SET status = $2, archived_at = ${archivedAt}, updated_at = now() WHERE id = $1`,
-    [id, status],
-  );
-  const after = await getAssignment(pool, id);
-  await recordChange(pool, {
-    actorId,
-    action: `assignment_${status}`,
-    entityType: "assignment",
-    entityId: id,
-    previous: { status: before.status },
-    next: { status },
-    reason,
+  return inAssignmentTransaction(pool, async (client) => {
+    const scope = await getAssignment(client, id);
+    if (!scope) return fail("not_found", "That assignment no longer exists.");
+    await lockAssignmentScope(client, scope);
+    const before = await getAssignment(client, id, true);
+    if (!before) return fail("not_found", "That assignment no longer exists.");
+
+    if (status === "active" && before.status !== "active" && await hasOverlappingAssignment(client, {
+      employeeId: before.employeeId,
+      individualId: before.individualId,
+      programId: before.programId,
+      startDate: before.startDate,
+      endDate: before.endDate,
+      excludeId: id,
+    })) {
+      return fail("conflict", "This assignment overlaps another active assignment and cannot be restored.");
+    }
+    const archivedAt = status === "archived" ? "now()" : "NULL";
+    await client.query(
+      `UPDATE assignments SET status = $2, archived_at = ${archivedAt}, updated_at = now() WHERE id = $1`,
+      [id, status],
+    );
+    const after = await getAssignment(client, id);
+    await recordChange(client, {
+      actorId,
+      action: `assignment_${status}`,
+      entityType: "assignment",
+      entityId: id,
+      previous: { status: before.status },
+      next: { status },
+      reason,
+    });
+    return ok(after!);
   });
-  return ok(after!);
 }
 
 export async function listAssignments(

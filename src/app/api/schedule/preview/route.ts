@@ -28,6 +28,7 @@ const ALL_DATE_WARNING_CODES = new Set([
   "not_assigned",
   "missing_authorization",
   "outside_authorization_dates",
+  "ambiguous_authorization",
 ]);
 
 /**

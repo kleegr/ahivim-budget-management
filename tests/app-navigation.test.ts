@@ -10,6 +10,7 @@ describe("role-specific workspaces", () => {
       canSeeSettlements: true,
       canSeeBudgets: false,
       canPlan: false,
+      canEditDocuments: false,
     };
     const workspaces = getVisibleWorkspaces(access);
 
@@ -27,6 +28,7 @@ describe("role-specific workspaces", () => {
       canSeeSettlements: false,
       canSeeBudgets: true,
       canPlan: false,
+      canEditDocuments: false,
     });
     expect(workspaces.find((workspace) => workspace.id === "budgets")?.href).toBe("/individuals");
   });
@@ -39,6 +41,7 @@ describe("role-specific workspaces", () => {
       canSeeSettlements: false,
       canSeeBudgets: true,
       canPlan: true,
+      canEditDocuments: false,
     };
     const workspaces = getVisibleWorkspaces(access);
 
@@ -49,6 +52,28 @@ describe("role-specific workspaces", () => {
     expect(workspaces.some((workspace) => workspace.id === "payroll")).toBe(false);
   });
 
+  it("gives a class-billing operator Classes and documents without employee money", () => {
+    const access = {
+      role: "viewer",
+      accessResolved: true,
+      canSeeTransactions: false,
+      canSeeSettlements: false,
+      canSeeBudgets: false,
+      canPlan: false,
+      canSeeClassFinancials: true,
+      canSeeEmployees: false,
+      canEditDocuments: true,
+    };
+    const hrefs = getCommandDestinations(access).map((item) => item.href);
+
+    expect(hrefs).toContain("/classes");
+    expect(hrefs).toContain("/documents/pdf-editor");
+    expect(hrefs).not.toContain("/employees");
+    expect(hrefs).not.toContain("/transactions");
+    expect(hrefs).not.toContain("/settlements");
+    expect(hrefs).not.toContain("/schedule");
+  });
+
   it("fails closed for gated navigation when capability resolution fails", () => {
     const unresolved = {
       role: "admin",
@@ -57,6 +82,7 @@ describe("role-specific workspaces", () => {
       canSeeSettlements: true,
       canSeeBudgets: true,
       canPlan: true,
+      canEditDocuments: true,
     };
 
     expect(getVisibleWorkspaces(unresolved)).toEqual([]);
@@ -71,6 +97,8 @@ describe("role-specific workspaces", () => {
       canSeeSettlements: true,
       canSeeBudgets: true,
       canPlan: true,
+      canSeeClassFinancials: true,
+      canEditDocuments: true,
     };
 
     const workspaces = getVisibleWorkspaces(resolved);
@@ -87,6 +115,23 @@ describe("role-specific workspaces", () => {
     expect(hrefs).toContain("/schedule");
     expect(hrefs).toContain("/individuals");
     expect(hrefs).toContain("/employees");
+    expect(hrefs).toContain("/classes");
     expect(hrefs).toContain("/reports");
+    expect(hrefs).toContain("/documents/pdf-editor");
+  });
+
+  it("shows the PDF workspace only after document access resolves", () => {
+    const base = {
+      role: "viewer",
+      accessResolved: true,
+      canSeeTransactions: false,
+      canSeeSettlements: false,
+      canSeeBudgets: false,
+      canPlan: false,
+      canEditDocuments: true,
+    };
+
+    expect(getCommandDestinations(base).map((item) => item.href)).toContain("/documents/pdf-editor");
+    expect(getCommandDestinations({ ...base, canEditDocuments: false }).map((item) => item.href)).not.toContain("/documents/pdf-editor");
   });
 });

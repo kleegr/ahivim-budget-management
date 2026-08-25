@@ -448,7 +448,7 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
               value={grid.search}
               onChange={(event) => grid.setSearch(event.target.value)}
               placeholder="Search individuals or programs"
-              className="input w-full pl-9 pr-9"
+              className="input input-leading-icon input-trailing-action w-full"
               aria-label="Search individuals"
             />
             {grid.search ? (

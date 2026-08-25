@@ -119,7 +119,10 @@ export default async function SettingsPage() {
                   canSeeBudgets: u.canSeeBudgets,
                   canSeeEmployeeDeals: u.canSeeEmployeeDeals,
                   canSeeSettlements: u.canSeeSettlements,
+                  canSeeClassFinancials: u.canSeeClassFinancials,
+                  canManageClassInvoices: u.canManageClassInvoices,
                   canPlan: u.canPlan,
+                  canEditDocuments: u.canEditDocuments,
                   individualCount: u.individualCount,
                   employeeCount: u.employeeCount,
                 }))}

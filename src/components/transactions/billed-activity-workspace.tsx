@@ -108,7 +108,7 @@ function ChecksView({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search checks"
-            className="input w-full pl-9"
+            className="input input-leading-icon w-full"
           />
         </label>
       </div>

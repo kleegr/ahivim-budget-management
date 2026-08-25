@@ -394,17 +394,23 @@ export default function CreateSessionModal({
                 {preview.forecast.map((f) => (
                   <div key={f.individualId} className="text-xs">
                     <p className="font-medium">{f.individualName}</p>
-                    <dl className="mt-0.5 grid grid-cols-2 gap-y-0.5">
-                      <dt className="text-[var(--color-ink-faint)]">Used hours</dt><dd className="tnum text-right">{f.actualHours} h</dd>
-                      <dt className="text-[var(--color-ink-faint)]">Already scheduled</dt><dd className="tnum text-right">{f.scheduledHours} h</dd>
-                      <dt className="text-[var(--color-ink-faint)]">This session</dt>
-                      <dd className="tnum text-right">+{formatHours(f.thisHours)} h</dd>
-                      <dt className="text-[var(--color-ink-faint)]">Authorized</dt><dd className="tnum text-right">{f.authorizedHours ?? "—"}{f.authorizedHours ? " h" : ""}</dd>
-                      <dt className="font-medium">Remaining after</dt>
-                      <dd className={`tnum text-right font-medium ${f.remainingAfterHours !== null && Number(f.remainingAfterHours) < 0 ? "text-[var(--color-pace-over)]" : ""}`}>
-                        {f.remainingAfterHours === null ? "—" : `${formatHours(f.remainingAfterHours)} h`}
-                      </dd>
-                    </dl>
+                    {f.authorizationAmbiguous ? (
+                      <p className="mt-1 text-[var(--color-ink-soft)]">
+                        {f.authorizationCount} overlapping authorizations need review. Combined remaining hours are hidden.
+                      </p>
+                    ) : (
+                      <dl className="mt-0.5 grid grid-cols-2 gap-y-0.5">
+                        <dt className="text-[var(--color-ink-faint)]">Used hours</dt><dd className="tnum text-right">{f.actualHours} h</dd>
+                        <dt className="text-[var(--color-ink-faint)]">Already scheduled</dt><dd className="tnum text-right">{f.scheduledHours} h</dd>
+                        <dt className="text-[var(--color-ink-faint)]">This session</dt>
+                        <dd className="tnum text-right">+{formatHours(f.thisHours)} h</dd>
+                        <dt className="text-[var(--color-ink-faint)]">Authorized</dt><dd className="tnum text-right">{f.authorizedHours ?? "—"}{f.authorizedHours ? " h" : ""}</dd>
+                        <dt className="font-medium">Remaining after</dt>
+                        <dd className={`tnum text-right font-medium ${f.remainingAfterHours !== null && Number(f.remainingAfterHours) < 0 ? "text-[var(--color-pace-over)]" : ""}`}>
+                          {f.remainingAfterHours === null ? "—" : `${formatHours(f.remainingAfterHours)} h`}
+                        </dd>
+                      </dl>
+                    )}
                   </div>
                 ))}
               </div>
@@ -725,7 +731,9 @@ export function SchedulePreflightSummary({
                 <div key={f.individualId} className="flex items-baseline justify-between gap-2">
                   <span className="truncate text-xs text-[var(--color-ink-soft)]">{isGroup ? f.individualName : "Remaining hours"}</span>
                   <span className="tnum text-sm font-semibold" style={{ color: neg ? "var(--color-pace-over)" : undefined }}>
-                    {rem === null ? "no authorization on file" : `${formatHours(rem)} h`}
+                    {f.authorizationAmbiguous
+                      ? "review overlapping authorizations"
+                      : rem === null ? "no authorization on file" : `${formatHours(rem)} h`}
                   </span>
                 </div>
               );

@@ -3,10 +3,21 @@ import { listIndividualBudgetBoard } from "@/lib/data/queries";
 
 describe("individual budget portfolio read model", () => {
   it("converts group-session internal money to used hours before every portfolio calculation", async () => {
-    let capturedSql = "";
+    const capturedSql: string[] = [];
     const pool = {
       query: async (sql: string) => {
-        capturedSql = sql;
+        capturedSql.push(sql);
+        if (sql.includes("FROM program_rate_schedules")) {
+          return {
+            rows: [{
+              program_id: "day-hab",
+              effective_from: "2026-01-01",
+              effective_to: "2026-12-31",
+              internal_rate: "17",
+              agency_rate: "19",
+            }],
+          };
+        }
         return {
           rows: [{
             id: "person-1",
@@ -15,10 +26,14 @@ describe("individual budget portfolio read model", () => {
             status: "active",
             archived_at: null,
             renewal_date: "2027-01-01",
+            period_start: "2026-01-01",
+            period_end: "2027-01-01",
+            program_id: "day-hab",
             program_name: "Day Hab",
             program_code: "DAY_HAB",
             authorized_hours: "200",
-            budget_rate: "17",
+            rate_override: null,
+            rate_override_effective_from: null,
             billed_hours: "10",
             billed_internal: "1700",
             billed_amount: "2500",
@@ -43,8 +58,9 @@ describe("individual budget portfolio read model", () => {
     expect(budget?.usedPct).toBe(50);
     expect(budget?.mustUseMonthly).toBeCloseTo(expectedMonthly, 8);
     expect(budget?.billedAmount).toBe("2500.00");
-    expect(capturedSql).toContain("l.rate_override");
-    expect(capturedSql).toContain("program_rate_schedules");
-    expect(capturedSql).toContain("t.spreadsheet_internal_amount");
+    expect(capturedSql[0]).toContain("l.rate_override");
+    expect(capturedSql[0]).toContain("t.period_begin < el.period_end");
+    expect(capturedSql[0]).toContain("t.spreadsheet_internal_amount");
+    expect(capturedSql[1]).toContain("FROM program_rate_schedules");
   });
 });

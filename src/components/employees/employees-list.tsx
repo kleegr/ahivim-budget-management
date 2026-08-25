@@ -296,7 +296,7 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
               value={q}
               onChange={(event) => setQ(event.target.value)}
               placeholder="Search employees or references"
-              className="input w-full pl-9 pr-9"
+              className="input input-leading-icon input-trailing-action w-full"
               aria-label="Search employees"
             />
             {q ? (

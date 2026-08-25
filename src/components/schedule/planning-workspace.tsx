@@ -10,11 +10,11 @@ import {
   UsersRound,
 } from "lucide-react";
 import ScheduleCalendar, { type ScheduleCalendarProps } from "@/components/schedule/calendar";
+import AssignmentManager from "@/components/schedule/assignment-manager";
 import ServiceSchedules from "@/components/schedule/service-schedules";
 import { TabPanels } from "@/components/ui-client";
 import { EmptyState, Hours, PaceBar, StatusBadge, Table, Td, Th, Tr } from "@/components/ui";
 import type {
-  PlanningAssignmentRow,
   PlanningAuthorizationGap,
   PlanningCoverageRow,
   PlanningReasonCode,
@@ -35,7 +35,6 @@ interface PlanningWorkspaceProps {
   individuals: ScheduleCalendarProps["individuals"];
   programs: ScheduleCalendarProps["programs"];
 }
-
 const WORK_REASON: Record<PlanningReasonCode, { label: string; tone: "danger" | "warn" | "info" | "muted" }> = {
   unassigned: { label: "Unassigned", tone: "danger" },
   conflict: { label: "Conflict", tone: "danger" },
@@ -62,7 +61,6 @@ const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
 function dateLabel(value: string): string {
   return DATE_FORMATTER.format(new Date(`${value}T00:00:00Z`));
 }
-
 function timeLabel(value: string | null): string {
   if (!value) return "Time not set";
   const [hourText, minute = "00"] = value.split(":");
@@ -208,7 +206,19 @@ export default function PlanningWorkspace({
           { id: "calendar", label: "Calendar", content: calendar },
           { id: "coverage", label: "Budgets & pace", badge: data.summary.coverageGaps || undefined, content: <CoverageTable rows={data.coverage} /> },
           { id: "queue", label: "Attention", badge: data.workQueueTotal || undefined, content: <WorkQueue data={data} /> },
-          { id: "future", label: "Assignments", badge: data.authorizationGaps.length || undefined, content: <FuturePlans data={data} /> },
+          {
+            id: "future",
+            label: "Assignments",
+            badge: data.authorizationGaps.length || undefined,
+            content: (
+              <FuturePlans
+                data={data}
+                employees={employees}
+                individuals={individuals}
+                programs={programs}
+              />
+            ),
+          },
         ]}
       />
     </div>
@@ -295,7 +305,6 @@ function WorkQueue({ data }: { data: PlanningWorkspaceData }) {
     </section>
   );
 }
-
 function CoverageTable({ rows }: { rows: PlanningCoverageRow[] }) {
   return (
     <section>
@@ -378,11 +387,33 @@ function CoverageTable({ rows }: { rows: PlanningCoverageRow[] }) {
   );
 }
 
-function FuturePlans({ data }: { data: PlanningWorkspaceData }) {
+function FuturePlans({
+  data,
+  employees,
+  individuals,
+  programs,
+}: {
+  data: PlanningWorkspaceData;
+  employees: ScheduleCalendarProps["employees"];
+  individuals: ScheduleCalendarProps["individuals"];
+  programs: ScheduleCalendarProps["programs"];
+}) {
   return (
     <div className="space-y-8">
       <AuthorizationGaps rows={data.authorizationGaps} />
-      <AssignmentPlans rows={data.assignments} />
+      <section>
+        <SectionHeading
+          title="Assignment timeline"
+          description="Employee-to-individual assignments that are effective now or in the future."
+          icon={<Clock3 aria-hidden className="h-4 w-4" />}
+        />
+        <AssignmentManager
+          rows={data.assignments}
+          employees={employees}
+          individuals={individuals}
+          programs={programs}
+        />
+      </section>
     </div>
   );
 }
@@ -425,48 +456,6 @@ function AuthorizationGaps({ rows }: { rows: PlanningAuthorizationGap[] }) {
                 <Td><StatusBadge label={AUTH_GAP_LABEL[row.gap]} tone="warn" /></Td>
               </Tr>
             ))}
-          </Table>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function assignmentTiming(row: PlanningAssignmentRow): { label: string; tone: "good" | "info" | "warn" } {
-  if (row.timing === "future") return { label: "Starts later", tone: "info" };
-  if (row.timing === "ending_soon") return { label: "Ending within 30 days", tone: "warn" };
-  return { label: "Effective now", tone: "good" };
-}
-
-function AssignmentPlans({ rows }: { rows: PlanningAssignmentRow[] }) {
-  return (
-    <section>
-      <SectionHeading
-        title="Assignment timeline"
-        description="Active employee-to-individual assignments that are effective now or in the future."
-        icon={<Clock3 aria-hidden className="h-4 w-4" />}
-      />
-      {rows.length === 0 ? (
-        <EmptyState compact title="No active assignments" icon={<UsersRound aria-hidden className="h-5 w-5" />} />
-      ) : (
-        <div className="border-y border-[var(--color-rule)]">
-          <Table
-            caption="Current and future employee assignments"
-            head={<><Th>Individual</Th><Th>Employee</Th><Th>Program</Th><Th>Effective dates</Th><Th numeric>Allowed hours</Th><Th>Status</Th></>}
-          >
-            {rows.map((row) => {
-              const timing = assignmentTiming(row);
-              return (
-                <Tr key={row.id}>
-                  <Td><Link href={`/individuals/${row.individualId}`} className="font-semibold hover:text-[var(--color-primary)] hover:underline">{row.individualName}</Link></Td>
-                  <Td><Link href={`/employees/${row.employeeId}`} className="hover:text-[var(--color-primary)] hover:underline">{row.employeeName}</Link></Td>
-                  <Td>{row.programName ?? "All programs"}</Td>
-                  <Td><span className="whitespace-nowrap">{row.startDate ? dateLabel(row.startDate) : "Open start"} to {row.endDate ? dateLabel(row.endDate) : "Open end"}</span></Td>
-                  <Td numeric>{row.allowedHours === null ? <span className="text-[var(--color-ink-faint)]">-</span> : <Hours value={row.allowedHours} />}</Td>
-                  <Td><StatusBadge label={timing.label} tone={timing.tone} /></Td>
-                </Tr>
-              );
-            })}
           </Table>
         </div>
       )}

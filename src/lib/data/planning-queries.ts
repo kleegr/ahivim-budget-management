@@ -103,10 +103,12 @@ export interface PlanningAssignmentRow {
   employeeName: string;
   individualId: string;
   individualName: string;
+  programId: string | null;
   programName: string | null;
   startDate: string | null;
   endDate: string | null;
   allowedHours: string | null;
+  notes: string | null;
   timing: "current" | "future" | "ending_soon";
 }
 
@@ -214,12 +216,9 @@ export async function getPlanningWorkspace(
                   WHERE target.scheduled_session_id = s.id
                     AND NOT EXISTS (
                       SELECT 1
-                      FROM budget_authorizations ba
-                      JOIN budget_periods bp ON bp.id = ba.budget_period_id
-                      WHERE ba.individual_id = target.individual_id
-                        AND ba.program_id = s.program_id
-                        AND ba.status = 'active' AND bp.status = 'active'
-                        AND s.session_date BETWEEN bp.start_date AND bp.end_date
+                      FROM effective_budget_authorizations_at(s.session_date) ea
+                      WHERE ea.individual_id = target.individual_id
+                        AND ea.program_id = s.program_id
                     )
                 ) AS authorization_gap,
                 (
@@ -253,23 +252,15 @@ export async function getPlanningWorkspace(
                 EXISTS (
                   SELECT 1
                   FROM scheduled_allocations target
-                  JOIN budget_authorizations ba
-                    ON ba.individual_id = target.individual_id
-                   AND ba.program_id = s.program_id AND ba.status = 'active'
-                  JOIN budget_periods bp
-                    ON bp.id = ba.budget_period_id AND bp.status = 'active'
-                   AND s.session_date BETWEEN bp.start_date AND bp.end_date
+                  JOIN LATERAL effective_budget_authorizations_at(s.session_date) ea
+                    ON ea.individual_id = target.individual_id
+                   AND ea.program_id = s.program_id
                   WHERE target.scheduled_session_id = s.id
                     AND (
-                      COALESCE((
-                        SELECT sum(actual_a.allocation_hours)
-                        FROM service_allocations actual_a
-                        JOIN service_sessions actual_s ON actual_s.id = actual_a.service_session_id
-                        WHERE actual_a.individual_id = target.individual_id
-                          AND actual_s.program_id = s.program_id
-                          AND COALESCE(actual_s.period_begin, actual_s.period_end)
-                              BETWEEN bp.start_date AND bp.end_date
-                      ), 0)
+                      effective_billed_hours(
+                        target.individual_id, s.program_id,
+                        ea.start_date, ea.end_date, ea.internal_rate
+                      )
                       + COALESCE((
                         SELECT sum(planned_a.allocation_hours)
                         FROM scheduled_allocations planned_a
@@ -278,9 +269,9 @@ export async function getPlanningWorkspace(
                           AND planned_s.program_id = s.program_id
                           AND planned_s.status = 'pending'
                           AND planned_s.matched_transaction_id IS NULL
-                          AND planned_s.session_date BETWEEN bp.start_date AND bp.end_date
+                          AND planned_s.session_date BETWEEN ea.start_date AND ea.end_date
                       ), 0)
-                    ) > ba.authorized_hours
+                    ) > ea.authorized_hours
                 ) AS over_budget
          FROM scheduled_sessions s
          LEFT JOIN employees e ON e.id = s.employee_id
@@ -324,32 +315,21 @@ export async function getPlanningWorkspace(
       scheduled_hours: string; eligible_employee_count: string; next_scheduled_date: string | null;
     }>(
       `WITH current_auth AS (
-         SELECT DISTINCT ON (ba.individual_id, ba.program_id)
-                ba.id AS authorization_id, ba.individual_id, ba.program_id,
-                ba.authorized_hours, bp.label AS period_label,
-                bp.start_date, bp.end_date
-         FROM budget_authorizations ba
-         JOIN budget_periods bp ON bp.id = ba.budget_period_id
-         JOIN individuals i ON i.id = ba.individual_id
-         JOIN programs p ON p.id = ba.program_id
-         WHERE ba.status = 'active' AND bp.status = 'active'
-           AND i.status = 'active' AND p.is_active = true
-           AND $1::date BETWEEN bp.start_date AND bp.end_date
-         ORDER BY ba.individual_id, ba.program_id, bp.start_date DESC, ba.revision DESC
+         SELECT ea.authorization_id, ea.individual_id, ea.program_id,
+                ea.authorized_hours, ea.period_label,
+                ea.start_date, ea.end_date, ea.internal_rate
+         FROM effective_budget_authorizations_at($1::date) ea
+         JOIN individuals i ON i.id = ea.individual_id
+         JOIN programs p ON p.id = ea.program_id
+         WHERE i.status = 'active' AND p.is_active = true
        )
        SELECT ca.authorization_id, ca.individual_id, i.display_name AS individual_name,
               ca.program_id, p.code AS program_code, p.name AS program_name,
               ca.period_label, ca.start_date::text AS start_date, ca.end_date::text AS end_date,
               ca.authorized_hours::text AS authorized_hours,
-              COALESCE((
-                SELECT sum(actual_a.allocation_hours)
-                FROM service_allocations actual_a
-                JOIN service_sessions actual_s ON actual_s.id = actual_a.service_session_id
-                WHERE actual_a.individual_id = ca.individual_id
-                  AND actual_s.program_id = ca.program_id
-                  AND COALESCE(actual_s.period_begin, actual_s.period_end)
-                      BETWEEN ca.start_date AND ca.end_date
-              ), 0)::text AS actual_hours,
+              effective_billed_hours(
+                ca.individual_id, ca.program_id, ca.start_date, ca.end_date, ca.internal_rate
+              )::text AS actual_hours,
               COALESCE((
                 SELECT sum(planned_a.allocation_hours)
                 FROM scheduled_allocations planned_a
@@ -468,12 +448,9 @@ export async function getPlanningWorkspace(
                   AND future_s.session_date >= $1::date
                   AND NOT EXISTS (
                     SELECT 1
-                    FROM budget_authorizations ba
-                    JOIN budget_periods bp ON bp.id = ba.budget_period_id
-                    WHERE ba.individual_id = future_a.individual_id
-                      AND ba.program_id = future_s.program_id
-                      AND ba.status = 'active' AND bp.status = 'active'
-                      AND future_s.session_date BETWEEN bp.start_date AND bp.end_date
+                    FROM effective_budget_authorizations_at(future_s.session_date) ea
+                    WHERE ea.individual_id = future_a.individual_id
+                      AND ea.program_id = future_s.program_id
                   )
               ) AS authorization_gap,
               EXISTS (
@@ -519,25 +496,17 @@ export async function getPlanningWorkspace(
                 SELECT 1
                 FROM scheduled_sessions future_s
                 JOIN scheduled_allocations future_a ON future_a.scheduled_session_id = future_s.id
-                JOIN budget_authorizations ba
-                  ON ba.individual_id = future_a.individual_id
-                 AND ba.program_id = future_s.program_id AND ba.status = 'active'
-                JOIN budget_periods bp
-                  ON bp.id = ba.budget_period_id AND bp.status = 'active'
-                 AND future_s.session_date BETWEEN bp.start_date AND bp.end_date
+                JOIN LATERAL effective_budget_authorizations_at(future_s.session_date) ea
+                  ON ea.individual_id = future_a.individual_id
+                 AND ea.program_id = future_s.program_id
                 WHERE future_s.series_id = series.id AND future_s.status = 'pending'
                   AND future_s.matched_transaction_id IS NULL
                   AND future_s.session_date >= $1::date
                   AND (
-                    COALESCE((
-                      SELECT sum(actual_a.allocation_hours)
-                      FROM service_allocations actual_a
-                      JOIN service_sessions actual_s ON actual_s.id = actual_a.service_session_id
-                      WHERE actual_a.individual_id = future_a.individual_id
-                        AND actual_s.program_id = future_s.program_id
-                        AND COALESCE(actual_s.period_begin, actual_s.period_end)
-                            BETWEEN bp.start_date AND bp.end_date
-                    ), 0)
+                    effective_billed_hours(
+                      future_a.individual_id, future_s.program_id,
+                      ea.start_date, ea.end_date, ea.internal_rate
+                    )
                     + COALESCE((
                       SELECT sum(planned_a.allocation_hours)
                       FROM scheduled_allocations planned_a
@@ -546,9 +515,9 @@ export async function getPlanningWorkspace(
                         AND planned_s.program_id = future_s.program_id
                         AND planned_s.status = 'pending'
                         AND planned_s.matched_transaction_id IS NULL
-                        AND planned_s.session_date BETWEEN bp.start_date AND bp.end_date
+                        AND planned_s.session_date BETWEEN ea.start_date AND ea.end_date
                     ), 0)
-                  ) > ba.authorized_hours
+                  ) > ea.authorized_hours
               ) AS over_budget,
               (
                 SELECT count(*)::text FROM scheduled_sessions future_s
@@ -583,17 +552,12 @@ export async function getPlanningWorkspace(
       has_coverage_gap: boolean;
     }>(
       `WITH active_auth AS (
-         SELECT DISTINCT ON (ba.budget_period_id, ba.program_id)
-                ba.id AS authorization_id, ba.individual_id, ba.program_id,
-                bp.label AS period_label, bp.start_date, bp.end_date
-         FROM budget_authorizations ba
-         JOIN budget_periods bp ON bp.id = ba.budget_period_id
-         JOIN individuals i ON i.id = ba.individual_id
-         JOIN programs p ON p.id = ba.program_id
-         WHERE ba.status = 'active' AND bp.status = 'active'
-           AND i.status = 'active' AND p.is_active = true
-           AND bp.end_date >= $1::date
-         ORDER BY ba.budget_period_id, ba.program_id, ba.revision DESC
+         SELECT ea.authorization_id, ea.individual_id, ea.program_id,
+                ea.period_label, ea.start_date, ea.end_date
+         FROM effective_budget_authorizations_at($1::date) ea
+         JOIN individuals i ON i.id = ea.individual_id
+         JOIN programs p ON p.id = ea.program_id
+         WHERE i.status = 'active' AND p.is_active = true
        )
        SELECT aa.authorization_id, aa.individual_id, i.display_name AS individual_name,
               aa.program_id, p.name AS program_name, aa.period_label,
@@ -661,13 +625,15 @@ export async function getPlanningWorkspace(
     ),
     pool.query<{
       id: string; employee_id: string; employee_name: string; individual_id: string;
-      individual_name: string; program_name: string | null; start_date: string | null;
-      end_date: string | null; allowed_hours: string | null;
+      individual_name: string; program_id: string | null; program_name: string | null;
+      start_date: string | null; end_date: string | null; allowed_hours: string | null;
+      notes: string | null;
     }>(
       `SELECT a.id, a.employee_id, e.display_name AS employee_name,
               a.individual_id, i.display_name AS individual_name,
-              p.name AS program_name, a.start_date::text AS start_date,
-              a.end_date::text AS end_date, a.allowed_hours::text AS allowed_hours
+              a.program_id, p.name AS program_name, a.start_date::text AS start_date,
+              a.end_date::text AS end_date, a.allowed_hours::text AS allowed_hours,
+              a.notes
        FROM assignments a
        JOIN employees e ON e.id = a.employee_id
        JOIN individuals i ON i.id = a.individual_id
@@ -830,10 +796,12 @@ export async function getPlanningWorkspace(
     employeeName: row.employee_name,
     individualId: row.individual_id,
     individualName: row.individual_name,
+    programId: row.program_id,
     programName: row.program_name,
     startDate: row.start_date,
     endDate: row.end_date,
     allowedHours: row.allowed_hours === null ? null : toHours(row.allowed_hours),
+    notes: row.notes,
     timing: row.start_date && row.start_date > asOf
       ? "future"
       : row.end_date && row.end_date <= soonDate

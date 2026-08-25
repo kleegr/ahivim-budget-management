@@ -253,9 +253,9 @@ export async function createUser(
        can_see_transactions, can_see_money, can_see_hours, can_see_billed_amounts,
        can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
        can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements,
-       can_plan
+       can_see_class_financials, can_manage_class_invoices, can_edit_documents, can_plan
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
      ON CONFLICT (email) DO NOTHING
      RETURNING id, email, display_name, password_hash, role, is_active,
                last_login_at::text AS last_login_at, created_at::text AS created_at`,
@@ -276,6 +276,9 @@ export async function createUser(
       trustedStaff,
       false,
       false,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
       trustedStaff,
     ],
   );
@@ -344,6 +347,7 @@ export interface UserAccessConfig extends VisibilityPermissions {
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
   canPlan: boolean;
+  canEditDocuments: boolean;
   individualIds: string[];
   employeeIds: string[];
 }
@@ -360,6 +364,8 @@ export function userAccessConfigFromInput(
     return typeof value === "boolean" ? value : fallback;
   };
   const canSeeHours = flag("canSeeHours");
+  const canSeeMoney = flag("canSeeMoney");
+  const canSeeClassFinancials = canSeeMoney && flag("canSeeClassFinancials");
 
   return {
     accessScope:
@@ -372,7 +378,7 @@ export function userAccessConfigFromInput(
     seeAllEmployees: flag("seeAllEmployees", false),
     canSeeTransactions: flag("canSeeTransactions"),
     canPlan: flag("canPlan"),
-    canSeeMoney: flag("canSeeMoney"),
+    canSeeMoney,
     canSeeHours,
     canSeeBilledAmounts: flag("canSeeBilledAmounts"),
     canSeeEmployeeAmounts: flag("canSeeEmployeeAmounts"),
@@ -382,6 +388,10 @@ export function userAccessConfigFromInput(
     canSeeBudgets: canSeeHours && flag("canSeeBudgets"),
     canSeeEmployeeDeals: flag("canSeeEmployeeDeals", false),
     canSeeSettlements: flag("canSeeSettlements", false),
+    canSeeClassFinancials,
+    canManageClassInvoices:
+      canSeeClassFinancials && flag("canManageClassInvoices"),
+    canEditDocuments: flag("canEditDocuments"),
     individualIds: Array.isArray(input.individualIds) ? input.individualIds.map(String) : [],
     employeeIds: Array.isArray(input.employeeIds) ? input.employeeIds.map(String) : [],
   };
@@ -393,6 +403,7 @@ export interface UserWithAccess extends UserRecord, VisibilityPermissions {
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
   canPlan: boolean;
+  canEditDocuments: boolean;
   individualCount: number;
   employeeCount: number;
 }
@@ -408,6 +419,9 @@ interface VisibilityRow {
   can_see_budgets: boolean;
   can_see_employee_deals: boolean;
   can_see_settlements: boolean;
+  can_see_class_financials: boolean;
+  can_manage_class_invoices: boolean;
+  can_edit_documents: boolean;
   can_plan: boolean;
 }
 
@@ -424,6 +438,12 @@ function storedVisibility(row: VisibilityRow): VisibilityPermissions {
     canSeeBudgets: canSeeHours && row.can_see_budgets !== false,
     canSeeEmployeeDeals: row.can_see_employee_deals === true,
     canSeeSettlements: row.can_see_settlements === true,
+    canSeeClassFinancials:
+      row.can_see_money !== false && row.can_see_class_financials === true,
+    canManageClassInvoices:
+      row.can_see_money !== false
+      && row.can_see_class_financials === true
+      && row.can_manage_class_invoices === true,
   };
 }
 
@@ -445,7 +465,7 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
             u.can_see_money, u.can_see_hours, u.can_see_billed_amounts,
             u.can_see_employee_amounts, u.can_see_agency_spread, u.can_see_check_net,
             u.can_see_taxes, u.can_see_budgets, u.can_see_employee_deals, u.can_see_settlements,
-            u.can_plan,
+            u.can_see_class_financials, u.can_manage_class_invoices, u.can_edit_documents, u.can_plan,
             (SELECT count(*) FROM user_individual_access a WHERE a.user_id = u.id)::int AS individual_count,
             (SELECT count(*) FROM user_employee_access a WHERE a.user_id = u.id)::int AS employee_count
        FROM users u
@@ -458,6 +478,7 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
     seeAllEmployees: r.see_all_employees === true,
     canSeeTransactions: r.can_see_transactions !== false,
     canPlan: r.can_plan === true,
+    canEditDocuments: r.can_edit_documents === true,
     ...storedVisibility(r),
     individualCount: Number(r.individual_count ?? 0),
     employeeCount: Number(r.employee_count ?? 0),
@@ -479,7 +500,7 @@ export async function getUserAccessConfig(
             can_see_money, can_see_hours, can_see_billed_amounts,
             can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
             can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements,
-            can_plan
+            can_see_class_financials, can_manage_class_invoices, can_edit_documents, can_plan
        FROM users WHERE id = $1`,
     [userId],
   );
@@ -503,6 +524,7 @@ export async function getUserAccessConfig(
     seeAllEmployees: u.see_all_employees === true,
     canSeeTransactions: u.can_see_transactions !== false,
     canPlan: u.can_plan === true,
+    canEditDocuments: u.can_edit_documents === true,
     ...storedVisibility(u),
     individualIds,
     employeeIds,
@@ -526,6 +548,10 @@ export async function setUserAccessConfig(
   const employeeIds = (config.employeeIds ?? []).filter((v) => UUID_RE.test(v));
   const canSeeHours = config.canSeeHours !== false;
   const canSeeBudgets = canSeeHours && config.canSeeBudgets !== false;
+  const canSeeMoney = config.canSeeMoney !== false;
+  const canSeeClassFinancials = canSeeMoney && config.canSeeClassFinancials === true;
+  const canManageClassInvoices =
+    canSeeClassFinancials && config.canManageClassInvoices === true;
 
   const client = await pool.connect();
   try {
@@ -546,15 +572,18 @@ export async function setUserAccessConfig(
               can_see_budgets = $12,
               can_see_employee_deals = $13,
               can_see_settlements = $14,
-              can_plan = $15,
+              can_see_class_financials = $15,
+              can_manage_class_invoices = $16,
+              can_edit_documents = $17,
+              can_plan = $18,
               updated_at = now()
-        WHERE id = $16`,
+        WHERE id = $19`,
       [
         scope,
         config.seeAllIndividuals === true,
         config.seeAllEmployees === true,
         config.canSeeTransactions !== false,
-        config.canSeeMoney !== false,
+        canSeeMoney,
         canSeeHours,
         config.canSeeBilledAmounts !== false,
         config.canSeeEmployeeAmounts !== false,
@@ -564,6 +593,9 @@ export async function setUserAccessConfig(
         canSeeBudgets,
         config.canSeeEmployeeDeals === true,
         config.canSeeSettlements === true,
+        canSeeClassFinancials,
+        canManageClassInvoices,
+        config.canEditDocuments === true,
         config.canPlan === true,
         userId,
       ],
@@ -616,6 +648,9 @@ export async function setUserAccessConfig(
       canSeeBudgets,
       canSeeEmployeeDeals: config.canSeeEmployeeDeals === true,
       canSeeSettlements: config.canSeeSettlements === true,
+      canSeeClassFinancials,
+      canManageClassInvoices,
+      canEditDocuments: config.canEditDocuments === true,
       canPlan: config.canPlan === true,
       individuals: individualIds.length,
       employees: employeeIds.length,

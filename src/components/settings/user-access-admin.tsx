@@ -2,7 +2,7 @@
 
 import { useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarClock, Eye, EyeOff, WalletCards } from "lucide-react";
+import { CalendarClock, Eye, EyeOff, GraduationCap, WalletCards } from "lucide-react";
 import { BUDGET_PLANNER_ACCESS } from "@/lib/auth/access-presets";
 
 /**
@@ -89,6 +89,9 @@ interface UserRow {
   canSeeBudgets: boolean;
   canSeeEmployeeDeals: boolean;
   canSeeSettlements: boolean;
+  canSeeClassFinancials: boolean;
+  canManageClassInvoices: boolean;
+  canEditDocuments: boolean;
   canPlan: boolean;
   individualCount: number;
   employeeCount: number;
@@ -109,6 +112,9 @@ interface AccessState {
   canSeeBudgets: boolean;
   canSeeEmployeeDeals: boolean;
   canSeeSettlements: boolean;
+  canSeeClassFinancials: boolean;
+  canManageClassInvoices: boolean;
+  canEditDocuments: boolean;
   canPlan: boolean;
   individualIds: Set<string>;
   employeeIds: Set<string>;
@@ -129,6 +135,9 @@ const emptyAccess = (): AccessState => ({
   canSeeBudgets: false,
   canSeeEmployeeDeals: false,
   canSeeSettlements: false,
+  canSeeClassFinancials: false,
+  canManageClassInvoices: false,
+  canEditDocuments: false,
   canPlan: false,
   individualIds: new Set(),
   employeeIds: new Set(),
@@ -149,6 +158,9 @@ const accessToBody = (a: AccessState) => ({
   canSeeBudgets: a.canSeeBudgets && a.canSeeHours,
   canSeeEmployeeDeals: a.canSeeEmployeeDeals,
   canSeeSettlements: a.canSeeSettlements,
+  canSeeClassFinancials: a.canSeeMoney && a.canSeeClassFinancials,
+  canManageClassInvoices: a.canSeeMoney && a.canSeeClassFinancials && a.canManageClassInvoices,
+  canEditDocuments: a.canEditDocuments,
   canPlan: a.canPlan,
   individualIds: [...a.individualIds],
   employeeIds: [...a.employeeIds],
@@ -163,7 +175,8 @@ type VisibilityKey =
   | "canSeeTaxes"
   | "canSeeBudgets"
   | "canSeeEmployeeDeals"
-  | "canSeeSettlements";
+  | "canSeeSettlements"
+  | "canSeeClassFinancials";
 
 const VISIBILITY_OPTIONS: Array<{
   key: VisibilityKey;
@@ -180,6 +193,7 @@ const VISIBILITY_OPTIONS: Array<{
   { key: "canSeeBudgets", label: "Budgets", description: "individual budgets and annual plans; enabling this also enables Hours" },
   { key: "canSeeEmployeeDeals", label: "Employee deals", description: "deal terms and calculated obligations", requiresMoney: true },
   { key: "canSeeSettlements", label: "Money operations", description: "view balances and record payments, collections, credits, and set-asides", requiresMoney: true },
+  { key: "canSeeClassFinancials", label: "Class revenue", description: "annual class allowances, invoices, and reimbursement profiles", requiresMoney: true },
 ];
 
 /* ------------------------------------------------------------ multi-select */
@@ -283,11 +297,37 @@ function AccessConfig({
     canSeeBudgets: false,
     canSeeEmployeeDeals: true,
     canSeeSettlements: true,
+    canSeeClassFinancials: false,
+    canManageClassInvoices: false,
+    canEditDocuments: false,
     canPlan: false,
   });
   const applyBudgetPlannerAccess = () => onChange({
     ...value,
     ...BUDGET_PLANNER_ACCESS,
+    individualIds: new Set(),
+    employeeIds: new Set(),
+  });
+  const applyClassBillingAccess = () => onChange({
+    ...value,
+    accessScope: "scoped",
+    seeAllIndividuals: true,
+    seeAllEmployees: false,
+    canSeeTransactions: false,
+    canSeeMoney: true,
+    canSeeHours: false,
+    canSeeBilledAmounts: false,
+    canSeeEmployeeAmounts: false,
+    canSeeAgencySpread: false,
+    canSeeCheckNet: false,
+    canSeeTaxes: false,
+    canSeeBudgets: false,
+    canSeeEmployeeDeals: false,
+    canSeeSettlements: false,
+    canSeeClassFinancials: true,
+    canManageClassInvoices: true,
+    canEditDocuments: true,
+    canPlan: false,
     individualIds: new Set(),
     employeeIds: new Set(),
   });
@@ -327,6 +367,15 @@ function AccessConfig({
           >
             <WalletCards aria-hidden className="h-4 w-4" />
             Money operator
+          </button>
+          <button
+            type="button"
+            onClick={applyClassBillingAccess}
+            className="btn btn-sm btn-secondary"
+            title="Allow class allowances, invoices, cover sheets, and PDF editing"
+          >
+            <GraduationCap aria-hidden className="h-4 w-4" />
+            Class billing
           </button>
         </div>
       </div>
@@ -394,9 +443,23 @@ function AccessConfig({
         <span className="text-xs text-[var(--color-ink-faint)]">recurring schedules and hour-based coverage; requires all people</span>
       </label>
       <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={value.canEditDocuments} onChange={(e) => set({ canEditDocuments: e.target.checked })} />
+        <span>Can edit PDF documents</span>
+        <span className="text-xs text-[var(--color-ink-faint)]">source-preserving cover sheets and form edits</span>
+      </label>
+      <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={value.canSeeMoney} onChange={(e) => set({ canSeeMoney: e.target.checked })} />
         <span className="font-medium">Allow dollar amounts</span>
         <span className="text-xs text-[var(--color-ink-faint)]">master switch for every money permission below</span>
+      </label>
+      <label className={`flex items-center gap-2 text-sm ${!value.canSeeMoney || !value.canSeeClassFinancials ? "opacity-50" : ""}`}>
+        <input
+          type="checkbox"
+          checked={value.canManageClassInvoices}
+          disabled={!value.canSeeMoney || !value.canSeeClassFinancials}
+          onChange={(e) => set({ canManageClassInvoices: e.target.checked })}
+        />
+        <span>Can manage class invoices</span>
       </label>
 
       <fieldset className="border-t border-[var(--color-rule)] pt-3">
@@ -522,6 +585,9 @@ export default function UserAccessAdmin({
           canSeeBudgets: boolean;
           canSeeEmployeeDeals: boolean;
           canSeeSettlements: boolean;
+          canSeeClassFinancials: boolean;
+          canManageClassInvoices: boolean;
+          canEditDocuments: boolean;
           canPlan: boolean;
           individualIds: string[];
           employeeIds: string[];
@@ -544,6 +610,9 @@ export default function UserAccessAdmin({
           canSeeBudgets: data.access.canSeeBudgets !== false && data.access.canSeeHours !== false,
           canSeeEmployeeDeals: data.access.canSeeEmployeeDeals === true,
           canSeeSettlements: data.access.canSeeSettlements === true,
+          canSeeClassFinancials: data.access.canSeeClassFinancials === true,
+          canManageClassInvoices: data.access.canManageClassInvoices === true,
+          canEditDocuments: data.access.canEditDocuments === true,
           canPlan: data.access.canPlan === true,
           individualIds: new Set(data.access.individualIds),
           employeeIds: new Set(data.access.employeeIds),
@@ -615,6 +684,8 @@ export default function UserAccessAdmin({
     if (!u.canSeeTransactions) parts.push("no transactions");
     if (!u.canSeeMoney) parts.push("hours only");
     if (u.canPlan) parts.push("planning");
+    if (u.canSeeClassFinancials) parts.push(u.canManageClassInvoices ? "class billing" : "class revenue");
+    if (u.canEditDocuments) parts.push("PDF editor");
     const visibleCategories = VISIBILITY_OPTIONS.filter(
       (option) => u[option.key] && (!option.requiresMoney || u.canSeeMoney),
     ).length;

@@ -22,6 +22,12 @@ const nextConfig: NextConfig = {
   // request), so a change to a user's role/access must take effect on their very
   // next navigation — not up to five minutes later from the router cache.
   experimental: { staleTimes: { dynamic: 0, static: 0 } },
+  // The invoice and reimbursement generators load these Unicode fonts from
+  // disk at runtime. Include them in every server trace so deployed functions
+  // do not depend on route-specific static analysis finding readFile paths.
+  outputFileTracingIncludes: {
+    "/*": ["./assets/fonts/**/*.ttf"],
+  },
 };
 
 export default nextConfig;

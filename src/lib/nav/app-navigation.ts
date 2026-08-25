@@ -1,4 +1,4 @@
-export type NavigationGate = "manager" | "transactions" | "settlements" | "budgets" | "planning" | "employees";
+export type NavigationGate = "manager" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents";
 
 export interface NavigationAccess {
   role: string;
@@ -6,6 +6,9 @@ export interface NavigationAccess {
   canSeeSettlements: boolean;
   canSeeBudgets: boolean;
   canPlan: boolean;
+  canSeeClassFinancials?: boolean;
+  canSeeEmployees?: boolean;
+  canEditDocuments: boolean;
   /** Every gated destination stays hidden until capability lookup succeeds. */
   accessResolved: boolean;
 }
@@ -85,7 +88,7 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
     id: "payroll",
     label: "Money operations",
     hint: "Amounts to pay, collect, set aside and reconcile",
-    activePrefixes: ["/settlements", "/employees"],
+    activePrefixes: ["/settlements", "/classes", "/employees"],
     destinations: [
       {
         id: "open-balances",
@@ -94,6 +97,14 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         hint: "Payouts, collections, set-asides and credits",
         keywords: "settlements ledger owed receivable payable payment history",
         gate: "settlements",
+      },
+      {
+        id: "class-billing",
+        label: "Classes",
+        href: "/classes",
+        hint: "Class allowances, monthly invoices and reimbursement forms",
+        keywords: "classes revenue invoice allowance reimbursement idgs",
+        gate: "classes",
       },
       {
         id: "employees",
@@ -197,6 +208,14 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
 
 const ADMIN_DESTINATIONS: readonly NavigationDestination[] = [
   {
+    id: "pdf-workspace",
+    label: "PDF workspace",
+    href: "/documents/pdf-editor",
+    hint: "Edit cover sheets and forms without changing the source",
+    keywords: "documents pdf cover sheets forms editor",
+    gate: "documents",
+  },
+  {
     id: "settings",
     label: "Settings and access",
     href: "/settings",
@@ -271,7 +290,10 @@ function allowed(gate: NavigationGate | undefined, access: NavigationAccess): bo
   if (gate === "transactions") return access.canSeeTransactions;
   if (gate === "settlements") return access.canSeeSettlements;
   if (gate === "planning") return access.canPlan;
+  if (gate === "classes") return access.canSeeClassFinancials ?? false;
+  if (gate === "documents") return access.canEditDocuments;
   if (gate === "employees") {
+    if (access.canSeeEmployees !== undefined) return access.canSeeEmployees;
     return access.role === "manager" || access.role === "admin" || !access.canPlan || access.canSeeTransactions || access.canSeeSettlements;
   }
   return access.canSeeBudgets;

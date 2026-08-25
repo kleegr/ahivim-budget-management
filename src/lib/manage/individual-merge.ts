@@ -43,15 +43,133 @@ export async function mergeIndividuals(
       return fail("conflict", "That individual was already merged.");
     }
 
-    // Repoint every table that has an individual_id column (robust to schema growth).
+    // Repoint every base table that has an individual_id column (robust to
+    // schema growth). Class billing needs a deliberate order because issued
+    // invoices are immutable and profiles are unique per individual.
     const cols = await client.query<{ table_name: string }>(
-      `SELECT table_name FROM information_schema.columns
-        WHERE table_schema = current_schema() AND column_name = 'individual_id'`,
+      `SELECT c.table_name
+         FROM information_schema.columns c
+         JOIN information_schema.tables t
+           ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+        WHERE c.table_schema = current_schema()
+          AND c.column_name = 'individual_id'
+          AND t.table_type = 'BASE TABLE'`,
     );
     const repointed: Record<string, number> = await repointSettlementPerson(client, "individual", keepId, mergeId);
+
+    const overlappingClassBudgets = await client.query<{ id: string }>(
+      `SELECT source.id
+         FROM class_budget_periods source
+         JOIN class_budget_periods target
+           ON target.individual_id = $1
+          AND target.status = 'active'
+          AND daterange(target.start_date, target.end_date, '[]')
+              && daterange(source.start_date, source.end_date, '[]')
+        WHERE source.individual_id = $2
+          AND source.status = 'active'
+        LIMIT 1`,
+      [keepId, mergeId],
+    );
+    if (overlappingClassBudgets.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail("conflict", "Resolve the overlapping active class allowances before merging these individuals.");
+    }
+
+    const movedClassBudgets = await client.query(
+      `UPDATE class_budget_periods SET individual_id = $1, updated_at = now() WHERE individual_id = $2`,
+      [keepId, mergeId],
+    );
+    if (movedClassBudgets.rowCount) repointed.class_budget_periods = movedClassBudgets.rowCount;
+    const movedClassInvoices = await client.query(
+      `UPDATE class_invoices SET individual_id = $1 WHERE individual_id = $2`,
+      [keepId, mergeId],
+    );
+    if (movedClassInvoices.rowCount) repointed.class_invoices = movedClassInvoices.rowCount;
+
+    const profiles = await client.query<{
+      id: string;
+      individual_id: string;
+      mailing_name: string | null;
+      address_line_1: string | null;
+      address_line_2: string | null;
+      city_state_zip: string | null;
+      phone: string | null;
+      date_of_birth: string | null;
+      medicaid_id: string | null;
+      fiscal_intermediary: string;
+      payable_to: string;
+      life_plan_confirmed: boolean;
+      budget_category: string;
+      form_completed_by: string | null;
+      relationship: string | null;
+    }>(
+      `SELECT id, individual_id, mailing_name, address_line_1, address_line_2,
+              city_state_zip, phone, date_of_birth::text AS date_of_birth,
+              medicaid_id, fiscal_intermediary, payable_to,
+              life_plan_confirmed, budget_category, form_completed_by, relationship
+         FROM class_reimbursement_profiles
+        WHERE individual_id = ANY($1::uuid[])
+        FOR UPDATE`,
+      [[keepId, mergeId]],
+    );
+    const keepProfile = profiles.rows.find((row) => row.individual_id === keepId);
+    const mergeProfile = profiles.rows.find((row) => row.individual_id === mergeId);
+    if (mergeProfile && keepProfile) {
+      const sensitiveFields = [
+        "mailing_name", "address_line_1", "address_line_2", "city_state_zip",
+        "phone", "date_of_birth", "medicaid_id", "fiscal_intermediary",
+        "payable_to", "budget_category", "form_completed_by", "relationship",
+      ] as const;
+      const conflicting = sensitiveFields.some((field) => (
+        keepProfile[field] !== null
+        && mergeProfile[field] !== null
+        && keepProfile[field] !== mergeProfile[field]
+      )) || keepProfile.life_plan_confirmed !== mergeProfile.life_plan_confirmed;
+      if (conflicting) {
+        await client.query("ROLLBACK");
+        return fail("conflict", "These individuals have different reimbursement profiles. Review and align them before merging.");
+      }
+      await client.query(
+        `UPDATE class_reimbursement_profiles target
+            SET mailing_name = COALESCE(target.mailing_name, source.mailing_name),
+                address_line_1 = COALESCE(target.address_line_1, source.address_line_1),
+                address_line_2 = COALESCE(target.address_line_2, source.address_line_2),
+                city_state_zip = COALESCE(target.city_state_zip, source.city_state_zip),
+                phone = COALESCE(target.phone, source.phone),
+                date_of_birth = COALESCE(target.date_of_birth, source.date_of_birth),
+                medicaid_id = COALESCE(target.medicaid_id, source.medicaid_id),
+                fiscal_intermediary = COALESCE(target.fiscal_intermediary, source.fiscal_intermediary),
+                payable_to = COALESCE(target.payable_to, source.payable_to),
+                budget_category = COALESCE(target.budget_category, source.budget_category),
+                form_completed_by = COALESCE(target.form_completed_by, source.form_completed_by),
+                relationship = COALESCE(target.relationship, source.relationship),
+                updated_by_user_id = $3,
+                updated_at = now()
+           FROM class_reimbursement_profiles source
+          WHERE target.id = $1 AND source.id = $2`,
+        [keepProfile.id, mergeProfile.id, actorId],
+      );
+      await client.query(`DELETE FROM class_reimbursement_profiles WHERE id = $1`, [mergeProfile.id]);
+      repointed.class_reimbursement_profiles = 1;
+    } else if (mergeProfile) {
+      const movedProfile = await client.query(
+        `UPDATE class_reimbursement_profiles
+            SET individual_id = $1, updated_by_user_id = $3, updated_at = now()
+          WHERE id = $2`,
+        [keepId, mergeProfile.id, actorId],
+      );
+      if (movedProfile.rowCount) repointed.class_reimbursement_profiles = movedProfile.rowCount;
+    }
+
     for (const { table_name } of cols.rows) {
       if (!/^[a-z_][a-z0-9_]*$/.test(table_name)) continue;
-      if (["settlement_events", "settlement_obligations"].includes(table_name)) continue;
+      if ([
+        "settlement_events",
+        "settlement_obligations",
+        "class_budget_periods",
+        "class_invoices",
+        "class_reimbursement_profiles",
+      ].includes(table_name)) continue;
       const res = await client.query(
         `UPDATE "${table_name}" SET individual_id = $1 WHERE individual_id = $2`,
         [keepId, mergeId],

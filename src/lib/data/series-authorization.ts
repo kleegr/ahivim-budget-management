@@ -110,59 +110,44 @@ export async function projectSeriesAuthorization(
     ? input.excludeSeriesFromDate
     : occurrenceDates[0]!;
   const authorizations = await pool.query<AuthorizationRow>(
-    `WITH ranked_authorizations AS (
-       SELECT ba.individual_id, bp.id AS period_id, bp.label AS period_label,
-              bp.start_date, bp.end_date, ba.authorized_hours,
-              row_number() OVER (
-                PARTITION BY ba.individual_id, bp.id
-                ORDER BY ba.revision DESC, ba.updated_at DESC, ba.id DESC
-              ) AS auth_rank
-         FROM budget_authorizations ba
-         JOIN budget_periods bp ON bp.id = ba.budget_period_id
-        WHERE ba.individual_id = ANY($1::uuid[])
-          AND ba.program_id = $2::uuid
-          AND ba.status = 'active'
-          AND ba.archived_at IS NULL
-          AND bp.status = 'active'
-          AND bp.end_date >= $3::date
-          AND bp.start_date <= $4::date
+    `WITH occurrence_dates AS (
+       SELECT DISTINCT unnest($3::date[]) AS occurrence_date
+     ), effective_authorizations AS (
+       SELECT DISTINCT ea.individual_id, ea.period_id, ea.period_label,
+              ea.start_date, ea.end_date, ea.authorized_hours, ea.internal_rate
+         FROM occurrence_dates dates
+         CROSS JOIN LATERAL effective_budget_authorizations_at(dates.occurrence_date) ea
+        WHERE ea.individual_id = ANY($1::uuid[])
+          AND ea.program_id = $2::uuid
      )
-     SELECT ra.individual_id, ra.period_id, ra.period_label,
-            ra.start_date::text AS start_date, ra.end_date::text AS end_date,
-            ra.authorized_hours::text AS authorized_hours,
-            COALESCE((
-              SELECT sum(al.allocation_hours)
-                FROM service_allocations al
-                JOIN service_sessions ss ON ss.id = al.service_session_id
-               WHERE al.individual_id = ra.individual_id
-                 AND ss.program_id = $2::uuid
-                 AND COALESCE(ss.period_begin, ss.period_end)
-                     BETWEEN ra.start_date AND ra.end_date
-            ), 0)::text AS actual_hours,
+     SELECT ea.individual_id, ea.period_id, ea.period_label,
+            ea.start_date::text AS start_date, ea.end_date::text AS end_date,
+            ea.authorized_hours::text AS authorized_hours,
+            effective_billed_hours(
+              ea.individual_id, $2::uuid, ea.start_date, ea.end_date, ea.internal_rate
+            )::text AS actual_hours,
             COALESCE((
               SELECT sum(sa.allocation_hours)
                 FROM scheduled_allocations sa
                 JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
-               WHERE sa.individual_id = ra.individual_id
+               WHERE sa.individual_id = ea.individual_id
                  AND s.program_id = $2::uuid
                  AND s.status = 'pending'
                  AND s.matched_transaction_id IS NULL
-                 AND s.session_date BETWEEN ra.start_date AND ra.end_date
-                 AND ($5::uuid IS NULL OR s.id <> $5::uuid)
+                 AND s.session_date BETWEEN ea.start_date AND ea.end_date
+                 AND ($4::uuid IS NULL OR s.id <> $4::uuid)
                  AND (
-                   $6::uuid IS NULL
-                   OR s.series_id IS DISTINCT FROM $6::uuid
-                   OR s.session_date < $7::date
+                   $5::uuid IS NULL
+                   OR s.series_id IS DISTINCT FROM $5::uuid
+                   OR s.session_date < $6::date
                  )
             ), 0)::text AS scheduled_hours
-       FROM ranked_authorizations ra
-      WHERE ra.auth_rank = 1
-      ORDER BY ra.individual_id, ra.start_date, ra.end_date, ra.period_id`,
+       FROM effective_authorizations ea
+      ORDER BY ea.individual_id, ea.start_date, ea.end_date, ea.period_id`,
     [
       individualIds,
       input.programId,
-      occurrenceDates[0],
-      occurrenceDates.at(-1),
+      occurrenceDates,
       excludeSessionId,
       excludeSeriesId,
       excludeSeriesFromDate,

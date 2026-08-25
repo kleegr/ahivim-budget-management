@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiUser } from "@/lib/auth/session";
+import { apiPlanningUser } from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { updateAssignment, setAssignmentStatus, type AssignmentInput } from "@/lib/manage/assignments";
 
@@ -10,14 +10,15 @@ export const dynamic = "force-dynamic";
 /**
  * Update an assignment, or change its status. A `body.action` of end / archive
  * / reactivate changes status; anything else is treated as a field edit.
- * Manager or admin only.
+ * Available to a dedicated planner without granting financial access.
  */
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const origin = sameOriginOrFail(request);
   if (origin) return origin;
 
-  const user = await apiUser("manager");
-  if (!user) return jsonError("Manager role required", 403);
+  const planning = await apiPlanningUser();
+  if (!planning) return jsonError("Planning access required", 403);
+  const { user } = planning;
 
   const { id } = await params;
   const body = await readJson(request);

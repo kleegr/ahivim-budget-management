@@ -16,8 +16,8 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`CREATE SCHEMA public`);
 
     const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
-    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 24]);
-    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 24]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 28]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 28]);
   }, 60_000);
 
   it("creates the ledger and every expected table", async () => {
@@ -38,16 +38,19 @@ suite("migration runner (real PostgreSQL)", () => {
       "employee_deals", "employee_deal_revisions",
       "settlement_obligations", "settlement_obligation_transactions",
       "settlement_batches", "settlement_events", "settlement_ledger_state",
+      "class_activities", "class_budget_periods", "class_invoices",
+      "class_invoice_lines", "class_budget_ledger", "class_reimbursement_profiles",
+      "class_cover_sheet_snapshots",
     ]) {
       expect(tables, `missing table ${table}`).toContain(table);
     }
-    expect(tables.length).toBe(46);
+    expect(tables.length).toBe(53);
   });
 
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(24);
+    expect(again.skipped).toBe(28);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -55,7 +58,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(24);
+    expect(rows).toHaveLength(28);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -80,6 +83,10 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[21].name).toBe("0021_planner_access.sql");
     expect(rows[22].name).toBe("0022_schedule_series_individuals.sql");
     expect(rows[23].name).toBe("0023_schedule_series_versioning.sql");
+    expect(rows[24].name).toBe("0024_effective_budget_authorizations.sql");
+    expect(rows[25].name).toBe("0025_class_revenue_invoicing.sql");
+    expect(rows[26].name).toBe("0026_document_editor_access.sql");
+    expect(rows[27].name).toBe("0027_class_reimbursement_profiles.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 

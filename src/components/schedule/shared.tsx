@@ -138,6 +138,7 @@ export function classifyWarningCode(code: string): WarningCategory {
     case "over_authorized_hours":
     case "missing_authorization":
     case "outside_authorization_dates":
+    case "ambiguous_authorization":
       return "budget";
     case "employee_double_booked":
     case "individual_double_booked":
@@ -182,12 +183,13 @@ export function sessionTone(s: CalendarSession, flags?: SessionFlags): EventTone
  * Shared modal shell.
  * ------------------------------------------------------------------------- */
 export function ModalShell({
-  title, onClose, children, wide,
+  title, onClose, children, wide, workspace,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   wide?: boolean;
+  workspace?: boolean;
 }) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -248,7 +250,7 @@ export function ModalShell({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div ref={panelRef} className={`mt-6 w-full ${wide ? "max-w-2xl" : "max-w-lg"} rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] shadow-xl`}>
+      <div ref={panelRef} className={`mt-2 w-full ${workspace ? "max-w-[92rem]" : wide ? "max-w-2xl" : "max-w-lg"} rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] shadow-xl sm:mt-6`}>
         <div className="flex items-center justify-between border-b border-[var(--color-rule)] px-5 py-3">
           <h2 id={titleId} className="display text-base font-medium">{title}</h2>
           <button type="button" onClick={onClose} aria-label="Close" title="Close" className="btn btn-icon btn-ghost h-8 w-8"><X aria-hidden className="h-4 w-4" /></button>

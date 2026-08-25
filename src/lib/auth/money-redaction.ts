@@ -103,5 +103,7 @@ export function redactTransactionMoney<T extends TransactionSensitiveShape>(
     canSeeBudgets: true,
     canSeeEmployeeDeals: true,
     canSeeSettlements: true,
+    canSeeClassFinancials: true,
+    canManageClassInvoices: true,
   });
 }

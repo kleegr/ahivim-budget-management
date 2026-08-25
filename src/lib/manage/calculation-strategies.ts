@@ -4,9 +4,11 @@ import { recordChange } from "@/lib/manage/audit";
 import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
 import { dec, toMoney, toHours } from "@/lib/money";
 import {
+  budgetRateDate,
   computeStrategy,
   currentBudgetPeriod,
   effectiveBilledHours,
+  programBudgetPeriod,
   type StrategyResult,
 } from "@/lib/business/calculation-strategy";
 import { calculatePeriodElapsed, classifyUtilization, type UtilizationStatus } from "@/lib/business/utilization";
@@ -88,6 +90,7 @@ interface RateScheduleRow {
   program_id: string;
   internal_rate: string;
   effective_from: string;
+  effective_to: string | null;
 }
 
 /**
@@ -99,7 +102,11 @@ interface RateScheduleRow {
 function rateAsOf(schedules: RateScheduleRow[], programId: string, asOf: string | null): string {
   const forProgram = schedules
     .filter((s) => s.program_id === programId)
-    .map((s) => ({ effectiveFrom: s.effective_from, internalRate: s.internal_rate }));
+    .map((s) => ({
+      effectiveFrom: s.effective_from,
+      effectiveTo: s.effective_to,
+      internalRate: s.internal_rate,
+    }));
   const resolved = resolveEffectiveRate(forProgram, asOf ?? "9999-12-31");
   return resolved?.internalRate ?? "0";
 }
@@ -113,7 +120,8 @@ export async function listProgramRates(pool: PgLikePool, asOf?: string | null): 
     [asOf ?? null],
   );
   const { rows: schedules } = await pool.query<RateScheduleRow>(
-    `SELECT program_id, internal_rate::text, to_char(effective_from,'YYYY-MM-DD') AS effective_from
+    `SELECT program_id, internal_rate::text, to_char(effective_from,'YYYY-MM-DD') AS effective_from,
+            to_char(effective_to,'YYYY-MM-DD') AS effective_to
        FROM program_rate_schedules`,
   );
   return rows.map((r) => ({
@@ -211,10 +219,12 @@ export async function listStrategies(
     : [];
 
   const { rows: schedules } = await pool.query<RateScheduleRow>(
-    `SELECT program_id, internal_rate::text, to_char(effective_from,'YYYY-MM-DD') AS effective_from
+    `SELECT program_id, internal_rate::text, to_char(effective_from,'YYYY-MM-DD') AS effective_from,
+            to_char(effective_to,'YYYY-MM-DD') AS effective_to
        FROM program_rate_schedules`,
   );
   const programs = await listProgramRates(pool);
+  const programCodes = new Map(programs.map((program) => [program.id, program.code]));
 
   const hoursByStrategy = new Map<string, Record<string, string>>();
   const overrideByStrategy = new Map<string, Record<string, string | null>>();
@@ -240,11 +250,18 @@ export async function listStrategies(
     const period = currentBudgetPeriod(s.renewal_date, active, asOf);
     const rates: Record<string, string> = {};
     const strategyLines = Object.entries(hours).map(([programId, h]) => {
-      const def = rateAsOf(schedules, programId, s.renewal_date);
+      const linePeriod = programBudgetPeriod(
+        programCodes.get(programId),
+        s.renewal_date,
+        active,
+        asOf,
+      );
+      const rateDate = budgetRateDate(linePeriod.end);
+      const def = rateAsOf(schedules, programId, rateDate);
       const { rate, isOverride } = effectiveLineRate({
         override: overrides[programId] ?? null,
         overrideEffectiveFrom: overrideFroms[programId] ?? null,
-        renewalDate: s.renewal_date,
+        renewalDate: rateDate,
         defaultRate: def,
       });
       rates[programId] = rate;
@@ -480,17 +497,20 @@ export async function explainStrategy(pool: PgLikePool, id: string): Promise<Str
     clock_adjustment: string;
     other_adjustment: string;
     after_all: string | null;
+    individual_status: string;
   }>(
-    `SELECT to_char(renewal_date,'YYYY-MM-DD') AS renewal_date, month_divisor::text,
-            cut1_percent::text, cut2_percent::text, clock_adjustment::text,
-            other_adjustment::text, after_all::text
-       FROM calculation_strategies WHERE id = $1`,
+    `SELECT to_char(s.renewal_date,'YYYY-MM-DD') AS renewal_date, s.month_divisor::text,
+             cut1_percent::text, cut2_percent::text, clock_adjustment::text,
+             other_adjustment::text, after_all::text, i.status AS individual_status
+       FROM calculation_strategies s
+       JOIN individuals i ON i.id = s.individual_id
+      WHERE s.id = $1`,
     [id],
   );
   const s = rows[0];
   if (!s) return null;
-  const { rows: lines } = await pool.query<{ program_id: string; program_label: string; authorized_hours: string; rate_override: string | null; rate_override_effective_from: string | null }>(
-    `SELECT csl.program_id, COALESCE(p.name, p.code) AS program_label, csl.authorized_hours::text, csl.rate_override::text,
+  const { rows: lines } = await pool.query<{ program_id: string; program_code: string; program_label: string; authorized_hours: string; rate_override: string | null; rate_override_effective_from: string | null }>(
+    `SELECT csl.program_id, p.code AS program_code, COALESCE(p.name, p.code) AS program_label, csl.authorized_hours::text, csl.rate_override::text,
             to_char(csl.rate_override_effective_from, 'YYYY-MM-DD') AS rate_override_effective_from
        FROM calculation_strategy_lines csl JOIN programs p ON p.id = csl.program_id
       WHERE csl.strategy_id = $1
@@ -498,16 +518,23 @@ export async function explainStrategy(pool: PgLikePool, id: string): Promise<Str
     [id],
   );
   const { rows: schedules } = await pool.query<RateScheduleRow>(
-    `SELECT program_id, internal_rate::text, to_char(effective_from,'YYYY-MM-DD') AS effective_from
+    `SELECT program_id, internal_rate::text, to_char(effective_from,'YYYY-MM-DD') AS effective_from,
+            to_char(effective_to,'YYYY-MM-DD') AS effective_to
        FROM program_rate_schedules`,
   );
   return computeStrategy({
     lines: lines.map((l) => {
-      const def = rateAsOf(schedules, l.program_id, s.renewal_date);
+      const period = programBudgetPeriod(
+        l.program_code,
+        s.renewal_date,
+        s.individual_status === "active",
+      );
+      const rateDate = budgetRateDate(period.end);
+      const def = rateAsOf(schedules, l.program_id, rateDate);
       const { rate, isOverride } = effectiveLineRate({
         override: l.rate_override,
         overrideEffectiveFrom: l.rate_override_effective_from,
-        renewalDate: s.renewal_date,
+        renewalDate: rateDate,
         defaultRate: def,
       });
       return {

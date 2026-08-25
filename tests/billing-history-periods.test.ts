@@ -93,11 +93,13 @@ describe("billing history periods", () => {
       planned,
     );
 
-    expect(calls).toHaveLength(4);
-    for (const call of calls.slice(1)) {
+    expect(calls).toHaveLength(5);
+    for (const call of calls.slice(2)) {
       expect(call.sql).toContain("IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')");
       expect(call.sql).toContain("t.period_begin >= $4::date");
+      expect(call.sql).toContain("t.period_begin < $5::date");
       expect(call.sql).toContain("t.period_begin >= $2::date");
+      expect(call.sql).toContain("t.period_begin < $3::date");
       expect(call.params.slice(0, 3)).toEqual(["person-1", "2026-07-15", "2027-07-15"]);
       expect(call.params[3]).toMatch(/^\d{4}-01-01$/);
       expect(call.params[4]).toMatch(/^\d{4}-01-01$/);

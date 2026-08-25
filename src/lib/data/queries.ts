@@ -11,7 +11,7 @@ import {
 } from "@/lib/business/utilization";
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
-import { derivePeriodFromRenewal, currentBudgetPeriod, programBudgetPeriod, isCalendarYearProgram, effectiveBilledHours } from "@/lib/business/calculation-strategy";
+import { budgetRateDate, currentBudgetPeriod, programBudgetPeriod, isCalendarYearProgram, effectiveBilledHours } from "@/lib/business/calculation-strategy";
 import { individualScopeClause, transactionScopeClause, type AccessScope } from "@/lib/auth/access";
 import {
   type BudgetLineStatus,
@@ -98,6 +98,63 @@ export async function currentRatesByProgram(
     };
   }
   return out;
+}
+
+interface EffectiveProgramRate {
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  internalRate: string;
+  agencyRate: string | null;
+}
+
+type EffectiveRatesByProgram = Map<string, EffectiveProgramRate[]>;
+
+async function effectiveRateSchedulesByProgram(pool: PgLikePool): Promise<EffectiveRatesByProgram> {
+  const { rows } = await pool.query<{
+    program_id: string;
+    effective_from: string;
+    effective_to: string | null;
+    internal_rate: string;
+    agency_rate: string | null;
+  }>(
+    `SELECT program_id,
+            to_char(effective_from, 'YYYY-MM-DD') AS effective_from,
+            to_char(effective_to, 'YYYY-MM-DD') AS effective_to,
+            internal_rate::text AS internal_rate,
+            agency_rate::text AS agency_rate
+       FROM program_rate_schedules`,
+  );
+  const rates = new Map<string, EffectiveProgramRate[]>();
+  for (const row of rows) {
+    const programRates = rates.get(row.program_id) ?? [];
+    programRates.push({
+      effectiveFrom: row.effective_from,
+      effectiveTo: row.effective_to,
+      internalRate: row.internal_rate,
+      agencyRate: row.agency_rate,
+    });
+    rates.set(row.program_id, programRates);
+  }
+  return rates;
+}
+
+/** Resolve a plan line on the final service day of its exclusive-ended budget period. */
+function resolvePeriodBudgetRate(
+  rates: EffectiveRatesByProgram,
+  programId: string,
+  periodEndExclusive: string | null,
+  override: string | null,
+  overrideEffectiveFrom: string | null,
+): { internalRate: string; agencyRate: string | null } {
+  const rateDate = budgetRateDate(periodEndExclusive);
+  if (!rateDate) return { internalRate: "0", agencyRate: null };
+  const scheduled = resolveEffectiveRate(rates.get(programId) ?? [], rateDate);
+  const overrideApplies = override !== null
+    && (overrideEffectiveFrom === null || overrideEffectiveFrom <= rateDate);
+  return {
+    internalRate: overrideApplies ? override : scheduled?.internalRate ?? "0",
+    agencyRate: scheduled?.agencyRate ?? null,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -491,7 +548,8 @@ export async function listIndividualBudgetBoard(
   asOf: Date = new Date(),
   scope?: AccessScope,
 ): Promise<IndividualBudgetBoardRow[]> {
-  const params: unknown[] = [];
+  const today = asOf.toISOString().slice(0, 10);
+  const params: unknown[] = [today];
   const scopeClause = scope ? individualScopeClause(scope, "i.id", params) : "";
   const billedScopeClause = scope
     ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
@@ -506,10 +564,14 @@ export async function listIndividualBudgetBoard(
     status: string;
     archived_at: string | null;
     renewal_date: string | null;
+    period_start: string | null;
+    period_end: string | null;
+    program_id: string | null;
     program_name: string | null;
     program_code: string | null;
     authorized_hours: string | null;
-    budget_rate: string | null;
+    rate_override: string | null;
+    rate_override_effective_from: string | null;
     billed_hours: string | null;
     billed_internal: string | null;
     billed_amount: string | null;
@@ -517,34 +579,47 @@ export async function listIndividualBudgetBoard(
     has_billing: boolean;
     last_billed_on: string | null;
   }>(
-    `WITH plan AS (
-       SELECT DISTINCT ON (cs.individual_id)
-              cs.individual_id, cs.id AS strategy_id,
-              -- The renewal auto-rolls forward for ACTIVE accounts: the current
-              -- year ends on the first anniversary on/after today. Inactive
-              -- accounts keep the stored (possibly past) date.
-              (CASE WHEN i.status = 'active' AND cs.renewal_date <= CURRENT_DATE
-                    THEN (cs.renewal_date + make_interval(years => extract(year from age(CURRENT_DATE, cs.renewal_date))::int + 1))::date
-                    ELSE cs.renewal_date END) AS period_end
+    `WITH plan_lines AS (
+       SELECT cs.individual_id, cs.created_at AS strategy_created_at,
+              l.id AS line_id, l.program_id, l.authorized_hours,
+              l.rate_override, l.rate_override_effective_from,
+              pr.name AS program_name, pr.code AS program_code,
+              CASE
+                WHEN pr.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
+                  THEN make_date(EXTRACT(YEAR FROM $1::date)::int + 1, 1, 1)
+                WHEN cs.renewal_date IS NULL THEN NULL
+                WHEN plan_individual.status = 'active' AND cs.renewal_date <= $1::date
+                  THEN (
+                    cs.renewal_date
+                    + make_interval(
+                        years => EXTRACT(YEAR FROM age($1::date, cs.renewal_date))::int + 1
+                      )
+                  )::date
+                ELSE cs.renewal_date
+              END AS period_end
          FROM calculation_strategies cs
-         JOIN individuals i ON i.id = cs.individual_id
-        WHERE cs.status = 'active' AND cs.renewal_date IS NOT NULL
-        ORDER BY cs.individual_id, cs.created_at
+         JOIN calculation_strategy_lines l ON l.strategy_id = cs.id
+         JOIN programs pr ON pr.id = l.program_id
+         JOIN individuals plan_individual ON plan_individual.id = cs.individual_id
+        WHERE cs.status = 'active'
+          AND pr.is_active IS DISTINCT FROM false
+     ), effective_lines AS (
+       SELECT plan_lines.*,
+              (period_end - interval '1 year')::date AS period_start
+         FROM plan_lines
+        WHERE period_end IS NOT NULL
      )
      SELECT i.id, i.display_name, i.preferred_name, i.status,
             i.archived_at::text AS archived_at,
-             to_char(pl.period_end, 'YYYY-MM-DD') AS renewal_date,
-             pr.name                  AS program_name,
-             pr.code                  AS program_code,
-             l.authorized_hours::text AS authorized_hours,
-             COALESCE(
-               l.rate_override,
-               (SELECT sched.internal_rate
-                  FROM program_rate_schedules sched
-                 WHERE sched.program_id = l.program_id
-                 ORDER BY sched.effective_from DESC
-                 LIMIT 1)
-             )::text AS budget_rate,
+             to_char(el.period_end, 'YYYY-MM-DD') AS renewal_date,
+             to_char(el.period_start, 'YYYY-MM-DD') AS period_start,
+             to_char(el.period_end, 'YYYY-MM-DD') AS period_end,
+             el.program_id,
+             el.program_name,
+             el.program_code,
+             el.authorized_hours::text AS authorized_hours,
+             el.rate_override::text AS rate_override,
+             to_char(el.rate_override_effective_from, 'YYYY-MM-DD') AS rate_override_effective_from,
              COALESCE(b.hrs, 0)::text AS billed_hours,
              COALESCE(b.internal, 0)::text AS billed_internal,
              COALESCE(b.amount, 0)::text AS billed_amount,
@@ -552,9 +627,7 @@ export async function listIndividualBudgetBoard(
              latest.total_count > 0 AS has_billing,
              to_char(latest.last_billed_on, 'YYYY-MM-DD') AS last_billed_on
        FROM individuals i
-       LEFT JOIN plan pl ON pl.individual_id = i.id
-       LEFT JOIN calculation_strategy_lines l ON l.strategy_id = pl.strategy_id
-       LEFT JOIN programs pr ON pr.id = l.program_id
+       LEFT JOIN effective_lines el ON el.individual_id = i.id
        LEFT JOIN LATERAL (
          SELECT COALESCE(sum(t.imported_hours), 0) AS hrs,
                 COALESCE(sum(COALESCE(
@@ -567,17 +640,11 @@ export async function listIndividualBudgetBoard(
                 count(*)::int AS cnt
            FROM payroll_transactions t
            WHERE t.individual_id = i.id
-             AND t.program_id = l.program_id
+             AND t.program_id = el.program_id
              ${billedScopeClause}
-            -- Day Hab / Supplemental always use the calendar year; everything
-            -- else uses the individual's own renewal window.
-            AND t.period_begin >= (CASE WHEN pr.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
-                                        THEN make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int, 1, 1)
-                                        ELSE (pl.period_end - interval '1 year')::date END)
-            AND t.period_begin <= (CASE WHEN pr.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
-                                        THEN make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int + 1, 1, 1)
-                                        ELSE pl.period_end END)
-       ) b ON l.id IS NOT NULL
+             AND t.period_begin >= el.period_start
+             AND t.period_begin < el.period_end
+       ) b ON el.line_id IS NOT NULL
        LEFT JOIN LATERAL (
          SELECT max(t.period_begin)::date AS last_billed_on,
                 count(*)::int AS total_count
@@ -586,9 +653,11 @@ export async function listIndividualBudgetBoard(
             ${latestBillingScopeClause}
        ) latest ON true
       WHERE i.merged_into_id IS NULL${scopeClause}
-      ORDER BY i.display_name`,
+      ORDER BY i.display_name, el.strategy_created_at, el.line_id`,
     params,
   );
+
+  const ratesByProgram = await effectiveRateSchedulesByProgram(pool);
 
   type Acc = {
     id: string;
@@ -596,7 +665,6 @@ export async function listIndividualBudgetBoard(
     preferredName: string | null;
     status: string;
     archived: boolean;
-    renewal: string | null;
     programs: Set<string>;
     auths: {
       authorized: string;
@@ -604,14 +672,17 @@ export async function listIndividualBudgetBoard(
       billedInternal: string;
       billedAmount: string;
       transactionCount: number;
+      programId: string;
       programCode: string;
-      budgetRate: string | null;
+      periodStart: string;
+      periodEnd: string;
+      rateOverride: string | null;
+      rateOverrideEffectiveFrom: string | null;
     }[];
     hasBilling: boolean;
     lastBilledOn: string | null;
   };
   const byId = new Map<string, Acc>();
-  const today = asOf.toISOString().slice(0, 10);
   for (const r of rows) {
     let acc = byId.get(r.id);
     if (!acc) {
@@ -621,7 +692,6 @@ export async function listIndividualBudgetBoard(
         preferredName: r.preferred_name,
         status: r.status,
         archived: r.status === "archived" || r.archived_at !== null,
-        renewal: r.renewal_date,
         programs: new Set<string>(),
         auths: [],
         hasBilling: r.has_billing === true,
@@ -629,7 +699,7 @@ export async function listIndividualBudgetBoard(
       };
       byId.set(r.id, acc);
     }
-    if (r.program_name && r.authorized_hours !== null) {
+    if (r.program_id && r.program_name && r.authorized_hours !== null && r.period_start && r.period_end) {
       acc.programs.add(r.program_name);
       acc.auths.push({
         authorized: r.authorized_hours,
@@ -637,8 +707,12 @@ export async function listIndividualBudgetBoard(
         billedInternal: r.billed_internal ?? "0",
         billedAmount: r.billed_amount ?? "0",
         transactionCount: r.transaction_count ?? 0,
+        programId: r.program_id,
         programCode: r.program_code ?? "",
-        budgetRate: r.budget_rate,
+        periodStart: r.period_start,
+        periodEnd: r.period_end,
+        rateOverride: r.rate_override,
+        rateOverrideEffectiveFrom: r.rate_override_effective_from,
       });
     }
   }
@@ -646,10 +720,8 @@ export async function listIndividualBudgetBoard(
   const out: IndividualBudgetBoardRow[] = [];
   for (const acc of byId.values()) {
     let budget: IndividualBudgetSummary | null = null;
-    const period = derivePeriodFromRenewal(acc.renewal);
-    if (acc.renewal && acc.auths.length > 0) {
-      const elapsed =
-        period.start && period.end ? calculatePeriodElapsed({ startDate: period.start, endDate: period.end }, asOf) : null;
+    if (acc.auths.length > 0) {
+      const renewal = acc.auths.map((auth) => auth.periodEnd).sort()[0] ?? null;
       let totalAuth = dec(0);
       let totalBilled = dec(0);
       let totalBilledAmount = dec(0);
@@ -657,21 +729,35 @@ export async function listIndividualBudgetBoard(
       let monthlyPace = dec(0);
       let weeklyPace = dec(0);
       let worst: UtilizationStatus = "not_started";
+      let elapsedPct: number | null = null;
       for (const a of acc.auths) {
         const auth = dec(a.authorized);
-        const billed = dec(effectiveBilledHours(a.programCode, a.rawBilledHours, a.billedInternal, a.budgetRate));
+        const budgetRate = resolvePeriodBudgetRate(
+          ratesByProgram,
+          a.programId,
+          a.periodEnd,
+          a.rateOverride,
+          a.rateOverrideEffectiveFrom,
+        ).internalRate;
+        const billed = dec(effectiveBilledHours(a.programCode, a.rawBilledHours, a.billedInternal, budgetRate));
         const remaining = auth.minus(billed);
         totalAuth = totalAuth.plus(auth);
         totalBilled = totalBilled.plus(billed);
         totalBilledAmount = totalBilledAmount.plus(dec(a.billedAmount));
         transactionCount += a.transactionCount;
-        const linePeriod = programBudgetPeriod(a.programCode, acc.renewal, acc.status === "active", today);
-        if (linePeriod.effectiveRenewal && remaining.greaterThan(0)) {
-          const lineDays = Math.round((Date.parse(`${linePeriod.effectiveRenewal}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / (24 * 60 * 60 * 1000));
+        const finalServiceDay = budgetRateDate(a.periodEnd);
+        const elapsed = finalServiceDay
+          ? calculatePeriodElapsed({ startDate: a.periodStart, endDate: finalServiceDay }, asOf)
+          : null;
+        if (a.periodEnd && remaining.greaterThan(0)) {
+          const lineDays = Math.round((Date.parse(`${a.periodEnd}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / (24 * 60 * 60 * 1000));
           if (lineDays > 0) {
             monthlyPace = monthlyPace.plus(remaining.dividedBy(lineDays / 30.4375));
             weeklyPace = weeklyPace.plus(remaining.dividedBy(lineDays / 7));
           }
+        }
+        if (elapsed && a.periodEnd === renewal) {
+          elapsedPct = dec(elapsed.timeElapsedPercent).times(100).toNumber();
         }
         if (elapsed) {
           const usage = auth.isZero() ? dec(0) : billed.dividedBy(auth);
@@ -681,20 +767,22 @@ export async function listIndividualBudgetBoard(
       }
       const usedPct = totalAuth.isZero() ? null : totalBilled.dividedBy(totalAuth).times(100).toNumber();
       const dayMs = 24 * 60 * 60 * 1000;
-      const daysToRenewal = Math.round((Date.parse(`${acc.renewal}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / dayMs);
+      const daysToRenewal = renewal
+        ? Math.round((Date.parse(`${renewal}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / dayMs)
+        : null;
       const hoursLeft = totalAuth.minus(totalBilled).toNumber();
       const positiveHoursLeft = Math.max(0, hoursLeft);
       budget = {
         status: worst,
         plainStatus: budgetStatusFromHours(totalAuth.toNumber(), totalBilled.toNumber()),
         usedPct,
-        elapsedPct: elapsed ? dec(elapsed.timeElapsedPercent).times(100).toNumber() : null,
-        renews: acc.renewal,
+        elapsedPct,
+        renews: renewal,
         usedHours: totalBilled.toNumber(),
         hoursLeft,
         plans: acc.auths.length,
         daysToRenewal,
-        expired: daysToRenewal < 0,
+        expired: daysToRenewal !== null && daysToRenewal < 0,
         mustUseMonthly: monthlyPace.greaterThan(0) ? Math.min(positiveHoursLeft, monthlyPace.toNumber()) : null,
         mustUseWeekly: weeklyPace.greaterThan(0) ? Math.min(positiveHoursLeft, weeklyPace.toNumber()) : null,
         transactionCount,
@@ -969,9 +1057,10 @@ export async function getIndividualBudgetView(
   // Authorized hours (and any per-hour rate override) per program from the plan.
   const authRows = plan
     ? (
-        await pool.query<{ program_id: string; program_name: string; program_code: string; authorized_hours: string; rate_override: string | null }>(
+        await pool.query<{ program_id: string; program_name: string; program_code: string; authorized_hours: string; rate_override: string | null; rate_override_effective_from: string | null }>(
           `SELECT l.program_id, p.name AS program_name, p.code AS program_code,
-                  l.authorized_hours::text AS authorized_hours, l.rate_override::text AS rate_override
+                  l.authorized_hours::text AS authorized_hours, l.rate_override::text AS rate_override,
+                  to_char(l.rate_override_effective_from, 'YYYY-MM-DD') AS rate_override_effective_from
              FROM calculation_strategy_lines l
              JOIN programs p ON p.id = l.program_id
             WHERE l.strategy_id = $1`,
@@ -980,19 +1069,27 @@ export async function getIndividualBudgetView(
       ).rows
     : [];
 
-  // The default per-hour rate per program (latest schedule), so a line with no
-  // override still shows the rate it will bill at.
+  // Keep every effective-dated row. Each program resolves its rate against its
+  // own current budget period below (calendar-year programs differ here).
   const rateRows = (
-    await pool.query<{ program_id: string; internal_rate: string; agency_rate: string | null }>(
-      `SELECT DISTINCT ON (program_id) program_id, internal_rate::text AS internal_rate, agency_rate::text AS agency_rate
-         FROM program_rate_schedules
-        ORDER BY program_id, effective_from DESC`,
+    await pool.query<{ program_id: string; internal_rate: string; agency_rate: string | null; effective_from: string; effective_to: string | null }>(
+      `SELECT program_id, internal_rate::text AS internal_rate, agency_rate::text AS agency_rate,
+              to_char(effective_from, 'YYYY-MM-DD') AS effective_from,
+              to_char(effective_to, 'YYYY-MM-DD') AS effective_to
+         FROM program_rate_schedules`,
     )
   ).rows;
-  const defaultRateByProgram = new Map(rateRows.map((r) => [r.program_id, r.internal_rate]));
-  // The agency (billed-out) rate, for the agency-currency valuation alongside the
-  // internal per-hour. Some programs (self-hire) have no agency rate configured.
-  const agencyRateByProgram = new Map(rateRows.map((r) => [r.program_id, r.agency_rate]));
+  const ratesByProgram: EffectiveRatesByProgram = new Map();
+  for (const rate of rateRows) {
+    const entries = ratesByProgram.get(rate.program_id) ?? [];
+    entries.push({
+      effectiveFrom: rate.effective_from,
+      effectiveTo: rate.effective_to,
+      internalRate: rate.internal_rate,
+      agencyRate: rate.agency_rate,
+    });
+    ratesByProgram.set(rate.program_id, entries);
+  }
 
   // Billed "used", per program, each windowed to ITS OWN budget year. Most
   // programs use the individual's renewal window ($2/$3); Day Hab and Supplemental
@@ -1027,7 +1124,7 @@ export async function getIndividualBudgetView(
               sum(internal_amt)::text    AS internal,
               count(*)::int              AS cnt
          FROM scoped
-        WHERE win_start IS NOT NULL AND period_begin >= win_start AND period_begin <= win_end
+        WHERE win_start IS NOT NULL AND period_begin >= win_start AND period_begin < win_end
         GROUP BY program_id, program_name, program_code`,
       billedParams,
     )
@@ -1050,10 +1147,18 @@ export async function getIndividualBudgetView(
     const a = authByProgram.get(pid);
     const b = billedByProgram.get(pid);
     const code = a?.program_code ?? b?.program_code ?? "";
+    const lp = programBudgetPeriod(code, renewalDate, active);
     // The plan's own per-hour rate (override if set, else the program default).
     // Needed here (not just for display) because group-session "used" hours are
     // backed out of the money at this rate.
-    const perHour = a?.rate_override ?? defaultRateByProgram.get(pid) ?? "0";
+    const resolvedRate = resolvePeriodBudgetRate(
+      ratesByProgram,
+      pid,
+      lp.end,
+      a?.rate_override ?? null,
+      a?.rate_override_effective_from ?? null,
+    );
+    const perHour = resolvedRate.internalRate;
     const authorized = dec(a?.authorized_hours ?? 0);
     // Group-session programs (Day Hab / Supplemental) bill a combined rate, so the
     // raw hours aren't this person's real hours — back them out of the internal
@@ -1063,7 +1168,6 @@ export async function getIndividualBudgetView(
     const status = budgetLineStatus(authorized, used);
     const usagePercent = authorized.greaterThan(0) ? used.dividedBy(authorized).toNumber() : null;
     // This program's own budget year (Day Hab / Supplemental = calendar year).
-    const lp = programBudgetPeriod(code, renewalDate, active);
     const lineDays = daysTo(lp.effectiveRenewal);
     const lineMonths = lineDays !== null && lineDays > 0 ? lineDays / 30.4375 : null;
     // Budget totals reflect the PLAN only, so "used of authorized" matches the
@@ -1077,7 +1181,7 @@ export async function getIndividualBudgetView(
     totAgency = totAgency.plus(dec(b?.agency ?? 0));
     totInternal = totInternal.plus(dec(b?.internal ?? 0));
     totTx += b?.cnt ?? 0;
-    const agencyRate = agencyRateByProgram.get(pid) ?? null;
+    const agencyRate = resolvedRate.agencyRate;
     lines.push({
       programId: pid,
       programName: a?.program_name ?? b?.program_name ?? "Unknown program",
@@ -1299,8 +1403,10 @@ export async function getIndividualPeriodActivity(
   end: string | null,
   scope?: AccessScope,
   plannedPrograms: PlannedPeriodProgram[] = [],
+  asOf: Date = new Date(),
 ): Promise<IndividualPeriodActivity> {
-  const calendarPeriod = programBudgetPeriod("DAY_HAB", null, true);
+  const today = asOf.toISOString().slice(0, 10);
+  const calendarPeriod = programBudgetPeriod("DAY_HAB", null, true, today);
   const calendarStart = calendarPeriod.start!;
   const calendarEnd = calendarPeriod.end!;
   const internalExpr =
@@ -1311,10 +1417,10 @@ export async function getIndividualPeriodActivity(
       ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
       : "";
     const periodClause = `AND (
-      (COALESCE(p.code, '') IN ('DAY_HAB','SUPP_GROUP_DAY_HAB') AND t.period_begin >= $4::date AND t.period_begin <= $5::date)
+      (COALESCE(p.code, '') IN ('DAY_HAB','SUPP_GROUP_DAY_HAB') AND t.period_begin >= $4::date AND t.period_begin < $5::date)
       OR
       (COALESCE(p.code, '') NOT IN ('DAY_HAB','SUPP_GROUP_DAY_HAB') AND $2::date IS NOT NULL AND $3::date IS NOT NULL
-       AND t.period_begin >= $2::date AND t.period_begin <= $3::date)
+       AND t.period_begin >= $2::date AND t.period_begin < $3::date)
     )`;
     return { params, clause, periodClause };
   };
@@ -1323,25 +1429,51 @@ export async function getIndividualPeriodActivity(
   // individual — override from the plan if set, else the program's latest default.
   // Group hours are backed out of the money at this rate, exactly like the budget
   // board, so the two never disagree.
-  const groupRateRes = await pool.query<{ program_id: string; budget_rate: string | null }>(
-    `SELECT p.id AS program_id,
-            COALESCE(
-              (SELECT l.rate_override::text
-                 FROM calculation_strategy_lines l
-                 JOIN calculation_strategies s ON s.id = l.strategy_id
-                WHERE s.individual_id = $1 AND s.status = 'active'
-                  AND l.program_id = p.id AND l.rate_override IS NOT NULL
-                ORDER BY s.created_at LIMIT 1),
-              (SELECT sched.internal_rate::text
-                 FROM program_rate_schedules sched
-                WHERE sched.program_id = p.id
-                ORDER BY sched.effective_from DESC LIMIT 1)
-            ) AS budget_rate
+  const groupRateRes = await pool.query<{
+    program_id: string;
+    program_code: string;
+    renewal_date: string | null;
+    individual_status: string | null;
+    rate_override: string | null;
+    rate_override_effective_from: string | null;
+  }>(
+    `SELECT p.id AS program_id, p.code AS program_code,
+            to_char(plan.renewal_date, 'YYYY-MM-DD') AS renewal_date,
+            plan.individual_status,
+            plan.rate_override::text AS rate_override,
+            to_char(plan.rate_override_effective_from, 'YYYY-MM-DD') AS rate_override_effective_from
        FROM programs p
+       LEFT JOIN LATERAL (
+         SELECT strategy.renewal_date, individual.status AS individual_status,
+                line.rate_override, line.rate_override_effective_from
+           FROM calculation_strategies strategy
+           JOIN calculation_strategy_lines line ON line.strategy_id = strategy.id
+           JOIN individuals individual ON individual.id = strategy.individual_id
+          WHERE strategy.individual_id = $1
+            AND strategy.status = 'active'
+            AND line.program_id = p.id
+          ORDER BY strategy.created_at, line.id
+          LIMIT 1
+       ) plan ON true
       WHERE p.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')`,
     [individualId],
   );
-  const groupRateByProgram = new Map(groupRateRes.rows.map((r) => [r.program_id, r.budget_rate]));
+  const ratesByProgram = await effectiveRateSchedulesByProgram(pool);
+  const groupRateByProgram = new Map(groupRateRes.rows.map((row) => {
+    const period = programBudgetPeriod(
+      row.program_code,
+      row.renewal_date,
+      row.individual_status === "active",
+      today,
+    );
+    return [row.program_id, resolvePeriodBudgetRate(
+      ratesByProgram,
+      row.program_id,
+      period.end,
+      row.rate_override,
+      row.rate_override_effective_from,
+    ).internalRate] as const;
+  }));
 
   // Program x month. Each program is restricted to its own budget year: the
   // individual's renewal year for most services, January-January for the two

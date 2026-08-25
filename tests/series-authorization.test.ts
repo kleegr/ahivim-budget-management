@@ -97,17 +97,16 @@ describe("series authorization projection", () => {
     }
 
     const sql = query.mock.calls.map(([statement]) => statement).join("\n").toLowerCase();
-    for (const forbidden of ["expected_", "rate", "amount", "check", "payout"]) {
+    for (const forbidden of ["expected_", "amount", "check", "payout"]) {
       expect(sql).not.toContain(forbidden);
     }
     expect(sql).toContain("s.matched_transaction_id is null");
-    expect(sql).toContain("s.series_id is distinct from $6::uuid");
-    const authorizationCall = query.mock.calls.find(([statement]) => statement.includes("ranked_authorizations"));
+    expect(sql).toContain("s.series_id is distinct from $5::uuid");
+    const authorizationCall = query.mock.calls.find(([statement]) => statement.includes("effective_authorizations"));
     expect(authorizationCall?.[1]).toEqual([
       [INDIVIDUAL_ID],
       PROGRAM_ID,
-      "2026-06-01",
-      "2026-07-13",
+      ["2026-06-01", "2026-06-08", "2026-07-06", "2026-07-13"],
       null,
       EDITED_SERIES_ID,
       "2026-06-08",

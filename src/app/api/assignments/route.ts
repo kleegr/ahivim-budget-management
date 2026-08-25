@@ -1,16 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiUser } from "@/lib/auth/session";
+import { apiPlanningUser } from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { listAssignments, createAssignment, type AssignmentInput } from "@/lib/manage/assignments";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** List assignments, filterable by employee or individual. Any role may read. */
+/** List assignments for an account with Planning access. */
 export async function GET(request: NextRequest) {
-  const user = await apiUser("manager");
-  if (!user) return jsonError("Manager role required", 403);
+  const planning = await apiPlanningUser();
+  if (!planning) return jsonError("Planning access required", 403);
 
   const url = new URL(request.url);
   const employeeId = url.searchParams.get("employeeId") ?? undefined;
@@ -26,13 +26,14 @@ export async function GET(request: NextRequest) {
   }
 }
 
-/** Create an assignment. Manager or admin only. */
+/** Create an hours-only employee assignment. */
 export async function POST(request: NextRequest) {
   const origin = sameOriginOrFail(request);
   if (origin) return origin;
 
-  const user = await apiUser("manager");
-  if (!user) return jsonError("Manager role required", 403);
+  const planning = await apiPlanningUser();
+  if (!planning) return jsonError("Planning access required", 403);
+  const { user } = planning;
 
   const body = await readJson(request);
   const reason = typeof body.reason === "string" ? body.reason : null;

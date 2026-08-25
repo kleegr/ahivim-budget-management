@@ -12,6 +12,7 @@ import { listAssignments } from "@/lib/manage/assignments";
 import { listAliases } from "@/lib/manage/aliases";
 import { scheduledByProgramForIndividual } from "@/lib/data/schedule-queries";
 import { getPersonSettlementBalance } from "@/lib/data/settlements";
+import { listClassBudgets, listClassInvoices } from "@/lib/data/class-invoices";
 import {
   Card, Table, Th, Td, Tr, Money, Hours, ErrorPanel, PageHeader, ButtonLink,
 } from "@/components/ui";
@@ -98,8 +99,9 @@ export default async function IndividualDetailPage({
     const directAccess = hasDirectIndividualAccess(scope, id);
     const canSeeBudgets = scope.canSeeBudgets && scope.canSeeHours && directAccess;
     const canSeeSettlements = scope.canSeeSettlements && directAccess;
+    const canSeeClasses = scope.canSeeClassFinancials && directAccess;
     const budget = await getIndividualBudgetView(pool, id, undefined, scope);
-    const [strategies, assignments, aliasesAll, scheduledByProgram, activity, settlement] = await Promise.all([
+    const [strategies, assignments, aliasesAll, scheduledByProgram, activity, settlement, classBudgets, classInvoices] = await Promise.all([
       canSeeBudgets
         ? listStrategies(pool, { individualId: id, withAnalytics: true })
         : Promise.resolve({ rows: [], programs: [] }),
@@ -121,6 +123,8 @@ export default async function IndividualDetailPage({
           )
         : Promise.resolve({ periods: [], byEmployee: [] }),
       canSeeSettlements ? getPersonSettlementBalance(pool, { individualId: id }) : Promise.resolve({ payable: "0", receivable: "0", reserve: "0", credit: "0", openItems: 0 }),
+      canSeeClasses ? listClassBudgets(pool, scope, { individualId: id }) : Promise.resolve([]),
+      canSeeClasses ? listClassInvoices(pool, scope, { individualId: id }) : Promise.resolve([]),
     ]);
     // The plan the main view describes (matches the budget board), plus any OTHER
     // plans this individual has — each gets its own budget view so a second plan
@@ -173,6 +177,10 @@ export default async function IndividualDetailPage({
       canSeeAgencySpread: scope.canSeeAgencySpread,
       canSeeBudgets,
       canSeeSettlements,
+      canSeeClasses,
+      canManageClasses: scope.canManageClassInvoices,
+      classBudgets,
+      classInvoices,
       canSeeTransactions: scope.canSeeTransactions,
       programs: strategies.programs, // program list with default per-hour rates, for the editor
       assignments: assignments.filter((a) => a.status === "active" && canViewEmployee(scope, a.employeeId)),
@@ -200,7 +208,8 @@ export default async function IndividualDetailPage({
   const {
     individual, budget, activity, settlement, strategy, otherPlans,
     canSeeHours, canSeeBilledAmounts, canSeeEmployeeAmounts, canSeeAgencySpread,
-    canSeeBudgets, canSeeSettlements, canSeeTransactions, programs, assignments, aliases, scheduled,
+    canSeeBudgets, canSeeSettlements, canSeeTransactions, canSeeClasses, canManageClasses,
+    classBudgets, classInvoices, programs, assignments, aliases, scheduled,
   } = result.data;
   const t = budget.totals;
   const headline = budget.headline ? BUDGET_STATUS_PRESENT[budget.headline] : null;
@@ -367,6 +376,51 @@ export default async function IndividualDetailPage({
                   </section>
                 ))}
                 {canEdit && strategy ? <AddPlanButton individualId={id} nextLabel={String(otherPlans.length + 2)} /> : null}
+              </div>
+            ),
+          }] : []),
+          ...(canSeeClasses ? [{
+            id: "classes",
+            label: "Classes",
+            content: (
+              <div className="space-y-5">
+                {classBudgets.map((classBudget) => (
+                  <section key={classBudget.id} className="rounded-md border border-[var(--color-rule)] bg-[var(--color-surface)] p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="eyebrow">{classBudget.label}</p>
+                        <h2 className="mt-1 text-lg font-semibold">{classBudget.startDate} - {classBudget.endDate}</h2>
+                      </div>
+                      <span className="badge">{classBudget.status === "active" ? "Active" : "Closed"}</span>
+                    </div>
+                    <div className="mt-5 grid gap-4 border-t border-[var(--color-rule)] pt-4 sm:grid-cols-3">
+                      <div><p className="eyebrow">Authorized</p><p className="tnum mt-1 text-xl font-semibold">{formatMoney(classBudget.authorizedAmount)}</p></div>
+                      <div><p className="eyebrow">Issued</p><p className="tnum mt-1 text-xl font-semibold">{formatMoney(classBudget.consumedAmount)}</p></div>
+                      <div><p className="eyebrow">Remaining</p><p className={`tnum mt-1 text-xl font-semibold ${dec(classBudget.remainingAmount).isNegative() ? "text-[var(--color-danger)]" : ""}`}>{formatMoney(classBudget.remainingAmount)}</p></div>
+                    </div>
+                  </section>
+                ))}
+
+                <Card
+                  title="Class invoices"
+                  action={canManageClasses ? <ButtonLink href="/classes">Open Classes</ButtonLink> : undefined}
+                >
+                  {classInvoices.length > 0 ? (
+                    <Table head={<><Th>Invoice</Th><Th>Date</Th><Th>Status</Th><Th numeric>Amount</Th><Th numeric>PDF</Th></>}>
+                      {classInvoices.map((invoice) => (
+                        <Tr key={invoice.id}>
+                          <Td><span className="font-semibold">{invoice.invoiceNumber}</span></Td>
+                          <Td><span className="tnum">{invoice.invoiceDate}</span></Td>
+                          <Td><span className="badge">{invoice.status === "void" ? "Voided" : invoice.status === "issued" ? "Issued" : "Draft"}</span></Td>
+                          <Td numeric><Money value={invoice.totalAmount} /></Td>
+                          <Td numeric>{invoice.status === "issued" ? <ButtonLink href={`/api/classes/invoices/${invoice.id}/pdf`} variant="secondary">Download</ButtonLink> : null}</Td>
+                        </Tr>
+                      ))}
+                    </Table>
+                  ) : (
+                    <p className="py-8 text-center text-sm text-[var(--color-ink-faint)]">No class invoices yet.</p>
+                  )}
+                </Card>
               </div>
             ),
           }] : []),

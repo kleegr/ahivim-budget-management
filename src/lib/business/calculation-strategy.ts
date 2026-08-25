@@ -260,3 +260,11 @@ export function programBudgetPeriod(
   if (isCalendarYearProgram(code)) return currentBudgetPeriod("2000-01-01", true, asOf); // the current Jan→Jan year
   return currentBudgetPeriod(individualRenewal, active, asOf);
 }
+
+/** Rate schedules use the final service day, not the next renewal day. */
+export function budgetRateDate(periodEndExclusive: string | null): string | null {
+  if (!periodEndExclusive) return null;
+  const parsed = new Date(`${periodEndExclusive}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return new Date(parsed.getTime() - 86_400_000).toISOString().slice(0, 10);
+}

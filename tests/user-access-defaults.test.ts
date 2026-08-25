@@ -19,6 +19,9 @@ describe("new user access defaults", () => {
       canSeeTaxes: false,
       canSeeEmployeeDeals: false,
       canSeeSettlements: false,
+      canSeeClassFinancials: false,
+      canManageClassInvoices: false,
+      canEditDocuments: false,
     });
   });
 
@@ -38,6 +41,9 @@ describe("new user access defaults", () => {
       canSeeBudgets: false,
       canSeeEmployeeDeals: false,
       canSeeSettlements: false,
+      canSeeClassFinancials: false,
+      canManageClassInvoices: false,
+      canEditDocuments: false,
       canPlan: false,
       individualIds: [],
       employeeIds: [],
@@ -53,6 +59,9 @@ describe("new user access defaults", () => {
       canSeeBudgets: true,
       canSeeEmployeeDeals: true,
       canSeeSettlements: true,
+      canSeeClassFinancials: true,
+      canManageClassInvoices: true,
+      canEditDocuments: true,
       canPlan: true,
       individualIds: ["individual-1"],
       employeeIds: ["employee-1"],
@@ -66,6 +75,9 @@ describe("new user access defaults", () => {
       canSeeBudgets: true,
       canSeeEmployeeDeals: true,
       canSeeSettlements: true,
+      canSeeClassFinancials: true,
+      canManageClassInvoices: true,
+      canEditDocuments: true,
       canPlan: true,
       individualIds: ["individual-1"],
       employeeIds: ["employee-1"],
@@ -96,6 +108,9 @@ describe("new user access defaults", () => {
       canSeeBudgets: true,
       canSeeEmployeeDeals: false,
       canSeeSettlements: false,
+      canSeeClassFinancials: true,
+      canManageClassInvoices: true,
+      canEditDocuments: true,
       canPlan: true,
     });
   });
@@ -131,6 +146,6 @@ describe("new user access defaults", () => {
 
     expect(result.ok).toBe(true);
     const insert = query.mock.calls.find(([sql]) => sql.includes("INSERT INTO users"));
-    expect(insert?.[1]?.slice(4)).toEqual(["scoped", ...Array(12).fill(false)]);
+    expect(insert?.[1]?.slice(4)).toEqual(["scoped", ...Array(15).fill(false)]);
   });
 });
