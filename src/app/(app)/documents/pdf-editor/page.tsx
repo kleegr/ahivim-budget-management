@@ -3,6 +3,7 @@ import { requireDocumentEditorUser } from "@/lib/auth/document-access";
 import { normalizePdfEditorSourcePath } from "@/lib/documents/pdf-editor";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "PDF Editor - Ahivim Budget Management" };
 
 export default async function PdfEditorPage({
   searchParams,

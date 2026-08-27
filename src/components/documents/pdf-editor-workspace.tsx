@@ -5,20 +5,32 @@ import {
   AlignLeft,
   AlignRight,
   ArrowDown,
+  ArrowLeft,
+  ArrowRight,
   ArrowUp,
+  Bold,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Circle,
+  Copy,
   Download,
   Eraser,
   FileText,
+  Highlighter,
   ImagePlus,
+  Italic,
   LoaderCircle,
   Maximize2,
+  MousePointer2,
+  PenTool,
   Redo2,
   RotateCcw,
   RotateCw,
+  ScanText,
+  Search,
   Settings2,
+  Square,
   Trash2,
   Type,
   Undo2,
@@ -34,9 +46,13 @@ import {
   commitPdfHistory,
   createCoverOverlay,
   createImageOverlay,
+  createInkOverlay,
+  createOverlayId,
+  createShapeOverlay,
   createSourceTextReplacement,
   createTextOverlay,
   deleteOverlay,
+  duplicateOverlay,
   hasPdfEditorChanges,
   moveOverlay,
   normalizeOverlay,
@@ -46,14 +62,16 @@ import {
   rotateOverlayPosition,
   undoPdfHistory,
   type PdfEditorHistory,
+  type PdfInkPoint,
   type PdfOverlay,
   type PdfTextOverlay,
 } from "@/lib/documents/pdf-editor";
 import type { PdfImageSource } from "@/lib/documents/pdf-export";
 import type { PdfExportMode } from "@/lib/documents/pdf-secure-export";
 import {
-  inspectPdfPageText,
+  inspectPdfPage,
   loadPdfJs,
+  type PdfDetectedFont,
   type PdfSourceTextItem,
 } from "@/lib/documents/pdfjs-client";
 
@@ -70,13 +88,14 @@ interface LoadedPdf {
   document: PDFDocumentProxy;
 }
 
-interface CustomFont {
+interface EditorFont {
   id: string;
   name: string;
-  bytes: Uint8Array;
+  bytes: Uint8Array | null;
   cssFamily: string;
-  objectUrl: string;
-  face: FontFace;
+  objectUrl?: string;
+  face?: FontFace;
+  source: "document" | "imported";
 }
 
 interface EditorImage extends PdfImageSource {
@@ -107,10 +126,20 @@ function percent(value: number): string {
   return String(Math.round(value * 1000) / 10);
 }
 
-function fontCss(fontId: string, customFonts: CustomFont[]): string {
+function fontCss(fontId: string, customFonts: EditorFont[]): string {
   return customFonts.find((font) => font.id === fontId)?.cssFamily
     ?? STANDARD_FONTS.find((font) => font.id === fontId)?.css
     ?? STANDARD_FONTS[0].css;
+}
+
+type PdfEditorTool = "select" | "edit-text" | "ink";
+
+function itemLabel(overlay: PdfOverlay): string {
+  if (overlay.kind === "text") return "Text box";
+  if (overlay.kind === "image") return "Image / signature";
+  if (overlay.kind === "cover") return "Background repair / redaction";
+  if (overlay.kind === "ink") return "Drawing / signature";
+  return overlay.shape === "highlight" ? "Highlight" : `${overlay.shape[0]?.toUpperCase()}${overlay.shape.slice(1)}`;
 }
 
 function ToolButton({
@@ -161,28 +190,47 @@ export default function PdfEditorWorkspace({
   const [draggingOver, setDraggingOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [sourceText, setSourceText] = useState<PdfSourceTextItem[] | null>(null);
+  const [nativeSourceText, setNativeSourceText] = useState<PdfSourceTextItem[] | null>(null);
+  const [ocrTextByPage, setOcrTextByPage] = useState<Record<number, PdfSourceTextItem[]>>({});
+  const [ocrProgress, setOcrProgress] = useState<{ status: string; progress: number } | null>(null);
+  const [sourceQuery, setSourceQuery] = useState("");
   const [inspectorTab, setInspectorTab] = useState<"properties" | "source">("properties");
-  const [customFonts, setCustomFonts] = useState<CustomFont[]>([]);
+  const [customFonts, setCustomFonts] = useState<EditorFont[]>([]);
   const [images, setImages] = useState<EditorImage[]>([]);
+  const [pageOrder, setPageOrder] = useState<number[]>([]);
   const [pageRotations, setPageRotations] = useState<Record<number, number>>({});
   const [exportMode, setExportMode] = useState<PdfExportMode>("standard");
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
+  const [activeTool, setActiveTool] = useState<PdfEditorTool>("select");
+  const [inkDraft, setInkDraft] = useState<PdfInkPoint[] | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fontInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const pageViewportRef = useRef<HTMLDivElement>(null);
   const pageSurfaceRef = useRef<HTMLDivElement>(null);
-  const customFontsRef = useRef<CustomFont[]>([]);
+  const customFontsRef = useRef<EditorFont[]>([]);
   const imagesRef = useRef<EditorImage[]>([]);
   const loadedDocumentRef = useRef<PDFDocumentProxy | null>(null);
   const mountedRef = useRef(true);
   const initialSourceLoadedRef = useRef<string | null>(null);
+  const detectedFontIdsRef = useRef(new Set<string>());
   const displayOverlays = draft ?? history.present;
   const selected = displayOverlays.find((overlay) => overlay.id === selectedId) ?? null;
   const pageRotation = pageRotations[pageNumber] ?? 0;
-  const hasChanges = hasPdfEditorChanges(history.present, pageRotations);
+  const pageCount = loaded ? pageOrder.length || loaded.document.numPages : 0;
+  const sourcePageNumber = pageOrder[pageNumber - 1] ?? pageNumber;
+  const pageOrderChanged = Boolean(loaded) && (
+    pageOrder.length !== loaded?.document.numPages
+    || pageOrder.some((sourcePage, index) => sourcePage !== index + 1)
+  );
+  const hasChanges = hasPdfEditorChanges(history.present, pageRotations) || pageOrderChanged;
+  const sourceText = nativeSourceText && nativeSourceText.length > 0
+    ? nativeSourceText
+    : ocrTextByPage[pageNumber] ?? nativeSourceText;
+  const filteredSourceText = (sourceText ?? []).filter((item) => (
+    !sourceQuery.trim() || item.text.toLocaleLowerCase().includes(sourceQuery.trim().toLocaleLowerCase())
+  ));
 
   const effectiveScale = useMemo(() => {
     if (!fitPage) return manualScale;
@@ -205,21 +253,68 @@ export default function PdfEditorWorkspace({
     return () => observer.disconnect();
   }, [loaded]);
 
+  const registerDetectedFonts = useCallback(async (fonts: PdfDetectedFont[]) => {
+    for (const detected of fonts) {
+      if (!detected.id.startsWith("document-") || detectedFontIdsRef.current.has(detected.id)) continue;
+      detectedFontIdsRef.current.add(detected.id);
+      let face: FontFace | undefined;
+      let objectUrl: string | undefined;
+      let cssFamily = detected.cssFamily;
+      if (detected.bytes) {
+        try {
+          cssFamily = `AhivimDocumentFont-${detected.id.replace(/[^a-z0-9-]/gi, "-")}`;
+          objectUrl = URL.createObjectURL(new Blob([detected.bytes.slice()], { type: "font/otf" }));
+          face = new FontFace(cssFamily, `url(${objectUrl})`, {
+            weight: String(detected.fontWeight),
+            style: detected.fontStyle,
+          });
+          await face.load();
+          document.fonts.add(face);
+        } catch {
+          if (objectUrl) URL.revokeObjectURL(objectUrl);
+          face = undefined;
+          objectUrl = undefined;
+          cssFamily = detected.cssFamily;
+        }
+      }
+      if (!mountedRef.current) {
+        if (face) document.fonts.delete(face);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      const editorFont: EditorFont = {
+        id: detected.id,
+        name: detected.name,
+        bytes: detected.bytes,
+        cssFamily,
+        objectUrl,
+        face,
+        source: "document",
+      };
+      setCustomFonts((current) => current.some((font) => font.id === editorFont.id)
+        ? current
+        : [...current, editorFont]);
+    }
+  }, []);
+
   useEffect(() => {
     if (!loaded) return;
     let active = true;
-    setSourceText(null);
-    void inspectPdfPageText(loaded.document, pageNumber, pageRotation)
-      .then((items) => {
-        if (active) setSourceText(items);
+    setNativeSourceText(null);
+    setSourceQuery("");
+    void inspectPdfPage(loaded.document, sourcePageNumber, pageRotation)
+      .then(async (inspection) => {
+        if (!active) return;
+        setNativeSourceText(inspection.items);
+        await registerDetectedFonts(inspection.fonts);
       })
       .catch(() => {
-        if (active) setSourceText([]);
+        if (active) setNativeSourceText([]);
       });
     return () => {
       active = false;
     };
-  }, [loaded, pageNumber, pageRotation]);
+  }, [loaded, pageRotation, registerDetectedFonts, sourcePageNumber]);
 
   useEffect(() => {
     if (selectedId && !history.present.some((overlay) => overlay.id === selectedId)) {
@@ -248,10 +343,12 @@ export default function PdfEditorWorkspace({
       mountedRef.current = false;
       void loadedDocumentRef.current?.destroy();
       for (const font of customFontsRef.current) {
-        document.fonts.delete(font.face);
-        URL.revokeObjectURL(font.objectUrl);
+        if (font.face) document.fonts.delete(font.face);
+        if (font.objectUrl) URL.revokeObjectURL(font.objectUrl);
       }
       for (const image of imagesRef.current) URL.revokeObjectURL(image.objectUrl);
+      void import("@/lib/documents/pdf-ocr-client")
+        .then(({ terminatePdfOcrWorker }) => terminatePdfOcrWorker());
     };
   }, []);
 
@@ -277,6 +374,20 @@ export default function PdfEditorWorkspace({
     setSelectedId(null);
   }, [commit, history.present, selectedId]);
 
+  const duplicateSelected = useCallback(() => {
+    const current = history.present.find((overlay) => overlay.id === selectedId);
+    if (!current) return;
+    const duplicate = duplicateOverlay(current);
+    commit([...history.present, duplicate]);
+    setSelectedId(duplicate.id);
+  }, [commit, history.present, selectedId]);
+
+  const nudgeSelected = useCallback((deltaX: number, deltaY: number) => {
+    const current = history.present.find((overlay) => overlay.id === selectedId);
+    if (!current) return;
+    commit(replaceOverlay(history.present, moveOverlay(current, deltaX, deltaY)));
+  }, [commit, history.present, selectedId]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target;
@@ -290,23 +401,35 @@ export default function PdfEditorWorkspace({
       } else if ((event.metaKey || event.ctrlKey) && !editingText && event.key.toLowerCase() === "y") {
         event.preventDefault();
         redo();
+      } else if ((event.metaKey || event.ctrlKey) && !editingText && event.key.toLowerCase() === "d") {
+        event.preventDefault();
+        duplicateSelected();
       } else if (!editingText && (event.key === "Delete" || event.key === "Backspace")) {
         event.preventDefault();
         removeSelected();
+      } else if (!editingText && selectedId && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+        event.preventDefault();
+        const distance = event.shiftKey ? 0.01 : 0.002;
+        nudgeSelected(
+          event.key === "ArrowLeft" ? -distance : event.key === "ArrowRight" ? distance : 0,
+          event.key === "ArrowUp" ? -distance : event.key === "ArrowDown" ? distance : 0,
+        );
       } else if (event.key === "Escape") {
         setSelectedId(null);
+        setActiveTool("select");
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [redo, removeSelected, undo]);
+  }, [duplicateSelected, nudgeSelected, redo, removeSelected, selectedId, undo]);
 
   const clearCustomFonts = useCallback(() => {
     setCustomFonts((fonts) => {
       for (const font of fonts) {
-        document.fonts.delete(font.face);
-        URL.revokeObjectURL(font.objectUrl);
+        if (font.face) document.fonts.delete(font.face);
+        if (font.objectUrl) URL.revokeObjectURL(font.objectUrl);
       }
+      detectedFontIdsRef.current.clear();
       return [];
     });
   }, []);
@@ -356,10 +479,17 @@ export default function PdfEditorWorkspace({
       setSelectedId(null);
       setPageNumber(1);
       setFitPage(true);
+      setPageOrder(Array.from({ length: pdfDocument.numPages }, (_, index) => index + 1));
       setPageRotations({});
       setExportMode("standard");
       setInspectorTab("properties");
       setMobileInspectorOpen(false);
+      setNativeSourceText(null);
+      setOcrTextByPage({});
+      setOcrProgress(null);
+      setSourceQuery("");
+      setActiveTool("select");
+      setInkDraft(null);
       clearCustomFonts();
       clearImages();
       void previousDocument?.destroy();
@@ -417,6 +547,17 @@ export default function PdfEditorWorkspace({
       width: Math.min(1 - source.x, Math.max(0.12, source.width)),
       height: Math.min(1 - source.y, Math.max(0.04, source.height)),
       fontSize: source.fontSize,
+      fontId: source.fontId,
+      sourceFontName: source.fontName,
+      fontWeight: source.fontWeight,
+      fontStyle: source.fontStyle,
+      color: source.color,
+      alignment: source.alignment,
+      opacity: source.opacity,
+      lineHeight: source.lineHeight,
+      letterSpacing: source.letterSpacing,
+      rotation: source.rotation,
+      direction: source.direction,
     } : {});
     commit([...history.present, overlay]);
     setSelectedId(overlay.id);
@@ -430,7 +571,8 @@ export default function PdfEditorWorkspace({
     setSelectedId(text.id);
     setInspectorTab("properties");
     setMobileInspectorOpen(true);
-    setExportMode("secure");
+    setActiveTool("select");
+    setExportMode(source.origin === "native" ? "secure" : "standard");
   };
 
   const addCover = () => {
@@ -441,6 +583,52 @@ export default function PdfEditorWorkspace({
     setMobileInspectorOpen(true);
     setExportMode("secure");
   };
+
+  const addShape = (shape: "highlight" | "rectangle" | "ellipse") => {
+    const overlay = createShapeOverlay(pageNumber, shape);
+    commit([...history.present, overlay]);
+    setSelectedId(overlay.id);
+    setInspectorTab("properties");
+    setMobileInspectorOpen(true);
+    setActiveTool("select");
+  };
+
+  const recognizeCurrentPage = useCallback(async () => {
+    if (!loaded || ocrProgress) return;
+    setError(null);
+    setNotice(null);
+    setOcrProgress({ status: "Preparing local text recognition", progress: 0 });
+    try {
+      const { recognizePdfPage } = await import("@/lib/documents/pdf-ocr-client");
+      const items = await recognizePdfPage({
+        document: loaded.document,
+        pageNumber: sourcePageNumber,
+        rotation: pageRotation,
+        onProgress: (progress) => setOcrProgress(progress),
+      });
+      setOcrTextByPage((current) => ({ ...current, [pageNumber]: items }));
+      setInspectorTab("source");
+      setMobileInspectorOpen(true);
+      setNotice(items.length > 0
+        ? `${items.length} editable text regions recognized locally on this page.`
+        : "No readable text was found on this page.");
+    } catch (ocrError) {
+      setError(`Text recognition could not finish. ${errorMessage(ocrError)}`);
+    } finally {
+      setOcrProgress(null);
+    }
+  }, [loaded, ocrProgress, pageNumber, pageRotation, sourcePageNumber]);
+
+  useEffect(() => {
+    if (
+      activeTool === "edit-text"
+      && nativeSourceText?.length === 0
+      && ocrTextByPage[pageNumber] === undefined
+      && !ocrProgress
+    ) {
+      void recognizeCurrentPage();
+    }
+  }, [activeTool, nativeSourceText, ocrProgress, ocrTextByPage, pageNumber, recognizeCurrentPage]);
 
   const importImage = async (file: File) => {
     const mimeType = file.type === "image/png" || file.name.toLowerCase().endsWith(".png")
@@ -493,19 +681,136 @@ export default function PdfEditorWorkspace({
       ...current,
       [pageNumber]: ((current[pageNumber] ?? 0) + delta + 360) % 360,
     }));
+    setOcrTextByPage((current) => {
+      const next = { ...current };
+      delete next[pageNumber];
+      return next;
+    });
+    setNativeSourceText(null);
     setExportMode("secure");
+  };
+
+  const movePage = (direction: "back" | "forward") => {
+    const target = direction === "back" ? pageNumber - 1 : pageNumber + 1;
+    if (target < 1 || target > pageCount) return;
+    setPageOrder((current) => {
+      const next = [...current];
+      [next[pageNumber - 1], next[target - 1]] = [next[target - 1]!, next[pageNumber - 1]!];
+      return next;
+    });
+    const swapPage = (page: number) => page === pageNumber ? target : page === target ? pageNumber : page;
+    const transform = (snapshot: PdfOverlay[]) => snapshot.map((overlay) => ({ ...overlay, page: swapPage(overlay.page) }));
+    setHistory((current) => ({
+      past: current.past.map(transform),
+      present: transform(current.present),
+      future: current.future.map(transform),
+    }));
+    setPageRotations((current) => {
+      const next = { ...current };
+      next[pageNumber] = current[target] ?? 0;
+      next[target] = current[pageNumber] ?? 0;
+      return next;
+    });
+    setOcrTextByPage((current) => {
+      const next = { ...current };
+      if (current[target]) next[pageNumber] = current[target];
+      else delete next[pageNumber];
+      if (current[pageNumber]) next[target] = current[pageNumber];
+      else delete next[target];
+      return next;
+    });
+    setDraft(null);
+    setSelectedId(null);
+    setPageNumber(target);
+    setNotice(`Page moved ${direction === "back" ? "earlier" : "later"} in this working copy.`);
+  };
+
+  const duplicatePage = () => {
+    const insertionPage = pageNumber + 1;
+    setPageOrder((current) => {
+      const next = [...current];
+      next.splice(pageNumber, 0, sourcePageNumber);
+      return next;
+    });
+    const shifted = history.present.map((overlay) => overlay.page > pageNumber
+      ? { ...overlay, page: overlay.page + 1 }
+      : overlay);
+    const copies = history.present
+      .filter((overlay) => overlay.page === pageNumber)
+      .map((overlay) => ({ ...overlay, id: createOverlayId(), page: insertionPage }));
+    setHistory({ past: [], present: [...shifted, ...copies], future: [] });
+    setPageRotations((current) => Object.fromEntries(
+      Object.entries(current).flatMap(([key, value]) => {
+        const page = Number(key);
+        if (page > pageNumber) return [[page + 1, value]];
+        if (page === pageNumber) return [[page, value], [insertionPage, value]];
+        return [[page, value]];
+      }),
+    ));
+    setOcrTextByPage((current) => Object.fromEntries(
+      Object.entries(current).flatMap(([key, value]) => {
+        const page = Number(key);
+        if (page > pageNumber) return [[page + 1, value]];
+        if (page === pageNumber) {
+          const copy = value.map((item) => ({ ...item, id: `${item.id}-copy-${insertionPage}` }));
+          return [[page, value], [insertionPage, copy]];
+        }
+        return [[page, value]];
+      }),
+    ));
+    setDraft(null);
+    setSelectedId(null);
+    setPageNumber(insertionPage);
+    setNotice("Page duplicated with its edits. Overlay undo history was restarted after the page operation.");
+  };
+
+  const deletePage = () => {
+    if (pageCount <= 1 || !window.confirm(`Delete page ${pageNumber} from this working copy?`)) return;
+    setPageOrder((current) => current.filter((_, index) => index !== pageNumber - 1));
+    const nextOverlays = history.present.flatMap((overlay): PdfOverlay[] => {
+      if (overlay.page === pageNumber) return [];
+      return [overlay.page > pageNumber ? { ...overlay, page: overlay.page - 1 } : overlay];
+    });
+    setHistory({ past: [], present: nextOverlays, future: [] });
+    setPageRotations((current) => Object.fromEntries(
+      Object.entries(current).flatMap(([key, value]) => {
+        const page = Number(key);
+        if (page === pageNumber) return [];
+        return [[page > pageNumber ? page - 1 : page, value]];
+      }),
+    ));
+    setOcrTextByPage((current) => Object.fromEntries(
+      Object.entries(current).flatMap(([key, value]) => {
+        const page = Number(key);
+        if (page === pageNumber) return [];
+        return [[page > pageNumber ? page - 1 : page, value]];
+      }),
+    ));
+    setDraft(null);
+    setSelectedId(null);
+    setPageNumber(Math.min(pageNumber, pageCount - 1));
+    setNotice("Page deleted from this working copy. The original PDF is unchanged.");
   };
 
   const updateSelected = (patch: Partial<PdfOverlay>) => {
     const current = history.present.find((overlay) => overlay.id === selectedId);
     if (!current) return;
+    if (typeof patch.rotation === "number" && patch.rotation % 360 !== 0) {
+      setExportMode("secure");
+    }
     commit(replaceOverlay(history.present, normalizeOverlay({ ...current, ...patch } as PdfOverlay)));
   };
 
   const reorderSelected = (direction: "up" | "down") => {
     const index = history.present.findIndex((overlay) => overlay.id === selectedId);
-    const target = direction === "up" ? index + 1 : index - 1;
-    if (index < 0 || target < 0 || target >= history.present.length) return;
+    if (index < 0) return;
+    const pageIndexes = history.present
+      .map((overlay, overlayIndex) => overlay.page === pageNumber ? overlayIndex : -1)
+      .filter((overlayIndex) => overlayIndex >= 0);
+    const pageIndex = pageIndexes.indexOf(index);
+    const targetPageIndex = direction === "up" ? pageIndex + 1 : pageIndex - 1;
+    const target = pageIndexes[targetPageIndex];
+    if (pageIndex < 0 || target === undefined) return;
     const next = [...history.present];
     [next[index], next[target]] = [next[target], next[index]];
     commit(next);
@@ -550,6 +855,41 @@ export default function PdfEditorWorkspace({
     window.addEventListener("pointercancel", finish, { once: true });
   };
 
+  const startInkGesture = (event: React.PointerEvent) => {
+    if (activeTool !== "ink" || event.button !== 0 || !pageSurfaceRef.current) return;
+    event.preventDefault();
+    const bounds = pageSurfaceRef.current.getBoundingClientRect();
+    const points: PdfInkPoint[] = [];
+    const record = (clientX: number, clientY: number) => {
+      const point = {
+        x: Math.max(0, Math.min(1, (clientX - bounds.left) / bounds.width)),
+        y: Math.max(0, Math.min(1, (clientY - bounds.top) / bounds.height)),
+      };
+      const previous = points.at(-1);
+      if (!previous || Math.hypot(point.x - previous.x, point.y - previous.y) > 0.0015) points.push(point);
+      setInkDraft([...points]);
+    };
+    record(event.clientX, event.clientY);
+    const move = (moveEvent: PointerEvent) => record(moveEvent.clientX, moveEvent.clientY);
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      setInkDraft(null);
+      if (points.length > 1) {
+        const overlay = createInkOverlay(pageNumber, points);
+        commit([...history.present, overlay]);
+        setSelectedId(overlay.id);
+        setInspectorTab("properties");
+        setMobileInspectorOpen(true);
+      }
+      setActiveTool("select");
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish, { once: true });
+    window.addEventListener("pointercancel", finish, { once: true });
+  };
+
   const importFont = async (file: File) => {
     setError(null);
     let objectUrl: string | null = null;
@@ -561,13 +901,14 @@ export default function PdfEditorWorkspace({
       const face = new FontFace(cssFamily, `url(${objectUrl})`);
       await face.load();
       document.fonts.add(face);
-      const font: CustomFont = {
+      const font: EditorFont = {
         id,
         name: file.name.replace(/\.(?:ttf|otf)$/i, ""),
         bytes,
         cssFamily,
         objectUrl,
         face,
+        source: "imported",
       };
       setCustomFonts((current) => [...current, font]);
       if (selected?.kind === "text") updateSelected({ fontId: id } as Partial<PdfTextOverlay>);
@@ -586,25 +927,18 @@ export default function PdfEditorWorkspace({
     setNotice(null);
     try {
       const secureExport = await import("@/lib/documents/pdf-secure-export");
-      let secure = secureExport.requiresSecureRasterExport(exportMode, pageRotations);
-      if (!secure) {
-        for (let page = 1; page <= loaded.document.numPages; page += 1) {
-          if ((await loaded.document.getPage(page)).rotate % 360 !== 0) {
-            secure = true;
-            break;
-          }
-        }
-      }
+      const secure = secureExport.requiresSecureRasterExport(exportMode, pageRotations, history.present);
       const fontFamilies = Object.fromEntries([
         ...STANDARD_FONTS.map((font) => [font.id, font.css]),
         ...customFonts.map((font) => [font.id, font.cssFamily]),
       ]);
-      if (secure) setExportProgress({ completed: 0, total: loaded.document.numPages });
+      if (secure) setExportProgress({ completed: 0, total: pageCount });
       const output = secure
         ? await secureExport.exportSecureRasterizedPdf({
             document: loaded.document,
             overlays: history.present,
             pageRotations,
+            pageOrder,
             fontFamilies,
             images,
             onProgress: (completed, total) => setExportProgress({ completed, total }),
@@ -612,8 +946,9 @@ export default function PdfEditorWorkspace({
         : await (await import("@/lib/documents/pdf-export")).exportPdfWithOverlays(
             loaded.bytes,
             history.present,
-            customFonts.map(({ id, bytes }) => ({ id, bytes })),
+            customFonts.flatMap(({ id, bytes }) => bytes ? [{ id, bytes }] : []),
             images,
+            pageOrder,
           );
       const buffer = output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength) as ArrayBuffer;
       const url = URL.createObjectURL(new Blob([buffer], { type: "application/pdf" }));
@@ -636,7 +971,7 @@ export default function PdfEditorWorkspace({
       <div className="mx-auto max-w-5xl space-y-6">
         <header>
           <p className="eyebrow">Documents</p>
-          <h1 className="display mt-1 text-2xl text-[var(--color-ink)] sm:text-3xl">PDF workspace</h1>
+          <h1 className="display mt-1 text-2xl text-[var(--color-ink)] sm:text-3xl">PDF editor</h1>
         </header>
 
         <section
@@ -689,17 +1024,17 @@ export default function PdfEditorWorkspace({
   const textSourceState = sourceText === null
     ? "Checking text"
     : sourceText.length > 0
-      ? "Searchable text"
+      ? sourceText.some((item) => item.origin === "ocr") ? "Text recognized locally" : "Editable source text"
       : "Image or scan";
 
   return (
     <div className="space-y-4 pb-16 lg:pb-0">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
-          <p className="eyebrow">Documents / PDF workspace</p>
+          <p className="eyebrow">Documents / PDF editor</p>
           <h1 className="display mt-1 truncate text-2xl text-[var(--color-ink)]">{loaded.name}</h1>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--color-ink-faint)]">
-            <span>{loaded.document.numPages} {loaded.document.numPages === 1 ? "page" : "pages"}</span>
+            <span>{pageCount} {pageCount === 1 ? "page" : "pages"}</span>
             <span aria-hidden>·</span>
             <span>{textSourceState}</span>
             <span aria-hidden>·</span>
@@ -713,10 +1048,10 @@ export default function PdfEditorWorkspace({
             className="select"
             value={exportMode}
             onChange={(event) => setExportMode(event.target.value as PdfExportMode)}
-            title="Standard preserves source objects. Secure flattened rebuilds pages from final pixels."
+            title="High-fidelity preserves the original page quality. Sanitized permanently flattens the final appearance."
           >
-            <option value="standard">Standard PDF</option>
-            <option value="secure">Secure flattened PDF</option>
+            <option value="standard">High-fidelity PDF</option>
+            <option value="secure">Sanitized flattened PDF</option>
           </select>
           <button type="button" className="btn btn-secondary" disabled={opening || exporting} onClick={() => fileInputRef.current?.click()}>
             <Upload className="h-4 w-4" aria-hidden />
@@ -744,20 +1079,58 @@ export default function PdfEditorWorkspace({
           Securely flattening page {Math.min(exportProgress.completed + 1, exportProgress.total)} of {exportProgress.total}. Keep this page open.
         </div>
       ) : null}
+      {ocrProgress ? (
+        <div className="rounded-lg border border-[var(--color-primary)] bg-[var(--color-primary-tint)] px-4 py-3" role="status" aria-live="polite">
+          <div className="flex items-center justify-between gap-3 text-sm font-medium text-[var(--color-primary)]">
+            <span className="flex items-center gap-2"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> {ocrProgress.status}</span>
+            <span className="tnum">{Math.round(ocrProgress.progress * 100)}%</span>
+          </div>
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white" aria-hidden>
+            <div className="h-full bg-[var(--color-primary)] transition-[width]" style={{ width: `${Math.round(ocrProgress.progress * 100)}%` }} />
+          </div>
+        </div>
+      ) : null}
       {exportMode === "standard" && history.present.some((overlay) => overlay.kind === "cover") ? (
         <div className="rounded-lg border border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-4 py-3 text-sm text-[var(--color-warn)]" role="status">
-          Standard PDF keeps source content beneath covers. Secure flattened PDF removes it.
+          High-fidelity output preserves every original pixel beneath repaired areas. Use sanitized output when the hidden original must be permanently removed.
         </div>
       ) : null}
 
       <section className="card overflow-hidden">
         <div className="flex min-h-14 flex-wrap items-center gap-1 border-b border-[var(--color-rule)] px-2 py-2 sm:px-3">
           <div className="flex items-center gap-1 border-r border-[var(--color-rule)] pr-2">
+            <ToolButton label="Select and move items" active={activeTool === "select"} onClick={() => setActiveTool("select")}>
+              <MousePointer2 className="h-[1.1rem] w-[1.1rem]" aria-hidden />
+            </ToolButton>
+            <ToolButton
+              label="Edit existing text"
+              active={activeTool === "edit-text"}
+              disabled={ocrProgress !== null}
+              onClick={() => {
+                setActiveTool("edit-text");
+                setInspectorTab("source");
+                setMobileInspectorOpen(true);
+              }}
+            >
+              <ScanText className="h-[1.1rem] w-[1.1rem]" aria-hidden />
+            </ToolButton>
             <ToolButton label="Add text" onClick={() => addText()}>
               <Type className="h-[1.1rem] w-[1.1rem]" aria-hidden />
             </ToolButton>
-            <ToolButton label="Add visual cover" onClick={addCover}>
+            <ToolButton label="Repair background or redact" onClick={addCover}>
               <Eraser className="h-[1.1rem] w-[1.1rem]" aria-hidden />
+            </ToolButton>
+            <ToolButton label="Highlight" onClick={() => addShape("highlight")}>
+              <Highlighter className="h-[1.1rem] w-[1.1rem]" aria-hidden />
+            </ToolButton>
+            <ToolButton label="Add rectangle" onClick={() => addShape("rectangle")}>
+              <Square className="h-[1.1rem] w-[1.1rem]" aria-hidden />
+            </ToolButton>
+            <ToolButton label="Add ellipse" onClick={() => addShape("ellipse")}>
+              <Circle className="h-[1.1rem] w-[1.1rem]" aria-hidden />
+            </ToolButton>
+            <ToolButton label="Draw or sign" active={activeTool === "ink"} onClick={() => setActiveTool(activeTool === "ink" ? "select" : "ink")}>
+              <PenTool className="h-[1.1rem] w-[1.1rem]" aria-hidden />
             </ToolButton>
             <ToolButton label="Add image or signature" onClick={() => imageInputRef.current?.click()}>
               <ImagePlus className="h-[1.1rem] w-[1.1rem]" aria-hidden />
@@ -772,6 +1145,9 @@ export default function PdfEditorWorkspace({
             </ToolButton>
             <ToolButton label="Delete selected item" disabled={!selected} onClick={removeSelected}>
               <Trash2 className="h-[1.1rem] w-[1.1rem]" aria-hidden />
+            </ToolButton>
+            <ToolButton label="Duplicate selected item" disabled={!selected} onClick={duplicateSelected}>
+              <Copy className="h-[1.1rem] w-[1.1rem]" aria-hidden />
             </ToolButton>
           </div>
           <div className="flex items-center gap-1 px-2">
@@ -793,6 +1169,18 @@ export default function PdfEditorWorkspace({
             </ToolButton>
           </div>
           <div className="ml-auto flex items-center gap-1 pl-2">
+            <ToolButton label="Move page earlier" disabled={pageNumber <= 1} onClick={() => movePage("back")}>
+              <ArrowLeft className="h-[1.1rem] w-[1.1rem]" aria-hidden />
+            </ToolButton>
+            <ToolButton label="Move page later" disabled={pageNumber >= pageCount} onClick={() => movePage("forward")}>
+              <ArrowRight className="h-[1.1rem] w-[1.1rem]" aria-hidden />
+            </ToolButton>
+            <ToolButton label="Duplicate page" onClick={duplicatePage}>
+              <Copy className="h-[1.1rem] w-[1.1rem]" aria-hidden />
+            </ToolButton>
+            <ToolButton label="Delete page" disabled={pageCount <= 1} onClick={deletePage}>
+              <Trash2 className="h-[1.1rem] w-[1.1rem]" aria-hidden />
+            </ToolButton>
             <ToolButton label="Rotate page counterclockwise" onClick={() => rotatePage("counterclockwise")}>
               <RotateCcw className="h-[1.1rem] w-[1.1rem]" aria-hidden />
             </ToolButton>
@@ -808,13 +1196,13 @@ export default function PdfEditorWorkspace({
                 type="number"
                 className="input tnum h-9 w-14 px-2 text-center"
                 min={1}
-                max={loaded.document.numPages}
+                max={pageCount}
                 value={pageNumber}
-                onChange={(event) => setPageNumber(Math.max(1, Math.min(loaded.document.numPages, Number(event.target.value) || 1)))}
+                onChange={(event) => setPageNumber(Math.max(1, Math.min(pageCount, Number(event.target.value) || 1)))}
               />
-              <span>of {loaded.document.numPages}</span>
+              <span>of {pageCount}</span>
             </label>
-            <ToolButton label="Next page" disabled={pageNumber >= loaded.document.numPages} onClick={() => setPageNumber((page) => page + 1)}>
+            <ToolButton label="Next page" disabled={pageNumber >= pageCount} onClick={() => setPageNumber((page) => page + 1)}>
               <ChevronRight className="h-[1.1rem] w-[1.1rem]" aria-hidden />
             </ToolButton>
           </div>
@@ -822,7 +1210,7 @@ export default function PdfEditorWorkspace({
 
         <div className="grid min-h-[42rem] min-w-0 grid-cols-1 lg:grid-cols-[8.5rem_minmax(0,1fr)_19rem]">
           <aside className="scroll-thin flex gap-2 overflow-x-auto border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] p-2 lg:block lg:space-y-3 lg:overflow-x-hidden lg:overflow-y-auto lg:border-b-0 lg:border-r">
-            {Array.from({ length: loaded.document.numPages }, (_, index) => index + 1).map((page) => (
+            {Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => (
               <button
                 key={page}
                 type="button"
@@ -831,7 +1219,7 @@ export default function PdfEditorWorkspace({
                 aria-label={`Open page ${page}`}
                 className={`w-24 shrink-0 rounded-md border p-1.5 text-left transition-colors lg:w-full ${page === pageNumber ? "border-[var(--color-primary)] bg-[var(--color-primary-tint)]" : "border-transparent hover:border-[var(--color-rule-strong)]"}`}
               >
-                <PdfThumbnailCanvas document={loaded.document} pageNumber={page} rotation={pageRotations[page] ?? 0} />
+                <PdfThumbnailCanvas document={loaded.document} pageNumber={pageOrder[page - 1] ?? page} rotation={pageRotations[page] ?? 0} />
                 <span className="mt-1 block text-center text-[0.7rem] font-medium text-[var(--color-ink-soft)]">Page {page}</span>
               </button>
             ))}
@@ -843,8 +1231,11 @@ export default function PdfEditorWorkspace({
           >
             <div
               ref={pageSurfaceRef}
-              onPointerDown={() => setSelectedId(null)}
-              className="relative mx-auto bg-white shadow-md"
+              onPointerDown={(event) => {
+                if (activeTool === "ink") startInkGesture(event);
+                else setSelectedId(null);
+              }}
+              className={`relative mx-auto bg-white shadow-md ${activeTool === "ink" ? "cursor-crosshair" : activeTool === "edit-text" ? "cursor-text" : "cursor-default"}`}
               style={{
                 width: pageSize.width * effectiveScale,
                 height: pageSize.height * effectiveScale,
@@ -854,12 +1245,44 @@ export default function PdfEditorWorkspace({
             >
               <PdfPageCanvas
                 document={loaded.document}
-                pageNumber={pageNumber}
+                pageNumber={sourcePageNumber}
                 scale={effectiveScale}
                 rotation={pageRotation}
                 onBaseSize={setBasePageSize}
                 className="block"
               />
+              {activeTool === "edit-text" ? filteredSourceText.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-label={`Edit detected text: ${item.text}`}
+                  title={`${item.origin === "ocr" ? "Recognized" : "Document"} text · ${item.fontName}${item.confidence === undefined ? "" : ` · ${Math.round(item.confidence)}% confidence`}`}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => replaceSourceText(item)}
+                  className="absolute z-[200] border border-dashed border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_8%,transparent)] opacity-50 transition-opacity hover:opacity-100 focus:opacity-100 focus:outline focus:outline-2 focus:outline-[var(--color-accent)]"
+                  style={{
+                    left: `${item.x * 100}%`,
+                    top: `${item.y * 100}%`,
+                    width: `${item.width * 100}%`,
+                    height: `${item.height * 100}%`,
+                    transform: `rotate(${item.rotation}deg)`,
+                    transformOrigin: "left top",
+                  }}
+                />
+              )) : null}
+              {inkDraft && inkDraft.length > 0 ? (
+                <svg className="pointer-events-none absolute inset-0 z-[220] h-full w-full" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden>
+                  <polyline
+                    points={inkDraft.map((point) => `${point.x * 1000},${point.y * 1000}`).join(" ")}
+                    fill="none"
+                    stroke="#17212b"
+                    strokeWidth={Math.max(2, 2 / Math.max(0.1, effectiveScale))}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </svg>
+              ) : null}
               {pageOverlays.map((overlay, index) => {
                 const isSelected = overlay.id === selectedId;
                 return (
@@ -868,7 +1291,7 @@ export default function PdfEditorWorkspace({
                     role="button"
                     tabIndex={0}
                     aria-pressed={isSelected}
-                    aria-label={overlay.kind === "text" ? `Text: ${overlay.text}` : overlay.kind === "image" ? "Image or signature" : "Visual cover"}
+                    aria-label={overlay.kind === "text" ? `Text: ${overlay.text}` : itemLabel(overlay)}
                     onPointerDown={(event) => startGesture(event, overlay, "move")}
                     onFocus={() => {
                       setSelectedId(overlay.id);
@@ -891,11 +1314,18 @@ export default function PdfEditorWorkspace({
                       height: `${overlay.height * 100}%`,
                       zIndex: index + 1,
                       touchAction: "none",
+                      transform: `rotate(${overlay.rotation}deg)`,
+                      transformOrigin: "left top",
                       color: overlay.kind === "text" ? overlay.color : undefined,
                       fontFamily: overlay.kind === "text" ? fontCss(overlay.fontId, customFonts) : undefined,
                       fontSize: overlay.kind === "text" ? `${overlay.fontSize * effectiveScale}px` : undefined,
-                      lineHeight: overlay.kind === "text" ? 1.2 : undefined,
+                      fontWeight: overlay.kind === "text" ? overlay.fontWeight : undefined,
+                      fontStyle: overlay.kind === "text" ? overlay.fontStyle : undefined,
+                      lineHeight: overlay.kind === "text" ? overlay.lineHeight : undefined,
+                      letterSpacing: overlay.kind === "text" ? `${overlay.letterSpacing * effectiveScale}px` : undefined,
                       textAlign: overlay.kind === "text" ? overlay.alignment : undefined,
+                      direction: overlay.kind === "text" ? overlay.direction : undefined,
+                      opacity: overlay.kind === "text" ? overlay.opacity : undefined,
                       whiteSpace: overlay.kind === "text" ? "pre-wrap" : undefined,
                     }}
                   >
@@ -913,6 +1343,45 @@ export default function PdfEditorWorkspace({
                           className="h-full w-full object-contain"
                           style={{ opacity: overlay.opacity }}
                         />
+                      ) : null}
+                      {overlay.kind === "shape" && overlay.shape === "line" ? (
+                        <svg className="block h-full w-full overflow-visible" aria-hidden>
+                          <line
+                            x1="0"
+                            y1="0"
+                            x2="100%"
+                            y2="100%"
+                            stroke={overlay.strokeColor}
+                            strokeWidth={Math.max(1, overlay.strokeWidth * effectiveScale)}
+                            strokeOpacity={overlay.opacity}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        </svg>
+                      ) : null}
+                      {overlay.kind === "shape" && overlay.shape !== "line" ? (
+                        <span
+                          className="block h-full w-full"
+                          style={{
+                            background: overlay.fillColor,
+                            border: overlay.strokeWidth > 0 ? `${Math.max(1, overlay.strokeWidth * effectiveScale)}px solid ${overlay.strokeColor}` : undefined,
+                            borderRadius: overlay.shape === "ellipse" ? "50%" : undefined,
+                            opacity: overlay.opacity,
+                          }}
+                        />
+                      ) : null}
+                      {overlay.kind === "ink" ? (
+                        <svg className="block h-full w-full overflow-visible" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden>
+                          <polyline
+                            points={overlay.points.map((point) => `${point.x * 1000},${point.y * 1000}`).join(" ")}
+                            fill="none"
+                            stroke={overlay.color}
+                            strokeWidth={Math.max(1, overlay.strokeWidth * effectiveScale)}
+                            strokeOpacity={overlay.opacity}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        </svg>
                       ) : null}
                     </div>
                     {isSelected ? (
@@ -940,7 +1409,7 @@ export default function PdfEditorWorkspace({
             <div className="flex items-center gap-2 p-3">
               <div className="segmented-control grid min-w-0 flex-1 grid-cols-2" role="group" aria-label="Inspector view">
                 <button type="button" aria-pressed={inspectorTab === "properties"} onClick={() => setInspectorTab("properties")}>Properties</button>
-                <button type="button" aria-pressed={inspectorTab === "source"} onClick={() => setInspectorTab("source")}>Source text</button>
+                <button type="button" aria-pressed={inspectorTab === "source"} onClick={() => { setInspectorTab("source"); setActiveTool("edit-text"); }}>Source text</button>
               </div>
               <div className="shrink-0 lg:hidden">
                 <button
@@ -966,7 +1435,7 @@ export default function PdfEditorWorkspace({
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <p className="eyebrow">Selected item</p>
-                        <p className="mt-1 text-sm font-semibold">{selected.kind === "text" ? "Text box" : selected.kind === "image" ? "Image / signature" : "Visual cover"}</p>
+                        <p className="mt-1 text-sm font-semibold">{itemLabel(selected)}</p>
                       </div>
                       <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" onClick={removeSelected} aria-label="Delete selected item" title="Delete">
                         <Trash2 className="h-4 w-4" aria-hidden />
@@ -986,10 +1455,26 @@ export default function PdfEditorWorkspace({
                         <label className="block text-xs font-semibold text-[var(--color-ink-soft)]">
                           Font
                           <select className="select mt-1 w-full" value={selected.fontId} onChange={(event) => updateSelected({ fontId: event.target.value } as Partial<PdfTextOverlay>)}>
-                            {STANDARD_FONTS.map((font) => <option key={font.id} value={font.id}>{font.label}</option>)}
-                            {customFonts.map((font) => <option key={font.id} value={font.id}>{font.name}</option>)}
+                            <optgroup label="Built-in fonts">
+                              {STANDARD_FONTS.map((font) => <option key={font.id} value={font.id}>{font.label}</option>)}
+                            </optgroup>
+                            {customFonts.some((font) => font.source === "document") ? (
+                              <optgroup label="Fonts recovered from this PDF">
+                                {customFonts.filter((font) => font.source === "document").map((font) => <option key={font.id} value={font.id}>{font.name}</option>)}
+                              </optgroup>
+                            ) : null}
+                            {customFonts.some((font) => font.source === "imported") ? (
+                              <optgroup label="Imported fonts">
+                                {customFonts.filter((font) => font.source === "imported").map((font) => <option key={font.id} value={font.id}>{font.name}</option>)}
+                              </optgroup>
+                            ) : null}
                           </select>
                         </label>
+                        {selected.sourceFontName ? (
+                          <p className="rounded-md bg-[var(--color-surface-muted)] px-2.5 py-2 text-xs text-[var(--color-ink-soft)]">
+                            Appearance match: <strong>{selected.sourceFontName}</strong>. Scanned documents contain no recoverable font file, so use font import when an exact licensed font is required.
+                          </p>
+                        ) : null}
                         <input
                           ref={fontInputRef}
                           type="file"
@@ -1004,6 +1489,29 @@ export default function PdfEditorWorkspace({
                           <Upload className="h-4 w-4" aria-hidden />
                           Import TTF or OTF font
                         </button>
+
+                        <div className="segmented-control grid w-full grid-cols-2" role="group" aria-label="Font style">
+                          <button
+                            type="button"
+                            aria-label="Bold"
+                            title="Bold"
+                            aria-pressed={selected.fontWeight === 700}
+                            onClick={() => updateSelected({ fontWeight: selected.fontWeight === 700 ? 400 : 700 } as Partial<PdfTextOverlay>)}
+                            className="justify-center"
+                          >
+                            <Bold className="h-4 w-4" aria-hidden />
+                          </button>
+                          <button
+                            type="button"
+                            aria-label="Italic"
+                            title="Italic"
+                            aria-pressed={selected.fontStyle === "italic"}
+                            onClick={() => updateSelected({ fontStyle: selected.fontStyle === "italic" ? "normal" : "italic" } as Partial<PdfTextOverlay>)}
+                            className="justify-center"
+                          >
+                            <Italic className="h-4 w-4" aria-hidden />
+                          </button>
+                        </div>
 
                         <div className="grid grid-cols-2 gap-3">
                           <label className="text-xs font-semibold text-[var(--color-ink-soft)]">
@@ -1032,6 +1540,57 @@ export default function PdfEditorWorkspace({
                           </label>
                         </div>
 
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="text-xs font-semibold text-[var(--color-ink-soft)]">
+                            Line spacing
+                            <input
+                              className="input tnum mt-1 w-full"
+                              type="number"
+                              min={0.8}
+                              max={3}
+                              step={0.05}
+                              value={selected.lineHeight}
+                              onChange={(event) => updateSelected({ lineHeight: Math.max(0.8, Math.min(3, Number(event.target.value) || 1)) } as Partial<PdfTextOverlay>)}
+                            />
+                          </label>
+                          <label className="text-xs font-semibold text-[var(--color-ink-soft)]">
+                            Letter spacing
+                            <input
+                              className="input tnum mt-1 w-full"
+                              type="number"
+                              min={-5}
+                              max={20}
+                              step={0.1}
+                              value={selected.letterSpacing}
+                              onChange={(event) => updateSelected({ letterSpacing: Math.max(-5, Math.min(20, Number(event.target.value) || 0)) } as Partial<PdfTextOverlay>)}
+                            />
+                          </label>
+                          <label className="text-xs font-semibold text-[var(--color-ink-soft)]">
+                            Opacity
+                            <input
+                              className="input tnum mt-1 w-full"
+                              type="number"
+                              min={10}
+                              max={100}
+                              step={5}
+                              value={Math.round(selected.opacity * 100)}
+                              onChange={(event) => updateSelected({ opacity: Math.max(0.1, Math.min(1, Number(event.target.value) / 100 || 0.1)) } as Partial<PdfTextOverlay>)}
+                            />
+                          </label>
+                          <label className="text-xs font-semibold text-[var(--color-ink-soft)]">
+                            Rotation
+                            <input
+                              className="input tnum mt-1 w-full"
+                              type="number"
+                              min={-359}
+                              max={359}
+                              step={1}
+                              value={selected.rotation}
+                              onChange={(event) => updateSelected({ rotation: Number(event.target.value) || 0 } as Partial<PdfTextOverlay>)}
+                            />
+                          </label>
+                        </div>
+
                         <div>
                           <p className="text-xs font-semibold text-[var(--color-ink-soft)]">Alignment</p>
                           <div className="segmented-control mt-1 grid w-full grid-cols-3" role="group" aria-label="Text alignment">
@@ -1056,21 +1615,29 @@ export default function PdfEditorWorkspace({
                         </div>
                       </>
                     ) : selected.kind === "cover" ? (
-                      <div>
-                        <p className="text-xs font-semibold text-[var(--color-ink-soft)]">Cover color</p>
-                        <div className="segmented-control mt-1 grid w-full grid-cols-2" role="group" aria-label="Cover color">
-                          <button type="button" aria-pressed={selected.color === "#ffffff"} onClick={() => updateSelected({ color: "#ffffff" })}>
-                            <span className="h-4 w-4 border border-[var(--color-rule-strong)] bg-white" aria-hidden /> White
-                          </button>
-                          <button type="button" aria-pressed={selected.color === "#111111"} onClick={() => updateSelected({ color: "#111111" })}>
-                            <span className="h-4 w-4 bg-[#111111]" aria-hidden /> Black
-                          </button>
+                      <div className="space-y-3">
+                        <label className="block text-xs font-semibold text-[var(--color-ink-soft)]">
+                          Background color
+                          <span className="mt-1 flex min-h-9 items-center gap-2 rounded-lg border border-[var(--color-rule-strong)] px-2">
+                            <input
+                              type="color"
+                              className="h-6 w-8 cursor-pointer border-0 bg-transparent p-0"
+                              value={selected.color}
+                              onChange={(event) => updateSelected({ color: event.target.value })}
+                              aria-label="Background repair color"
+                            />
+                            <span className="tnum text-xs font-normal">{selected.color.toUpperCase()}</span>
+                          </span>
+                        </label>
+                        <div className="segmented-control grid w-full grid-cols-2" role="group" aria-label="Common repair colors">
+                          <button type="button" aria-pressed={selected.color === "#ffffff"} onClick={() => updateSelected({ color: "#ffffff" })}>White</button>
+                          <button type="button" aria-pressed={selected.color === "#111111"} onClick={() => updateSelected({ color: "#111111" })}>Black</button>
                         </div>
                         <p className={`mt-2 text-xs font-medium ${exportMode === "secure" ? "text-[var(--color-success)]" : "text-[var(--color-warn)]"}`}>
-                          {exportMode === "secure" ? "Permanent in secure flattened output" : "Visual-only in standard output"}
+                          {exportMode === "secure" ? "Permanently removed in sanitized output" : "Original quality preserved beneath this repair"}
                         </p>
                       </div>
-                    ) : (
+                    ) : selected.kind === "image" ? (
                       <div className="space-y-3">
                         <p className="truncate text-xs text-[var(--color-ink-faint)]">{images.find((image) => image.id === selected.imageId)?.name ?? "Imported image"}</p>
                         <label className="block text-xs font-semibold text-[var(--color-ink-soft)]">
@@ -1088,6 +1655,53 @@ export default function PdfEditorWorkspace({
                             <span className="tnum w-10 text-right text-xs">{Math.round(selected.opacity * 100)}%</span>
                           </div>
                         </label>
+                      </div>
+                    ) : selected.kind === "shape" ? (
+                      <div className="space-y-3">
+                        <label className="block text-xs font-semibold text-[var(--color-ink-soft)]">
+                          Shape
+                          <select className="select mt-1 w-full" value={selected.shape} onChange={(event) => updateSelected({ shape: event.target.value as typeof selected.shape })}>
+                            <option value="highlight">Highlight</option>
+                            <option value="rectangle">Rectangle</option>
+                            <option value="ellipse">Ellipse</option>
+                            <option value="line">Line</option>
+                          </select>
+                        </label>
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="text-xs font-semibold text-[var(--color-ink-soft)]">
+                            Fill
+                            <input type="color" className="input mt-1 h-9 w-full p-1" value={selected.fillColor} onChange={(event) => updateSelected({ fillColor: event.target.value })} />
+                          </label>
+                          <label className="text-xs font-semibold text-[var(--color-ink-soft)]">
+                            Border
+                            <input type="color" className="input mt-1 h-9 w-full p-1" value={selected.strokeColor} onChange={(event) => updateSelected({ strokeColor: event.target.value })} />
+                          </label>
+                          <label className="text-xs font-semibold text-[var(--color-ink-soft)]">
+                            Border width
+                            <input type="number" className="input tnum mt-1 w-full" min={0} max={20} step={0.5} value={selected.strokeWidth} onChange={(event) => updateSelected({ strokeWidth: Math.max(0, Math.min(20, Number(event.target.value) || 0)) })} />
+                          </label>
+                          <label className="text-xs font-semibold text-[var(--color-ink-soft)]">
+                            Opacity
+                            <input type="number" className="input tnum mt-1 w-full" min={5} max={100} step={5} value={Math.round(selected.opacity * 100)} onChange={(event) => updateSelected({ opacity: Math.max(0.05, Math.min(1, Number(event.target.value) / 100 || 0.05)) })} />
+                          </label>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <label className="block text-xs font-semibold text-[var(--color-ink-soft)]">
+                          Ink color
+                          <input type="color" className="input mt-1 h-9 w-full p-1" value={selected.color} onChange={(event) => updateSelected({ color: event.target.value })} />
+                        </label>
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="text-xs font-semibold text-[var(--color-ink-soft)]">
+                            Stroke width
+                            <input type="number" className="input tnum mt-1 w-full" min={0.5} max={20} step={0.5} value={selected.strokeWidth} onChange={(event) => updateSelected({ strokeWidth: Math.max(0.5, Math.min(20, Number(event.target.value) || 0.5)) })} />
+                          </label>
+                          <label className="text-xs font-semibold text-[var(--color-ink-soft)]">
+                            Opacity
+                            <input type="number" className="input tnum mt-1 w-full" min={5} max={100} step={5} value={Math.round(selected.opacity * 100)} onChange={(event) => updateSelected({ opacity: Math.max(0.05, Math.min(1, Number(event.target.value) / 100 || 0.05)) })} />
+                          </label>
+                        </div>
                       </div>
                     )}
 
@@ -1114,6 +1728,20 @@ export default function PdfEditorWorkspace({
                           </label>
                         ))}
                       </div>
+                      {selected.kind !== "text" ? (
+                        <label className="mt-2 block text-[0.7rem] text-[var(--color-ink-faint)]">
+                          Rotation (degrees)
+                          <input
+                            type="number"
+                            className="input tnum mt-0.5 w-full"
+                            min={-359}
+                            max={359}
+                            step={1}
+                            value={selected.rotation}
+                            onChange={(event) => updateSelected({ rotation: Number(event.target.value) || 0 } as Partial<PdfOverlay>)}
+                          />
+                        </label>
+                      ) : null}
                     </div>
 
                     <div>
@@ -1126,6 +1754,9 @@ export default function PdfEditorWorkspace({
                           <ArrowDown className="h-4 w-4" aria-hidden /> Backward
                         </button>
                       </div>
+                      <button type="button" className="btn btn-sm btn-secondary mt-2 w-full" onClick={duplicateSelected}>
+                        <Copy className="h-4 w-4" aria-hidden /> Duplicate
+                      </button>
                     </div>
                   </>
                 )}
@@ -1137,30 +1768,59 @@ export default function PdfEditorWorkspace({
                     <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> Checking page text
                   </div>
                 ) : sourceText.length === 0 ? (
-                  <div>
+                  <div className="py-3">
                     <p className="text-sm font-semibold">Image or scanned page</p>
-                    <p className="mt-2 text-xs font-medium text-[var(--color-warn)]">No searchable text · OCR not enabled</p>
+                    <p className="mt-2 text-xs text-[var(--color-ink-soft)]">Recognize the visible wording locally, then select it directly on the page. The PDF is not uploaded.</p>
+                    <button type="button" className="btn btn-sm btn-primary mt-4 w-full" disabled={ocrProgress !== null} onClick={() => void recognizeCurrentPage()}>
+                      {ocrProgress ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <ScanText className="h-4 w-4" aria-hidden />}
+                      Recognize text on this page
+                    </button>
                   </div>
                 ) : (
                   <div>
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold">Detected source text</p>
-                        <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{sourceText.length} text {sourceText.length === 1 ? "item" : "items"} on this page</p>
+                        <p className="text-sm font-semibold">Editable page text</p>
+                        <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{sourceText.length} {sourceText.length === 1 ? "region" : "regions"} · click a box on the page or choose Edit below</p>
                       </div>
                     </div>
+                    <label className="relative mt-3 block">
+                      <span className="sr-only">Search page text</span>
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-ink-faint)]" aria-hidden />
+                      <input
+                        type="search"
+                        className="input w-full pl-9"
+                        value={sourceQuery}
+                        onChange={(event) => setSourceQuery(event.target.value)}
+                        placeholder="Search this page"
+                      />
+                    </label>
                     <ul className="mt-3 divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)]">
-                      {sourceText.slice(0, 80).map((item) => (
-                        <li key={item.id} className="flex items-start gap-2 py-2">
-                          <span className="min-w-0 flex-1 break-words text-xs text-[var(--color-ink-soft)]">{item.text}</span>
-                          <button type="button" className="btn btn-sm btn-secondary shrink-0" onClick={() => replaceSourceText(item)} aria-label={`Cover and edit ${item.text}`} title="Cover the original and add editable replacement text">
+                      {filteredSourceText.map((item) => (
+                        <li key={item.id} className="flex items-start gap-2 py-2.5">
+                          <span className="min-w-0 flex-1">
+                            <span className="block break-words text-xs text-[var(--color-ink-soft)]">{item.text}</span>
+                            <span className="mt-1 flex flex-wrap items-center gap-1.5 text-[0.68rem] text-[var(--color-ink-faint)]">
+                              <span>{item.fontName}</span>
+                              <span aria-hidden>·</span>
+                              <span>{Math.round(item.fontSize * 10) / 10} pt</span>
+                              {item.confidence === undefined ? null : <><span aria-hidden>·</span><span>{Math.round(item.confidence)}% confidence</span></>}
+                              <span className="h-3 w-3 border border-[var(--color-rule-strong)]" style={{ background: item.backgroundColor }} title={`Sampled background ${item.backgroundColor}`} aria-hidden />
+                            </span>
+                          </span>
+                          <button type="button" className="btn btn-sm btn-secondary shrink-0" onClick={() => replaceSourceText(item)} aria-label={`Edit ${item.text}`} title="Repair the original area and add matched editable text">
                             <Type className="h-4 w-4" aria-hidden />
-                            Cover &amp; edit
+                            Edit
                           </button>
                         </li>
                       ))}
                     </ul>
-                    {sourceText.length > 80 ? <p className="mt-2 text-xs text-[var(--color-ink-faint)]">Showing the first 80 items.</p> : null}
+                    {filteredSourceText.length === 0 ? <p className="py-6 text-center text-xs text-[var(--color-ink-faint)]">No page text matches that search.</p> : null}
+                    {sourceText.some((item) => item.origin === "ocr") ? (
+                      <button type="button" className="btn btn-sm btn-ghost mt-3 w-full" disabled={ocrProgress !== null} onClick={() => void recognizeCurrentPage()}>
+                        <ScanText className="h-4 w-4" aria-hidden /> Recognize this page again
+                      </button>
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -1187,6 +1847,7 @@ export default function PdfEditorWorkspace({
               type="button"
               onClick={() => {
                 setInspectorTab("source");
+                setActiveTool("edit-text");
                 setMobileInspectorOpen(true);
               }}
             >

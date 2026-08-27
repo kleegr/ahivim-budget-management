@@ -5,8 +5,11 @@ import {
   commitPdfHistory,
   createCoverOverlay,
   createImageOverlay,
+  createInkOverlay,
+  createShapeOverlay,
   createSourceTextReplacement,
   createTextOverlay,
+  duplicateOverlay,
   hasPdfEditorChanges,
   moveOverlay,
   normalizePdfEditorSourcePath,
@@ -85,6 +88,56 @@ describe("PDF editor history", () => {
     expect(undoPdfHistory(history).present).toEqual([]);
   });
 
+  it("preserves detected typography and sampled background in a source replacement", () => {
+    const [cover, text] = createSourceTextReplacement(1, {
+      text: "Invoice date",
+      x: 0.2,
+      y: 0.3,
+      width: 0.18,
+      height: 0.035,
+      fontSize: 10.5,
+      fontId: "times",
+      fontName: "Times New Roman Bold",
+      fontWeight: 700,
+      fontStyle: "italic",
+      color: "#222222",
+      backgroundColor: "#eeeeee",
+      alignment: "right",
+      opacity: 0.9,
+      lineHeight: 1.1,
+      letterSpacing: 0.25,
+      rotation: 2,
+      direction: "rtl",
+    });
+
+    expect(cover.color).toBe("#eeeeee");
+    expect(text).toMatchObject({
+      fontId: "times",
+      sourceFontName: "Times New Roman Bold",
+      fontWeight: 700,
+      fontStyle: "italic",
+      color: "#222222",
+      alignment: "right",
+      opacity: 0.9,
+      lineHeight: 1.1,
+      letterSpacing: 0.25,
+      rotation: 2,
+      direction: "rtl",
+    });
+  });
+
+  it("creates movable drawing and shape layers and duplicates without sharing identity", () => {
+    const ink = createInkOverlay(1, [{ x: 0.1, y: 0.2 }, { x: 0.2, y: 0.25 }, { x: 0.3, y: 0.22 }]);
+    const highlight = createShapeOverlay(1, "highlight");
+    const duplicate = duplicateOverlay(highlight);
+
+    expect(ink.points).toHaveLength(3);
+    expect(ink.width).toBeGreaterThan(0.1);
+    expect(highlight).toMatchObject({ kind: "shape", shape: "highlight", opacity: 0.45 });
+    expect(duplicate.id).not.toBe(highlight.id);
+    expect(duplicate.x).toBeGreaterThan(highlight.x);
+  });
+
   it("treats page rotations as unsaved work", () => {
     expect(hasPdfEditorChanges([], {})).toBe(false);
     expect(hasPdfEditorChanges([], { 1: 90 })).toBe(true);
@@ -130,6 +183,30 @@ describe("PDF overlay export", () => {
     expect(exported.getPage(1).node.Contents()).toBeDefined();
   });
 
+  it("exports shapes, ink, richer text, and a reordered duplicate page working copy", async () => {
+    const sourceDocument = await PDFDocument.create();
+    sourceDocument.addPage([612, 792]);
+    sourceDocument.addPage([792, 612]);
+    const source = await sourceDocument.save();
+    const output = await exportPdfWithOverlays(source, [
+      createShapeOverlay(1, "highlight"),
+      createInkOverlay(1, [{ x: 0.1, y: 0.1 }, { x: 0.4, y: 0.2 }]),
+      createTextOverlay(2, {
+        text: "Matched text",
+        fontWeight: 700,
+        fontStyle: "italic",
+        letterSpacing: 0.5,
+        rotation: 4,
+      }),
+    ], [], [], [2, 1, 2]);
+
+    const exported = await PDFDocument.load(output);
+    expect(exported.getPageCount()).toBe(3);
+    expect(exported.getPage(0).getSize()).toEqual({ width: 792, height: 612 });
+    expect(exported.getPage(1).getSize()).toEqual({ width: 612, height: 792 });
+    expect(exported.getPage(2).getSize()).toEqual({ width: 792, height: 612 });
+  });
+
   it("builds a new PDF from sanitized raster pages without carrying source objects", async () => {
     const output = await buildPdfFromRasterPages([
       { pngBytes: ONE_PIXEL_PNG, width: 612, height: 792 },
@@ -142,6 +219,10 @@ describe("PDF overlay export", () => {
     expect(requiresSecureRasterExport("secure", {})).toBe(true);
     expect(requiresSecureRasterExport("standard", { 1: 90 })).toBe(true);
     expect(requiresSecureRasterExport("standard", { 1: 0 })).toBe(false);
+    expect(requiresSecureRasterExport("standard", {}, [{
+      ...createTextOverlay(1),
+      rotation: 15,
+    }])).toBe(true);
   });
 
   it("adapts secure resolution to a total pixel budget and rejects unsafe workloads", () => {

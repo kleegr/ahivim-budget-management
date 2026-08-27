@@ -2,6 +2,12 @@ export type PdfTextAlignment = "left" | "center" | "right";
 
 export type PdfStandardFont = "helvetica" | "times" | "courier";
 
+export type PdfFontWeight = 400 | 700;
+
+export type PdfFontStyle = "normal" | "italic";
+
+export type PdfShapeType = "highlight" | "rectangle" | "ellipse" | "line";
+
 export interface PdfOverlayBase {
   id: string;
   page: number;
@@ -10,6 +16,7 @@ export interface PdfOverlayBase {
   y: number;
   width: number;
   height: number;
+  rotation: number;
 }
 
 export interface PdfTextOverlay extends PdfOverlayBase {
@@ -19,11 +26,18 @@ export interface PdfTextOverlay extends PdfOverlayBase {
   fontSize: number;
   color: string;
   alignment: PdfTextAlignment;
+  fontWeight: PdfFontWeight;
+  fontStyle: PdfFontStyle;
+  opacity: number;
+  lineHeight: number;
+  letterSpacing: number;
+  direction: "ltr" | "rtl";
+  sourceFontName?: string;
 }
 
 export interface PdfCoverOverlay extends PdfOverlayBase {
   kind: "cover";
-  color: "#ffffff" | "#111111";
+  color: string;
 }
 
 export interface PdfImageOverlay extends PdfOverlayBase {
@@ -32,7 +46,30 @@ export interface PdfImageOverlay extends PdfOverlayBase {
   opacity: number;
 }
 
-export type PdfOverlay = PdfTextOverlay | PdfCoverOverlay | PdfImageOverlay;
+export interface PdfShapeOverlay extends PdfOverlayBase {
+  kind: "shape";
+  shape: PdfShapeType;
+  fillColor: string;
+  strokeColor: string;
+  strokeWidth: number;
+  opacity: number;
+}
+
+export interface PdfInkPoint {
+  x: number;
+  y: number;
+}
+
+export interface PdfInkOverlay extends PdfOverlayBase {
+  kind: "ink";
+  /** Points are normalized within the overlay's own bounding box. */
+  points: PdfInkPoint[];
+  color: string;
+  strokeWidth: number;
+  opacity: number;
+}
+
+export type PdfOverlay = PdfTextOverlay | PdfCoverOverlay | PdfImageOverlay | PdfShapeOverlay | PdfInkOverlay;
 
 export interface PdfEditorHistory {
   past: PdfOverlay[][];
@@ -47,6 +84,18 @@ export interface PdfSourceTextPlacement {
   width: number;
   height: number;
   fontSize: number;
+  fontId?: string;
+  fontName?: string;
+  fontWeight?: PdfFontWeight;
+  fontStyle?: PdfFontStyle;
+  color?: string;
+  alignment?: PdfTextAlignment;
+  opacity?: number;
+  lineHeight?: number;
+  letterSpacing?: number;
+  rotation?: number;
+  direction?: "ltr" | "rtl";
+  backgroundColor?: string;
 }
 
 export const EMPTY_PDF_HISTORY: PdfEditorHistory = {
@@ -75,11 +124,18 @@ export function createTextOverlay(page: number, patch: Partial<PdfTextOverlay> =
     y: 0.14,
     width: 0.42,
     height: 0.09,
+    rotation: 0,
     text: "Type replacement text",
     fontId: "helvetica",
     fontSize: 14,
     color: "#17212b",
     alignment: "left",
+    fontWeight: 400,
+    fontStyle: "normal",
+    opacity: 1,
+    lineHeight: 1.2,
+    letterSpacing: 0,
+    direction: "ltr",
     ...patch,
   }) as PdfTextOverlay;
 }
@@ -93,6 +149,7 @@ export function createCoverOverlay(page: number, color: PdfCoverOverlay["color"]
     y: 0.22,
     width: 0.38,
     height: 0.06,
+    rotation: 0,
     color,
   }) as PdfCoverOverlay;
 }
@@ -111,9 +168,67 @@ export function createImageOverlay(
     y: 0.18,
     width,
     height: Math.max(0.04, Math.min(0.3, width / Math.max(0.2, aspectRatio))),
+    rotation: 0,
     imageId,
     opacity: 1,
   }) as PdfImageOverlay;
+}
+
+export function createShapeOverlay(
+  page: number,
+  shape: PdfShapeType = "highlight",
+  patch: Partial<PdfShapeOverlay> = {},
+): PdfShapeOverlay {
+  return normalizeOverlay({
+    id: createOverlayId(),
+    kind: "shape",
+    page,
+    x: 0.14,
+    y: 0.2,
+    width: 0.42,
+    height: shape === "line" ? 0.025 : 0.055,
+    rotation: 0,
+    shape,
+    fillColor: shape === "highlight" ? "#fff176" : "#ffffff",
+    strokeColor: shape === "highlight" ? "#fff176" : "#d04444",
+    strokeWidth: shape === "highlight" ? 0 : 1.5,
+    opacity: shape === "highlight" ? 0.45 : 1,
+    ...patch,
+  }) as PdfShapeOverlay;
+}
+
+export function createInkOverlay(
+  page: number,
+  pagePoints: PdfInkPoint[],
+  patch: Partial<PdfInkOverlay> = {},
+): PdfInkOverlay {
+  const points = pagePoints.length > 0 ? pagePoints : [{ x: 0.18, y: 0.2 }, { x: 0.42, y: 0.26 }];
+  const padding = 0.006;
+  const minimumX = Math.max(0, Math.min(...points.map((point) => point.x)) - padding);
+  const minimumY = Math.max(0, Math.min(...points.map((point) => point.y)) - padding);
+  const maximumX = Math.min(1, Math.max(...points.map((point) => point.x)) + padding);
+  const maximumY = Math.min(1, Math.max(...points.map((point) => point.y)) + padding);
+  const width = Math.max(MIN_SIZE, maximumX - minimumX);
+  const height = Math.max(MIN_SIZE, maximumY - minimumY);
+
+  return normalizeOverlay({
+    id: createOverlayId(),
+    kind: "ink",
+    page,
+    x: minimumX,
+    y: minimumY,
+    width,
+    height,
+    rotation: 0,
+    points: points.map((point) => ({
+      x: clamp((point.x - minimumX) / width, 0, 1),
+      y: clamp((point.y - minimumY) / height, 0, 1),
+    })),
+    color: "#17212b",
+    strokeWidth: 2,
+    opacity: 1,
+    ...patch,
+  }) as PdfInkOverlay;
 }
 
 /**
@@ -135,7 +250,8 @@ export function createSourceTextReplacement(
     y: source.y - verticalPadding,
     width: source.width + horizontalPadding * 2,
     height: source.height + verticalPadding * 2,
-    color: "#ffffff",
+    rotation: source.rotation ?? 0,
+    color: source.backgroundColor ?? "#ffffff",
   } as PdfCoverOverlay);
   const text = createTextOverlay(page, {
     text: source.text,
@@ -144,6 +260,17 @@ export function createSourceTextReplacement(
     width: source.width,
     height: source.height,
     fontSize: source.fontSize,
+    fontId: source.fontId ?? "helvetica",
+    sourceFontName: source.fontName,
+    fontWeight: source.fontWeight ?? 400,
+    fontStyle: source.fontStyle ?? "normal",
+    color: source.color ?? "#111111",
+    alignment: source.alignment ?? "left",
+    opacity: source.opacity ?? 1,
+    lineHeight: source.lineHeight ?? 1.15,
+    letterSpacing: source.letterSpacing ?? 0,
+    rotation: source.rotation ?? 0,
+    direction: source.direction ?? "ltr",
   });
   return [cover, text];
 }
@@ -175,6 +302,7 @@ export function rotateOverlayPosition(
       y: overlay.x,
       width: overlay.height,
       height: overlay.width,
+      rotation: overlay.rotation + 90,
     });
   }
   return normalizeOverlay({
@@ -183,6 +311,7 @@ export function rotateOverlayPosition(
     y: 1 - overlay.x - overlay.width,
     width: overlay.height,
     height: overlay.width,
+    rotation: overlay.rotation - 90,
   });
 }
 
@@ -195,6 +324,7 @@ export function normalizeOverlay<T extends PdfOverlay>(overlay: T): T {
     height,
     x: clamp(overlay.x, 0, 1 - width),
     y: clamp(overlay.y, 0, 1 - height),
+    rotation: ((overlay.rotation % 360) + 360) % 360,
   };
 }
 
@@ -241,4 +371,13 @@ export function redoPdfHistory(history: PdfEditorHistory): PdfEditorHistory {
 
 export function deleteOverlay(overlays: PdfOverlay[], id: string): PdfOverlay[] {
   return overlays.filter((overlay) => overlay.id !== id);
+}
+
+export function duplicateOverlay(overlay: PdfOverlay): PdfOverlay {
+  return normalizeOverlay({
+    ...overlay,
+    id: createOverlayId(),
+    x: overlay.x + 0.015,
+    y: overlay.y + 0.015,
+  });
 }

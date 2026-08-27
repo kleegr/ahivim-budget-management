@@ -208,11 +208,11 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
 
 const ADMIN_DESTINATIONS: readonly NavigationDestination[] = [
   {
-    id: "pdf-workspace",
-    label: "PDF workspace",
+    id: "pdf-editor",
+    label: "PDF editor",
     href: "/documents/pdf-editor",
-    hint: "Edit cover sheets and forms without changing the source",
-    keywords: "documents pdf cover sheets forms editor",
+    hint: "Edit text, scans, forms, signatures and page artwork",
+    keywords: "documents pdf ocr scans cover sheets forms editor signature redact",
     gate: "documents",
   },
   {

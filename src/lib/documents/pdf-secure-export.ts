@@ -15,6 +15,7 @@ export interface SecurePdfExportOptions {
   document: PDFDocumentProxy;
   overlays: PdfOverlay[];
   pageRotations: Record<number, number>;
+  pageOrder?: number[];
   fontFamilies: Record<string, string>;
   images: PdfImageSource[];
   onProgress?: (completedPages: number, totalPages: number) => void;
@@ -165,21 +166,97 @@ function paintText(
   const boxWidth = overlay.width * width;
   const boxHeight = overlay.height * height;
   const fontSize = overlay.fontSize * scale;
-  const lineHeight = fontSize * 1.2;
+  const lineHeight = fontSize * overlay.lineHeight;
 
   context.save();
+  context.translate(x, y);
+  context.rotate(overlay.rotation * Math.PI / 180);
   context.beginPath();
-  context.rect(x, y, boxWidth, boxHeight);
+  context.rect(0, 0, boxWidth, boxHeight);
   context.clip();
-  context.font = `${fontSize}px ${fontFamily}`;
+  context.globalAlpha = overlay.opacity;
+  context.font = `${overlay.fontStyle} ${overlay.fontWeight} ${fontSize}px ${fontFamily}`;
+  (context as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing = `${overlay.letterSpacing * scale}px`;
   context.fillStyle = overlay.color;
   context.textBaseline = "top";
+  context.direction = overlay.direction;
   context.textAlign = overlay.alignment === "center" ? "center" : overlay.alignment === "right" ? "right" : "left";
-  const textX = overlay.alignment === "center" ? x + boxWidth / 2 : overlay.alignment === "right" ? x + boxWidth : x;
+  const textX = overlay.alignment === "center" ? boxWidth / 2 : overlay.alignment === "right" ? boxWidth : 0;
   const maxLines = Math.max(1, Math.floor(boxHeight / lineHeight));
   wrapCanvasText(context, overlay.text, boxWidth).slice(0, maxLines).forEach((line, index) => {
-    context.fillText(line, textX, y + index * lineHeight, boxWidth);
+    context.fillText(line, textX, index * lineHeight, boxWidth);
   });
+  context.restore();
+}
+
+function paintShape(
+  context: CanvasRenderingContext2D,
+  overlay: Extract<PdfOverlay, { kind: "shape" }>,
+  width: number,
+  height: number,
+  scale: number,
+): void {
+  const x = overlay.x * width;
+  const y = overlay.y * height;
+  const overlayWidth = overlay.width * width;
+  const overlayHeight = overlay.height * height;
+  context.save();
+  context.translate(x, y);
+  context.rotate(overlay.rotation * Math.PI / 180);
+  context.globalAlpha = overlay.opacity;
+  context.fillStyle = overlay.fillColor;
+  context.strokeStyle = overlay.strokeColor;
+  context.lineWidth = overlay.strokeWidth * scale;
+  if (overlay.shape === "ellipse") {
+    context.beginPath();
+    context.ellipse(overlayWidth / 2, overlayHeight / 2, overlayWidth / 2, overlayHeight / 2, 0, 0, Math.PI * 2);
+    context.fill();
+    if (overlay.strokeWidth > 0) context.stroke();
+  } else if (overlay.shape === "line") {
+    context.beginPath();
+    context.moveTo(0, 0);
+    context.lineTo(overlayWidth, overlayHeight);
+    context.stroke();
+  } else {
+    context.fillRect(0, 0, overlayWidth, overlayHeight);
+    if (overlay.strokeWidth > 0) context.strokeRect(0, 0, overlayWidth, overlayHeight);
+  }
+  context.restore();
+}
+
+function paintInk(
+  context: CanvasRenderingContext2D,
+  overlay: Extract<PdfOverlay, { kind: "ink" }>,
+  width: number,
+  height: number,
+  scale: number,
+): void {
+  const first = overlay.points[0];
+  if (!first) return;
+  const x = overlay.x * width;
+  const y = overlay.y * height;
+  const overlayWidth = overlay.width * width;
+  const overlayHeight = overlay.height * height;
+  context.save();
+  context.translate(x, y);
+  context.rotate(overlay.rotation * Math.PI / 180);
+  context.globalAlpha = overlay.opacity;
+  context.strokeStyle = overlay.color;
+  context.lineWidth = overlay.strokeWidth * scale;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.beginPath();
+  context.moveTo(
+    first.x * overlayWidth,
+    first.y * overlayHeight,
+  );
+  for (const point of overlay.points.slice(1)) {
+    context.lineTo(
+      point.x * overlayWidth,
+      point.y * overlayHeight,
+    );
+  }
+  context.stroke();
   context.restore();
 }
 
@@ -199,16 +276,33 @@ async function paintOverlays(
     const overlayHeight = overlay.height * height;
     if (overlay.kind === "cover") {
       context.save();
+      context.translate(x, y);
+      context.rotate(overlay.rotation * Math.PI / 180);
       context.fillStyle = overlay.color;
-      context.fillRect(x, y, overlayWidth, overlayHeight);
+      context.fillRect(0, 0, overlayWidth, overlayHeight);
       context.restore();
     } else if (overlay.kind === "image") {
       const image = imageMap.get(overlay.imageId);
       if (!image) continue;
       context.save();
+      context.translate(x, y);
+      context.rotate(overlay.rotation * Math.PI / 180);
       context.globalAlpha = Math.max(0, Math.min(1, overlay.opacity));
-      context.drawImage(image, x, y, overlayWidth, overlayHeight);
+      const fit = Math.min(overlayWidth / image.width, overlayHeight / image.height);
+      const fittedWidth = image.width * fit;
+      const fittedHeight = image.height * fit;
+      context.drawImage(
+        image,
+        (overlayWidth - fittedWidth) / 2,
+        (overlayHeight - fittedHeight) / 2,
+        fittedWidth,
+        fittedHeight,
+      );
       context.restore();
+    } else if (overlay.kind === "shape") {
+      paintShape(context, overlay, width, height, scale);
+    } else if (overlay.kind === "ink") {
+      paintInk(context, overlay, width, height, scale);
     } else {
       paintText(
         context,
@@ -238,7 +332,10 @@ export async function buildPdfFromRasterPages(pages: RasterPage[]): Promise<Uint
  */
 export async function exportSecureRasterizedPdf(options: SecurePdfExportOptions): Promise<Uint8Array> {
   const workloadLimits = options.workloadLimits ?? browserWorkloadLimits();
-  if (options.document.numPages > workloadLimits.maxPages) {
+  const pageOrder = options.pageOrder?.length
+    ? options.pageOrder
+    : Array.from({ length: options.document.numPages }, (_, index) => index + 1);
+  if (pageOrder.length > workloadLimits.maxPages) {
     throw new Error(SECURE_EXPORT_TOO_LARGE);
   }
   const sourcePages: Array<{
@@ -246,9 +343,11 @@ export async function exportSecureRasterizedPdf(options: SecurePdfExportOptions)
     rotation: number;
     baseViewport: ReturnType<Awaited<ReturnType<PDFDocumentProxy["getPage"]>>["getViewport"]>;
   }> = [];
-  for (let pageNumber = 1; pageNumber <= options.document.numPages; pageNumber += 1) {
-    const page = await options.document.getPage(pageNumber);
-    const rotation = (page.rotate + (options.pageRotations[pageNumber] ?? 0) + 360) % 360;
+  for (let index = 0; index < pageOrder.length; index += 1) {
+    const logicalPageNumber = index + 1;
+    const sourcePageNumber = pageOrder[index]!;
+    const page = await options.document.getPage(sourcePageNumber);
+    const rotation = (page.rotate + (options.pageRotations[logicalPageNumber] ?? 0) + 360) % 360;
     sourcePages.push({
       page,
       rotation,
@@ -312,6 +411,9 @@ export async function exportSecureRasterizedPdf(options: SecurePdfExportOptions)
 export function requiresSecureRasterExport(
   mode: PdfExportMode,
   pageRotations: Record<number, number>,
+  overlays: PdfOverlay[] = [],
 ): boolean {
-  return mode === "secure" || Object.values(pageRotations).some((rotation) => rotation % 360 !== 0);
+  return mode === "secure"
+    || Object.values(pageRotations).some((rotation) => rotation % 360 !== 0)
+    || overlays.some((overlay) => overlay.rotation % 360 !== 0);
 }
