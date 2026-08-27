@@ -16,6 +16,14 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const PUBLIC_PATHS = new Set(["/signin"]);
 
+const PUBLIC_OCR_ASSETS = new Set([
+  "/tesseract/7.0.0/worker.min.js",
+  "/tesseract/7.0.0/core/tesseract-core-lstm.wasm.js",
+  "/tesseract/7.0.0/core/tesseract-core-simd-lstm.wasm.js",
+  "/tesseract/7.0.0/core/tesseract-core-relaxedsimd-lstm.wasm.js",
+  "/tesseract/7.0.0/lang/eng.traineddata.gz",
+]);
+
 // The sync cron and one-time bootstrap must be reachable WITHOUT a session
 // cookie: the Vercel Cron calls the endpoint with a CRON_SECRET bearer header
 // (no cookie), and the bootstrap is a one-time self-service trigger. Both do
@@ -34,6 +42,7 @@ const PUBLIC_API_PREFIXES = [
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  if (PUBLIC_OCR_ASSETS.has(pathname)) return NextResponse.next();
   if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
   if (PUBLIC_API_PREFIXES.some((p) => pathname === p || pathname.startsWith(p))) {
     return NextResponse.next();

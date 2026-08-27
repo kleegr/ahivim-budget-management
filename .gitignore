@@ -11,6 +11,9 @@ next-env.d.ts
 .vercel
 coverage/
 
+# Generated from pinned Tesseract packages before development and production builds
+public/tesseract/
+
 # Playwright end-to-end output (traces, screenshots, run marker)
 test-results/
 playwright-report/

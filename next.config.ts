@@ -17,6 +17,19 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["exceljs", "@neondatabase/serverless", "ws"],
   eslint: { ignoreDuringBuilds: false },
   typescript: { ignoreBuildErrors: false },
+  async headers() {
+    return [
+      {
+        source: "/tesseract/7.0.0/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
+        ],
+      },
+    ];
+  },
   // Never reuse a client-cached RSC payload across navigations. Every screen is
   // permission-sensitive (role + access scope are re-read from the DB on each
   // request), so a change to a user's role/access must take effect on their very

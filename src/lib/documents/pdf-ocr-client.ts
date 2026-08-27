@@ -55,6 +55,10 @@ function getWorker(): Promise<TesseractWorker> {
   if (!workerPromise) {
     workerPromise = import("tesseract.js")
       .then((tesseract) => tesseract.createWorker("eng", tesseract.OEM.LSTM_ONLY, {
+        workerPath: "/tesseract/7.0.0/worker.min.js",
+        corePath: "/tesseract/7.0.0/core",
+        langPath: "/tesseract/7.0.0/lang",
+        workerBlobURL: false,
         logger: (message) => currentLogger?.(message),
       }))
       .catch((error) => {
