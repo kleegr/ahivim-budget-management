@@ -1,10 +1,15 @@
 import {
   apiClassFinancialUser,
   canAccessClassIndividual,
+  type ClassFinancialAccess,
 } from "@/lib/auth/class-financial-access";
 import type { ClassInvoiceLineInput } from "@/lib/business/class-invoicing";
-import { getClassInvoice } from "@/lib/data/class-invoices";
+import { getClassInvoice, type ClassInvoiceRecord } from "@/lib/data/class-invoices";
 import { jsonError } from "@/lib/http";
+
+type AccessibleClassInvoiceResult =
+  | { error: Response }
+  | { access: ClassFinancialAccess; invoice: ClassInvoiceRecord };
 
 export function classInvoiceLinesFromRequest(value: unknown): ClassInvoiceLineInput[] {
   if (!Array.isArray(value)) return [];
@@ -24,7 +29,10 @@ export function classInvoiceLinesFromRequest(value: unknown): ClassInvoiceLineIn
     }));
 }
 
-export async function accessibleClassInvoice(id: string, mode: "view" | "manage") {
+export async function accessibleClassInvoice(
+  id: string,
+  mode: "view" | "manage",
+): Promise<AccessibleClassInvoiceResult> {
   const access = await apiClassFinancialUser(mode);
   if (!access) {
     return {

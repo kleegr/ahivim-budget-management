@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiPlanningUser } from "@/lib/auth/planning-access";
+import { apiPlanningUser, planningSubjectsAllowed } from "@/lib/auth/planning-access";
 import { jsonError, redactError } from "@/lib/http";
 import { individualScheduleSummary } from "@/lib/data/schedule-queries";
 
@@ -21,10 +21,13 @@ export async function GET(request: NextRequest) {
   if (!individualId || !/^[0-9a-f-]{36}$/i.test(individualId)) {
     return NextResponse.json({ ok: true, data: null });
   }
+  if (!planningSubjectsAllowed(planning, { individualIds: [individualId], employeeId: null })) {
+    return jsonError("Not found", 404);
+  }
 
   try {
     const pool = getPool();
-    const summary = await individualScheduleSummary(pool, individualId);
+    const summary = await individualScheduleSummary(pool, individualId, new Date(), planning.agencyIds.length > 0);
     return NextResponse.json({ ok: true, data: summary });
   } catch (error) {
     return jsonError(redactError(error), 500);

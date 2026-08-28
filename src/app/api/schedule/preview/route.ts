@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiPlanningUser } from "@/lib/auth/planning-access";
+import {
+  apiPlanningUser,
+  planningEmployeeIdsAllowedForSubjects,
+  planningProgramAllowed,
+  planningSeriesAllowed,
+  planningSubjectsAllowed,
+} from "@/lib/auth/planning-access";
 import { readJson, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { previewSession, type SessionDraft } from "@/lib/manage/schedule";
 import { listEmployeeAvailability } from "@/lib/data/employee-availability";
@@ -8,6 +14,7 @@ import { projectSeriesAuthorization } from "@/lib/data/series-authorization";
 import { listIndividualScheduleConflicts } from "@/lib/data/individual-schedule-conflicts";
 import { projectSeries } from "@/lib/business/planning-projection";
 import { MAX_SERIES_OCCURRENCES } from "@/lib/business/scheduling";
+import { getSession } from "@/lib/data/schedule-queries";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -68,6 +75,11 @@ export async function POST(request: NextRequest) {
       typeof day === "number" && Number.isInteger(day) && day >= 0 && day <= 6))]
     : [];
   const recurrenceEndDate = asString(recurrence?.endDate) ?? "";
+  const requestedStartDate = asString(recurrence?.startDate) ?? draft.sessionDate;
+  const requestedApplyFromDate = asString(recurrence?.applyFromDate) ?? requestedStartDate;
+  const occurrenceFromDate = requestedStartDate > requestedApplyFromDate
+    ? requestedStartDate
+    : requestedApplyFromDate;
 
   if (
     !isUuid(draft.programId)
@@ -88,19 +100,30 @@ export async function POST(request: NextRequest) {
       },
     });
   }
-
   try {
     const pool = getPool();
+    if (!await planningProgramAllowed(pool, planning, draft.programId)) {
+      return jsonError("Choose an active hours-based planning program.", 403);
+    }
     const editSeriesIdCandidate = asString(body.editSeriesId) ?? null;
     const editSeriesId = editSeriesIdCandidate && isUuid(editSeriesIdCandidate)
       ? editSeriesIdCandidate
       : null;
-    const requestedStartDate = asString(recurrence?.startDate) ?? draft.sessionDate;
-    const requestedApplyFromDate = asString(recurrence?.applyFromDate) ?? requestedStartDate;
+    if (excludeSessionId) {
+      const excluded = isUuid(excludeSessionId)
+        ? await getSession(pool, excludeSessionId, planning.access)
+        : null;
+      if (!excluded || !planningSubjectsAllowed(planning, {
+        individualIds: excluded.individualIds,
+        employeeId: excluded.employeeId,
+      }, "read", { from: excluded.sessionDate, to: excluded.sessionDate })) {
+        return jsonError("Not found", 404);
+      }
+    }
+    if (editSeriesId && !await planningSeriesAllowed(pool, planning, editSeriesId)) {
+      return jsonError("Not found", 404);
+    }
     let recurrenceAnchorDate = requestedStartDate;
-    const occurrenceFromDate = requestedStartDate > requestedApplyFromDate
-      ? requestedStartDate
-      : requestedApplyFromDate;
 
     if (recurrence && editSeriesId) {
       const current = await pool.query<{ recurrence_anchor_date: string; start_date: string }>(
@@ -139,6 +162,35 @@ export async function POST(request: NextRequest) {
       ? validationMessage ? [] : recurrenceProjection?.dates ?? []
       : [draft.sessionDate];
 
+    const validOccurrenceFrom = /^\d{4}-\d{2}-\d{2}$/.test(occurrenceFromDate)
+      ? occurrenceFromDate
+      : draft.sessionDate;
+    const validOccurrenceEnd = /^\d{4}-\d{2}-\d{2}$/.test(recurrenceEndDate)
+      && recurrenceEndDate >= validOccurrenceFrom
+      ? recurrenceEndDate
+      : validOccurrenceFrom;
+    const requestedRange = recurrence
+      ? { from: validOccurrenceFrom, to: validOccurrenceEnd }
+      : { from: draft.sessionDate, to: draft.sessionDate };
+    const validApplyFromDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedApplyFromDate)
+      ? requestedApplyFromDate
+      : draft.sessionDate;
+    if (editSeriesId && !await planningSeriesAllowed(pool, planning, editSeriesId, "schedule", {
+      from: validApplyFromDate,
+      to: requestedRange.to,
+    })) {
+      return jsonError("Not found", 404);
+    }
+    if (!planningSubjectsAllowed(planning, {
+      individualIds: draft.individualIds,
+      employeeId: draft.employeeId,
+    }, "read", requestedRange)) return jsonError("Not found", 404);
+    const candidateEmployeeIds = planningEmployeeIdsAllowedForSubjects(
+      planning,
+      draft.individualIds,
+      requestedRange,
+    );
+
     if (recurrence && editSeriesId && occurrenceDates.length > 0) {
       const protectedDates = await pool.query<{ session_date: string }>(
         `SELECT DISTINCT session_date::text AS session_date
@@ -152,7 +204,7 @@ export async function POST(request: NextRequest) {
       occurrenceDates = occurrenceDates.filter((date) => !protectedSet.has(date));
     }
 
-    const previewDate = occurrenceDates[0] ?? draft.sessionDate;
+    const previewDate = occurrenceDates[0] ?? requestedRange.from;
     const preview = await previewSession(pool, { ...draft, sessionDate: previewDate }, excludeSessionId);
     if (recurrence) {
       preview.warnings = preview.warnings.filter((warning) => !ALL_DATE_WARNING_CODES.has(warning.code));
@@ -167,7 +219,8 @@ export async function POST(request: NextRequest) {
         endTime: draft.endTime,
         excludeSessionId,
         excludeSeriesId: editSeriesId,
-        excludeSeriesFromDate: occurrenceFromDate,
+        excludeSeriesFromDate: validApplyFromDate,
+        employeeIds: candidateEmployeeIds,
       }),
       listIndividualScheduleConflicts(pool, {
         individualIds: draft.individualIds,
@@ -176,7 +229,7 @@ export async function POST(request: NextRequest) {
         endTime: draft.endTime,
         excludeSessionId,
         excludeSeriesId: editSeriesId,
-        excludeSeriesFromDate: occurrenceFromDate,
+        excludeSeriesFromDate: validApplyFromDate,
       }),
       recurrence
         ? projectSeriesAuthorization(pool, {
@@ -186,7 +239,7 @@ export async function POST(request: NextRequest) {
           durationHours: preview.durationHours,
           excludeSessionId,
           excludeSeriesId: editSeriesId,
-          excludeSeriesFromDate: occurrenceFromDate,
+          excludeSeriesFromDate: validApplyFromDate,
         })
         : Promise.resolve(null),
     ]);

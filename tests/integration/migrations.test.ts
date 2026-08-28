@@ -16,8 +16,8 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`CREATE SCHEMA public`);
 
     const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
-    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 33]);
-    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 33]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 34]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 34]);
   }, 60_000);
 
   it("creates the ledger and every expected table", async () => {
@@ -55,7 +55,7 @@ suite("migration runner (real PostgreSQL)", () => {
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(33);
+    expect(again.skipped).toBe(34);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -63,7 +63,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(33);
+    expect(rows).toHaveLength(34);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -97,6 +97,7 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[30].name).toBe("0030_direct_pay_targets_and_payroll_checks.sql");
     expect(rows[31].name).toBe("0031_settlement_manage_permission.sql");
     expect(rows[32].name).toBe("0032_enforce_sequential_calculations.sql");
+    expect(rows[33].name).toBe("0033_home_agency_budget_responsibility.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 

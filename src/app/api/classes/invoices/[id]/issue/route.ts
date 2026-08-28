@@ -16,7 +16,7 @@ export async function POST(
   const { id } = await params;
   try {
     const found = await accessibleClassInvoice(id, "manage");
-    if (found.error) return found.error;
+    if ("error" in found) return found.error;
     const body = await readJson(request);
     return classResultResponse(await issueClassInvoice(found.access.pool, id, found.access.user.id, {
       overBudgetOverrideReason: typeof body.overBudgetOverrideReason === "string" ? body.overBudgetOverrideReason : null,

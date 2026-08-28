@@ -611,6 +611,8 @@ export interface UpdateSeriesInput extends Omit<CreateSeriesInput, "seriesId" | 
   status: "active" | "cancelled";
   /** First pending occurrence that should use the edited schedule. Defaults to today. */
   applyFromDate?: string;
+  /** Preserve pre-change series metadata when a scoped external planner edits a handoff. */
+  forceSplit?: boolean;
 }
 
 export interface UpdateSeriesResult {
@@ -696,7 +698,7 @@ export async function updateSeries(
       await client.query("ROLLBACK");
       return fail("validation", "The change date must be on or before the schedule end date.");
     }
-    const split = applyFromDate > current.today;
+    const split = input.forceSplit === true || applyFromDate > current.today;
     if (split && input.status !== "active") {
       await client.query("ROLLBACK");
       return fail("validation", "Use End schedule to cancel a future schedule.");

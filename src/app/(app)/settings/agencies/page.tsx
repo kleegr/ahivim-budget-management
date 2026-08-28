@@ -205,7 +205,7 @@ export default async function AgencySettingsPage({
             <div>
               <p className="text-sm font-semibold">Operational staff access</p>
               <p className="text-xs text-[var(--color-ink-faint)]">
-                Agency portal roles show only that agency&apos;s summaries. Planning and collection entry are assigned as internal staff access.
+                Schedulers and staffing managers can work in hours-only Planning for their agency roster. Agency and collector roles remain scoped portal summaries; broader internal access is managed separately.
               </p>
             </div>
             <Link href="/settings#access" className="btn btn-secondary btn-sm">Manage staff access</Link>

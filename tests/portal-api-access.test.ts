@@ -64,9 +64,21 @@ describe("portal API authorization boundary", () => {
   });
 
   it("returns 401 for an unauthenticated current-portal read", async () => {
-    const response = await portalAccess();
+    const response = await portalAccess(new NextRequest("http://localhost/api/portal/access"));
     expect(response.status).toBe(401);
     expect(mocks.getPortalHomeReadModel).not.toHaveBeenCalled();
+  });
+
+  it("passes the requested reporting month to the capability-scoped read model", async () => {
+    const pool = { query: vi.fn(), connect: vi.fn() };
+    const access = { userId: "portal-user", globalRoles: [], agencyAccess: [], individualLinks: [], employeeLinks: [] };
+    mocks.apiPortalUser.mockResolvedValue({ pool, access });
+    mocks.getPortalHomeReadModel.mockResolvedValue({ month: "2024-02" });
+
+    const response = await portalAccess(new NextRequest("http://localhost/api/portal/access?month=2024-02"));
+
+    expect(response.status).toBe(200);
+    expect(mocks.getPortalHomeReadModel).toHaveBeenCalledWith(pool, access, "2024-02");
   });
 
   const ownerCases: Array<[string, () => Promise<Response>]> = [

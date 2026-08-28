@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiPlanningUser } from "@/lib/auth/planning-access";
+import { apiPlanningUser, planningProgramAllowed, planningSubjectsAllowed } from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import {
   setSessionStatus,
@@ -25,7 +25,11 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   const { id } = await params;
   try {
     const pool = getPool();
-    const record = await getSession(pool, id);
+    const record = await getSession(pool, id, planning.access);
+    if (record && !planningSubjectsAllowed(planning, {
+      individualIds: record.individualIds,
+      employeeId: record.employeeId,
+    }, "read", { from: record.sessionDate, to: record.sessionDate })) return jsonError("Not found", 404);
     if (!record) return jsonError("Not found", 404);
     return NextResponse.json({ ok: true, data: record });
   } catch (error) {
@@ -48,6 +52,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const planning = await apiPlanningUser();
   if (!planning) return jsonError("Planning access required", 403);
   const { user } = planning;
+  if (!planning.canManageSchedules) return jsonError("Schedule management access required", 403);
 
   const { id } = await params;
   const body = await readJson(request);
@@ -56,6 +61,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   try {
     const pool = getPool();
+    const existing = await getSession(pool, id, planning.access);
+    if (!existing || !planningSubjectsAllowed(planning, {
+      individualIds: existing.individualIds,
+      employeeId: existing.employeeId,
+    }, "schedule", { from: existing.sessionDate, to: existing.sessionDate })) return jsonError("Not found", 404);
 
     if (action === "cancel") {
       return resultResponse(await setSessionStatus(pool, id, "cancelled", user.id, reason), 200);
@@ -66,10 +76,23 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (!status || !SESSION_STATUSES.includes(status as SessionStatus)) {
         return jsonError("Provide a valid status.", 400);
       }
+      if (status !== "cancelled" && !await planningProgramAllowed(pool, planning, existing.programId)) {
+        return jsonError("That inactive program can only be cancelled.", 403);
+      }
       return resultResponse(await setSessionStatus(pool, id, status as SessionStatus, user.id, reason), 200);
     }
 
     if (action === "reschedule") {
+      if (!await planningProgramAllowed(pool, planning, existing.programId)) {
+        return jsonError("Choose an active hours-based planning program.", 403);
+      }
+      const sessionDate = asString(body.sessionDate) ?? existing.sessionDate;
+      if (!planningSubjectsAllowed(planning, {
+        individualIds: existing.individualIds,
+        employeeId: existing.employeeId,
+      }, "schedule", { from: sessionDate, to: sessionDate })) {
+        return jsonError("That service date is outside your agency roster.", 403);
+      }
       const result = await rescheduleSession(
           pool,
           id,
@@ -88,8 +111,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
 
     if (action === "duplicate") {
+      if (!await planningProgramAllowed(pool, planning, existing.programId)) {
+        return jsonError("Choose an active hours-based planning program.", 403);
+      }
       const toDate = asString(body.toDate) ?? asString(body.sessionDate);
       if (!toDate) return jsonError("Provide the date to duplicate onto.", 400);
+      if (!planningSubjectsAllowed(planning, {
+        individualIds: existing.individualIds,
+        employeeId: existing.employeeId,
+      }, "schedule", { from: toDate, to: toDate })) {
+        return jsonError("That service date is outside your agency roster.", 403);
+      }
       const result = await duplicateSession(pool, id, toDate, user.id, reason);
       if (result.ok) {
         result.data.warnings = result.data.warnings.filter((warning) => warning.code !== "missing_rate");

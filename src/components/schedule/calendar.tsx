@@ -258,7 +258,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
         ) : null}
         <select aria-label="Filter by program" value={filters.programId} onChange={(e) => setFilters((f) => ({ ...f, programId: e.target.value }))} className="select">
           <option value="">All programs</option>
-          {programs.map((p) => <option key={p.id} value={p.id}>{p.code}</option>)}
+          {programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <select aria-label="Filter by status" value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))} className="select">
           <option value="">Any status</option>

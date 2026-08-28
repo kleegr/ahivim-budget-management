@@ -73,7 +73,7 @@ describe("portal authorization context", () => {
     const context = await resolvePortalAccess(pool, { id: USER });
 
     expect(hasPortalCapability(context, "hours_budgets.agency.read", AGENCY_A)).toBe(true);
-    expect(hasPortalCapability(context, "schedules.agency.manage", AGENCY_A)).toBe(false);
+    expect(hasPortalCapability(context, "schedules.agency.manage", AGENCY_A)).toBe(true);
     expect(hasPortalCapability(context, "financials.agency.billed_totals.read", AGENCY_A)).toBe(false);
     expect(hasPortalCapability(context, "financials.agency.billed_totals.read", AGENCY_B)).toBe(true);
     expect(hasPortalCapability(context, "schedules.agency.manage", AGENCY_B)).toBe(false);
@@ -156,17 +156,22 @@ describe("portal authorization context", () => {
     expect(hasPortalCapability(agencyReadOnly, "settlements.agency.manage", AGENCY_A)).toBe(false);
   });
 
-  it("keeps every agency portal role read-only even when a write override is requested", () => {
+  it("allows only the hours-operations roles to mutate their scoped workflow", () => {
     expect(portalCapabilityAllowedForRole("agency", "people.agency.manage")).toBe(false);
-    expect(portalCapabilityAllowedForRole("staffing_manager", "assignments.agency.manage")).toBe(false);
-    expect(portalCapabilityAllowedForRole("scheduler", "schedules.agency.manage")).toBe(false);
+    expect(portalCapabilityAllowedForRole("staffing_manager", "assignments.agency.manage")).toBe(true);
+    expect(portalCapabilityAllowedForRole("staffing_manager", "schedules.agency.manage")).toBe(true);
+    expect(portalCapabilityAllowedForRole("scheduler", "schedules.agency.manage")).toBe(true);
+    expect(portalCapabilityAllowedForRole("scheduler", "assignments.agency.manage")).toBe(false);
     expect(portalCapabilityAllowedForRole("collector", "settlements.agency.manage")).toBe(false);
+    expect(portalCapabilityAllowedForRole("scheduler", "transactions.agency.read")).toBe(false);
+    expect(portalCapabilityAllowedForRole("scheduler", "financials.agency.direct_checks.read")).toBe(false);
+    expect(portalCapabilityAllowedForRole("staffing_manager", "employee_checks.self.net.read")).toBe(false);
   });
 
   it("does not grant portal categories that have no rendered read model", () => {
     expect(portalCapabilityAllowedForRole("parent", "schedules.self.read")).toBe(false);
     expect(portalCapabilityAllowedForRole("employee", "assignments.self.read")).toBe(false);
     expect(portalCapabilityAllowedForRole("agency", "transactions.agency.read")).toBe(false);
-    expect(portalCapabilityAllowedForRole("scheduler", "schedules.agency.read")).toBe(false);
+    expect(portalCapabilityAllowedForRole("scheduler", "schedules.agency.read")).toBe(true);
   });
 });

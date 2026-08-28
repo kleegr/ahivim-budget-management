@@ -7,6 +7,7 @@ import {
   type UtilizationStatus,
 } from "@/lib/business/utilization";
 import { agencyDate } from "@/lib/business/agency-time";
+import type { AccessScope } from "@/lib/auth/access";
 
 type ScheduleQueryPool = Pick<PgLikePool, "query">;
 
@@ -77,12 +78,21 @@ export interface CalendarFilter {
   status?: string;
 }
 
+function scheduleScopeArrays(scope?: AccessScope): [string[] | null, string[] | null] {
+  return [
+    !scope || scope.full || scope.allIndividuals ? null : scope.individualIds,
+    !scope || scope.full || scope.allEmployees ? null : scope.employeeIds,
+  ];
+}
+
 /** Planned sessions in a date range. This calendar DTO is intentionally hours-only. */
-export async function listSessions(pool: PgLikePool, filter: CalendarFilter): Promise<CalendarSession[]> {
+export async function listSessions(pool: PgLikePool, filter: CalendarFilter, scope?: AccessScope): Promise<CalendarSession[]> {
   const employeeId = filter.employeeId && isUuid(filter.employeeId) ? filter.employeeId : null;
   const individualId = filter.individualId && isUuid(filter.individualId) ? filter.individualId : null;
   const programId = filter.programId && isUuid(filter.programId) ? filter.programId : null;
   const status = ["pending", "completed", "cancelled", "no_show"].includes(filter.status ?? "") ? filter.status! : null;
+  const [individualIds, employeeIds] = scheduleScopeArrays(scope);
+  const agencyScoped = Boolean(scope && !scope.full && !scope.allIndividuals && !scope.allEmployees);
 
   const { rows } = await pool.query<{
     id: string; series_id: string | null; session_date: string; start_time: string | null;
@@ -128,9 +138,22 @@ export async function listSessions(pool: PgLikePool, filter: CalendarFilter): Pr
        )
        AND ($7::uuid IS NULL OR EXISTS (
              SELECT 1 FROM scheduled_allocations aa WHERE aa.scheduled_session_id = s.id AND aa.individual_id = $7))
+       AND ($9::uuid[] IS NULL OR s.employee_id IS NULL OR s.employee_id = ANY($9::uuid[]))
+       AND ($8::uuid[] IS NULL OR (
+         EXISTS (SELECT 1 FROM scheduled_allocations visible_a WHERE visible_a.scheduled_session_id = s.id)
+         AND NOT EXISTS (
+           SELECT 1 FROM scheduled_allocations hidden_a
+            WHERE hidden_a.scheduled_session_id = s.id
+              AND hidden_a.individual_id <> ALL($8::uuid[])
+         )
+       ))
+       AND ($10::boolean IS NOT TRUE OR (
+         p.required_auth_type <> 'dollars'
+         AND p.consumption_source IN ('payroll', 'mixed')
+       ))
      GROUP BY s.id, e.display_name, p.name
      ORDER BY s.session_date, s.start_time NULLS LAST`,
-    [filter.from, filter.to, employeeId, programId, filter.unassigned ?? false, status, individualId],
+    [filter.from, filter.to, employeeId, programId, filter.unassigned ?? false, status, individualId, individualIds, employeeIds, agencyScoped],
   );
 
   return rows.map((r) => ({
@@ -154,24 +177,35 @@ export async function listSessions(pool: PgLikePool, filter: CalendarFilter): Pr
   }));
 }
 
-export async function getSession(pool: PgLikePool, id: string): Promise<CalendarSession | null> {
+export async function getSession(pool: PgLikePool, id: string, scope?: AccessScope): Promise<CalendarSession | null> {
   if (!isUuid(id)) return null;
-  const rows = await listSessionsById(pool, id);
+  const rows = await listSessionsById(pool, id, scope);
   return rows[0] ?? null;
 }
-async function listSessionsById(pool: PgLikePool, id: string): Promise<CalendarSession[]> {
+async function listSessionsById(pool: PgLikePool, id: string, scope?: AccessScope): Promise<CalendarSession[]> {
+  const [individualIds, employeeIds] = scheduleScopeArrays(scope);
   const { rows } = await pool.query<{ session_date: string }>(
-    `SELECT session_date::text FROM scheduled_sessions WHERE id = $1`,
-    [id],
+    `SELECT s.session_date::text FROM scheduled_sessions s
+      WHERE s.id = $1
+        AND ($3::uuid[] IS NULL OR s.employee_id IS NULL OR s.employee_id = ANY($3::uuid[]))
+        AND ($2::uuid[] IS NULL OR (
+          EXISTS (SELECT 1 FROM scheduled_allocations visible_a WHERE visible_a.scheduled_session_id = s.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM scheduled_allocations hidden_a
+             WHERE hidden_a.scheduled_session_id = s.id
+               AND hidden_a.individual_id <> ALL($2::uuid[])
+          )
+        ))`,
+    [id, individualIds, employeeIds],
   );
   if (!rows[0]) return [];
-  const all = await listSessions(pool, { from: rows[0].session_date, to: rows[0].session_date });
+  const all = await listSessions(pool, { from: rows[0].session_date, to: rows[0].session_date }, scope);
   const session = all.find((item) => item.id === id);
   if (!session) return [];
   const flags = await listSessionWarningFlags(pool, {
     from: rows[0].session_date,
     to: rows[0].session_date,
-  });
+  }, scope);
   const warningCount = flags.find((item) => item.id === id)?.warningCount;
   return [{ ...session, warningCount: warningCount ?? session.warningCount }];
 }
@@ -260,6 +294,7 @@ async function activeAuthorizations(
   individualId: string,
   asOfDate: string,
   programId?: string,
+  hoursOnlyPrograms = false,
 ): Promise<EffectiveAuthorizationRow[]> {
   const { rows } = await pool.query<EffectiveAuthorizationRow>(
     `SELECT ea.authorization_id::text, ea.period_id::text, ea.period_label,
@@ -274,8 +309,12 @@ async function activeAuthorizations(
        JOIN programs p ON p.id = ea.program_id
       WHERE ea.individual_id = $1
         AND ($3::uuid IS NULL OR ea.program_id = $3)
+        AND ($4::boolean IS NOT TRUE OR (
+          p.is_active = true AND p.required_auth_type <> 'dollars'
+          AND p.consumption_source IN ('payroll', 'mixed')
+        ))
       ORDER BY p.name, ea.start_date, ea.end_date, ea.authorization_id`,
-    [individualId, asOfDate, programId ?? null],
+    [individualId, asOfDate, programId ?? null, hoursOnlyPrograms],
   );
   return rows;
 }
@@ -485,6 +524,7 @@ export async function individualScheduleSummary(
   pool: PgLikePool,
   individualId: string,
   asOf: Date = new Date(),
+  hoursOnlyPrograms = false,
 ): Promise<ScheduleUtilizationSummary | null> {
   if (!isUuid(individualId)) return null;
   const asOfDate = agencyDate(asOf);
@@ -494,7 +534,7 @@ export async function individualScheduleSummary(
   );
   if (!person.rows[0]) return null;
 
-  const authorizationRows = await activeAuthorizations(pool, individualId, asOfDate);
+  const authorizationRows = await activeAuthorizations(pool, individualId, asOfDate, undefined, hoursOnlyPrograms);
   const programCounts = new Map<string, number>();
   for (const row of authorizationRows) {
     programCounts.set(row.program_id, (programCounts.get(row.program_id) ?? 0) + 1);
@@ -621,11 +661,14 @@ export interface SessionWarningFlags {
 export async function listSessionWarningFlags(
   pool: PgLikePool,
   filter: CalendarFilter,
+  scope?: AccessScope,
 ): Promise<SessionWarningFlags[]> {
   const employeeId = filter.employeeId && isUuid(filter.employeeId) ? filter.employeeId : null;
   const individualId = filter.individualId && isUuid(filter.individualId) ? filter.individualId : null;
   const programId = filter.programId && isUuid(filter.programId) ? filter.programId : null;
   const status = ["pending", "completed", "cancelled", "no_show"].includes(filter.status ?? "") ? filter.status! : null;
+  const [individualIds, employeeIds] = scheduleScopeArrays(scope);
+  const agencyScoped = Boolean(scope && !scope.full && !scope.allIndividuals && !scope.allEmployees);
 
   const { rows } = await pool.query<{
     id: string;
@@ -779,8 +822,23 @@ export async function listSessionWarningFlags(
          )
        )
        AND ($7::uuid IS NULL OR EXISTS (
-             SELECT 1 FROM scheduled_allocations aa WHERE aa.scheduled_session_id = s.id AND aa.individual_id = $7))`,
-    [filter.from, filter.to, employeeId, programId, filter.unassigned ?? false, status, individualId],
+             SELECT 1 FROM scheduled_allocations aa WHERE aa.scheduled_session_id = s.id AND aa.individual_id = $7))
+       AND ($9::uuid[] IS NULL OR s.employee_id IS NULL OR s.employee_id = ANY($9::uuid[]))
+       AND ($8::uuid[] IS NULL OR (
+         EXISTS (SELECT 1 FROM scheduled_allocations visible_a WHERE visible_a.scheduled_session_id = s.id)
+         AND NOT EXISTS (
+           SELECT 1 FROM scheduled_allocations hidden_a
+            WHERE hidden_a.scheduled_session_id = s.id
+              AND hidden_a.individual_id <> ALL($8::uuid[])
+         )
+       ))
+       AND ($10::boolean IS NOT TRUE OR EXISTS (
+         SELECT 1 FROM programs visible_program
+          WHERE visible_program.id = s.program_id
+            AND visible_program.required_auth_type <> 'dollars'
+            AND visible_program.consumption_source IN ('payroll', 'mixed')
+       ))`,
+    [filter.from, filter.to, employeeId, programId, filter.unassigned ?? false, status, individualId, individualIds, employeeIds, agencyScoped],
   );
 
   return rows.map((r) => {

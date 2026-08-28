@@ -3,7 +3,7 @@ import { canAccessPlanning, isPlanningOnlyAccess, resolveAccessScope } from "@/l
 import AppNav from "@/components/app-nav";
 import { withDb } from "@/lib/data/pool";
 import { exceptionCounts } from "@/lib/data/queries";
-import { hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
+import { agencyIdsWithPlanningAccess, hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
 
 export const dynamic = "force-dynamic";
 
@@ -46,11 +46,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       resolveAccessScope(pool, user),
       resolvePortalAccess(pool, user),
     ]);
+    const internalPlanning = canAccessPlanning(scope);
+    const agencyPlanning = !internalPlanning
+      && agencyIdsWithPlanningAccess(portal).length > 0;
     return {
       canSeeTransactions: scope.canSeeTransactions,
       canSeeSettlements: scope.canSeeSettlements,
       canSeeBudgets: scope.canSeeBudgets,
-      canPlan: canAccessPlanning(scope),
+      canPlan: internalPlanning || agencyPlanning,
       canSeeClassFinancials: scope.canSeeClassFinancials,
       canSeeEmployees:
         !isPlanningOnlyAccess(scope)

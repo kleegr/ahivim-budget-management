@@ -26,6 +26,8 @@ import type { View } from "./shared";
 interface PlanningWorkspaceProps {
   data: PlanningWorkspaceData;
   canManage: boolean;
+  canManageAssignments?: boolean;
+  canOpenPersonRecords?: boolean;
   today: string;
   initialView?: string;
   initialCalendarDate?: string;
@@ -129,6 +131,8 @@ function SectionHeading({
 export default function PlanningWorkspace({
   data,
   canManage,
+  canManageAssignments = canManage,
+  canOpenPersonRecords = true,
   today,
   initialView,
   initialCalendarDate,
@@ -204,8 +208,8 @@ export default function PlanningWorkspace({
             ),
           },
           { id: "calendar", label: "Calendar", content: calendar },
-          { id: "coverage", label: "Budgets & pace", badge: data.summary.coverageGaps || undefined, content: <CoverageTable rows={data.coverage} /> },
-          { id: "queue", label: "Attention", badge: data.workQueueTotal || undefined, content: <WorkQueue data={data} /> },
+          { id: "coverage", label: "Budgets & pace", badge: data.summary.coverageGaps || undefined, content: <CoverageTable rows={data.coverage} canOpenPersonRecords={canOpenPersonRecords} /> },
+          { id: "queue", label: "Attention", badge: data.workQueueTotal || undefined, content: <WorkQueue data={data} canOpenPersonRecords={canOpenPersonRecords} /> },
           {
             id: "future",
             label: "Assignments",
@@ -216,6 +220,8 @@ export default function PlanningWorkspace({
                 employees={employees}
                 individuals={individuals}
                 programs={programs}
+                canOpenPersonRecords={canOpenPersonRecords}
+                canManageAssignments={canManageAssignments}
               />
             ),
           },
@@ -225,7 +231,7 @@ export default function PlanningWorkspace({
   );
 }
 
-function WorkQueue({ data }: { data: PlanningWorkspaceData }) {
+function WorkQueue({ data, canOpenPersonRecords }: { data: PlanningWorkspaceData; canOpenPersonRecords: boolean }) {
   const hiddenCount = Math.max(0, data.workQueueTotal - data.workQueue.length);
   return (
     <section>
@@ -277,10 +283,12 @@ function WorkQueue({ data }: { data: PlanningWorkspaceData }) {
                     <p className="max-w-56 text-[var(--color-ink-soft)]">{item.individualNames.join(", ") || "No individual"}</p>
                   </Td>
                   <Td>
-                    {item.employeeId ? (
+                    {item.employeeId && canOpenPersonRecords ? (
                       <Link href={`/employees/${item.employeeId}`} className="hover:text-[var(--color-primary)] hover:underline">
                         {item.employeeName ?? "Employee"}
                       </Link>
+                    ) : item.employeeId ? (
+                      <span>{item.employeeName ?? "Employee"}</span>
                     ) : (
                       <span className="font-medium text-[var(--color-danger)]">Unassigned</span>
                     )}
@@ -305,7 +313,7 @@ function WorkQueue({ data }: { data: PlanningWorkspaceData }) {
     </section>
   );
 }
-function CoverageTable({ rows }: { rows: PlanningCoverageRow[] }) {
+function CoverageTable({ rows, canOpenPersonRecords }: { rows: PlanningCoverageRow[]; canOpenPersonRecords: boolean }) {
   return (
     <section>
       <SectionHeading
@@ -346,9 +354,9 @@ function CoverageTable({ rows }: { rows: PlanningCoverageRow[] }) {
               return (
                 <Tr key={row.authorizationId}>
                   <Td>
-                    <Link href={`/individuals/${row.individualId}`} className="font-semibold hover:text-[var(--color-primary)] hover:underline">
-                      {row.individualName}
-                    </Link>
+                    {canOpenPersonRecords ? (
+                      <Link href={`/individuals/${row.individualId}`} className="font-semibold hover:text-[var(--color-primary)] hover:underline">{row.individualName}</Link>
+                    ) : <span className="font-semibold">{row.individualName}</span>}
                     <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">{row.programCode} / {row.programName}</p>
                     {row.eligibleEmployeeCount === 0 ? (
                       <div className="mt-1.5"><StatusBadge label="No effective assignment" tone="warn" /></div>
@@ -392,15 +400,19 @@ function FuturePlans({
   employees,
   individuals,
   programs,
+  canOpenPersonRecords,
+  canManageAssignments,
 }: {
   data: PlanningWorkspaceData;
   employees: ScheduleCalendarProps["employees"];
   individuals: ScheduleCalendarProps["individuals"];
   programs: ScheduleCalendarProps["programs"];
+  canOpenPersonRecords: boolean;
+  canManageAssignments: boolean;
 }) {
   return (
     <div className="space-y-8">
-      <AuthorizationGaps rows={data.authorizationGaps} />
+      <AuthorizationGaps rows={data.authorizationGaps} canOpenPersonRecords={canOpenPersonRecords} />
       <section>
         <SectionHeading
           title="Assignment timeline"
@@ -412,6 +424,7 @@ function FuturePlans({
           employees={employees}
           individuals={individuals}
           programs={programs}
+          canManage={canManageAssignments}
         />
       </section>
     </div>
@@ -426,7 +439,7 @@ const AUTH_GAP_LABEL: Record<PlanningAuthorizationGap["gap"], string> = {
   coverage_gap: "Gap inside period",
 };
 
-function AuthorizationGaps({ rows }: { rows: PlanningAuthorizationGap[] }) {
+function AuthorizationGaps({ rows, canOpenPersonRecords }: { rows: PlanningAuthorizationGap[]; canOpenPersonRecords: boolean }) {
   return (
     <section>
       <SectionHeading
@@ -445,7 +458,9 @@ function AuthorizationGaps({ rows }: { rows: PlanningAuthorizationGap[] }) {
             {rows.map((row) => (
               <Tr key={row.authorizationId}>
                 <Td>
-                  <Link href={`/individuals/${row.individualId}`} className="font-semibold hover:text-[var(--color-primary)] hover:underline">{row.individualName}</Link>
+                  {canOpenPersonRecords ? (
+                    <Link href={`/individuals/${row.individualId}`} className="font-semibold hover:text-[var(--color-primary)] hover:underline">{row.individualName}</Link>
+                  ) : <span className="font-semibold">{row.individualName}</span>}
                   <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">{row.programName}</p>
                 </Td>
                 <Td>

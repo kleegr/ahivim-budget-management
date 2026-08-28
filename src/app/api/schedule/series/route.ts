@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiPlanningUser } from "@/lib/auth/planning-access";
+import { apiPlanningUser, planningProgramAllowed, planningSubjectsAllowed } from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { createSeries, type CreateSeriesInput } from "@/lib/manage/schedule";
 
@@ -52,9 +52,17 @@ export async function POST(request: NextRequest) {
     endDate: asString(body.endDate) ?? "",
   };
   const reason = asString(body.reason) ?? null;
+  if (!planning.canManageSchedules) return jsonError("Schedule management access required", 403);
+  if (!planningSubjectsAllowed(planning, {
+    individualIds: input.individualIds,
+    employeeId: input.employeeId,
+  }, "schedule", { from: input.startDate, to: input.endDate })) return jsonError("That schedule range is outside your agency roster.", 403);
 
   try {
     const pool = getPool();
+    if (!await planningProgramAllowed(pool, planning, input.programId)) {
+      return jsonError("Choose an active hours-based planning program.", 403);
+    }
     const result = await createSeries(pool, input, user.id, reason);
     return resultResponse(result, 201);
   } catch (error) {

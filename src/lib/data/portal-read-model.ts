@@ -51,6 +51,7 @@ export interface PortalPayrollCheckSummary {
   checkDate: string | null;
   periodBegin: string | null;
   periodEnd: string | null;
+  serviceDate: string | null;
   actualGross?: string | null;
   actualNet?: string;
   taxWithheld?: string | null;
@@ -59,6 +60,7 @@ export interface PortalPayrollCheckSummary {
 export interface PortalEmployeeSummary {
   id: string;
   name: string;
+  month: string;
   checkVisibility: {
     gross: boolean;
     net: boolean;
@@ -67,6 +69,33 @@ export interface PortalEmployeeSummary {
   checks: PortalPayrollCheckSummary[] | null;
   giveBack: {
     month: string;
+    dueThisMonth: string;
+    collectedThisMonth: string;
+    remaining: string;
+  } | null;
+}
+
+export interface PortalAgencyIndividualSummary {
+  id: string;
+  name: string;
+  managesBudget: boolean | null;
+  billsServices: boolean | null;
+  hours: PortalUsageSummary | null;
+  dollars: PortalDollarUsageSummary | null;
+  month: string;
+  billedThisMonth: string | null;
+  setAsideThisMonth: string | null;
+  directChecksThisMonth: string | null;
+  agencyPaidThisMonth: string | null;
+}
+
+export interface PortalAgencyEmployeeSummary {
+  id: string;
+  name: string;
+  month: string;
+  payrollGrossThisMonth: string | null;
+  payrollNetThisMonth: string | null;
+  giveBack: {
     dueThisMonth: string;
     collectedThisMonth: string;
     remaining: string;
@@ -92,6 +121,8 @@ export interface PortalAgencySummary {
   payrollGrossThisMonth: string | null;
   payrollNetThisMonth: string | null;
   giveBackRemaining: string | null;
+  individuals: PortalAgencyIndividualSummary[] | null;
+  employees: PortalAgencyEmployeeSummary[] | null;
 }
 
 export interface PortalHomeReadModel {
@@ -112,14 +143,20 @@ interface PersonRow {
   name: string;
 }
 
-interface BudgetAggregateRow {
-  scope_id: string;
+interface HoursAggregateFields {
   authorized_hours: string;
   used_hours: string;
   remaining_hours: string;
+}
+
+interface DollarAggregateFields {
   authorized_dollars: string | null;
   used_dollars: string;
   remaining_dollars: string | null;
+}
+
+interface BudgetAggregateRow extends HoursAggregateFields, DollarAggregateFields {
+  scope_id: string;
 }
 
 interface MoneyAggregateRow {
@@ -150,8 +187,6 @@ interface AgencyAggregateRow {
   id: string;
   code: string;
   name: string;
-  individual_count: number | string;
-  employee_count: number | string;
   managed_budget_count: number | string;
   billing_without_budget_count: number | string;
 }
@@ -164,6 +199,51 @@ interface AgencyFinancialRow {
   payroll_gross_this_month: string | null;
   payroll_net_this_month: string | null;
   giveback_remaining: string | null;
+}
+
+interface AgencyIndividualMemberRow {
+  agency_id: string;
+  person_id: string;
+  name: string;
+  manages_budget: boolean;
+  bills_services: boolean;
+}
+
+interface AgencyEmployeeMemberRow {
+  agency_id: string;
+  person_id: string;
+  name: string;
+}
+
+interface AgencyPersonHoursRow extends HoursAggregateFields {
+  agency_id: string;
+  person_id: string;
+}
+
+interface AgencyPersonDollarRow extends DollarAggregateFields {
+  agency_id: string;
+  person_id: string;
+}
+
+interface AgencyPersonMoneyRow {
+  agency_id: string;
+  person_id: string;
+  amount: string;
+}
+
+interface AgencyEmployeeCheckRow {
+  agency_id: string;
+  person_id: string;
+  gross: string | null;
+  net: string;
+}
+
+interface AgencyEmployeeGiveBackRow {
+  agency_id: string;
+  person_id: string;
+  due_this_month: string;
+  collected_this_month: string;
+  remaining: string;
 }
 
 function roleSummary(role: PortalRole): PortalRoleSummary {
@@ -188,7 +268,15 @@ function mapByScope<T extends { scope_id: string }>(rows: T[]): Map<string, T> {
   return new Map(rows.map((row) => [row.scope_id, row]));
 }
 
-function usage(row: BudgetAggregateRow | undefined): PortalUsageSummary {
+function agencyPersonKey(agencyId: string, personId: string): string {
+  return `${agencyId}:${personId}`;
+}
+
+function mapByAgencyPerson<T extends { agency_id: string; person_id: string }>(rows: T[]): Map<string, T> {
+  return new Map(rows.map((row) => [agencyPersonKey(row.agency_id, row.person_id), row]));
+}
+
+function usage(row: HoursAggregateFields | undefined): PortalUsageSummary {
   return {
     authorized: toHours(row?.authorized_hours ?? 0),
     used: toHours(row?.used_hours ?? 0),
@@ -196,7 +284,7 @@ function usage(row: BudgetAggregateRow | undefined): PortalUsageSummary {
   };
 }
 
-function dollarUsage(row: BudgetAggregateRow | undefined): PortalDollarUsageSummary {
+function dollarUsage(row: DollarAggregateFields | undefined): PortalDollarUsageSummary {
   return {
     authorized: row?.authorized_dollars == null ? null : toMoney(row.authorized_dollars),
     used: toMoney(row?.used_dollars ?? 0),
@@ -398,27 +486,23 @@ async function directEmployeeSummaries(
     ),
     checkIds.length > 0
       ? pool.query<PayrollCheckRow>(
-          `SELECT id, employee_id, check_number,
+          `SELECT c.id, c.employee_id, c.check_number,
                   to_char(check_date, 'YYYY-MM-DD') AS check_date,
                   to_char(period_begin, 'YYYY-MM-DD') AS period_begin,
                   to_char(period_end, 'YYYY-MM-DD') AS period_end,
-                  CASE WHEN employee_id = ANY($2::uuid[]) THEN actual_gross::text END AS actual_gross,
-                  CASE WHEN employee_id = ANY($3::uuid[]) THEN actual_net::text END AS actual_net,
-                  CASE WHEN employee_id = ANY($4::uuid[]) THEN tax_withheld::text END AS tax_withheld
-             FROM (
-               SELECT c.*, row_number() OVER (
-                 PARTITION BY c.employee_id
-                  ORDER BY canonical_service_date(c.period_begin, c.check_date, c.period_end) DESC,
-                           c.updated_at DESC
-               ) AS portal_row
-                 FROM employee_payroll_checks c
-                 WHERE c.employee_id = ANY($1::uuid[])
-                   AND c.verification_status = 'verified'
-                   AND canonical_service_date(c.period_begin, c.check_date, c.period_end) IS NOT NULL
-             ) checks
-            WHERE portal_row <= 12
-            ORDER BY canonical_service_date(period_begin, check_date, period_end) DESC`,
-          [checkIds, grossIds, netIds, taxIds],
+                  CASE WHEN c.employee_id = ANY($2::uuid[]) THEN c.actual_gross::text END AS actual_gross,
+                  CASE WHEN c.employee_id = ANY($3::uuid[]) THEN c.actual_net::text END AS actual_net,
+                  CASE WHEN c.employee_id = ANY($4::uuid[]) THEN c.tax_withheld::text END AS tax_withheld
+             FROM employee_payroll_checks c
+            WHERE c.employee_id = ANY($1::uuid[])
+              AND c.verification_status = 'verified'
+              AND canonical_service_date(c.period_begin, c.check_date, c.period_end) IS NOT NULL
+              AND date_trunc('month', canonical_service_date(
+                    c.period_begin, c.check_date, c.period_end
+                  )) = $5::date
+            ORDER BY canonical_service_date(c.period_begin, c.check_date, c.period_end) DESC,
+                     c.updated_at DESC`,
+          [checkIds, grossIds, netIds, taxIds, monthStart],
         )
       : empty<PayrollCheckRow>(),
     giveBackIds.length > 0
@@ -435,6 +519,7 @@ async function directEmployeeSummaries(
            SELECT o.employee_id AS scope_id,
                   COALESCE(sum(o.original_amount) FILTER (
                     WHERE o.direction = 'receivable'
+                      AND o.status = 'active'
                       AND canonical_service_date(o.period_begin, o.check_date, o.period_end) IS NOT NULL
                       AND date_trunc('month', canonical_service_date(
                             o.period_begin, o.check_date, o.period_end
@@ -462,6 +547,7 @@ async function directEmployeeSummaries(
       checkDate: row.check_date,
       periodBegin: row.period_begin,
       periodEnd: row.period_end,
+      serviceDate: row.period_begin ?? row.check_date ?? row.period_end,
     };
     if (grossIds.includes(row.employee_id)) item.actualGross = row.actual_gross === null ? null : toMoney(row.actual_gross);
     if (netIds.includes(row.employee_id) && row.actual_net !== null) item.actualNet = toMoney(row.actual_net);
@@ -474,6 +560,7 @@ async function directEmployeeSummaries(
     return {
       id: person.id,
       name: person.name,
+      month,
       checkVisibility: {
         gross: grossIds.includes(person.id),
         net: netIds.includes(person.id),
@@ -488,6 +575,396 @@ async function directEmployeeSummaries(
       } : null,
     };
   });
+}
+
+async function agencyMemberSummaries(
+  pool: PgLikePool,
+  month: string,
+  peopleAgencyIds: readonly string[],
+  hourAgencyIds: readonly string[],
+  dollarAgencyIds: readonly string[],
+  billedAgencyIds: readonly string[],
+  setAsideAgencyIds: readonly string[],
+  directCheckAgencyIds: readonly string[],
+  agencyPaidAgencyIds: readonly string[],
+  giveBackAgencyIds: readonly string[],
+): Promise<{
+  individuals: Map<string, PortalAgencyIndividualSummary[]>;
+  employees: Map<string, PortalAgencyEmployeeSummary[]>;
+}> {
+  const monthStart = `${month}-01`;
+  const peopleIds = new Set(peopleAgencyIds);
+  const memberHours = hourAgencyIds.filter((id) => peopleIds.has(id));
+  const memberDollars = dollarAgencyIds.filter((id) => peopleIds.has(id));
+  const memberBilled = billedAgencyIds.filter((id) => peopleIds.has(id));
+  const memberSetAside = setAsideAgencyIds.filter((id) => peopleIds.has(id));
+  const memberDirectChecks = directCheckAgencyIds.filter((id) => peopleIds.has(id));
+  const memberAgencyPaid = agencyPaidAgencyIds.filter((id) => peopleIds.has(id));
+  const memberGiveBack = giveBackAgencyIds.filter((id) => peopleIds.has(id));
+
+  const [
+    individualResult,
+    employeeResult,
+    hoursBudgetResult,
+    dollarBudgetResult,
+    billedResult,
+    setAsideResult,
+    directCheckResult,
+    agencyPaidResult,
+    employeeCheckResult,
+    employeeGiveBackResult,
+  ] = await Promise.all([
+    peopleAgencyIds.length > 0
+      ? pool.query<AgencyIndividualMemberRow>(
+          `WITH ranked_memberships AS (
+             SELECT membership.agency_id,
+                    membership.individual_id AS person_id,
+                    individual.display_name AS name,
+                    membership.manages_budget,
+                    membership.bills_services,
+                    row_number() OVER (
+                      PARTITION BY membership.agency_id, membership.individual_id
+                      ORDER BY membership.effective_from DESC,
+                               membership.updated_at DESC,
+                               membership.id DESC
+                    ) AS responsibility_rank
+               FROM agency_individuals membership
+               JOIN individuals individual ON individual.id = membership.individual_id
+              WHERE membership.agency_id = ANY($1::uuid[])
+                AND membership.is_active = true
+                AND membership.effective_from < ($2::date + interval '1 month')
+                AND (membership.effective_to IS NULL OR membership.effective_to >= $2::date)
+           )
+           SELECT agency_id, person_id, name, manages_budget, bills_services
+             FROM ranked_memberships
+            WHERE responsibility_rank = 1
+            ORDER BY agency_id, name`,
+          [peopleAgencyIds, monthStart],
+        )
+      : empty<AgencyIndividualMemberRow>(),
+    peopleAgencyIds.length > 0
+      ? pool.query<AgencyEmployeeMemberRow>(
+          `SELECT membership.agency_id,
+                  membership.employee_id AS person_id,
+                  employee.display_name AS name
+             FROM agency_employees membership
+             JOIN employees employee ON employee.id = membership.employee_id
+            WHERE membership.agency_id = ANY($1::uuid[])
+              AND membership.is_active = true
+              AND (
+                (
+                  membership.effective_from < ($2::date + interval '1 month')
+                  AND (membership.effective_to IS NULL OR membership.effective_to >= $2::date)
+                )
+                OR (
+                  membership.agency_id = ANY($3::uuid[])
+                  AND EXISTS (
+                    SELECT 1
+                      FROM settlement_obligations obligation
+                     WHERE obligation.employee_id = membership.employee_id
+                       AND obligation.status = 'active'
+                       AND obligation.direction = 'receivable'
+                       AND obligation.kind LIKE 'employee_giveback%'
+                       AND canonical_service_date(
+                             obligation.period_begin, obligation.check_date, obligation.period_end
+                           ) BETWEEN membership.effective_from
+                               AND COALESCE(membership.effective_to, 'infinity'::date)
+                  )
+                )
+              )
+            GROUP BY membership.agency_id, membership.employee_id, employee.display_name
+            ORDER BY membership.agency_id, employee.display_name`,
+          [peopleAgencyIds, monthStart, memberGiveBack],
+        )
+      : empty<AgencyEmployeeMemberRow>(),
+    memberHours.length > 0
+      ? pool.query<AgencyPersonHoursRow>(
+          `SELECT membership.agency_id,
+                  membership.individual_id AS person_id,
+                  COALESCE(sum(balance.authorized_hours), 0)::text AS authorized_hours,
+                  COALESCE(sum(balance.consumed_hours), 0)::text AS used_hours,
+                  COALESCE(sum(balance.remaining_hours), 0)::text AS remaining_hours
+             FROM agency_individuals membership
+             LEFT JOIN program_budget_balances balance
+               ON balance.individual_id = membership.individual_id
+              AND balance.period_status = 'active'
+              AND (now() AT TIME ZONE 'America/New_York')::date
+                  BETWEEN balance.start_date AND balance.end_date
+            WHERE membership.agency_id = ANY($1::uuid[])
+              AND membership.is_active = true
+              AND membership.manages_budget = true
+              AND membership.effective_from <= (now() AT TIME ZONE 'America/New_York')::date
+              AND (membership.effective_to IS NULL
+                OR membership.effective_to >= (now() AT TIME ZONE 'America/New_York')::date)
+            GROUP BY membership.agency_id, membership.individual_id`,
+          [memberHours],
+        )
+      : empty<AgencyPersonHoursRow>(),
+    memberDollars.length > 0
+      ? pool.query<AgencyPersonDollarRow>(
+          `SELECT membership.agency_id,
+                  membership.individual_id AS person_id,
+                  CASE WHEN count(balance.authorized_dollars) > 0
+                    THEN sum(balance.authorized_dollars)::text END AS authorized_dollars,
+                  COALESCE(sum(balance.consumed_dollars), 0)::text AS used_dollars,
+                  CASE WHEN count(balance.remaining_dollars) > 0
+                    THEN sum(balance.remaining_dollars)::text END AS remaining_dollars
+             FROM agency_individuals membership
+             LEFT JOIN program_budget_balances balance
+               ON balance.individual_id = membership.individual_id
+              AND balance.period_status = 'active'
+              AND (now() AT TIME ZONE 'America/New_York')::date
+                  BETWEEN balance.start_date AND balance.end_date
+            WHERE membership.agency_id = ANY($1::uuid[])
+              AND membership.is_active = true
+              AND membership.manages_budget = true
+              AND membership.effective_from <= (now() AT TIME ZONE 'America/New_York')::date
+              AND (membership.effective_to IS NULL
+                OR membership.effective_to >= (now() AT TIME ZONE 'America/New_York')::date)
+            GROUP BY membership.agency_id, membership.individual_id`,
+          [memberDollars],
+        )
+      : empty<AgencyPersonDollarRow>(),
+    memberBilled.length > 0
+      ? pool.query<AgencyPersonMoneyRow>(
+          `SELECT membership.agency_id,
+                  transaction.individual_id AS person_id,
+                  COALESCE(sum(transaction.imported_amount), 0)::text AS amount
+             FROM payroll_transactions transaction
+             JOIN agency_individuals membership
+               ON membership.individual_id = transaction.individual_id
+              AND membership.is_active = true
+              AND membership.bills_services = true
+              AND canonical_service_date(
+                    transaction.period_begin, transaction.check_date, transaction.period_end
+                  ) BETWEEN membership.effective_from AND COALESCE(membership.effective_to, 'infinity'::date)
+            WHERE membership.agency_id = ANY($1::uuid[])
+              AND canonical_service_date(
+                    transaction.period_begin, transaction.check_date, transaction.period_end
+                  ) IS NOT NULL
+              AND date_trunc('month', canonical_service_date(
+                    transaction.period_begin, transaction.check_date, transaction.period_end
+                  )) = $2::date
+            GROUP BY membership.agency_id, transaction.individual_id`,
+          [memberBilled, monthStart],
+        )
+      : empty<AgencyPersonMoneyRow>(),
+    memberSetAside.length > 0
+      ? pool.query<AgencyPersonMoneyRow>(
+          `SELECT membership.agency_id,
+                  event.individual_id AS person_id,
+                  COALESCE(sum(event.amount), 0)::text AS amount
+             FROM settlement_events event
+             JOIN settlement_obligations obligation ON obligation.id = event.settlement_obligation_id
+             JOIN agency_individuals membership
+               ON membership.individual_id = event.individual_id
+              AND membership.is_active = true
+              AND membership.manages_budget = true
+              AND event.occurred_on BETWEEN membership.effective_from
+                  AND COALESCE(membership.effective_to, 'infinity'::date)
+            WHERE membership.agency_id = ANY($1::uuid[])
+              AND obligation.direction = 'reserve'
+              AND date_trunc('month', event.occurred_on) = $2::date
+            GROUP BY membership.agency_id, event.individual_id`,
+          [memberSetAside, monthStart],
+        )
+      : empty<AgencyPersonMoneyRow>(),
+    memberDirectChecks.length > 0
+      ? pool.query<AgencyPersonMoneyRow>(
+          `SELECT membership.agency_id,
+                  transaction.individual_id AS person_id,
+                  COALESCE(sum(transaction.employee_payment_amount), 0)::text AS amount
+             FROM payroll_transactions transaction
+             LEFT JOIN programs program ON program.id = transaction.program_id
+             JOIN agency_individuals membership
+               ON membership.individual_id = transaction.individual_id
+              AND membership.is_active = true
+              AND membership.bills_services = true
+              AND canonical_service_date(
+                    transaction.period_begin, transaction.check_date, transaction.period_end
+                  ) BETWEEN membership.effective_from AND COALESCE(membership.effective_to, 'infinity'::date)
+            WHERE membership.agency_id = ANY($1::uuid[])
+              AND effective_payment_recipient(
+                    transaction.payment_recipient, program.payment_recipient
+                  ) = 'employee'
+              AND canonical_service_date(
+                    transaction.period_begin, transaction.check_date, transaction.period_end
+                  ) IS NOT NULL
+              AND date_trunc('month', canonical_service_date(
+                    transaction.period_begin, transaction.check_date, transaction.period_end
+                  )) = $2::date
+            GROUP BY membership.agency_id, transaction.individual_id`,
+          [memberDirectChecks, monthStart],
+        )
+      : empty<AgencyPersonMoneyRow>(),
+    memberAgencyPaid.length > 0
+      ? pool.query<AgencyPersonMoneyRow>(
+          `SELECT membership.agency_id,
+                  transaction.individual_id AS person_id,
+                  COALESCE(sum(transaction.employee_payment_amount), 0)::text AS amount
+             FROM payroll_transactions transaction
+             LEFT JOIN programs program ON program.id = transaction.program_id
+             JOIN agency_individuals membership
+               ON membership.individual_id = transaction.individual_id
+              AND membership.is_active = true
+              AND membership.bills_services = true
+              AND canonical_service_date(
+                    transaction.period_begin, transaction.check_date, transaction.period_end
+                  ) BETWEEN membership.effective_from AND COALESCE(membership.effective_to, 'infinity'::date)
+            WHERE membership.agency_id = ANY($1::uuid[])
+              AND effective_payment_recipient(
+                    transaction.payment_recipient, program.payment_recipient
+                  ) = 'excellent_staffing'
+              AND canonical_service_date(
+                    transaction.period_begin, transaction.check_date, transaction.period_end
+                  ) IS NOT NULL
+              AND date_trunc('month', canonical_service_date(
+                    transaction.period_begin, transaction.check_date, transaction.period_end
+                  )) = $2::date
+            GROUP BY membership.agency_id, transaction.individual_id`,
+          [memberAgencyPaid, monthStart],
+        )
+      : empty<AgencyPersonMoneyRow>(),
+    memberDirectChecks.length > 0
+      ? pool.query<AgencyEmployeeCheckRow>(
+          `SELECT membership.agency_id,
+                  checks.employee_id AS person_id,
+                  CASE
+                    WHEN count(*) FILTER (WHERE checks.actual_gross IS NULL) > 0 THEN NULL
+                    ELSE COALESCE(sum(checks.actual_gross), 0)::text
+                  END AS gross,
+                  COALESCE(sum(checks.actual_net), 0)::text AS net
+             FROM employee_payroll_checks checks
+             JOIN agency_employees membership
+               ON membership.employee_id = checks.employee_id
+              AND membership.is_active = true
+              AND canonical_service_date(
+                    checks.period_begin, checks.check_date, checks.period_end
+                  ) BETWEEN membership.effective_from AND COALESCE(membership.effective_to, 'infinity'::date)
+            WHERE membership.agency_id = ANY($1::uuid[])
+              AND checks.verification_status = 'verified'
+              AND canonical_service_date(
+                    checks.period_begin, checks.check_date, checks.period_end
+                  ) IS NOT NULL
+              AND date_trunc('month', canonical_service_date(
+                    checks.period_begin, checks.check_date, checks.period_end
+                  )) = $2::date
+            GROUP BY membership.agency_id, checks.employee_id`,
+          [memberDirectChecks, monthStart],
+        )
+      : empty<AgencyEmployeeCheckRow>(),
+    memberGiveBack.length > 0
+      ? pool.query<AgencyEmployeeGiveBackRow>(
+          `WITH event_totals AS (
+             SELECT settlement_obligation_id,
+                    COALESCE(sum(amount), 0) AS applied,
+                    COALESCE(sum(amount) FILTER (
+                      WHERE date_trunc('month', occurred_on) = $2::date
+                    ), 0) AS applied_month
+               FROM settlement_events
+              GROUP BY settlement_obligation_id
+           )
+           SELECT membership.agency_id,
+                  obligation.employee_id AS person_id,
+                  COALESCE(sum(obligation.original_amount) FILTER (
+                    WHERE obligation.status = 'active'
+                      AND canonical_service_date(
+                            obligation.period_begin, obligation.check_date, obligation.period_end
+                          ) IS NOT NULL
+                      AND date_trunc('month', canonical_service_date(
+                            obligation.period_begin, obligation.check_date, obligation.period_end
+                          )) = $2::date
+                  ), 0)::text AS due_this_month,
+                  COALESCE(sum(events.applied_month), 0)::text AS collected_this_month,
+                  COALESCE(sum(GREATEST(
+                    obligation.original_amount - COALESCE(events.applied, 0), 0
+                  )) FILTER (WHERE obligation.status = 'active'), 0)::text AS remaining
+             FROM settlement_obligations obligation
+             JOIN agency_employees membership
+               ON membership.employee_id = obligation.employee_id
+              AND membership.is_active = true
+              AND canonical_service_date(
+                    obligation.period_begin, obligation.check_date, obligation.period_end
+                  ) BETWEEN membership.effective_from AND COALESCE(membership.effective_to, 'infinity'::date)
+             LEFT JOIN event_totals events ON events.settlement_obligation_id = obligation.id
+            WHERE membership.agency_id = ANY($1::uuid[])
+              AND obligation.direction = 'receivable'
+              AND obligation.kind LIKE 'employee_giveback%'
+            GROUP BY membership.agency_id, obligation.employee_id`,
+          [memberGiveBack, monthStart],
+        )
+      : empty<AgencyEmployeeGiveBackRow>(),
+  ]);
+
+  const hourBudgets = mapByAgencyPerson(hoursBudgetResult.rows);
+  const dollarBudgets = mapByAgencyPerson(dollarBudgetResult.rows);
+  const billed = mapByAgencyPerson(billedResult.rows);
+  const setAside = mapByAgencyPerson(setAsideResult.rows);
+  const directChecks = mapByAgencyPerson(directCheckResult.rows);
+  const agencyPaid = mapByAgencyPerson(agencyPaidResult.rows);
+  const employeeChecks = mapByAgencyPerson(employeeCheckResult.rows);
+  const employeeGiveBack = mapByAgencyPerson(employeeGiveBackResult.rows);
+  const individuals = new Map<string, PortalAgencyIndividualSummary[]>();
+  const employees = new Map<string, PortalAgencyEmployeeSummary[]>();
+
+  for (const person of individualResult.rows) {
+    const key = agencyPersonKey(person.agency_id, person.person_id);
+    const canReadHours = memberHours.includes(person.agency_id);
+    const canReadDollars = memberDollars.includes(person.agency_id);
+    const summary: PortalAgencyIndividualSummary = {
+      id: person.person_id,
+      name: person.name,
+      managesBudget: canReadHours || canReadDollars ? person.manages_budget : null,
+      billsServices: canReadHours || canReadDollars ? person.bills_services : null,
+      hours: canReadHours && person.manages_budget
+        ? usage(hourBudgets.get(key))
+        : null,
+      dollars: canReadDollars && person.manages_budget
+        ? dollarUsage(dollarBudgets.get(key))
+        : null,
+      month,
+      billedThisMonth: memberBilled.includes(person.agency_id)
+        ? toMoney(billed.get(key)?.amount ?? 0)
+        : null,
+      setAsideThisMonth: memberSetAside.includes(person.agency_id)
+        ? toMoney(setAside.get(key)?.amount ?? 0)
+        : null,
+      directChecksThisMonth: memberDirectChecks.includes(person.agency_id)
+        ? toMoney(directChecks.get(key)?.amount ?? 0)
+        : null,
+      agencyPaidThisMonth: memberAgencyPaid.includes(person.agency_id)
+        ? toMoney(agencyPaid.get(key)?.amount ?? 0)
+        : null,
+    };
+    individuals.set(person.agency_id, [...(individuals.get(person.agency_id) ?? []), summary]);
+  }
+
+  for (const person of employeeResult.rows) {
+    const key = agencyPersonKey(person.agency_id, person.person_id);
+    const checks = employeeChecks.get(key);
+    const giveBack = employeeGiveBack.get(key);
+    const summary: PortalAgencyEmployeeSummary = {
+      id: person.person_id,
+      name: person.name,
+      month,
+      payrollGrossThisMonth: memberDirectChecks.includes(person.agency_id)
+        ? checks?.gross === null
+          ? null
+          : toMoney(checks?.gross ?? 0)
+        : null,
+      payrollNetThisMonth: memberDirectChecks.includes(person.agency_id)
+        ? toMoney(checks?.net ?? 0)
+        : null,
+      giveBack: memberGiveBack.includes(person.agency_id) ? {
+        dueThisMonth: toMoney(giveBack?.due_this_month ?? 0),
+        collectedThisMonth: toMoney(giveBack?.collected_this_month ?? 0),
+        remaining: toMoney(giveBack?.remaining ?? 0),
+      } : null,
+    };
+    employees.set(person.agency_id, [...(employees.get(person.agency_id) ?? []), summary]);
+  }
+
+  return { individuals, employees };
 }
 
 /**
@@ -516,14 +993,11 @@ export async function getPortalHomeReadModel(
     ownerCanReadAgencies || scopedAgencyIds.length > 0
       ? pool.query<AgencyAggregateRow>(
           `SELECT a.id, a.code, a.name,
-                  COALESCE(ai.individual_count, 0)::int AS individual_count,
-                  COALESCE(ae.employee_count, 0)::int AS employee_count,
                   COALESCE(ai.managed_budget_count, 0)::int AS managed_budget_count,
                   COALESCE(ai.billing_without_budget_count, 0)::int AS billing_without_budget_count
              FROM agencies a
              LEFT JOIN LATERAL (
-               SELECT COUNT(*) AS individual_count,
-                      COUNT(*) FILTER (WHERE manages_budget) AS managed_budget_count,
+               SELECT COUNT(*) FILTER (WHERE manages_budget) AS managed_budget_count,
                       COUNT(*) FILTER (WHERE bills_services AND NOT manages_budget) AS billing_without_budget_count
                  FROM agency_individuals
                 WHERE agency_id = a.id AND is_active = true
@@ -531,14 +1005,6 @@ export async function getPortalHomeReadModel(
                   AND (effective_to IS NULL
                     OR effective_to >= (now() AT TIME ZONE 'America/New_York')::date)
              ) ai ON true
-             LEFT JOIN LATERAL (
-               SELECT COUNT(*) AS employee_count
-                 FROM agency_employees
-                WHERE agency_id = a.id AND is_active = true
-                  AND effective_from <= (now() AT TIME ZONE 'America/New_York')::date
-                  AND (effective_to IS NULL
-                    OR effective_to >= (now() AT TIME ZONE 'America/New_York')::date)
-             ) ae ON true
             WHERE a.status = 'active'
               AND ($1::boolean = true OR a.id = ANY($2::uuid[]))
             ORDER BY a.is_home_agency DESC, a.name`,
@@ -548,6 +1014,7 @@ export async function getPortalHomeReadModel(
   ]);
 
   const agencyIds = agencyResult.rows.map((row) => row.id);
+  const peopleAgencyIds = agencyIdsWith(context, agencyIds, "people.agency.read");
   const hourAgencyIds = agencyIdsWith(context, agencyIds, "hours_budgets.agency.read");
   const dollarAgencyIds = agencyIdsWith(context, agencyIds, "dollar_budgets.agency.read");
   const budgetAgencyIds = unique([...hourAgencyIds, ...dollarAgencyIds]);
@@ -564,7 +1031,7 @@ export async function getPortalHomeReadModel(
     ...giveBackAgencyIds,
   ]);
 
-  const [agencyBudgetResult, agencyFinancialResult] = await Promise.all([
+  const [agencyBudgetResult, agencyFinancialResult, agencyMembers] = await Promise.all([
     budgetAgencyIds.length > 0
       ? pool.query<BudgetAggregateRow>(
           `SELECT membership.agency_id AS scope_id,
@@ -661,9 +1128,12 @@ export async function getPortalHomeReadModel(
                                     transaction.period_end))
                        )
                   ), 0)::text END AS agency_paid_this_month,
-                  CASE WHEN requested.agency_id = ANY($5::uuid[]) THEN COALESCE((
-                    SELECT sum(checks.actual_gross)
-                      FROM employee_payroll_checks checks
+                  CASE WHEN requested.agency_id = ANY($5::uuid[]) THEN (
+                    SELECT CASE
+                             WHEN count(*) FILTER (WHERE checks.actual_gross IS NULL) > 0 THEN NULL
+                             ELSE COALESCE(sum(checks.actual_gross), 0)::text
+                           END
+                       FROM employee_payroll_checks checks
                      WHERE checks.verification_status = 'verified'
                        AND canonical_service_date(
                              checks.period_begin, checks.check_date, checks.period_end
@@ -683,8 +1153,8 @@ export async function getPortalHomeReadModel(
                             AND (membership.effective_to IS NULL OR membership.effective_to >=
                                   canonical_service_date(checks.period_begin, checks.check_date,
                                     checks.period_end))
-                       )
-                  ), 0)::text END AS payroll_gross_this_month,
+                        )
+                  ) END AS payroll_gross_this_month,
                   CASE WHEN requested.agency_id = ANY($5::uuid[]) THEN COALESCE((
                     SELECT sum(checks.actual_net)
                       FROM employee_payroll_checks checks
@@ -746,6 +1216,18 @@ export async function getPortalHomeReadModel(
           ],
         )
       : empty<AgencyFinancialRow>(),
+    agencyMemberSummaries(
+      pool,
+      month,
+      peopleAgencyIds,
+      hourAgencyIds,
+      dollarAgencyIds,
+      billedAgencyIds,
+      setAsideAgencyIds,
+      checkAgencyIds,
+      agencyPaidAgencyIds,
+      giveBackAgencyIds,
+    ),
   ]);
 
   const agencyBudgets = mapByScope(agencyBudgetResult.rows);
@@ -759,14 +1241,16 @@ export async function getPortalHomeReadModel(
     const canReadHours = hourAgencyIds.includes(row.id);
     const canReadDollars = dollarAgencyIds.includes(row.id);
     const financial = agencyFinancials.get(row.id);
+    const agencyIndividuals = canReadPeople ? agencyMembers.individuals.get(row.id) ?? [] : null;
+    const agencyEmployees = canReadPeople ? agencyMembers.employees.get(row.id) ?? [] : null;
     return {
       id: row.id,
       code: row.code,
       name: row.name,
       roles: unique(roles).map((role) => roleSummary(role as PortalRole)),
       capabilities: portalCapabilities(context, row.id),
-      individualCount: canReadPeople ? Number(row.individual_count) : null,
-      employeeCount: canReadPeople ? Number(row.employee_count) : null,
+      individualCount: agencyIndividuals?.length ?? null,
+      employeeCount: agencyEmployees?.length ?? null,
       managedBudgetCount: canReadHours ? Number(row.managed_budget_count) : null,
       billingWithoutBudgetCount: canReadHours ? Number(row.billing_without_budget_count) : null,
       budgetHours: canReadHours ? usage(agencyBudgets.get(row.id)) : null,
@@ -775,9 +1259,15 @@ export async function getPortalHomeReadModel(
       billedThisMonth: billedAgencyIds.includes(row.id) ? toMoney(financial?.billed_this_month ?? 0) : null,
       setAsideThisMonth: setAsideAgencyIds.includes(row.id) ? toMoney(financial?.set_aside_this_month ?? 0) : null,
       agencyPaidThisMonth: agencyPaidAgencyIds.includes(row.id) ? toMoney(financial?.agency_paid_this_month ?? 0) : null,
-      payrollGrossThisMonth: checkAgencyIds.includes(row.id) ? toMoney(financial?.payroll_gross_this_month ?? 0) : null,
+      payrollGrossThisMonth: checkAgencyIds.includes(row.id)
+        ? financial?.payroll_gross_this_month === null
+          ? null
+          : toMoney(financial?.payroll_gross_this_month ?? 0)
+        : null,
       payrollNetThisMonth: checkAgencyIds.includes(row.id) ? toMoney(financial?.payroll_net_this_month ?? 0) : null,
       giveBackRemaining: giveBackAgencyIds.includes(row.id) ? toMoney(financial?.giveback_remaining ?? 0) : null,
+      individuals: agencyIndividuals,
+      employees: agencyEmployees,
     };
   });
 

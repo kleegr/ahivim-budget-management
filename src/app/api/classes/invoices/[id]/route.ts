@@ -17,7 +17,7 @@ export async function GET(
   const { id } = await params;
   try {
     const found = await accessibleClassInvoice(id, "view");
-    if (found.error) return found.error;
+    if ("error" in found) return found.error;
     return NextResponse.json({ ok: true, data: found.invoice });
   } catch (error) {
     return jsonError(redactError(error, "Could not load that class invoice."), 500);
@@ -33,7 +33,7 @@ export async function PATCH(
   const { id } = await params;
   try {
     const found = await accessibleClassInvoice(id, "manage");
-    if (found.error) return found.error;
+    if ("error" in found) return found.error;
     const body = await readJson(request);
     return classResultResponse(await updateClassInvoiceDraft(found.access.pool, id, {
       invoiceNumber: body.invoiceNumber === undefined ? undefined : String(body.invoiceNumber),
@@ -62,7 +62,7 @@ export async function DELETE(
   const { id } = await params;
   try {
     const found = await accessibleClassInvoice(id, "manage");
-    if (found.error) return found.error;
+    if ("error" in found) return found.error;
     const body = await readJson(request);
     return classResultResponse(await discardClassInvoiceDraft(
       found.access.pool,

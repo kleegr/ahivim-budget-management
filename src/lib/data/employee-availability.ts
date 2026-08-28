@@ -13,6 +13,8 @@ export interface EmployeeAvailabilityInput {
   excludeSessionId?: string | null;
   excludeSeriesId?: string | null;
   excludeSeriesFromDate?: string | null;
+  /** Optional hours-only roster boundary for agency planners. */
+  employeeIds?: string[] | null;
 }
 
 export interface EmployeeAvailability {
@@ -75,7 +77,9 @@ export async function listEmployeeAvailability(
     `SELECT id AS employee_id, display_name AS employee_name
        FROM employees
       WHERE status = 'active' AND archived_at IS NULL
+        AND ($1::uuid[] IS NULL OR id = ANY($1::uuid[]))
       ORDER BY lower(display_name), id`,
+    [input.employeeIds ?? null],
   );
   const employeeIds = employeeResult.rows.map((row) => row.employee_id);
   const assignmentResult = employeeIds.length > 0

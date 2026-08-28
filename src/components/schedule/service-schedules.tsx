@@ -179,7 +179,7 @@ export default function ServiceSchedules({
         </select>
         <select aria-label="Program" value={programId} onChange={(event) => setProgramId(event.target.value)} className="select">
           <option value="">All programs</option>
-          {programs.map((program) => <option key={program.id} value={program.id}>{program.code}</option>)}
+          {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
         </select>
         <select aria-label="Readiness" value={readiness} onChange={(event) => setReadiness(event.target.value as ReadinessFilter)} className="select">
           <option value="">Any readiness</option>

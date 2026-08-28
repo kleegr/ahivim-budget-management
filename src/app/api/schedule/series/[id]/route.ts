@@ -1,8 +1,9 @@
 import { NextRequest } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiPlanningUser } from "@/lib/auth/planning-access";
+import { apiPlanningUser, planningProgramAllowed, planningSeriesAllowed, planningSubjectsAllowed } from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { cancelSeries, updateSeries, type UpdateSeriesInput } from "@/lib/manage/schedule";
+import { agencyDate } from "@/lib/business/agency-time";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,6 +31,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const planning = await apiPlanningUser();
   if (!planning) return jsonError("Planning access required", 403);
   const { user } = planning;
+  if (!planning.canManageSchedules) return jsonError("Schedule management access required", 403);
 
   const { id } = await params;
   const body = await readJson(request);
@@ -39,9 +41,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   try {
     const pool = getPool();
     if (action === "cancel") {
+      if (!await planningSeriesAllowed(pool, planning, id, "schedule")) return jsonError("Not found", 404);
       return resultResponse(await cancelSeries(pool, id, user.id, reason), 200);
     }
     if (action === "update") {
+      if (!await planningSeriesAllowed(pool, planning, id, "read")) return jsonError("Not found", 404);
       const frequency = asString(body.frequency);
       const status = asString(body.status);
       if (frequency !== "weekly" && frequency !== "daily") {
@@ -69,8 +73,25 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         startDate: asString(body.startDate) ?? "",
         endDate: asString(body.endDate) ?? "",
         applyFromDate: asString(body.applyFromDate),
+        forceSplit: planning.agencyIds.length > 0,
         status,
       };
+      const applyFromDate = input.applyFromDate ?? agencyDate();
+      const replacementStartDate = input.startDate > applyFromDate ? input.startDate : applyFromDate;
+      if (!await planningSeriesAllowed(pool, planning, id, "schedule", {
+        from: applyFromDate,
+        to: input.endDate,
+      })) return jsonError("That change date is outside your agency roster.", 403);
+      if (!planningSubjectsAllowed(planning, {
+        individualIds: input.individualIds,
+        employeeId: input.employeeId,
+      }, "schedule", {
+        from: replacementStartDate,
+        to: input.endDate,
+      })) return jsonError("That schedule range is outside your agency roster.", 403);
+      if (!await planningProgramAllowed(pool, planning, input.programId)) {
+        return jsonError("Choose an active hours-based planning program.", 403);
+      }
       return resultResponse(await updateSeries(pool, id, input, user.id, reason), 200);
     }
     return jsonError("Unknown action.", 400);

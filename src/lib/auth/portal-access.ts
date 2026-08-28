@@ -111,11 +111,16 @@ const ROLE_CAPABILITIES: Record<PortalRole, readonly PortalCapability[]> = {
     "agencies.read",
     "people.agency.read",
     "hours_budgets.agency.read",
+    "assignments.agency.manage",
+    "schedules.agency.read",
+    "schedules.agency.manage",
   ],
   scheduler: [
     "agencies.read",
     "people.agency.read",
     "hours_budgets.agency.read",
+    "schedules.agency.read",
+    "schedules.agency.manage",
   ],
   collector: [
     "agencies.read",
@@ -222,9 +227,6 @@ function allowedForGlobalRole(role: GlobalPortalRole): ReadonlySet<PortalCapabil
 }
 
 function allowedForAgencyRole(role: AgencyPortalRole): ReadonlySet<PortalCapability> {
-  // Agency portal assignments are scoped reporting identities. Operational
-  // write access lives in the internal staff access model, whose endpoints
-  // enforce the relevant employee and individual scope.
   if (role === "agency") return AGENCY_READ_CAPABILITIES;
   if (role === "collector") {
     return new Set<PortalCapability>([
@@ -232,9 +234,27 @@ function allowedForAgencyRole(role: AgencyPortalRole): ReadonlySet<PortalCapabil
       "financials.agency.billed_totals.read",
     ]);
   }
-  // Staffing and scheduler roles are categorically hours-only. A per-account
-  // override may narrow them, but can never introduce a monetary capability.
+  // Staffing and scheduler roles are categorically hours-only. Their schedule
+  // writes are checked again against the agency roster at every endpoint. A
+  // per-account override may narrow them, but can never add money access.
   return new Set(ROLE_CAPABILITIES[role]);
+}
+
+export function agencyIdsWithPortalCapability(
+  context: PortalAccessContext,
+  capability: PortalCapability,
+): string[] {
+  return [...new Set(
+    context.agencyAccess
+      .filter((assignment) => hasPortalCapability(context, capability, assignment.agencyId))
+      .map((assignment) => assignment.agencyId),
+  )];
+}
+
+/** Planning always exposes authorization hours, so both read grants are required. */
+export function agencyIdsWithPlanningAccess(context: PortalAccessContext): string[] {
+  return agencyIdsWithPortalCapability(context, "schedules.agency.read").filter((agencyId) =>
+    hasPortalCapability(context, "hours_budgets.agency.read", agencyId));
 }
 
 export function portalCapabilityAllowedForRole(
@@ -412,15 +432,6 @@ export function canAccessPortalAgency(
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function agencyIdsWithCapability(context: PortalAccessContext, capability: PortalCapability): string[] {
-  const ids = new Set(
-    context.agencyAccess
-      .filter((assignment) => hasPortalCapability(context, capability, assignment.agencyId))
-      .map((assignment) => assignment.agencyId),
-  );
-  return [...ids];
-}
-
 export async function canAccessPortalIndividual(
   pool: PgLikePool,
   context: PortalAccessContext,
@@ -429,7 +440,7 @@ export async function canAccessPortalIndividual(
   if (!UUID.test(individualId)) return false;
   if (hasPortalIndividualCapability(context, individualId, "people.self.read")) return true;
   if (isPortalOwner(context)) return hasPortalCapability(context, "people.agency.read");
-  const agencyIds = agencyIdsWithCapability(context, "people.agency.read");
+  const agencyIds = agencyIdsWithPortalCapability(context, "people.agency.read");
   if (agencyIds.length === 0) return false;
   const { rows } = await pool.query<{ allowed: boolean }>(
     `SELECT true AS allowed
@@ -454,7 +465,7 @@ export async function canAccessPortalEmployee(
   if (!UUID.test(employeeId)) return false;
   if (hasPortalEmployeeCapability(context, employeeId, "people.self.read")) return true;
   if (isPortalOwner(context)) return hasPortalCapability(context, "people.agency.read");
-  const agencyIds = agencyIdsWithCapability(context, "people.agency.read");
+  const agencyIds = agencyIdsWithPortalCapability(context, "people.agency.read");
   if (agencyIds.length === 0) return false;
   const { rows } = await pool.query<{ allowed: boolean }>(
     `SELECT true AS allowed

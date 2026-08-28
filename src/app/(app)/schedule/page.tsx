@@ -1,9 +1,10 @@
-import { requirePlanningUser } from "@/lib/auth/planning-access";
+import { canViewPlannerDirectPayTargets, requirePlanningUser } from "@/lib/auth/planning-access";
 import { withDb } from "@/lib/data/pool";
-import { listIndividualsManaged } from "@/lib/manage/individuals";
-import { listEmployeesManaged } from "@/lib/manage/employees";
-import { listPrograms } from "@/lib/data/app-queries";
-import { getPlanningWorkspace } from "@/lib/data/planning-queries";
+import {
+  filterPlanningWorkspaceForAgency,
+  getPlanningReferenceData,
+  getPlanningWorkspace,
+} from "@/lib/data/planning-queries";
 import { listPlannerDirectPayTargets } from "@/lib/data/direct-pay-operations";
 import { PageHeader, ErrorPanel } from "@/components/ui";
 import PlanningWorkspace from "@/components/schedule/planning-workspace";
@@ -23,8 +24,8 @@ export default async function SchedulePage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requirePlanningUser();
-  const canManage = true;
+  const planningAccess = await requirePlanningUser();
+  const canManage = planningAccess.canManageSchedules;
   const today = agencyDate();
   const sp = await searchParams;
   const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
@@ -47,14 +48,18 @@ export default async function SchedulePage({
   };
 
   const result = await withDb(async (pool) => {
-    const [individuals, employees, programs, planning, directPayTargets] = await Promise.all([
-      listIndividualsManaged(pool, { status: "active" }),
-      listEmployeesManaged(pool, { status: "active" }),
-      listPrograms(pool),
-      getPlanningWorkspace(pool, today),
-      listPlannerDirectPayTargets(pool, today),
+    const [reference, planning, directPayTargets] = await Promise.all([
+      getPlanningReferenceData(pool, planningAccess.access),
+      getPlanningWorkspace(pool, today, planningAccess.access, planningAccess.agencyIds),
+      canViewPlannerDirectPayTargets(planningAccess)
+        ? listPlannerDirectPayTargets(pool, today)
+        : Promise.resolve(null),
     ]);
-    return { individuals, employees, programs, planning, directPayTargets };
+    return {
+      reference,
+      planning: filterPlanningWorkspaceForAgency(planning, planningAccess.agencyRosters),
+      directPayTargets,
+    };
   });
 
   return (
@@ -69,22 +74,25 @@ export default async function SchedulePage({
         <ErrorPanel title="Could not load scheduling data">{result.error}</ErrorPanel>
       ) : (
         <>
-          <DirectPayTargetsPanel rows={result.data.directPayTargets} />
+          {result.data.directPayTargets ? <DirectPayTargetsPanel rows={result.data.directPayTargets} /> : null}
           <PlanningWorkspace
             data={result.data.planning}
             canManage={canManage}
+            canManageAssignments={planningAccess.canManageAssignments}
+            canOpenPersonRecords={planningAccess.agencyIds.length === 0}
             today={today}
             initialView={initialView}
             initialCalendarDate={initialCalendarDate}
             initialCalendarView={initialCalendarView}
             initialFilters={initialFilters}
-            individuals={result.data.individuals.map((i) => ({ id: i.id, label: i.displayName }))}
-            employees={result.data.employees.map((e) => ({ id: e.id, label: e.displayName }))}
-            programs={result.data.programs
-              .filter((p) => p.isActive
-                && p.requiredAuthType !== "dollars"
-                && (p.consumptionSource === "payroll" || p.consumptionSource === "mixed"))
-              .map((p) => ({ id: p.id, code: p.code, name: p.name, isGroupCapable: p.isGroupCapable }))}
+            individuals={result.data.reference.individuals}
+            employees={result.data.reference.employees}
+            programs={result.data.reference.programs.map((p) => ({
+              id: p.id,
+              code: p.code,
+              name: p.name,
+              isGroupCapable: p.isGroupCapable,
+            }))}
           />
         </>
       )}

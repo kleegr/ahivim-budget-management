@@ -2,6 +2,7 @@ import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { dec, toHours } from "@/lib/money";
 import { recordChange } from "./audit";
 import { ok, fail, type Result } from "./errors";
+import { employeeScopeClause, individualScopeClause, type AccessScope } from "@/lib/auth/access";
 
 /** An employee is permitted to serve an individual (optionally for a program). */
 export interface AssignmentRecord {
@@ -343,17 +344,24 @@ export async function setAssignmentStatus(
 
 export async function listAssignments(
   pool: PgLikePool,
-  by: { employeeId?: string; individualId?: string; includeInactive?: boolean } = {},
+  by: { employeeId?: string; individualId?: string; includeInactive?: boolean; scope?: AccessScope; hoursOnlyPrograms?: boolean } = {},
 ): Promise<AssignmentRecord[]> {
   const employeeId = by.employeeId && isUuid(by.employeeId) ? by.employeeId : null;
   const individualId = by.individualId && isUuid(by.individualId) ? by.individualId : null;
+  const params: unknown[] = [employeeId, individualId, by.includeInactive ?? false, by.hoursOnlyPrograms ?? false];
+  const employeeClause = by.scope ? employeeScopeClause(by.scope, "a.employee_id", params) : "";
+  const individualClause = by.scope ? individualScopeClause(by.scope, "a.individual_id", params) : "";
   const { rows } = await pool.query<Row>(
     `${SELECT}
      WHERE ($1::uuid IS NULL OR a.employee_id = $1)
        AND ($2::uuid IS NULL OR a.individual_id = $2)
        AND ($3::boolean IS TRUE OR a.status = 'active')
+       AND ($4::boolean IS NOT TRUE OR a.program_id IS NULL OR (
+         p.required_auth_type <> 'dollars'
+         AND p.consumption_source IN ('payroll', 'mixed')
+       ))${employeeClause}${individualClause}
      ORDER BY (a.status <> 'active'), i.display_name, e.display_name`,
-    [employeeId, individualId, by.includeInactive ?? false],
+    params,
   );
   return rows.map(toRecord);
 }

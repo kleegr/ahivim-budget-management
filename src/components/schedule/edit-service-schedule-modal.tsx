@@ -240,7 +240,7 @@ export default function EditServiceScheduleModal({
               <span className="font-medium">Program</span>
               <select value={programId} onChange={(event) => setProgramId(event.target.value)} className="select mt-1 w-full">
                 <option value="">Choose program</option>
-                {programs.map((program) => <option key={program.id} value={program.id}>{program.code} / {program.name}</option>)}
+                {programs.map((program) => <option key={program.id} value={program.id}>{program.name} ({program.code})</option>)}
               </select>
             </label>
             <label className="block text-sm">

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PortalAccessContext } from "@/lib/auth/portal-access";
+import { agencyMonth } from "@/lib/business/agency-time";
 import { getPortalHomeReadModel } from "@/lib/data/portal-read-model";
 import { runMigrations } from "@/lib/db/migrate";
 import {
@@ -37,7 +38,7 @@ suite("agency membership interval history (real PostgreSQL)", () => {
     await pool.query(
       `INSERT INTO agency_individuals
          (agency_id, individual_id, manages_budget, bills_services, effective_from, effective_to)
-       VALUES ($1, $2, true, true, '2024-01-01', '2024-01-31')`,
+       VALUES ($1, $2, false, true, '2024-01-01', '2024-01-31')`,
       [agencyId, individualId],
     );
     await pool.query(
@@ -65,6 +66,7 @@ suite("agency membership interval history (real PostgreSQL)", () => {
     const january = await getPortalHomeReadModel(pool, context, "2024-01");
     const february = await getPortalHomeReadModel(pool, context, "2024-02");
     expect(january.agencies.find((entry) => entry.id === agencyId)?.billedThisMonth).toBe("100.0000");
+    expect(january.agencies.find((entry) => entry.id === agencyId)?.individuals?.[0]?.managesBudget).toBe(false);
     expect(february.agencies.find((entry) => entry.id === agencyId)?.billedThisMonth).toBe("0.0000");
 
     await expect(pool.query(
@@ -80,14 +82,20 @@ suite("agency membership interval history (real PostgreSQL)", () => {
     );
     const restored = await setAgencyIndividualMembership(pool, agencyId, {
       individualId,
-      managesBudget: false,
+      managesBudget: true,
       billsServices: true,
       effectiveFrom: today.rows[0]!.today,
     }, actorId, "Restart relationship");
     expect(restored.ok).toBe(true);
+    const januaryAfterResponsibilityChange = await getPortalHomeReadModel(pool, context, "2024-01");
+    const currentResponsibility = await getPortalHomeReadModel(pool, context, agencyMonth());
+    expect(januaryAfterResponsibilityChange.agencies
+      .find((entry) => entry.id === agencyId)?.individuals?.[0]?.managesBudget).toBe(false);
+    expect(currentResponsibility.agencies
+      .find((entry) => entry.id === agencyId)?.individuals?.[0]?.managesBudget).toBe(true);
     const ended = await setAgencyIndividualMembership(pool, agencyId, {
       individualId,
-      managesBudget: false,
+      managesBudget: true,
       billsServices: true,
       isActive: false,
     }, actorId, "End current relationship");

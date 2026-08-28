@@ -3,6 +3,7 @@ import {
   BadgeDollarSign,
   Building2,
   CalendarDays,
+  ChevronDown,
   Clock3,
   Landmark,
   ReceiptText,
@@ -16,6 +17,8 @@ import type { ReactNode } from "react";
 import { Card, EmptyState, Hours, Metric, Money, PageHeader, Plain, StatusBadge, Table, Td, Th, Tr } from "@/components/ui";
 import type {
   PortalAgencySummary,
+  PortalAgencyEmployeeSummary,
+  PortalAgencyIndividualSummary,
   PortalDollarUsageSummary,
   PortalEmployeeSummary,
   PortalHomeReadModel,
@@ -70,6 +73,143 @@ function BudgetSummary({
         { label: "Dollars remaining", value: <Money value={dollars.remaining} /> },
       ]} /> : null}
     </>
+  );
+}
+
+function agencyIndividualResponsibility(individual: PortalAgencyIndividualSummary): string | null {
+  if (individual.managesBudget === null && individual.billsServices === null) return null;
+  if (individual.managesBudget && individual.billsServices) return "Budget + billing";
+  if (individual.managesBudget) return "Budget managed";
+  if (individual.billsServices) return "Billing only";
+  return null;
+}
+
+function AgencyIndividualMember({ individual }: { individual: PortalAgencyIndividualSummary }) {
+  const selectedMonth = monthLabel(individual.month);
+  const responsibility = agencyIndividualResponsibility(individual);
+  return (
+    <details className="border-b border-[var(--color-rule)] last:border-b-0">
+      <summary className="flex cursor-pointer list-none items-center gap-3 px-5 py-3 text-sm font-semibold hover:bg-[var(--color-surface-muted)]">
+        <UserRound aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-primary)]" />
+        <span className="min-w-0 flex-1 truncate">{individual.name}</span>
+        {responsibility ? <StatusBadge tone={individual.managesBudget ? "good" : "muted"} label={responsibility} /> : null}
+        <ChevronDown aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-ink-faint)]" />
+      </summary>
+      <div className="border-t border-[var(--color-rule)] bg-[var(--color-surface-muted)]/40">
+        <BudgetSummary hours={individual.hours} dollars={individual.dollars} />
+        <SummaryGrid items={[
+          individual.billedThisMonth !== null
+            ? { label: `Billed (${selectedMonth})`, value: <Money value={individual.billedThisMonth} /> }
+            : null,
+          individual.setAsideThisMonth !== null
+            ? { label: `Set aside (${selectedMonth})`, value: <Money value={individual.setAsideThisMonth} /> }
+            : null,
+          individual.directChecksThisMonth !== null
+            ? { label: `Direct checks (${selectedMonth})`, value: <Money value={individual.directChecksThisMonth} /> }
+            : null,
+          individual.agencyPaidThisMonth !== null
+            ? { label: `Agency-paid (${selectedMonth})`, value: <Money value={individual.agencyPaidThisMonth} /> }
+            : null,
+        ].filter(present)} />
+      </div>
+    </details>
+  );
+}
+
+function AgencyEmployeeMember({
+  employee,
+  canReadChecks,
+}: {
+  employee: PortalAgencyEmployeeSummary;
+  canReadChecks: boolean;
+}) {
+  const selectedMonth = monthLabel(employee.month);
+  const hasFinancialDetail = canReadChecks || employee.giveBack !== null;
+  const summary = (
+    <>
+      <ReceiptText aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-primary)]" />
+      <span className="min-w-0 flex-1 truncate">{employee.name}</span>
+      {hasFinancialDetail ? <ChevronDown aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-ink-faint)]" /> : null}
+    </>
+  );
+
+  if (!hasFinancialDetail) {
+    return <div className="flex items-center gap-3 border-b border-[var(--color-rule)] px-5 py-3 text-sm font-semibold last:border-b-0">{summary}</div>;
+  }
+
+  return (
+    <details className="border-b border-[var(--color-rule)] last:border-b-0">
+      <summary className="flex cursor-pointer list-none items-center gap-3 px-5 py-3 text-sm font-semibold hover:bg-[var(--color-surface-muted)]">
+        {summary}
+      </summary>
+      <div className="border-t border-[var(--color-rule)] bg-[var(--color-surface-muted)]/40">
+        <SummaryGrid items={[
+          canReadChecks
+            ? {
+                label: `Check gross (${selectedMonth})`,
+                value: employee.payrollGrossThisMonth === null
+                  ? <Plain value="Unknown" />
+                  : <Money value={employee.payrollGrossThisMonth} />,
+              }
+            : null,
+          canReadChecks
+            ? { label: `Check net (${selectedMonth})`, value: <Money value={employee.payrollNetThisMonth} /> }
+            : null,
+          employee.giveBack !== null
+            ? { label: `Give-back due (${selectedMonth})`, value: <Money value={employee.giveBack.dueThisMonth} /> }
+            : null,
+          employee.giveBack !== null
+            ? { label: `Collected (${selectedMonth})`, value: <Money value={employee.giveBack.collectedThisMonth} /> }
+            : null,
+          employee.giveBack !== null
+            ? { label: "Give-back remaining", value: <Money value={employee.giveBack.remaining} /> }
+            : null,
+        ].filter(present)} />
+      </div>
+    </details>
+  );
+}
+
+function AgencyMembers({ agency }: { agency: PortalAgencySummary }) {
+  if (agency.individuals === null && agency.employees === null) return null;
+  const canReadChecks = includes(agency, "financials.agency.direct_checks.read");
+  return (
+    <div className="border-t border-[var(--color-rule)]">
+      {agency.individuals !== null ? (
+        <details>
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 text-sm font-semibold hover:bg-[var(--color-surface-muted)]">
+            <UserRound aria-hidden className="h-4 w-4 text-[var(--color-primary)]" />
+            Individuals
+            <span className="tnum text-xs font-normal text-[var(--color-ink-faint)]">{agency.individuals.length}</span>
+            <ChevronDown aria-hidden className="ml-auto h-4 w-4 text-[var(--color-ink-faint)]" />
+          </summary>
+          <div className="border-t border-[var(--color-rule)]">
+            {agency.individuals.length === 0 ? (
+              <EmptyState compact title="No individuals for this view" icon={<UserRound aria-hidden className="h-5 w-5" />} />
+            ) : agency.individuals.map((individual) => (
+              <AgencyIndividualMember key={individual.id} individual={individual} />
+            ))}
+          </div>
+        </details>
+      ) : null}
+      {agency.employees !== null ? (
+        <details className="border-t border-[var(--color-rule)]">
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 text-sm font-semibold hover:bg-[var(--color-surface-muted)]">
+            <UsersRound aria-hidden className="h-4 w-4 text-[var(--color-primary)]" />
+            Employees
+            <span className="tnum text-xs font-normal text-[var(--color-ink-faint)]">{agency.employees.length}</span>
+            <ChevronDown aria-hidden className="ml-auto h-4 w-4 text-[var(--color-ink-faint)]" />
+          </summary>
+          <div className="border-t border-[var(--color-rule)]">
+            {agency.employees.length === 0 ? (
+              <EmptyState compact title="No employees for this view" icon={<UsersRound aria-hidden className="h-5 w-5" />} />
+            ) : agency.employees.map((employee) => (
+              <AgencyEmployeeMember key={employee.id} employee={employee} canReadChecks={canReadChecks} />
+            ))}
+          </div>
+        </details>
+      ) : null}
+    </div>
   );
 }
 
@@ -128,7 +268,12 @@ function AgencyAccess({ agency }: { agency: PortalAgencySummary }) {
         agency.billedThisMonth !== null ? { label: `Billed (${selectedMonth})`, value: <Money value={agency.billedThisMonth} /> } : null,
         agency.setAsideThisMonth !== null ? { label: `Set aside (${selectedMonth})`, value: <Money value={agency.setAsideThisMonth} /> } : null,
         agency.agencyPaidThisMonth !== null ? { label: `Agency-paid (${selectedMonth})`, value: <Money value={agency.agencyPaidThisMonth} /> } : null,
-        agency.payrollGrossThisMonth !== null ? { label: `Check gross (${selectedMonth})`, value: <Money value={agency.payrollGrossThisMonth} /> } : null,
+        includes(agency, "financials.agency.direct_checks.read") ? {
+          label: `Check gross (${selectedMonth})`,
+          value: agency.payrollGrossThisMonth === null
+            ? <Plain value="Unknown" />
+            : <Money value={agency.payrollGrossThisMonth} />,
+        } : null,
         agency.payrollNetThisMonth !== null ? { label: `Check net (${selectedMonth})`, value: <Money value={agency.payrollNetThisMonth} /> } : null,
         agency.giveBackRemaining !== null ? { label: "Give-back remaining", value: <Money value={agency.giveBackRemaining} /> } : null,
       ].filter(present)} />
@@ -143,6 +288,8 @@ function AgencyAccess({ agency }: { agency: PortalAgencySummary }) {
           ))}
         </div>
       ) : null}
+
+      <AgencyMembers agency={agency} />
     </Card>
   );
 }
@@ -170,7 +317,7 @@ function IndividualAccess({ individual }: { individual: PortalIndividualSummary 
 }
 
 function EmployeeAccess({ employee }: { employee: PortalEmployeeSummary }) {
-  const selectedMonth = employee.giveBack ? monthLabel(employee.giveBack.month) : null;
+  const selectedMonth = monthLabel(employee.month);
   return (
     <Card className="h-full">
       <div className="flex items-start justify-between gap-4 border-b border-[var(--color-rule)] px-5 py-4">
@@ -186,24 +333,31 @@ function EmployeeAccess({ employee }: { employee: PortalEmployeeSummary }) {
         { label: "Give-back remaining", value: <Money value={employee.giveBack.remaining} /> },
       ]} /> : null}
       {employee.checks !== null ? employee.checks.length === 0 ? (
-        <EmptyState compact title="No verified payroll checks" icon={<ReceiptText aria-hidden className="h-5 w-5" />} />
+        <EmptyState compact title={`No verified payroll checks for ${selectedMonth}`} icon={<ReceiptText aria-hidden className="h-5 w-5" />} />
       ) : (
-        <Table head={<>
-          <Th>Check</Th><Th>Date</Th>
-          {employee.checkVisibility.gross ? <Th numeric>Gross</Th> : null}
-          {employee.checkVisibility.net ? <Th numeric>Net</Th> : null}
-          {employee.checkVisibility.tax ? <Th numeric>Tax withheld</Th> : null}
-        </>}>
-          {employee.checks.map((check) => (
-            <Tr key={check.id}>
-              <Td><Plain value={check.checkNumber} /></Td>
-              <Td><Plain value={check.checkDate ?? check.periodEnd} /></Td>
-              {employee.checkVisibility.gross ? <Td numeric><Money value={check.actualGross} /></Td> : null}
-              {employee.checkVisibility.net ? <Td numeric><Money value={check.actualNet} /></Td> : null}
-              {employee.checkVisibility.tax ? <Td numeric><Money value={check.taxWithheld} /></Td> : null}
-            </Tr>
-          ))}
-        </Table>
+        <div>
+          <p className="border-b border-[var(--color-rule)] px-5 py-2.5 text-xs font-medium text-[var(--color-ink-soft)]">
+            Verified checks for {selectedMonth}
+          </p>
+          <Table head={<>
+            <Th>Check</Th><Th>Service date</Th>
+            {employee.checkVisibility.gross ? <Th numeric>Gross</Th> : null}
+            {employee.checkVisibility.net ? <Th numeric>Net</Th> : null}
+            {employee.checkVisibility.tax ? <Th numeric>Tax withheld</Th> : null}
+          </>}>
+            {employee.checks.map((check) => (
+              <Tr key={check.id}>
+                <Td><Plain value={check.checkNumber} /></Td>
+                <Td><Plain value={check.serviceDate} /></Td>
+                {employee.checkVisibility.gross ? (
+                  <Td numeric>{check.actualGross === null ? <Plain value="Unknown" /> : <Money value={check.actualGross} />}</Td>
+                ) : null}
+                {employee.checkVisibility.net ? <Td numeric><Money value={check.actualNet} /></Td> : null}
+                {employee.checkVisibility.tax ? <Td numeric><Money value={check.taxWithheld} /></Td> : null}
+              </Tr>
+            ))}
+          </Table>
+        </div>
       ) : null}
     </Card>
   );

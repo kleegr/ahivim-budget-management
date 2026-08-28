@@ -2,16 +2,24 @@ import { type NextRequest, NextResponse } from "next/server";
 import {
   apiClassFinancialUser,
   canAccessClassIndividual,
+  type ClassFinancialAccess,
 } from "@/lib/auth/class-financial-access";
 import { classResultResponse } from "@/lib/class-response";
-import { getClassBudget } from "@/lib/data/class-invoices";
+import { getClassBudget, type ClassBudgetRecord } from "@/lib/data/class-invoices";
 import { jsonError, readJson, redactError, sameOriginOrFail } from "@/lib/http";
 import { updateClassBudget } from "@/lib/manage/class-invoices";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-async function accessibleBudget(id: string, mode: "view" | "manage") {
+type AccessibleBudgetResult =
+  | { error: Response }
+  | { access: ClassFinancialAccess; budget: ClassBudgetRecord };
+
+async function accessibleBudget(
+  id: string,
+  mode: "view" | "manage",
+): Promise<AccessibleBudgetResult> {
   const access = await apiClassFinancialUser(mode);
   if (!access) return { error: jsonError(mode === "view" ? "Class financial access required" : "Class invoice management access required", 403) };
   const budget = await getClassBudget(access.pool, id);
@@ -29,7 +37,7 @@ export async function GET(
   const { id } = await params;
   try {
     const found = await accessibleBudget(id, "view");
-    if (found.error) return found.error;
+    if ("error" in found) return found.error;
     return NextResponse.json({ ok: true, data: found.budget });
   } catch (error) {
     return jsonError(redactError(error, "Could not load that class budget."), 500);
@@ -45,7 +53,7 @@ export async function PATCH(
   const { id } = await params;
   try {
     const found = await accessibleBudget(id, "manage");
-    if (found.error) return found.error;
+    if ("error" in found) return found.error;
     const body = await readJson(request);
     const status = body.status === "active" || body.status === "closed" ? body.status : null;
     return classResultResponse(await updateClassBudget(found.access.pool, id, {

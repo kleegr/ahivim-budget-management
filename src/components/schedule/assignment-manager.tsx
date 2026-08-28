@@ -50,11 +50,13 @@ export default function AssignmentManager({
   employees,
   individuals,
   programs,
+  canManage = true,
 }: {
   rows: PlanningAssignmentRow[];
   employees: Picker[];
   individuals: Picker[];
   programs: ProgramPicker[];
+  canManage?: boolean;
 }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
@@ -170,10 +172,12 @@ export default function AssignmentManager({
             placeholder="Individual, employee, or program"
           />
         </label>
-        <button type="button" onClick={openNew} className="btn btn-sm btn-primary shrink-0">
-          <Plus aria-hidden className="h-4 w-4" />
-          New assignment
-        </button>
+        {canManage ? (
+          <button type="button" onClick={openNew} className="btn btn-sm btn-primary shrink-0">
+            <Plus aria-hidden className="h-4 w-4" />
+            New assignment
+          </button>
+        ) : null}
       </div>
 
       {rows.length === 0 ? (
@@ -201,11 +205,11 @@ export default function AssignmentManager({
                     tone={row.timing === "future" ? "info" : row.timing === "ending_soon" ? "warn" : "good"}
                   />
                 </Td>
-                <Td>
+                <Td>{canManage ? (
                   <button type="button" onClick={() => openEdit(row)} className="btn btn-icon btn-sm" aria-label={`Edit assignment for ${row.individualName}`} title="Edit assignment">
                     <Pencil aria-hidden className="h-4 w-4" />
                   </button>
-                </Td>
+                ) : null}</Td>
               </Tr>
             ))}
           </Table>

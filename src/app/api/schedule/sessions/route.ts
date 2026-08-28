@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiPlanningUser } from "@/lib/auth/planning-access";
+import { apiPlanningUser, planningProgramAllowed, planningSubjectsAllowed } from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { createSession, type CreateSessionInput } from "@/lib/manage/schedule";
 import { listSessions, listSessionWarningFlags, type CalendarFilter } from "@/lib/data/schedule-queries";
@@ -46,15 +46,20 @@ export async function GET(request: NextRequest) {
   try {
     const pool = getPool();
     const [sessions, warningFlags] = await Promise.all([
-      listSessions(pool, filter),
-      listSessionWarningFlags(pool, filter),
+      listSessions(pool, filter, planning.access),
+      listSessionWarningFlags(pool, filter, planning.access),
     ]);
     const warningCountById = new Map(warningFlags.map((row) => [row.id, row.warningCount]));
-    const liveSessions = sessions.map((session) => ({
+    const liveSessions = sessions.filter((session) => planningSubjectsAllowed(planning, {
+      individualIds: session.individualIds,
+      employeeId: session.employeeId,
+    }, "read", { from: session.sessionDate, to: session.sessionDate })).map((session) => ({
       ...session,
       warningCount: warningCountById.get(session.id) ?? session.warningCount,
     }));
-    return NextResponse.json({ ok: true, data: { from, to, sessions: liveSessions, warningFlags } });
+    const visibleIds = new Set(liveSessions.map((session) => session.id));
+    const visibleWarningFlags = warningFlags.filter((row) => visibleIds.has(row.id));
+    return NextResponse.json({ ok: true, data: { from, to, sessions: liveSessions, warningFlags: visibleWarningFlags } });
   } catch (error) {
     return jsonError(redactError(error), 500);
   }
@@ -83,9 +88,17 @@ export async function POST(request: NextRequest) {
     overrideReason: asString(body.overrideReason) ?? null,
   };
   const reason = asString(body.reason) ?? null;
+  if (!planning.canManageSchedules) return jsonError("Schedule management access required", 403);
+  if (!planningSubjectsAllowed(planning, {
+    individualIds: input.individualIds,
+    employeeId: input.employeeId,
+  }, "schedule", { from: input.sessionDate, to: input.sessionDate })) return jsonError("That employee and individual are outside your agency roster for this service date.", 403);
 
   try {
     const pool = getPool();
+    if (!await planningProgramAllowed(pool, planning, input.programId)) {
+      return jsonError("Choose an active hours-based planning program.", 403);
+    }
     const result = await createSession(pool, input, user.id, reason);
     if (result.ok) {
       result.data.warnings = result.data.warnings.filter((warning) => warning.code !== "missing_rate");
