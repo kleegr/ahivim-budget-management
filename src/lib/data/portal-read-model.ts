@@ -155,7 +155,11 @@ interface DollarAggregateFields {
   remaining_dollars: string | null;
 }
 
-interface BudgetAggregateRow extends HoursAggregateFields, DollarAggregateFields {
+interface HoursAggregateRow extends HoursAggregateFields {
+  scope_id: string;
+}
+
+interface DollarAggregateRow extends DollarAggregateFields {
   scope_id: string;
 }
 
@@ -244,6 +248,185 @@ interface AgencyEmployeeGiveBackRow {
   due_this_month: string;
   collected_this_month: string;
   remaining: string;
+}
+
+const DIRECT_PORTAL_HOURS_SCOPE = `SELECT unnest($1::uuid[]) AS individual_id`;
+
+const AGENCY_PORTAL_HOURS_SCOPE = `SELECT DISTINCT membership.individual_id
+  FROM agency_individuals membership
+ WHERE membership.agency_id = ANY($1::uuid[])
+   AND membership.is_active = true
+   AND membership.manages_budget = true
+   AND membership.effective_from <= (now() AT TIME ZONE 'America/New_York')::date
+   AND (membership.effective_to IS NULL
+     OR membership.effective_to >= (now() AT TIME ZONE 'America/New_York')::date)`;
+
+function effectivePortalHoursCte(scopeSql: string): string {
+  return `portal_scope AS (
+  ${scopeSql}
+),
+physical_authorization_base AS (
+  SELECT physical_auth.id AS authorization_id,
+         physical_auth.individual_id,
+         physical_auth.program_id,
+         physical_auth.budget_period_id,
+         period.start_date,
+         period.end_date,
+         COALESCE(physical_auth.authorized_hours, 0) AS authorized_hours,
+         physical_auth.internal_rate,
+         program.consumption_source,
+         program.rate_scope
+    FROM budget_authorizations physical_auth
+    JOIN portal_scope scope ON scope.individual_id = physical_auth.individual_id
+    JOIN budget_periods period ON period.id = physical_auth.budget_period_id
+    JOIN programs program ON program.id = physical_auth.program_id
+   WHERE physical_auth.status = 'active'
+     AND physical_auth.archived_at IS NULL
+     AND period.status = 'active'
+     AND period.archived_at IS NULL
+     AND (now() AT TIME ZONE 'America/New_York')::date
+         BETWEEN period.start_date AND period.end_date
+),
+physical_payroll_usage AS (
+  SELECT physical.authorization_id,
+         COALESCE(sum(
+           CASE
+             WHEN physical.rate_scope = 'per_group'
+              AND COALESCE(physical.internal_rate, 0) > 0
+               THEN COALESCE(
+                      payroll.calculated_internal_amount,
+                      payroll.spreadsheet_internal_amount,
+                      payroll.internal_rate_applied * payroll.imported_hours,
+                      0
+                    ) / physical.internal_rate
+             ELSE COALESCE(payroll.imported_hours, 0)
+           END
+         ), 0)::numeric(10, 4) AS used_hours
+    FROM physical_authorization_base physical
+    LEFT JOIN payroll_transactions payroll
+      ON physical.consumption_source IN ('payroll', 'mixed')
+     AND payroll.individual_id = physical.individual_id
+     AND payroll.program_id = physical.program_id
+     AND canonical_service_date(
+           payroll.period_begin, payroll.check_date, payroll.period_end
+         ) BETWEEN physical.start_date AND physical.end_date
+   GROUP BY physical.authorization_id
+),
+physical_event_usage AS (
+  SELECT physical.authorization_id,
+         COALESCE(sum(event.hours), 0)::numeric(10, 4) AS used_hours
+    FROM physical_authorization_base physical
+    LEFT JOIN program_budget_events event
+      ON event.budget_period_id = physical.budget_period_id
+     AND event.individual_id = physical.individual_id
+     AND event.program_id = physical.program_id
+   GROUP BY physical.authorization_id
+),
+physical_authorizations AS (
+  SELECT physical.authorization_id,
+         physical.individual_id,
+         physical.program_id,
+         physical.authorized_hours,
+         (
+           COALESCE(payroll.used_hours, 0) + COALESCE(event.used_hours, 0)
+         )::numeric(10, 4) AS used_hours
+    FROM physical_authorization_base physical
+    LEFT JOIN physical_payroll_usage payroll
+      ON payroll.authorization_id = physical.authorization_id
+    LEFT JOIN physical_event_usage event
+      ON event.authorization_id = physical.authorization_id
+),
+synthetic_authorizations AS (
+  SELECT budget_auth.authorization_id,
+         budget_auth.individual_id,
+         budget_auth.program_id,
+         budget_auth.start_date,
+         budget_auth.end_date,
+         budget_auth.updated_at,
+         COALESCE(budget_auth.authorized_hours, 0) AS authorized_hours,
+         budget_auth.internal_rate,
+         program.consumption_source,
+         program.rate_scope
+    FROM effective_budget_authorizations_at(
+           (now() AT TIME ZONE 'America/New_York')::date
+         ) budget_auth
+    JOIN portal_scope scope ON scope.individual_id = budget_auth.individual_id
+    JOIN programs program ON program.id = budget_auth.program_id
+   WHERE budget_auth.source = 'calculation_strategy'
+     AND NOT EXISTS (
+       SELECT 1
+         FROM physical_authorizations physical
+        WHERE physical.individual_id = budget_auth.individual_id
+          AND physical.program_id = budget_auth.program_id
+     )
+),
+synthetic_transaction_matches AS (
+  SELECT synthetic.individual_id,
+         synthetic.program_id,
+         payroll.id AS transaction_id,
+         synthetic.internal_rate,
+         synthetic.rate_scope,
+         payroll.imported_hours,
+         payroll.calculated_internal_amount,
+         payroll.spreadsheet_internal_amount,
+         payroll.internal_rate_applied,
+         row_number() OVER (
+           PARTITION BY payroll.id
+           ORDER BY synthetic.start_date DESC,
+                    synthetic.updated_at DESC,
+                    synthetic.authorization_id DESC
+         ) AS match_rank
+    FROM synthetic_authorizations synthetic
+    JOIN payroll_transactions payroll
+      ON payroll.individual_id = synthetic.individual_id
+     AND payroll.program_id = synthetic.program_id
+     AND canonical_service_date(
+           payroll.period_begin, payroll.check_date, payroll.period_end
+         ) BETWEEN synthetic.start_date AND synthetic.end_date
+   WHERE synthetic.consumption_source IN ('payroll', 'mixed')
+),
+synthetic_transaction_usage AS (
+  SELECT individual_id,
+         program_id,
+         transaction_id,
+         CASE
+           WHEN rate_scope = 'per_group'
+            AND COALESCE(internal_rate, 0) > 0
+             THEN COALESCE(
+                    calculated_internal_amount,
+                    spreadsheet_internal_amount,
+                    internal_rate_applied * imported_hours,
+                    0
+                  ) / internal_rate
+           ELSE COALESCE(imported_hours, 0)
+         END AS used_hours
+    FROM synthetic_transaction_matches
+   WHERE match_rank = 1
+),
+synthetic_usage AS (
+  SELECT individual_id,
+         program_id,
+         COALESCE(sum(used_hours), 0) AS used_hours
+    FROM synthetic_transaction_usage
+   GROUP BY individual_id, program_id
+),
+effective_hours AS (
+  SELECT physical.individual_id,
+         physical.program_id,
+         physical.authorized_hours,
+         physical.used_hours
+    FROM physical_authorizations physical
+  UNION ALL
+  SELECT synthetic.individual_id,
+         synthetic.program_id,
+         COALESCE(sum(synthetic.authorized_hours), 0) AS authorized_hours,
+         COALESCE(usage.used_hours, 0) AS used_hours
+    FROM synthetic_authorizations synthetic
+    LEFT JOIN synthetic_usage usage
+      ON usage.individual_id = synthetic.individual_id
+     AND usage.program_id = synthetic.program_id
+   GROUP BY synthetic.individual_id, synthetic.program_id, usage.used_hours
+)`;
 }
 
 function roleSummary(role: PortalRole): PortalRoleSummary {
@@ -342,36 +525,57 @@ async function directIndividualSummaries(
   if (ids.length === 0) return [];
   const hourIds = individualIdsWith(context, ids, "hours_budgets.self.read");
   const dollarIds = individualIdsWith(context, ids, "dollar_budgets.self.read");
-  const budgetIds = unique([...hourIds, ...dollarIds]);
   const billedIds = individualIdsWith(context, ids, "financials.self.billed_totals.read");
   const setAsideIds = individualIdsWith(context, ids, "financials.self.cuts_set_asides.read");
   const directCheckIds = individualIdsWith(context, ids, "financials.self.direct_checks.read");
   const agencyPaidIds = individualIdsWith(context, ids, "financials.self.agency_paid.read");
 
-  const [peopleResult, budgetResult, billedResult, setAsideResult, directCheckResult, agencyPaidResult] = await Promise.all([
+  const [
+    peopleResult,
+    hourBudgetResult,
+    dollarBudgetResult,
+    billedResult,
+    setAsideResult,
+    directCheckResult,
+    agencyPaidResult,
+  ] = await Promise.all([
     pool.query<PersonRow>(
       `SELECT id, display_name AS name FROM individuals
         WHERE id = ANY($1::uuid[]) AND status <> 'archived'
         ORDER BY display_name`,
       [ids],
     ),
-    budgetIds.length > 0
-      ? pool.query<BudgetAggregateRow>(
+    hourIds.length > 0
+      ? pool.query<HoursAggregateRow>(
+          `WITH ${effectivePortalHoursCte(DIRECT_PORTAL_HOURS_SCOPE)}
+           SELECT effective_hours.individual_id AS scope_id,
+                  COALESCE(sum(effective_hours.authorized_hours), 0)::text AS authorized_hours,
+                  COALESCE(sum(effective_hours.used_hours), 0)::text AS used_hours,
+                  COALESCE(sum(
+                    effective_hours.authorized_hours - effective_hours.used_hours
+                  ), 0)::text AS remaining_hours
+             FROM effective_hours
+            WHERE effective_hours.individual_id = ANY($1::uuid[])
+            GROUP BY effective_hours.individual_id`,
+          [hourIds],
+        )
+      : empty<HoursAggregateRow>(),
+    dollarIds.length > 0
+      ? pool.query<DollarAggregateRow>(
           `SELECT individual_id AS scope_id,
-                  COALESCE(sum(authorized_hours), 0)::text AS authorized_hours,
-                  COALESCE(sum(consumed_hours), 0)::text AS used_hours,
-                  COALESCE(sum(remaining_hours), 0)::text AS remaining_hours,
-                  CASE WHEN count(authorized_dollars) > 0 THEN sum(authorized_dollars)::text END AS authorized_dollars,
+                  CASE WHEN count(authorized_dollars) > 0
+                    THEN sum(authorized_dollars)::text END AS authorized_dollars,
                   COALESCE(sum(consumed_dollars), 0)::text AS used_dollars,
-                  CASE WHEN count(remaining_dollars) > 0 THEN sum(remaining_dollars)::text END AS remaining_dollars
+                  CASE WHEN count(remaining_dollars) > 0
+                    THEN sum(remaining_dollars)::text END AS remaining_dollars
              FROM program_budget_balances
             WHERE individual_id = ANY($1::uuid[])
               AND period_status = 'active'
               AND (now() AT TIME ZONE 'America/New_York')::date BETWEEN start_date AND end_date
             GROUP BY individual_id`,
-          [budgetIds],
+          [dollarIds],
         )
-      : empty<BudgetAggregateRow>(),
+      : empty<DollarAggregateRow>(),
     billedIds.length > 0
       ? pool.query<MoneyAggregateRow>(
           `SELECT individual_id AS scope_id, COALESCE(sum(imported_amount), 0)::text AS amount
@@ -440,7 +644,8 @@ async function directIndividualSummaries(
       : empty<MoneyAggregateRow>(),
   ]);
 
-  const budgets = mapByScope(budgetResult.rows);
+  const hourBudgets = mapByScope(hourBudgetResult.rows);
+  const dollarBudgets = mapByScope(dollarBudgetResult.rows);
   const billed = mapByScope(billedResult.rows);
   const setAside = mapByScope(setAsideResult.rows);
   const directChecks = mapByScope(directCheckResult.rows);
@@ -453,8 +658,8 @@ async function directIndividualSummaries(
         .filter((link) => link.individualId === person.id)
         .map((link) => link.relationship),
     ) as IndividualRelationship[],
-    hours: hourIds.includes(person.id) ? usage(budgets.get(person.id)) : null,
-    dollars: dollarIds.includes(person.id) ? dollarUsage(budgets.get(person.id)) : null,
+    hours: hourIds.includes(person.id) ? usage(hourBudgets.get(person.id)) : null,
+    dollars: dollarIds.includes(person.id) ? dollarUsage(dollarBudgets.get(person.id)) : null,
     month,
     billedThisMonth: billedIds.includes(person.id) ? toMoney(billed.get(person.id)?.amount ?? 0) : null,
     setAsideThisMonth: setAsideIds.includes(person.id) ? toMoney(setAside.get(person.id)?.amount ?? 0) : null,
@@ -679,17 +884,17 @@ async function agencyMemberSummaries(
       : empty<AgencyEmployeeMemberRow>(),
     memberHours.length > 0
       ? pool.query<AgencyPersonHoursRow>(
-          `SELECT membership.agency_id,
+          `WITH ${effectivePortalHoursCte(AGENCY_PORTAL_HOURS_SCOPE)}
+           SELECT membership.agency_id,
                   membership.individual_id AS person_id,
-                  COALESCE(sum(balance.authorized_hours), 0)::text AS authorized_hours,
-                  COALESCE(sum(balance.consumed_hours), 0)::text AS used_hours,
-                  COALESCE(sum(balance.remaining_hours), 0)::text AS remaining_hours
+                  COALESCE(sum(effective_hours.authorized_hours), 0)::text AS authorized_hours,
+                  COALESCE(sum(effective_hours.used_hours), 0)::text AS used_hours,
+                  COALESCE(sum(
+                    effective_hours.authorized_hours - effective_hours.used_hours
+                  ), 0)::text AS remaining_hours
              FROM agency_individuals membership
-             LEFT JOIN program_budget_balances balance
-               ON balance.individual_id = membership.individual_id
-              AND balance.period_status = 'active'
-              AND (now() AT TIME ZONE 'America/New_York')::date
-                  BETWEEN balance.start_date AND balance.end_date
+             LEFT JOIN effective_hours
+               ON effective_hours.individual_id = membership.individual_id
             WHERE membership.agency_id = ANY($1::uuid[])
               AND membership.is_active = true
               AND membership.manages_budget = true
@@ -1017,7 +1222,6 @@ export async function getPortalHomeReadModel(
   const peopleAgencyIds = agencyIdsWith(context, agencyIds, "people.agency.read");
   const hourAgencyIds = agencyIdsWith(context, agencyIds, "hours_budgets.agency.read");
   const dollarAgencyIds = agencyIdsWith(context, agencyIds, "dollar_budgets.agency.read");
-  const budgetAgencyIds = unique([...hourAgencyIds, ...dollarAgencyIds]);
   const billedAgencyIds = agencyIdsWith(context, agencyIds, "financials.agency.billed_totals.read");
   const setAsideAgencyIds = agencyIdsWith(context, agencyIds, "financials.agency.cuts_set_asides.read");
   const agencyPaidAgencyIds = agencyIdsWith(context, agencyIds, "financials.agency.agency_paid.read");
@@ -1031,13 +1235,32 @@ export async function getPortalHomeReadModel(
     ...giveBackAgencyIds,
   ]);
 
-  const [agencyBudgetResult, agencyFinancialResult, agencyMembers] = await Promise.all([
-    budgetAgencyIds.length > 0
-      ? pool.query<BudgetAggregateRow>(
+  const [agencyHoursResult, agencyDollarsResult, agencyFinancialResult, agencyMembers] = await Promise.all([
+    hourAgencyIds.length > 0
+      ? pool.query<HoursAggregateRow>(
+          `WITH ${effectivePortalHoursCte(AGENCY_PORTAL_HOURS_SCOPE)}
+           SELECT membership.agency_id AS scope_id,
+                  COALESCE(sum(effective_hours.authorized_hours), 0)::text AS authorized_hours,
+                  COALESCE(sum(effective_hours.used_hours), 0)::text AS used_hours,
+                  COALESCE(sum(
+                    effective_hours.authorized_hours - effective_hours.used_hours
+                  ), 0)::text AS remaining_hours
+             FROM agency_individuals membership
+             LEFT JOIN effective_hours
+               ON effective_hours.individual_id = membership.individual_id
+            WHERE membership.agency_id = ANY($1::uuid[])
+              AND membership.is_active = true
+              AND membership.manages_budget = true
+              AND membership.effective_from <= (now() AT TIME ZONE 'America/New_York')::date
+              AND (membership.effective_to IS NULL
+                OR membership.effective_to >= (now() AT TIME ZONE 'America/New_York')::date)
+            GROUP BY membership.agency_id`,
+          [hourAgencyIds],
+        )
+      : empty<HoursAggregateRow>(),
+    dollarAgencyIds.length > 0
+      ? pool.query<DollarAggregateRow>(
           `SELECT membership.agency_id AS scope_id,
-                  COALESCE(sum(balance.authorized_hours), 0)::text AS authorized_hours,
-                  COALESCE(sum(balance.consumed_hours), 0)::text AS used_hours,
-                  COALESCE(sum(balance.remaining_hours), 0)::text AS remaining_hours,
                   CASE WHEN count(balance.authorized_dollars) > 0 THEN sum(balance.authorized_dollars)::text END AS authorized_dollars,
                   COALESCE(sum(balance.consumed_dollars), 0)::text AS used_dollars,
                   CASE WHEN count(balance.remaining_dollars) > 0 THEN sum(balance.remaining_dollars)::text END AS remaining_dollars
@@ -1054,9 +1277,9 @@ export async function getPortalHomeReadModel(
               AND (membership.effective_to IS NULL
                 OR membership.effective_to >= (now() AT TIME ZONE 'America/New_York')::date)
             GROUP BY membership.agency_id`,
-          [budgetAgencyIds],
+          [dollarAgencyIds],
         )
-      : empty<BudgetAggregateRow>(),
+      : empty<DollarAggregateRow>(),
     financialAgencyIds.length > 0
       ? pool.query<AgencyFinancialRow>(
           `SELECT requested.agency_id AS scope_id,
@@ -1230,7 +1453,8 @@ export async function getPortalHomeReadModel(
     ),
   ]);
 
-  const agencyBudgets = mapByScope(agencyBudgetResult.rows);
+  const agencyHours = mapByScope(agencyHoursResult.rows);
+  const agencyDollars = mapByScope(agencyDollarsResult.rows);
   const agencyFinancials = mapByScope(agencyFinancialResult.rows);
   const agencies = agencyResult.rows.map((row): PortalAgencySummary => {
     const accessRoles = context.agencyAccess
@@ -1253,8 +1477,8 @@ export async function getPortalHomeReadModel(
       employeeCount: agencyEmployees?.length ?? null,
       managedBudgetCount: canReadHours ? Number(row.managed_budget_count) : null,
       billingWithoutBudgetCount: canReadHours ? Number(row.billing_without_budget_count) : null,
-      budgetHours: canReadHours ? usage(agencyBudgets.get(row.id)) : null,
-      budgetDollars: canReadDollars ? dollarUsage(agencyBudgets.get(row.id)) : null,
+      budgetHours: canReadHours ? usage(agencyHours.get(row.id)) : null,
+      budgetDollars: canReadDollars ? dollarUsage(agencyDollars.get(row.id)) : null,
       month,
       billedThisMonth: billedAgencyIds.includes(row.id) ? toMoney(financial?.billed_this_month ?? 0) : null,
       setAsideThisMonth: setAsideAgencyIds.includes(row.id) ? toMoney(financial?.set_aside_this_month ?? 0) : null,

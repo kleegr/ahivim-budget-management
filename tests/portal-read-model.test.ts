@@ -15,7 +15,7 @@ const AGENCY_A_EMPLOYEE = "00000000-0000-4000-8000-000000000008";
 const AGENCY_B_EMPLOYEE = "00000000-0000-4000-8000-000000000009";
 
 describe("portal-safe home read model", () => {
-  it("returns aggregates only and hides budget counts from a collector-only agency", async () => {
+  it("includes strategy-backed hours on every scoped surface without widening category access", async () => {
     const context: PortalAccessContext = {
       userId: "user",
       globalRoles: [{ role: "parent", grants: [], denials: [] }],
@@ -67,18 +67,25 @@ describe("portal-safe home read model", () => {
           { agency_id: AGENCY_B, person_id: AGENCY_B_EMPLOYEE, name: "Agency B Employee" },
         ] };
       }
-      if (sql.includes("FROM program_budget_balances")) {
+      if (sql.includes("effective_hours.individual_id AS scope_id")) {
         return { rows: [{
           scope_id: INDIVIDUAL,
           authorized_hours: "120",
           used_hours: "42",
           remaining_hours: "78",
-          authorized_dollars: "2400",
-          used_dollars: "840",
-          remaining_dollars: "1560",
         }] };
       }
-      if (sql.includes("FROM payroll_transactions") && !sql.includes("AS person_id")) {
+      if (sql.includes("FROM payroll_transactions")
+        && sql.includes("COALESCE(sum(imported_amount), 0)::text AS amount")
+        && !sql.includes("AS person_id")) {
+        return { rows: [{ scope_id: INDIVIDUAL, amount: "250" }] };
+      }
+      if (sql.includes("transaction.individual_id AS scope_id")
+        && sql.includes("= 'employee'")) {
+        return { rows: [{ scope_id: INDIVIDUAL, amount: "250" }] };
+      }
+      if (sql.includes("transaction.individual_id AS scope_id")
+        && sql.includes("= 'excellent_staffing'")) {
         return { rows: [{ scope_id: INDIVIDUAL, amount: "250" }] };
       }
       if (sql.includes("FROM agencies a")) {
@@ -104,7 +111,7 @@ describe("portal-safe home read model", () => {
         ] };
       }
       if (sql.includes("membership.individual_id AS person_id")
-        && sql.includes("LEFT JOIN program_budget_balances")
+        && sql.includes("physical_authorization_base AS")
         && sql.includes("authorized_hours")) {
         return { rows: [{
           agency_id: AGENCY_B,
@@ -135,7 +142,8 @@ describe("portal-safe home read model", () => {
           remaining: "75",
         }] };
       }
-      if (sql.includes("FROM agency_individuals membership") && sql.includes("program_budget_balances")) {
+      if (sql.includes("membership.agency_id AS scope_id")
+        && sql.includes("physical_authorization_base AS")) {
         return { rows: [{
           scope_id: AGENCY_B,
           authorized_hours: "700",
@@ -228,10 +236,16 @@ describe("portal-safe home read model", () => {
     expect(JSON.stringify(model)).not.toMatch(/employeeName|taxWithheld|connected/i);
     const sql = query.mock.calls.map(([statement]) => statement).join("\n");
     expect(sql).not.toMatch(/service_allocations|assignments/i);
-    const agencyBudgetSql = query.mock.calls.find(([statement]) => statement.includes("LEFT JOIN program_budget_balances"))?.[0];
+    const agencyBudgetSql = query.mock.calls.find(([statement]) =>
+      statement.includes("membership.agency_id AS scope_id")
+      && statement.includes("effective_budget_authorizations_at"),
+    )?.[0];
     const agencyFinancialCall = query.mock.calls.find(([statement]) => statement.includes("FROM unnest"));
     const agencyRosterCall = query.mock.calls.find(([statement]) => statement.includes("FROM agencies a"));
-    const directBilledCall = query.mock.calls.find(([statement]) => statement.includes("FROM payroll_transactions"));
+    const directBilledCall = query.mock.calls.find(([statement]) =>
+      statement.includes("FROM payroll_transactions")
+      && statement.includes("COALESCE(sum(imported_amount), 0)::text AS amount"),
+    );
     const portalSql = query.mock.calls.map(([statement]) => statement).join("\n");
     expect(agencyBudgetSql).toContain("membership.manages_budget = true");
     expect(agencyFinancialCall?.[0].match(/membership\.bills_services = true/g)).toHaveLength(2);
@@ -249,6 +263,7 @@ describe("portal-safe home read model", () => {
     expect(portalSql.match(/effective_payment_recipient\(/g)?.length).toBeGreaterThanOrEqual(3);
     expect(portalSql).not.toMatch(/\btransaction\.payment_recipient\s*=\s*'(?:employee|excellent_staffing)'/);
     expect(portalSql).not.toContain("created_at::date");
+    expect(portalSql).not.toMatch(/authorized_dollars|consumed_dollars|remaining_dollars/);
     expect(portalSql.match(/canonical_service_date\(/g)?.length).toBeGreaterThanOrEqual(12);
     expect(portalSql).toContain("AT TIME ZONE 'America/New_York'");
     expect(agencyFinancialCall?.[1]?.[6]).toBe("2026-05-01");
@@ -262,11 +277,74 @@ describe("portal-safe home read model", () => {
     expect(memberPeopleCall?.[0]).not.toContain("bool_or(");
     const memberHoursCall = query.mock.calls.find(([statement]) =>
       statement.includes("membership.individual_id AS person_id")
-      && statement.includes("LEFT JOIN program_budget_balances")
+      && statement.includes("physical_authorization_base AS")
       && statement.includes("authorized_hours"),
     );
     expect(memberHoursCall?.[1]?.[0]).toEqual([AGENCY_B]);
     expect(memberHoursCall?.[0]).not.toMatch(/dollar/i);
+    const hourCalls = query.mock.calls.filter(([statement]) => statement.includes("effective_budget_authorizations_at"));
+    expect(hourCalls).toHaveLength(3);
+    for (const [statement] of hourCalls) {
+      expect(statement).toContain("FROM budget_authorizations physical_auth");
+      expect(statement).toContain("JOIN portal_scope scope ON scope.individual_id = physical_auth.individual_id");
+      expect(statement).toContain("JOIN budget_periods period ON period.id = physical_auth.budget_period_id");
+      expect(statement).toContain("physical_auth.status = 'active'");
+      expect(statement).toContain("physical_auth.archived_at IS NULL");
+      expect(statement).toContain("period.status = 'active'");
+      expect(statement).toContain("period.archived_at IS NULL");
+      expect(statement).toContain("physical_payroll_usage AS");
+      expect(statement).toContain("FROM physical_authorization_base physical");
+      expect(statement).toContain("LEFT JOIN payroll_transactions payroll");
+      expect(statement).toContain("physical.consumption_source IN ('payroll', 'mixed')");
+      expect(statement).toContain("WHEN physical.rate_scope = 'per_group'");
+      expect(statement).toContain("/ physical.internal_rate");
+      expect(statement).toContain("), 0)::numeric(10, 4) AS used_hours");
+      expect(statement).toContain("physical_event_usage AS");
+      expect(statement).toContain("LEFT JOIN program_budget_events event");
+      expect(statement).toContain("COALESCE(sum(event.hours), 0)::numeric(10, 4) AS used_hours");
+      expect(statement).toContain("COALESCE(payroll.used_hours, 0) + COALESCE(event.used_hours, 0)");
+      expect(statement).toContain(")::numeric(10, 4) AS used_hours");
+      expect(statement).toContain("JOIN portal_scope scope ON scope.individual_id = budget_auth.individual_id");
+      expect(statement).toContain("budget_auth.source = 'calculation_strategy'");
+      expect(statement).toContain("NOT EXISTS (");
+      expect(statement).toContain("FROM physical_authorizations physical");
+      expect(statement).toContain("FROM synthetic_authorizations synthetic");
+      expect(statement).toContain("JOIN payroll_transactions payroll");
+      expect(statement).not.toContain("FROM payroll_transactions payroll");
+      expect(statement).toContain("synthetic.consumption_source IN ('payroll', 'mixed')");
+      expect(statement).toContain("canonical_service_date(");
+      expect(statement).toContain("row_number() OVER (");
+      expect(statement).toContain("PARTITION BY payroll.id");
+      expect(statement).toContain("ORDER BY synthetic.start_date DESC");
+      expect(statement).toContain("WHERE match_rank = 1");
+      expect(statement).toContain("WHEN rate_scope = 'per_group'");
+      expect(statement).toContain("payroll.calculated_internal_amount");
+      expect(statement).toContain("payroll.spreadsheet_internal_amount");
+      expect(statement).toContain("internal_rate_applied * imported_hours");
+      expect(statement).toContain("/ internal_rate");
+      expect(statement).toContain("COALESCE(sum(synthetic.authorized_hours), 0)");
+      expect(statement).toContain("effective_hours.authorized_hours - effective_hours.used_hours");
+      expect(statement).not.toContain("effective_billed_hours");
+      expect(statement).not.toContain("program_budget_balances");
+      expect(statement).not.toMatch(/undated_usage|authorized_dollars|consumed_dollars|remaining_dollars/);
+      expect(statement).not.toMatch(/DAY_HAB|SUPP_GROUP_DAY_HAB/);
+      expect(statement).not.toMatch(/dollar/i);
+    }
+    const directHourCall = hourCalls.find(([statement]) =>
+      statement.includes("effective_hours.individual_id AS scope_id"),
+    );
+    expect(directHourCall?.[0]).toContain("SELECT unnest($1::uuid[]) AS individual_id");
+    const agencyHourCalls = hourCalls.filter(([statement]) =>
+      statement.includes("SELECT DISTINCT membership.individual_id"),
+    );
+    expect(agencyHourCalls).toHaveLength(2);
+    for (const [statement] of agencyHourCalls) {
+      expect(statement).toContain("membership.agency_id = ANY($1::uuid[])");
+      expect(statement).toContain("membership.is_active = true");
+      expect(statement).toContain("membership.manages_budget = true");
+      expect(statement).toContain("membership.effective_from <= (now() AT TIME ZONE 'America/New_York')::date");
+      expect(statement).toContain("membership.effective_to >= (now() AT TIME ZONE 'America/New_York')::date");
+    }
     expect(query.mock.calls.some(([statement]) =>
       statement.includes("membership.individual_id AS person_id")
       && statement.includes("LEFT JOIN program_budget_balances")
@@ -276,7 +354,7 @@ describe("portal-safe home read model", () => {
       statement.includes("AS person_id")
       && !statement.includes("JOIN individuals individual")
       && !statement.includes("JOIN employees employee")
-      && !statement.includes("LEFT JOIN program_budget_balances"),
+      && !statement.includes("physical_authorization_base"),
     );
     expect(memberFinancialCalls.length).toBeGreaterThan(0);
     for (const call of memberFinancialCalls) expect(call[1]?.[0]).toEqual([AGENCY_A]);
@@ -294,6 +372,56 @@ describe("portal-safe home read model", () => {
       /sum\(obligation\.original_amount\) FILTER \(([\s\S]*?)\), 0\)::text AS due_this_month/,
     )?.[1];
     expect(memberDueFilter).toContain("obligation.status = 'active'");
+  });
+
+  it("keeps physical dollar balances separate from effective hour authorization totals", async () => {
+    const context: PortalAccessContext = {
+      userId: "individual-budget-user",
+      globalRoles: [{ role: "parent", grants: [], denials: [] }],
+      individualLinks: [{
+        individualId: INDIVIDUAL,
+        relationship: "guardian",
+        grants: ["dollar_budgets.self.read"],
+        denials: [],
+      }],
+      employeeLinks: [],
+      agencyAccess: [],
+    };
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM individuals")) {
+        return { rows: [{ id: INDIVIDUAL, name: "Individual Budget" }] };
+      }
+      if (sql.includes("effective_hours.individual_id AS scope_id")) {
+        return { rows: [{
+          scope_id: INDIVIDUAL,
+          authorized_hours: "100",
+          used_hours: "40",
+          remaining_hours: "60",
+        }] };
+      }
+      if (sql.includes("FROM program_budget_balances") && sql.includes("authorized_dollars")) {
+        return { rows: [{
+          scope_id: INDIVIDUAL,
+          authorized_dollars: "2000",
+          used_dollars: "500",
+          remaining_dollars: "1500",
+        }] };
+      }
+      throw new Error(`Unexpected individual budget query: ${sql}`);
+    });
+    const pool = { query, connect: vi.fn() } as unknown as PgLikePool;
+
+    const model = await getPortalHomeReadModel(pool, context, "2026-05");
+
+    expect(model.individuals[0]).toMatchObject({
+      hours: { authorized: "100.0000", used: "40.0000", remaining: "60.0000" },
+      dollars: { authorized: "2000.0000", used: "500.0000", remaining: "1500.0000" },
+    });
+    const hourCall = query.mock.calls.find(([sql]) => sql.includes("effective_budget_authorizations_at"));
+    const dollarCall = query.mock.calls.find(([sql]) => sql.includes("authorized_dollars"));
+    expect(hourCall?.[0]).not.toMatch(/dollar/i);
+    expect(dollarCall?.[0]).toContain("FROM program_budget_balances");
+    expect(dollarCall?.[0]).not.toMatch(/authorized_hours|consumed_hours|remaining_hours|effective_billed_hours/);
   });
 
   it("uses one selected-month responsibility instead of combining it with current membership", async () => {
@@ -333,7 +461,9 @@ describe("portal-safe home read model", () => {
         }] };
       }
       if (sql.includes("JOIN employees employee")) return { rows: [] };
-      if (sql.includes("program_budget_balances")) return { rows: [] };
+      if (sql.includes("program_budget_balances") || sql.includes("physical_authorization_base")) {
+        return { rows: [] };
+      }
       throw new Error(`Unexpected historical portal query: ${sql}`);
     });
     const pool = { query, connect: vi.fn() } as unknown as PgLikePool;
@@ -428,7 +558,8 @@ describe("portal-safe home read model", () => {
       if (sql.includes("event.individual_id AS person_id")) {
         return { rows: [{ agency_id: AGENCY_A, person_id: AGENCY_A_INDIVIDUAL, amount: "30" }] };
       }
-      if (sql.includes("membership.agency_id AS scope_id") && sql.includes("program_budget_balances")) {
+      if (sql.includes("membership.agency_id AS scope_id")
+        && sql.includes("physical_authorization_base")) {
         return { rows: [] };
       }
       throw new Error(`Unexpected mid-month portal query: ${sql}`);
