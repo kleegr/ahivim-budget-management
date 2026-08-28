@@ -8,6 +8,7 @@ function financeScope(overrides: Partial<AccessScope> = {}): AccessScope {
     role: "viewer",
     full: false,
     canSeeTransactions: true,
+    canManageSettlements: true,
     canSeeMoney: true,
     canSeeHours: false,
     canSeeBilledAmounts: false,

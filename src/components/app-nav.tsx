@@ -14,6 +14,7 @@ import {
   Menu,
   Search,
   Settings2,
+  ShieldCheck,
   WalletCards,
   X,
   type LucideIcon,
@@ -37,6 +38,7 @@ const ROLE_LABEL: Record<string, string> = {
 
 const WORKSPACE_ICONS: Record<VisibleNavigationWorkspace["id"], LucideIcon> = {
   overview: LayoutDashboard,
+  portal: ShieldCheck,
   budgets: WalletCards,
   payroll: BadgeDollarSign,
   activity: Activity,
@@ -260,6 +262,8 @@ export default function AppNav({
   canSeeClassFinancials = false,
   canSeeEmployees = false,
   canEditDocuments = false,
+  canUsePortal = false,
+  canManageAgencies = false,
 }: {
   user: AuthenticatedUser;
   reviewCount?: number;
@@ -271,6 +275,8 @@ export default function AppNav({
   canSeeClassFinancials?: boolean;
   canSeeEmployees?: boolean;
   canEditDocuments?: boolean;
+  canUsePortal?: boolean;
+  canManageAgencies?: boolean;
 }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
@@ -279,8 +285,8 @@ export default function AppNav({
   const drawerRef = useRef<HTMLElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const access = useMemo<NavigationAccess>(
-    () => ({ role: user.role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments }),
-    [user.role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments],
+    () => ({ role: user.role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies }),
+    [user.role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies],
   );
 
   const closeDrawer = useCallback(() => setOpen(false), []);
@@ -357,7 +363,7 @@ export default function AppNav({
         Skip to content
       </a>
 
-      <CommandBar role={user.role} accessResolved={accessResolved} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} canSeeBudgets={canSeeBudgets} canPlan={canPlan} canSeeClassFinancials={canSeeClassFinancials} canSeeEmployees={canSeeEmployees} canEditDocuments={canEditDocuments} />
+      <CommandBar role={user.role} accessResolved={accessResolved} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} canSeeBudgets={canSeeBudgets} canPlan={canPlan} canSeeClassFinancials={canSeeClassFinancials} canSeeEmployees={canSeeEmployees} canEditDocuments={canEditDocuments} canUsePortal={canUsePortal} canManageAgencies={canManageAgencies} />
 
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 md:hidden">
         <Wordmark />

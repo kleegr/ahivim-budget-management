@@ -283,12 +283,13 @@ function DirectCalculationDetail({ row }: { row: SettlementRow }) {
         <p className="text-xs font-medium text-[var(--color-ink-soft)]">Direct employee check: {ruleLabel}</p>
         <ReconciliationStatus row={row} />
       </div>
-      <dl className="grid grid-cols-2 gap-x-5 gap-y-2 sm:grid-cols-5">
+      <dl className="grid grid-cols-2 gap-x-5 gap-y-2 sm:grid-cols-6">
         <DetailMetric label="Check gross" value={safeMoney(metadataString(row, "checkGross"))} />
         <DetailMetric label="Check net" value={safeMoney(metadataString(row, "checkNet"))} />
         <DetailMetric label="Employee keeps" value={safeMoney(metadataString(row, "employeeKeeps"))} />
         <DetailMetric label="Employee owes" value={safeMoney(metadataString(row, "employeeOwesAgency"))} />
-        <DetailMetric label="Taxes (display only)" value={safeMoney(metadataString(row, "withholdingDisplayOnly"))} muted />
+        <DetailMetric label="Tax withheld (display only)" value={safeMoney(metadataString(row, "taxWithheldDisplayOnly"))} muted />
+        <DetailMetric label="Total deductions" value={safeMoney(metadataString(row, "totalDeductionsDisplayOnly"))} muted />
       </dl>
     </div>
   );

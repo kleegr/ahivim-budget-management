@@ -35,8 +35,6 @@ export function coerceCalculationInput(body: Record<string, unknown>): Calculati
     basis: body.basis === "monthly" ? "monthly" : body.basis === "annual" ? "annual" : undefined,
     cut1Percent: asStr(body.cut1Percent) ?? null,
     cut2Percent: asStr(body.cut2Percent) ?? null,
-    cutOrder:
-      body.cutOrder === "parallel" ? "parallel" : body.cutOrder === "sequential" ? "sequential" : undefined,
     clockAdjustment: asStr(body.clockAdjustment) ?? null,
     netAdjustment: asStr(body.netAdjustment) ?? null,
     afterAllAdjustment: asStr(body.afterAllAdjustment) ?? null,

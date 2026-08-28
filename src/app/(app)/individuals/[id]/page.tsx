@@ -5,14 +5,16 @@ import { canViewEmployee, canViewIndividual, hasDirectIndividualAccess, resolveA
 import { withDb } from "@/lib/data/pool";
 import { getIndividualBudgetView, getIndividualPeriodActivity } from "@/lib/data/queries";
 import { BUDGET_STATUS_PRESENT, type BudgetLineStatus } from "@/lib/business/budget-status";
-import { isUuid } from "@/lib/data/app-queries";
+import { isUuid, listPrograms } from "@/lib/data/app-queries";
 import { getIndividual } from "@/lib/manage/individuals";
+import { listAuthorizationsForIndividual } from "@/lib/manage/authorizations";
 import { listStrategies } from "@/lib/manage/calculation-strategies";
 import { listAssignments } from "@/lib/manage/assignments";
 import { listAliases } from "@/lib/manage/aliases";
 import { scheduledByProgramForIndividual } from "@/lib/data/schedule-queries";
 import { getPersonSettlementBalance } from "@/lib/data/settlements";
 import { listClassBudgets, listClassInvoices } from "@/lib/data/class-invoices";
+import { listProgramBudgetEvents, listProgramBudgets } from "@/lib/data/program-budgets";
 import {
   Card, Table, Th, Td, Tr, Money, Hours, ErrorPanel, PageHeader, ButtonLink,
 } from "@/components/ui";
@@ -24,6 +26,7 @@ import EmployeesActivity from "@/components/individuals/employees-activity";
 import FinancialPlan from "@/components/individuals/financial-plan";
 import MergePanel from "@/components/individuals/merge-panel";
 import AddPlanButton from "@/components/individuals/add-plan-button";
+import ProgramBudgetWorkspace from "@/components/individuals/program-budget-workspace";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import { txLink } from "@/lib/nav/tx-link";
 
@@ -98,10 +101,12 @@ export default async function IndividualDetailPage({
     if (!canViewIndividual(scope, id)) return null;
     const directAccess = hasDirectIndividualAccess(scope, id);
     const canSeeBudgets = scope.canSeeBudgets && scope.canSeeHours && directAccess;
+    const canSeeAnyProgramDollars = (scope.canSeeBilledAmounts || scope.canSeeClassFinancials) && directAccess;
+    const canSeeProgramBudgets = canSeeBudgets || canSeeAnyProgramDollars;
     const canSeeSettlements = scope.canSeeSettlements && directAccess;
     const canSeeClasses = scope.canSeeClassFinancials && directAccess;
     const budget = await getIndividualBudgetView(pool, id, undefined, scope);
-    const [strategies, assignments, aliasesAll, scheduledByProgram, activity, settlement, classBudgets, classInvoices] = await Promise.all([
+    const [strategies, assignments, aliasesAll, scheduledByProgram, activity, settlement, classBudgets, classInvoices, programBudgetsRaw, programCatalogRaw, authorizationHistoryRaw] = await Promise.all([
       canSeeBudgets
         ? listStrategies(pool, { individualId: id, withAnalytics: true })
         : Promise.resolve({ rows: [], programs: [] }),
@@ -125,7 +130,98 @@ export default async function IndividualDetailPage({
       canSeeSettlements ? getPersonSettlementBalance(pool, { individualId: id }) : Promise.resolve({ payable: "0", receivable: "0", reserve: "0", credit: "0", openItems: 0 }),
       canSeeClasses ? listClassBudgets(pool, scope, { individualId: id }) : Promise.resolve([]),
       canSeeClasses ? listClassInvoices(pool, scope, { individualId: id }) : Promise.resolve([]),
+      canSeeProgramBudgets ? listProgramBudgets(pool, { individualId: id }) : Promise.resolve([]),
+      canEdit ? listPrograms(pool) : Promise.resolve([]),
+      canSeeProgramBudgets
+        ? listAuthorizationsForIndividual(pool, id)
+        : Promise.resolve({ periods: [], authorizations: [] }),
     ]);
+    const canSeeRowDollars = (serviceCategory: string) => directAccess && (
+      serviceCategory === "classes" ? scope.canSeeClassFinancials : scope.canSeeBilledAmounts
+    );
+    const visibleProgramBudgetRows = programBudgetsRaw.filter((row) => {
+      const hasVisibleHours = canSeeBudgets && row.requiredAuthType !== "dollars";
+      const hasVisibleDollars = canSeeRowDollars(row.serviceCategory) && row.requiredAuthType !== "hours";
+      return hasVisibleHours || hasVisibleDollars;
+    });
+    const programBudgetHistoryVisibility = visibleProgramBudgetRows.map((row) => (
+      (scope.canSeeTransactions || canSeeRowDollars(row.serviceCategory)) && directAccess
+    ));
+    const programBudgetEvents = await Promise.all(
+      visibleProgramBudgetRows.map((row, index) => programBudgetHistoryVisibility[index]
+        ? listProgramBudgetEvents(pool, row.budgetPeriodId, row.programId)
+        : Promise.resolve([])),
+    );
+    const programBudgets = visibleProgramBudgetRows.map((row, index) => ({
+      authorizationId: row.authorizationId,
+      budgetPeriodId: row.budgetPeriodId,
+      programId: row.programId,
+      programCode: row.programCode,
+      programName: row.programName,
+      periodLabel: row.periodLabel,
+      startDate: row.startDate,
+      endDate: row.endDate,
+      renewalDate: row.renewalDate,
+      periodType: row.periodType,
+      periodStatus: row.periodStatus,
+      requiredAuthType: row.requiredAuthType,
+      consumptionSource: row.consumptionSource,
+      renewalPolicy: row.renewalPolicy,
+      authorizedHours: canSeeBudgets && row.requiredAuthType !== "dollars" ? row.authorizedHours : null,
+      authorizedDollars: canSeeRowDollars(row.serviceCategory) && row.requiredAuthType !== "hours" ? row.authorizedDollars : null,
+      internalRate: scope.canSeeEmployeeAmounts && directAccess ? row.internalRate : null,
+      agencyRate: canSeeRowDollars(row.serviceCategory) ? row.agencyRate : null,
+      individualRateOverride: scope.canSeeEmployeeAmounts && directAccess ? row.individualRateOverride : null,
+      allowIndividualRateOverride: row.allowIndividualRateOverride,
+      notes: scope.canSeeMoney ? row.notes : null,
+      consumedHours: canSeeBudgets && row.requiredAuthType !== "dollars" ? row.consumedHours : null,
+      consumedDollars: canSeeRowDollars(row.serviceCategory) && row.requiredAuthType !== "hours" ? row.consumedDollars : null,
+      remainingHours: canSeeBudgets && row.requiredAuthType !== "dollars" ? row.remainingHours : null,
+      remainingDollars: canSeeRowDollars(row.serviceCategory) && row.requiredAuthType !== "hours" ? row.remainingDollars : null,
+      // Planners need the budget-quality warning, not a payroll row count.
+      undatedUsageCount: scope.canSeeTransactions ? row.undatedUsageCount : null,
+      hasUndatedUsage: row.hasUndatedUsage,
+      revision: row.revision,
+      showEventHistory: programBudgetHistoryVisibility[index] ?? false,
+      events: (programBudgetEvents[index] ?? []).map((event) => ({
+        id: event.id,
+        eventType: event.eventType,
+        serviceDate: event.serviceDate,
+        hours: canSeeBudgets && row.requiredAuthType !== "dollars" ? event.hours : null,
+        amount: canSeeRowDollars(row.serviceCategory) && row.requiredAuthType !== "hours" ? event.amount : null,
+        sourceType: event.sourceType,
+        reversesEventId: event.reversesEventId,
+        note: scope.canSeeMoney ? event.note : null,
+        createdAt: event.createdAt,
+      })),
+      authorizationRevisions: authorizationHistoryRaw.authorizations
+        .filter((authorization) => (
+          authorization.budgetPeriodId === row.budgetPeriodId
+          && authorization.programId === row.programId
+        ))
+        .map((authorization) => ({
+          id: authorization.id,
+          revision: authorization.revision,
+          status: authorization.status,
+          authorizedHours: canSeeBudgets && row.requiredAuthType !== "dollars"
+            ? authorization.authorizedHours
+            : null,
+          authorizedDollars: canSeeRowDollars(row.serviceCategory) && row.requiredAuthType !== "hours"
+            ? authorization.authorizedDollars
+            : null,
+          internalRate: scope.canSeeEmployeeAmounts && directAccess
+            ? authorization.internalRate
+            : null,
+          agencyRate: canSeeRowDollars(row.serviceCategory)
+            ? authorization.agencyRate
+            : null,
+          individualRateOverride: scope.canSeeEmployeeAmounts && directAccess
+            ? authorization.individualRateOverride
+            : null,
+          notes: scope.canSeeMoney ? authorization.notes : null,
+          createdAt: authorization.createdAt,
+        })),
+    }));
     // The plan the main view describes (matches the budget board), plus any OTHER
     // plans this individual has — each gets its own budget view so a second plan
     // (different programs / different cuts) shows in full.
@@ -176,11 +272,24 @@ export default async function IndividualDetailPage({
       canSeeEmployeeAmounts: scope.canSeeEmployeeAmounts,
       canSeeAgencySpread: scope.canSeeAgencySpread,
       canSeeBudgets,
+      canSeeProgramBudgets,
       canSeeSettlements,
       canSeeClasses,
       canManageClasses: scope.canManageClassInvoices,
       classBudgets,
       classInvoices,
+      programBudgets,
+      programCatalog: programCatalogRaw
+        .filter((program) => program.isActive && program.code !== "CLASSES")
+        .map((program) => ({
+          id: program.id,
+          code: program.code,
+          name: program.name,
+          requiredAuthType: program.requiredAuthType,
+          defaultAgencyRate: scope.canSeeBilledAmounts && directAccess ? program.agencyRate : null,
+          defaultInternalRate: scope.canSeeEmployeeAmounts && directAccess ? program.internalRate : null,
+          allowIndividualRateOverride: program.allowIndividualRateOverride,
+        })),
       canSeeTransactions: scope.canSeeTransactions,
       programs: strategies.programs, // program list with default per-hour rates, for the editor
       assignments: assignments.filter((a) => a.status === "active" && canViewEmployee(scope, a.employeeId)),
@@ -208,8 +317,10 @@ export default async function IndividualDetailPage({
   const {
     individual, budget, activity, settlement, strategy, otherPlans,
     canSeeHours, canSeeBilledAmounts, canSeeEmployeeAmounts, canSeeAgencySpread,
-    canSeeBudgets, canSeeSettlements, canSeeTransactions, canSeeClasses, canManageClasses,
-    classBudgets, classInvoices, programs, assignments, aliases, scheduled,
+    canSeeBudgets, canSeeProgramBudgets,
+    canSeeSettlements, canSeeTransactions, canSeeClasses, canManageClasses,
+    classBudgets, classInvoices, programBudgets, programCatalog,
+    programs, assignments, aliases, scheduled,
   } = result.data;
   const t = budget.totals;
   const headline = budget.headline ? BUDGET_STATUS_PRESENT[budget.headline] : null;
@@ -377,6 +488,21 @@ export default async function IndividualDetailPage({
                 ))}
                 {canEdit && strategy ? <AddPlanButton individualId={id} nextLabel={String(otherPlans.length + 2)} /> : null}
               </div>
+            ),
+          }] : []),
+          ...(canSeeProgramBudgets ? [{
+            id: "programs",
+            label: "Programs",
+            badge: programBudgets.length || undefined,
+            content: (
+              <ProgramBudgetWorkspace
+                individualId={id}
+                budgets={programBudgets}
+                programs={programCatalog}
+                canManage={canEdit}
+                showInternalRate={canSeeEmployeeAmounts}
+                showAgencyRate={canSeeBilledAmounts}
+              />
             ),
           }] : []),
           ...(canSeeClasses ? [{

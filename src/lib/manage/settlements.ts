@@ -111,6 +111,10 @@ interface EmployeeTransactionRow {
   billed_amount: string;
   base_amount: string | null;
   total_net_pay: string | null;
+  payroll_check_id: string | null;
+  payroll_gross: string | null;
+  payroll_tax_withheld: string | null;
+  payroll_verification_status: "unverified" | "verified" | null;
   deal_id: string | null;
   deal_revision: number | null;
   direct_rule: "keep_all" | "giveback_percent" | "giveback_all" | null;
@@ -294,31 +298,58 @@ async function loadEmployeeTransactions(
   const { rows } = await pool.query<EmployeeTransactionRow>(
     `SELECT t.id, t.employee_id,
             COALESCE(e.display_name, e.normalized_name) AS employee_name,
-            t.check_number,
-            to_char(t.check_date, 'YYYY-MM-DD') AS check_date,
-            to_char(t.period_begin, 'YYYY-MM-DD') AS period_begin,
-            to_char(t.period_end, 'YYYY-MM-DD') AS period_end,
-            to_char(COALESCE(t.check_date, t.period_end, t.period_begin, t.created_at::date), 'YYYY-MM-DD') AS effective_date,
-            t.payment_recipient,
+            COALESCE(pc.check_number, t.check_number) AS check_number,
+            to_char(COALESCE(pc.check_date, t.check_date), 'YYYY-MM-DD') AS check_date,
+            to_char(COALESCE(pc.period_begin, t.period_begin), 'YYYY-MM-DD') AS period_begin,
+            to_char(COALESCE(pc.period_end, t.period_end), 'YYYY-MM-DD') AS period_end,
+            to_char(canonical_service_date(
+              COALESCE(pc.period_begin, t.period_begin),
+              COALESCE(pc.check_date, t.check_date),
+              COALESCE(pc.period_end, t.period_end)
+            ), 'YYYY-MM-DD') AS effective_date,
+            effective_payment_recipient(
+              t.payment_recipient,
+              p.payment_recipient
+            ) AS payment_recipient,
             COALESCE(t.imported_amount, 0)::text AS billed_amount,
             COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
                      t.internal_rate_applied * t.imported_hours)::text AS base_amount,
-            t.total_net_pay::text,
+            pc.actual_net::text AS total_net_pay,
+            pc.id AS payroll_check_id, pc.actual_gross::text AS payroll_gross,
+            pc.tax_withheld::text AS payroll_tax_withheld,
+            pc.verification_status AS payroll_verification_status,
             d.id AS deal_id, d.revision AS deal_revision, d.direct_rule,
             d.direct_percent::text, d.agency_cut_percent::text
        FROM payroll_transactions t
        JOIN employees e ON e.id = t.employee_id
+       LEFT JOIN programs p ON p.id = t.program_id
+       LEFT JOIN employee_payroll_checks pc
+         ON pc.id = t.payroll_check_id AND pc.verification_status = 'verified'
        LEFT JOIN LATERAL (
          SELECT ed.id, ed.revision, ed.direct_rule, ed.direct_percent, ed.agency_cut_percent
            FROM employee_deals ed
-          WHERE ed.employee_id = t.employee_id AND ed.status = 'active'
-            AND ed.effective_from <= COALESCE(t.check_date, t.period_end, t.period_begin, t.created_at::date)
-            AND (ed.effective_to IS NULL OR ed.effective_to >= COALESCE(t.check_date, t.period_end, t.period_begin, t.created_at::date))
+           WHERE ed.employee_id = t.employee_id AND ed.status = 'active'
+             AND ed.effective_from <= canonical_service_date(
+               COALESCE(pc.period_begin, t.period_begin),
+               COALESCE(pc.check_date, t.check_date),
+               COALESCE(pc.period_end, t.period_end)
+             )
+             AND (ed.effective_to IS NULL OR ed.effective_to >= canonical_service_date(
+               COALESCE(pc.period_begin, t.period_begin),
+               COALESCE(pc.check_date, t.check_date),
+               COALESCE(pc.period_end, t.period_end)
+             ))
           ORDER BY ed.effective_from DESC
           LIMIT 1
        ) d ON true
       WHERE t.employee_id IS NOT NULL
-        AND t.payment_recipient IN ('employee', 'excellent_staffing')
+        AND (
+          effective_payment_recipient(t.payment_recipient, p.payment_recipient) = 'excellent_staffing'
+          OR (
+            effective_payment_recipient(t.payment_recipient, p.payment_recipient) = 'employee'
+            AND pc.id IS NOT NULL
+          )
+        )
         ${employeeClause}
       ORDER BY t.employee_id, t.check_date NULLS LAST, t.check_number NULLS LAST, t.id`,
     params,
@@ -331,13 +362,16 @@ async function loadUnknownRecipientTransactionIds(
   employeeId?: string | null,
 ): Promise<string[]> {
   const params: unknown[] = [];
-  const employeeClause = employeeId ? `AND employee_id = $${params.push(employeeId)}` : "";
+  const employeeClause = employeeId ? `AND t.employee_id = $${params.push(employeeId)}` : "";
   const { rows } = await client.query<{ id: string }>(
-    `SELECT id
-       FROM payroll_transactions
-      WHERE employee_id IS NOT NULL
-        AND payment_recipient IS DISTINCT FROM 'employee'
-        AND payment_recipient IS DISTINCT FROM 'excellent_staffing'
+    `SELECT t.id
+       FROM payroll_transactions t
+       LEFT JOIN programs p ON p.id = t.program_id
+      WHERE t.employee_id IS NOT NULL
+        AND effective_payment_recipient(
+          t.payment_recipient,
+          p.payment_recipient
+        ) = 'unknown'
         ${employeeClause}`,
     params,
   );
@@ -415,12 +449,14 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
 
   for (const row of rows) {
     if (row.deal_id || row.payment_recipient !== "employee") continue;
-    const directIdentity = directSettlementCheckIdentity({
-      checkNumber: row.check_number,
-      checkDate: row.check_date ?? inferredCheckDates.get(row.id) ?? null,
-      periodBegin: row.period_begin,
-      periodEnd: row.period_end,
-    });
+    const directIdentity = row.payroll_check_id
+      ? `payroll-check:${row.payroll_check_id}`
+      : directSettlementCheckIdentity({
+          checkNumber: row.check_number,
+          checkDate: row.check_date ?? inferredCheckDates.get(row.id) ?? null,
+          periodBegin: row.period_begin,
+          periodEnd: row.period_end,
+        });
     if (!directIdentity) continue;
     const groupKey = `${row.employee_id}:direct:${directIdentity}`;
     blockedDirectGroupKeys.add(groupKey);
@@ -439,12 +475,14 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
     const flow = row.payment_recipient === "employee" ? "direct" : "agency";
     const resolvedCheckDate = row.check_date ?? inferredCheckDates.get(row.id) ?? null;
     const directIdentity = flow === "direct"
-      ? directSettlementCheckIdentity({
-          checkNumber: row.check_number,
-          checkDate: resolvedCheckDate,
-          periodBegin: row.period_begin,
-          periodEnd: row.period_end,
-        })
+      ? row.payroll_check_id
+        ? `payroll-check:${row.payroll_check_id}`
+        : directSettlementCheckIdentity({
+            checkNumber: row.check_number,
+            checkDate: resolvedCheckDate,
+            periodBegin: row.period_begin,
+            periodEnd: row.period_end,
+          })
       : null;
     if (flow === "direct" && !directIdentity) {
       skippedMissingCheckIdentity++;
@@ -514,12 +552,26 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
         continue;
       }
       const checkNet = dec(netValues[0]);
-      const checkGross = group.reduce((total, row) => total.plus(row.billed_amount), dec(0));
+      const payrollGrossValues = [...new Set(
+        group.map((row) => row.payroll_gross).filter((value): value is string => value !== null).map(toMoney),
+      )];
+      const payrollTaxValues = [...new Set(
+        group.map((row) => row.payroll_tax_withheld).filter((value): value is string => value !== null).map(toMoney),
+      )];
+      const payrollCheckIds = [...new Set(
+        group.map((row) => row.payroll_check_id).filter((value): value is string => value !== null),
+      )];
+      if (payrollGrossValues.length > 1 || payrollTaxValues.length > 1 || payrollCheckIds.length > 1) {
+        skippedInconsistentCheck++;
+        protectedSourceKeys.add(sourceKey);
+        for (const transactionId of transactionIds) protectedTransactionIds.add(transactionId);
+        continue;
+      }
       const calculation = calculateDirectEmployeeCheck({
         flow: "direct_employee",
         checkId: groupKey,
         checkNet: toMoney(checkNet),
-        checkGross: toMoney(checkGross),
+        checkGross: payrollGrossValues[0] ?? null,
         deal: directDeal(first),
       });
       const signed = dec(calculation.employeeOwesAgency);
@@ -534,10 +586,13 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
           dealRevision: first.deal_revision,
           directRule: first.direct_rule,
           directPercent: first.direct_percent,
-          checkNet: calculation.checkNet,
-          checkGross: calculation.checkGross,
-          withholdingDisplayOnly: calculation.withholding,
-          employeeKeeps: calculation.employeeKeeps,
+           checkNet: calculation.checkNet,
+           checkGross: calculation.checkGross,
+           taxWithheldDisplayOnly: payrollTaxValues[0] ?? null,
+           totalDeductionsDisplayOnly: calculation.withholding,
+           payrollCheckId: payrollCheckIds[0] ?? null,
+           payrollVerificationStatus: first.payroll_verification_status,
+           employeeKeeps: calculation.employeeKeeps,
           employeeOwesAgency: calculation.employeeOwesAgency,
           netValueCount: netValues.length,
           transactionCount: group.length,

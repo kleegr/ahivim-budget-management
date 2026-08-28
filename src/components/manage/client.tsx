@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { X } from "lucide-react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 /**
  * Shared building blocks for the editable screens: a modal, labelled fields,
@@ -39,24 +40,82 @@ export function Modal({
   onClose: () => void;
   children: ReactNode;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const titleId = useId();
+
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    const dialog = dialogRef.current;
+    const focusableSelector = [
+      "a[href]",
+      "button:not([disabled])",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "[tabindex]:not([tabindex='-1'])",
+    ].join(",");
+
+    document.body.style.overflow = "hidden";
+    const initial = dialog?.querySelector<HTMLElement>(
+      "[data-modal-initial], input:not([disabled]), select:not([disabled]), textarea:not([disabled])",
+    );
+    (initial ?? dialog)?.focus();
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector))
+        .filter((element) => !element.hasAttribute("disabled") && element.getAttribute("aria-hidden") !== "true");
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previouslyFocused?.focus();
+    };
+  }, []);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 p-4 sm:p-8"
       role="dialog"
       aria-modal="true"
-      aria-label={title}
-      onKeyDown={(e) => e.key === "Escape" && onClose()}
+      aria-labelledby={titleId}
     >
-      <div className="mt-8 w-full max-w-lg rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] shadow-xl">
+      <div ref={dialogRef} tabIndex={-1} className="mt-8 w-full max-w-lg rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] shadow-xl outline-none">
         <div className="flex items-center justify-between border-b border-[var(--color-rule)] px-5 py-3">
-          <h2 className="display text-base font-medium">{title}</h2>
+          <h2 id={titleId} className="display text-base font-medium">{title}</h2>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="rounded px-2 py-1 text-sm text-[var(--color-ink-faint)] hover:bg-[var(--color-paper)]"
+            className="icon-button"
           >
-            ✕
+            <X size={16} aria-hidden />
           </button>
         </div>
         <div className="px-5 py-4">{children}</div>
@@ -104,11 +163,15 @@ export function TextAreaField({
   name,
   defaultValue,
   placeholder,
+  required,
+  minLength,
 }: {
   label: string;
   name: string;
   defaultValue?: string | null;
   placeholder?: string;
+  required?: boolean;
+  minLength?: number;
 }) {
   return (
     <label className="block">
@@ -116,6 +179,8 @@ export function TextAreaField({
       <textarea
         name={name}
         rows={2}
+        required={required}
+        minLength={minLength}
         placeholder={placeholder}
         defaultValue={defaultValue ?? undefined}
         className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm"
@@ -266,25 +331,46 @@ export function ActionButton({
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reasonOpen, setReasonOpen] = useState(false);
+  const [reason, setReason] = useState("");
 
-  async function run() {
-    let reason: string | undefined;
-    if (withReason) {
-      const entered = window.prompt(`${label} — reason (recorded in the audit log):`, "");
-      if (entered === null) return;
-      reason = entered.trim() || undefined;
-    } else if (confirm && !window.confirm(confirm)) {
+  async function run(auditReason?: string) {
+    if (!withReason && confirm && !window.confirm(confirm)) {
       return;
     }
     setBusy(true);
     setError(null);
-    const result = await send(method, endpoint, { ...body, ...(reason !== undefined ? { reason } : {}) });
+    const result = await send(method, endpoint, {
+      ...body,
+      ...(auditReason !== undefined ? { reason: auditReason } : {}),
+    });
     setBusy(false);
     if (!result.ok) {
       setError(result.error ?? "Action failed.");
       return;
     }
+    setReasonOpen(false);
+    setReason("");
     router.refresh();
+  }
+
+  function requestAction() {
+    setError(null);
+    if (withReason) {
+      setReasonOpen(true);
+      return;
+    }
+    void run();
+  }
+
+  function submitReason(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const value = reason.trim();
+    if (value.length < 5) {
+      setError("Enter a reason of at least 5 characters for the audit history.");
+      return;
+    }
+    void run(value);
   }
 
   const cls =
@@ -296,11 +382,39 @@ export function ActionButton({
   const pad = size === "sm" ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm";
 
   return (
-    <span className="inline-flex flex-col items-start gap-0.5">
-      <button type="button" onClick={run} disabled={busy} className={`rounded font-medium ${cls} ${pad} disabled:opacity-60`}>
-        {busy ? "…" : label}
-      </button>
-      {error ? <span className="text-xs text-[var(--color-pace-over)]">{error}</span> : null}
-    </span>
+    <>
+      <span className="inline-flex flex-col items-start gap-0.5">
+        <button type="button" onClick={requestAction} disabled={busy} className={`rounded font-medium ${cls} ${pad} disabled:opacity-60`}>
+          {busy ? "Working..." : label}
+        </button>
+        {!reasonOpen && error ? <span role="alert" className="text-xs text-[var(--color-pace-over)]">{error}</span> : null}
+      </span>
+      {reasonOpen ? (
+        <Modal title={`${label} - reason`} onClose={() => (busy ? null : setReasonOpen(false))}>
+          <form onSubmit={submitReason} className="space-y-3">
+            <label className="block">
+              <span className="text-sm font-medium">Reason for this change</span>
+              <textarea
+                data-modal-initial
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+                rows={3}
+                minLength={5}
+                required
+                className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-2 text-sm"
+              />
+              <span className="mt-1 block text-xs text-[var(--color-ink-faint)]">This will be recorded in the audit history.</span>
+            </label>
+            {error ? <p role="alert" className="rounded border border-[var(--color-pace-over)] bg-[#fdf2f5] px-3 py-2 text-sm text-[var(--color-pace-over)]">{error}</p> : null}
+            <div className="flex justify-end gap-2">
+              <button type="button" disabled={busy} onClick={() => setReasonOpen(false)} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-sm">Cancel</button>
+              <button type="submit" disabled={busy} className="rounded bg-[var(--color-primary)] px-4 py-1.5 text-sm font-medium text-white disabled:opacity-60">
+                {busy ? "Working..." : label}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+    </>
   );
 }

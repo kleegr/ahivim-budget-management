@@ -107,6 +107,18 @@ describe("settlement history SQL scope", () => {
     expect(sql).toContain(
       "GROUP BY employee_id, employee_name, NULLIF(btrim(check_number), '')",
     );
+    expect(sql.match(/effective_payment_recipient\(/g)).toHaveLength(4);
+    expect(sql).toContain("p.payment_recipient");
+    expect(sql).not.toContain("t.payment_recipient = 'employee'");
+
+    const missingDealCall = query.mock.calls.find(([statement]) =>
+      String(statement).includes("SELECT 1 FROM employee_deals d"),
+    );
+    const missingDealSql = String(missingDealCall?.[0]);
+    expect(missingDealSql).toContain(
+      "canonical_service_date(\n                 t.period_begin, t.check_date, t.period_end",
+    );
+    expect(missingDealSql).not.toContain("t.created_at::date");
   });
 });
 

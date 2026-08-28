@@ -1,4 +1,5 @@
 import { dec, toMoney, formatMoney, formatHours, type MoneyInput, type Decimal } from "@/lib/money";
+import { agencyDate } from "@/lib/business/agency-time";
 
 /**
  * The Calculation-tab formula chain, reproduced exactly and step by step so a
@@ -69,7 +70,11 @@ function toFraction(value: MoneyInput): Decimal {
   if (value === null || value === undefined || value === "") return dec(0);
   const raw = typeof value === "string" ? value.replace("%", "") : value;
   const d = dec(raw);
-  return d.abs().greaterThan(1) ? d.dividedBy(100) : d;
+  const fraction = d.abs().greaterThan(1) ? d.dividedBy(100) : d;
+  if (fraction.lessThan(0) || fraction.greaterThan(1)) {
+    throw new RangeError("Cut percentages must be between 0% and 100%.");
+  }
+  return fraction;
 }
 
 export function computeStrategy(input: StrategyInput): StrategyResult {
@@ -188,7 +193,7 @@ export function currentBudgetPeriod(
   if (!active) {
     return { start: at(baseYear - 1), end: at(baseYear), effectiveRenewal: at(baseYear), rolled: false };
   }
-  const today = (asOf ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const today = (asOf ?? agencyDate()).slice(0, 10);
   let endYear = baseYear;
   // Smallest anniversary strictly after today (renewal day itself opens the new year).
   while (at(endYear) <= today) endYear++;

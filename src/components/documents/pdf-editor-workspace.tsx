@@ -20,7 +20,9 @@ import {
   Highlighter,
   ImagePlus,
   Italic,
+  ListChecks,
   LoaderCircle,
+  LocateFixed,
   Maximize2,
   MousePointer2,
   PenTool,
@@ -67,7 +69,15 @@ import {
   type PdfTextOverlay,
 } from "@/lib/documents/pdf-editor";
 import type { PdfImageSource } from "@/lib/documents/pdf-export";
-import type { PdfExportMode } from "@/lib/documents/pdf-secure-export";
+import type {
+  PdfFormFieldDescriptor,
+  PdfFormValue,
+} from "@/lib/documents/pdf-forms";
+import { pdfFormWidgetCanvasRectangle } from "@/lib/documents/pdf-form-geometry";
+import {
+  resolvePdfExportMode,
+  type PdfExportMode,
+} from "@/lib/documents/pdf-export-mode";
 import {
   inspectPdfPage,
   loadPdfJs,
@@ -194,9 +204,13 @@ export default function PdfEditorWorkspace({
   const [ocrTextByPage, setOcrTextByPage] = useState<Record<number, PdfSourceTextItem[]>>({});
   const [ocrProgress, setOcrProgress] = useState<{ status: string; progress: number } | null>(null);
   const [sourceQuery, setSourceQuery] = useState("");
-  const [inspectorTab, setInspectorTab] = useState<"properties" | "source">("properties");
+  const [inspectorTab, setInspectorTab] = useState<"properties" | "source" | "form">("properties");
   const [customFonts, setCustomFonts] = useState<EditorFont[]>([]);
   const [images, setImages] = useState<EditorImage[]>([]);
+  const [formFields, setFormFields] = useState<PdfFormFieldDescriptor[]>([]);
+  const [formValues, setFormValues] = useState<Record<string, PdfFormValue>>({});
+  const [initialFormValues, setInitialFormValues] = useState<Record<string, PdfFormValue>>({});
+  const [selectedFormWidget, setSelectedFormWidget] = useState<{ fieldName: string; widgetIndex: number } | null>(null);
   const [pageOrder, setPageOrder] = useState<number[]>([]);
   const [pageRotations, setPageRotations] = useState<Record<number, number>>({});
   const [exportMode, setExportMode] = useState<PdfExportMode>("standard");
@@ -224,7 +238,21 @@ export default function PdfEditorWorkspace({
     pageOrder.length !== loaded?.document.numPages
     || pageOrder.some((sourcePage, index) => sourcePage !== index + 1)
   );
-  const hasChanges = hasPdfEditorChanges(history.present, pageRotations) || pageOrderChanged;
+  const exportModeResolution = resolvePdfExportMode(exportMode, {
+    hasPageRotation: Object.values(pageRotations).some((rotation) => rotation % 360 !== 0),
+    hasRotatedOverlay: history.present.some((overlay) => overlay.rotation % 360 !== 0),
+    pageOrderChanged,
+    hasFormFields: formFields.length > 0,
+  });
+  const selectedFormField = selectedFormWidget
+    ? formFields.find((field) => field.name === selectedFormWidget.fieldName) ?? null
+    : null;
+  const activeFormWidget = selectedFormField?.widgets[selectedFormWidget?.widgetIndex ?? -1] ?? null;
+  const formWidgetHighlight = activeFormWidget?.page === sourcePageNumber
+    ? pdfFormWidgetCanvasRectangle(activeFormWidget, pageRotation)
+    : null;
+  const hasFormChanges = JSON.stringify(formValues) !== JSON.stringify(initialFormValues);
+  const hasChanges = hasPdfEditorChanges(history.present, pageRotations) || pageOrderChanged || hasFormChanges;
   const sourceText = nativeSourceText && nativeSourceText.length > 0
     ? nativeSourceText
     : ocrTextByPage[pageNumber] ?? nativeSourceText;
@@ -466,7 +494,12 @@ export default function PdfEditorWorkspace({
       const bytes = new Uint8Array(await file.arrayBuffer());
       const pdfjs = await loadPdfJs();
       const loadingTask = pdfjs.getDocument({ data: bytes.slice(), isEvalSupported: false });
-      const pdfDocument = await loadingTask.promise;
+      const [pdfDocument, inspectedFormFields] = await Promise.all([
+        loadingTask.promise,
+        import("@/lib/documents/pdf-forms")
+          .then(({ inspectPdfForm }) => inspectPdfForm(bytes))
+          .catch(() => [] as PdfFormFieldDescriptor[]),
+      ]);
       if (!mountedRef.current) {
         void pdfDocument.destroy();
         return;
@@ -488,6 +521,11 @@ export default function PdfEditorWorkspace({
       setOcrTextByPage({});
       setOcrProgress(null);
       setSourceQuery("");
+      const nextFormValues = Object.fromEntries(inspectedFormFields.map((field) => [field.name, field.value]));
+      setFormFields(inspectedFormFields);
+      setFormValues(nextFormValues);
+      setInitialFormValues(nextFormValues);
+      setSelectedFormWidget(null);
       setActiveTool("select");
       setInkDraft(null);
       clearCustomFonts();
@@ -572,7 +610,6 @@ export default function PdfEditorWorkspace({
     setInspectorTab("properties");
     setMobileInspectorOpen(true);
     setActiveTool("select");
-    setExportMode(source.origin === "native" ? "secure" : "standard");
   };
 
   const addCover = () => {
@@ -581,7 +618,6 @@ export default function PdfEditorWorkspace({
     setSelectedId(overlay.id);
     setInspectorTab("properties");
     setMobileInspectorOpen(true);
-    setExportMode("secure");
   };
 
   const addShape = (shape: "highlight" | "rectangle" | "ellipse") => {
@@ -687,7 +723,6 @@ export default function PdfEditorWorkspace({
       return next;
     });
     setNativeSourceText(null);
-    setExportMode("secure");
   };
 
   const movePage = (direction: "back" | "forward") => {
@@ -795,10 +830,25 @@ export default function PdfEditorWorkspace({
   const updateSelected = (patch: Partial<PdfOverlay>) => {
     const current = history.present.find((overlay) => overlay.id === selectedId);
     if (!current) return;
-    if (typeof patch.rotation === "number" && patch.rotation % 360 !== 0) {
-      setExportMode("secure");
-    }
     commit(replaceOverlay(history.present, normalizeOverlay({ ...current, ...patch } as PdfOverlay)));
+  };
+
+  const updateFormValue = (name: string, value: PdfFormValue) => {
+    setFormValues((current) => ({ ...current, [name]: value }));
+    setNotice(null);
+  };
+
+  const locateFormField = (field: PdfFormFieldDescriptor) => {
+    if (field.widgets.length === 0) return;
+    const nextWidgetIndex = selectedFormWidget?.fieldName === field.name
+      ? (selectedFormWidget.widgetIndex + 1) % field.widgets.length
+      : 0;
+    const widget = field.widgets[nextWidgetIndex]!;
+    setSelectedFormWidget({ fieldName: field.name, widgetIndex: nextWidgetIndex });
+    if (widget.page !== null) {
+      const logicalPageIndex = pageOrder.indexOf(widget.page);
+      if (logicalPageIndex >= 0) setPageNumber(logicalPageIndex + 1);
+    }
   };
 
   const reorderSelected = (direction: "up" | "down") => {
@@ -925,17 +975,33 @@ export default function PdfEditorWorkspace({
     setExporting(true);
     setError(null);
     setNotice(null);
+    let temporaryDocument: PDFDocumentProxy | null = null;
     try {
       const secureExport = await import("@/lib/documents/pdf-secure-export");
-      const secure = secureExport.requiresSecureRasterExport(exportMode, pageRotations, history.present);
+      const secure = exportModeResolution.mode === "secure";
       const fontFamilies = Object.fromEntries([
         ...STANDARD_FONTS.map((font) => [font.id, font.css]),
         ...customFonts.map((font) => [font.id, font.cssFamily]),
       ]);
+      const formSource = formFields.length > 0 && hasFormChanges
+        ? await (await import("@/lib/documents/pdf-forms")).applyPdfFormValues(
+            loaded.bytes,
+            formValues,
+          )
+        : loaded.bytes;
+      let exportDocument = loaded.document;
+      if (secure && formFields.length > 0 && hasFormChanges) {
+        const pdfjs = await loadPdfJs();
+        temporaryDocument = await pdfjs.getDocument({
+          data: formSource.slice(),
+          isEvalSupported: false,
+        }).promise;
+        exportDocument = temporaryDocument;
+      }
       if (secure) setExportProgress({ completed: 0, total: pageCount });
       const output = secure
         ? await secureExport.exportSecureRasterizedPdf({
-            document: loaded.document,
+            document: exportDocument,
             overlays: history.present,
             pageRotations,
             pageOrder,
@@ -944,7 +1010,7 @@ export default function PdfEditorWorkspace({
             onProgress: (completed, total) => setExportProgress({ completed, total }),
           })
         : await (await import("@/lib/documents/pdf-export")).exportPdfWithOverlays(
-            loaded.bytes,
+            formSource,
             history.present,
             customFonts.flatMap(({ id, bytes }) => bytes ? [{ id, bytes }] : []),
             images,
@@ -961,6 +1027,7 @@ export default function PdfEditorWorkspace({
     } catch (exportError) {
       setError(errorMessage(exportError));
     } finally {
+      void temporaryDocument?.destroy();
       setExporting(false);
       setExportProgress(null);
     }
@@ -1024,7 +1091,7 @@ export default function PdfEditorWorkspace({
   const textSourceState = sourceText === null
     ? "Checking text"
     : sourceText.length > 0
-      ? sourceText.some((item) => item.origin === "ocr") ? "Text recognized locally" : "Editable source text"
+      ? sourceText.some((item) => item.origin === "ocr") ? "Text recognized locally" : "Selectable source text"
       : "Image or scan";
 
   return (
@@ -1037,6 +1104,9 @@ export default function PdfEditorWorkspace({
             <span>{pageCount} {pageCount === 1 ? "page" : "pages"}</span>
             <span aria-hidden>·</span>
             <span>{textSourceState}</span>
+            {formFields.length > 0 ? (
+              <><span aria-hidden>·</span><span>{formFields.length} form {formFields.length === 1 ? "field" : "fields"}</span></>
+            ) : null}
             <span aria-hidden>·</span>
             <span>Original preserved</span>
           </div>
@@ -1046,11 +1116,12 @@ export default function PdfEditorWorkspace({
           <select
             id="pdf-export-mode"
             className="select"
-            value={exportMode}
+            value={exportModeResolution.mode}
             onChange={(event) => setExportMode(event.target.value as PdfExportMode)}
-            title="High-fidelity preserves the original page quality. Sanitized permanently flattens the final appearance."
+            title={exportModeResolution.reason
+              ?? "High-fidelity preserves the original page quality. Sanitized permanently flattens the final appearance."}
           >
-            <option value="standard">High-fidelity PDF</option>
+            <option value="standard" disabled={exportModeResolution.forced}>High-fidelity PDF</option>
             <option value="secure">Sanitized flattened PDF</option>
           </select>
           <button type="button" className="btn btn-secondary" disabled={opening || exporting} onClick={() => fileInputRef.current?.click()}>
@@ -1079,6 +1150,11 @@ export default function PdfEditorWorkspace({
           Securely flattening page {Math.min(exportProgress.completed + 1, exportProgress.total)} of {exportProgress.total}. Keep this page open.
         </div>
       ) : null}
+      {exportModeResolution.forced ? (
+        <div className="rounded-lg border border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-4 py-3 text-sm text-[var(--color-warn)]" role="status">
+          Sanitized output is required for this working copy. {exportModeResolution.reason}
+        </div>
+      ) : null}
       {ocrProgress ? (
         <div className="rounded-lg border border-[var(--color-primary)] bg-[var(--color-primary-tint)] px-4 py-3" role="status" aria-live="polite">
           <div className="flex items-center justify-between gap-3 text-sm font-medium text-[var(--color-primary)]">
@@ -1090,20 +1166,29 @@ export default function PdfEditorWorkspace({
           </div>
         </div>
       ) : null}
-      {exportMode === "standard" && history.present.some((overlay) => overlay.kind === "cover") ? (
+      {exportModeResolution.mode === "standard" && history.present.some((overlay) => overlay.kind === "cover") ? (
         <div className="rounded-lg border border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-4 py-3 text-sm text-[var(--color-warn)]" role="status">
           High-fidelity output preserves every original pixel beneath repaired areas. Use sanitized output when the hidden original must be permanently removed.
         </div>
       ) : null}
+      {formFields.some((field) => field.kind === "signature") ? (
+        <div className="rounded-lg border border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-4 py-3 text-sm text-[var(--color-warn)]" role="status">
+          Exporting an edited copy can invalidate an existing digital signature. Its visible appearance is retained, but certification may no longer verify.
+        </div>
+      ) : null}
 
       <section className="card overflow-hidden">
-        <div className="flex min-h-14 flex-wrap items-center gap-1 border-b border-[var(--color-rule)] px-2 py-2 sm:px-3">
-          <div className="flex items-center gap-1 border-r border-[var(--color-rule)] pr-2">
+        <div
+          className="scroll-thin flex min-h-14 touch-pan-x items-center gap-1 overflow-x-auto overscroll-x-contain border-b border-[var(--color-rule)] px-2 py-2 sm:px-3"
+          role="toolbar"
+          aria-label="PDF editing tools"
+        >
+          <div className="flex shrink-0 items-center gap-1 border-r border-[var(--color-rule)] pr-2">
             <ToolButton label="Select and move items" active={activeTool === "select"} onClick={() => setActiveTool("select")}>
               <MousePointer2 className="h-[1.1rem] w-[1.1rem]" aria-hidden />
             </ToolButton>
             <ToolButton
-              label="Edit existing text"
+              label="Replace visible text"
               active={activeTool === "edit-text"}
               disabled={ocrProgress !== null}
               onClick={() => {
@@ -1135,8 +1220,20 @@ export default function PdfEditorWorkspace({
             <ToolButton label="Add image or signature" onClick={() => imageInputRef.current?.click()}>
               <ImagePlus className="h-[1.1rem] w-[1.1rem]" aria-hidden />
             </ToolButton>
+            <ToolButton
+              label="Fill PDF form fields"
+              disabled={formFields.length === 0}
+              active={inspectorTab === "form"}
+              onClick={() => {
+                setActiveTool("select");
+                setInspectorTab("form");
+                setMobileInspectorOpen(true);
+              }}
+            >
+              <ListChecks className="h-[1.1rem] w-[1.1rem]" aria-hidden />
+            </ToolButton>
           </div>
-          <div className="flex items-center gap-1 border-r border-[var(--color-rule)] px-2">
+          <div className="flex shrink-0 items-center gap-1 border-r border-[var(--color-rule)] px-2">
             <ToolButton label="Undo" disabled={history.past.length === 0} onClick={undo}>
               <Undo2 className="h-[1.1rem] w-[1.1rem]" aria-hidden />
             </ToolButton>
@@ -1150,7 +1247,7 @@ export default function PdfEditorWorkspace({
               <Copy className="h-[1.1rem] w-[1.1rem]" aria-hidden />
             </ToolButton>
           </div>
-          <div className="flex items-center gap-1 px-2">
+          <div className="flex shrink-0 items-center gap-1 px-2">
             <ToolButton
               label="Zoom out"
               onClick={() => { setFitPage(false); setManualScale((scale) => Math.max(0.25, scale - 0.15)); }}
@@ -1168,7 +1265,7 @@ export default function PdfEditorWorkspace({
               <Maximize2 className="h-[1.1rem] w-[1.1rem]" aria-hidden />
             </ToolButton>
           </div>
-          <div className="ml-auto flex items-center gap-1 pl-2">
+          <div className="ml-auto flex shrink-0 items-center gap-1 pl-2">
             <ToolButton label="Move page earlier" disabled={pageNumber <= 1} onClick={() => movePage("back")}>
               <ArrowLeft className="h-[1.1rem] w-[1.1rem]" aria-hidden />
             </ToolButton>
@@ -1251,11 +1348,24 @@ export default function PdfEditorWorkspace({
                 onBaseSize={setBasePageSize}
                 className="block"
               />
+              {formWidgetHighlight && selectedFormField ? (
+                <div
+                  className="pointer-events-none absolute z-[190] border-2 border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] outline outline-2 outline-offset-2 outline-white"
+                  style={{
+                    left: `${formWidgetHighlight.x * 100}%`,
+                    top: `${formWidgetHighlight.y * 100}%`,
+                    width: `${formWidgetHighlight.width * 100}%`,
+                    height: `${formWidgetHighlight.height * 100}%`,
+                  }}
+                  title={`Form field ${selectedFormField.name}`}
+                  aria-hidden
+                />
+              ) : null}
               {activeTool === "edit-text" ? filteredSourceText.map((item) => (
                 <button
                   key={item.id}
                   type="button"
-                  aria-label={`Edit detected text: ${item.text}`}
+                  aria-label={`Visually replace detected text: ${item.text}`}
                   title={`${item.origin === "ocr" ? "Recognized" : "Document"} text · ${item.fontName}${item.confidence === undefined ? "" : ` · ${Math.round(item.confidence)}% confidence`}`}
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={() => replaceSourceText(item)}
@@ -1407,9 +1517,10 @@ export default function PdfEditorWorkspace({
             className={`${mobileInspectorOpen ? "fixed" : "hidden"} inset-x-2 bottom-2 z-40 min-w-0 max-h-[58vh] overflow-hidden rounded-lg border border-[var(--color-rule-strong)] bg-white shadow-2xl lg:static lg:inset-auto lg:z-auto lg:block lg:max-h-none lg:rounded-none lg:border-y-0 lg:border-r-0 lg:shadow-none`}
           >
             <div className="flex items-center gap-2 p-3">
-              <div className="segmented-control grid min-w-0 flex-1 grid-cols-2" role="group" aria-label="Inspector view">
+              <div className="segmented-control grid min-w-0 flex-1 grid-cols-3" role="group" aria-label="Inspector view">
                 <button type="button" aria-pressed={inspectorTab === "properties"} onClick={() => setInspectorTab("properties")}>Properties</button>
                 <button type="button" aria-pressed={inspectorTab === "source"} onClick={() => { setInspectorTab("source"); setActiveTool("edit-text"); }}>Source text</button>
+                <button type="button" disabled={formFields.length === 0} aria-pressed={inspectorTab === "form"} onClick={() => { setInspectorTab("form"); setActiveTool("select"); }}>Form</button>
               </div>
               <div className="shrink-0 lg:hidden">
                 <button
@@ -1633,8 +1744,8 @@ export default function PdfEditorWorkspace({
                           <button type="button" aria-pressed={selected.color === "#ffffff"} onClick={() => updateSelected({ color: "#ffffff" })}>White</button>
                           <button type="button" aria-pressed={selected.color === "#111111"} onClick={() => updateSelected({ color: "#111111" })}>Black</button>
                         </div>
-                        <p className={`mt-2 text-xs font-medium ${exportMode === "secure" ? "text-[var(--color-success)]" : "text-[var(--color-warn)]"}`}>
-                          {exportMode === "secure" ? "Permanently removed in sanitized output" : "Original quality preserved beneath this repair"}
+                        <p className={`mt-2 text-xs font-medium ${exportModeResolution.mode === "secure" ? "text-[var(--color-success)]" : "text-[var(--color-warn)]"}`}>
+                          {exportModeResolution.mode === "secure" ? "Permanently removed in sanitized output" : "Original quality preserved beneath this repair"}
                         </p>
                       </div>
                     ) : selected.kind === "image" ? (
@@ -1761,7 +1872,7 @@ export default function PdfEditorWorkspace({
                   </>
                 )}
               </div>
-            ) : (
+            ) : inspectorTab === "source" ? (
               <div className="scroll-thin max-h-[calc(58vh-4.5rem)] overflow-y-auto border-t border-[var(--color-rule)] p-4 lg:max-h-[42rem]">
                 {sourceText === null ? (
                   <div className="flex items-center gap-2 text-sm text-[var(--color-ink-soft)]">
@@ -1780,8 +1891,9 @@ export default function PdfEditorWorkspace({
                   <div>
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold">Editable page text</p>
-                        <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{sourceText.length} {sourceText.length === 1 ? "region" : "regions"} · click a box on the page or choose Edit below</p>
+                        <p className="text-sm font-semibold">Replace page text</p>
+                        <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{sourceText.length} {sourceText.length === 1 ? "region" : "regions"} · click a box on the page or choose Replace below</p>
+                        <p className="mt-1 text-xs text-[var(--color-ink-faint)]">Replacement paints a background cover and a new text layer. It does not reflow the source PDF text.</p>
                       </div>
                     </div>
                     <label className="relative mt-3 block">
@@ -1808,9 +1920,9 @@ export default function PdfEditorWorkspace({
                               <span className="h-3 w-3 border border-[var(--color-rule-strong)]" style={{ background: item.backgroundColor }} title={`Sampled background ${item.backgroundColor}`} aria-hidden />
                             </span>
                           </span>
-                          <button type="button" className="btn btn-sm btn-secondary shrink-0" onClick={() => replaceSourceText(item)} aria-label={`Edit ${item.text}`} title="Repair the original area and add matched editable text">
+                          <button type="button" className="btn btn-sm btn-secondary shrink-0" onClick={() => replaceSourceText(item)} aria-label={`Replace ${item.text}`} title="Cover the original area and add matched replacement text">
                             <Type className="h-4 w-4" aria-hidden />
-                            Edit
+                            Replace
                           </button>
                         </li>
                       ))}
@@ -1824,6 +1936,123 @@ export default function PdfEditorWorkspace({
                   </div>
                 )}
               </div>
+            ) : (
+              <div className="scroll-thin max-h-[calc(58vh-4.5rem)] overflow-y-auto border-t border-[var(--color-rule)] p-4 lg:max-h-[42rem]">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">PDF form fields</p>
+                    <p className="mt-1 text-xs text-[var(--color-ink-faint)]">Interactive in high-fidelity output · flattened in sanitized output</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost"
+                    disabled={!hasFormChanges}
+                    onClick={() => setFormValues({ ...initialFormValues })}
+                  >
+                    Reset
+                  </button>
+                </div>
+                <ul className="mt-4 divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)]">
+                  {formFields.map((field) => {
+                    const value = formValues[field.name] ?? field.value;
+                    const selections = Array.isArray(value) ? value : typeof value === "string" && value ? [value] : [];
+                    const firstWidgetPage = field.widgets.find((widget) => widget.page !== null)?.page ?? null;
+                    const isLocated = selectedFormWidget?.fieldName === field.name;
+                    return (
+                      <li key={field.name} className="py-3">
+                        <div className="mb-1.5 flex items-center justify-between gap-2">
+                          <label className="min-w-0 break-words text-xs font-semibold text-[var(--color-ink-soft)]" htmlFor={`pdf-form-${field.name}`}>
+                            {field.name}{field.required ? " *" : ""}
+                          </label>
+                          <span className="flex shrink-0 items-center gap-1.5">
+                            {field.readOnly ? <span className="badge bg-[var(--color-surface-muted)] text-[var(--color-ink-faint)]">Read only</span> : null}
+                            {field.widgets.length > 0 ? (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-ghost btn-icon"
+                                aria-label={`Show ${field.name} on page ${firstWidgetPage ?? "unknown"}`}
+                                aria-pressed={isLocated}
+                                title={field.widgets.length > 1 ? "Show next field location" : "Show field on page"}
+                                onClick={() => locateFormField(field)}
+                              >
+                                <LocateFixed className="h-4 w-4" aria-hidden />
+                              </button>
+                            ) : null}
+                          </span>
+                        </div>
+                        {field.kind === "text" ? field.multiline ? (
+                          <textarea
+                            id={`pdf-form-${field.name}`}
+                            className="input min-h-24 w-full resize-y"
+                            value={typeof value === "string" ? value : ""}
+                            maxLength={field.maxLength ?? undefined}
+                            disabled={field.readOnly}
+                            onFocus={() => locateFormField(field)}
+                            onChange={(event) => updateFormValue(field.name, event.target.value)}
+                          />
+                        ) : (
+                          <input
+                            id={`pdf-form-${field.name}`}
+                            type="text"
+                            className="input w-full"
+                            value={typeof value === "string" ? value : ""}
+                            maxLength={field.maxLength ?? undefined}
+                            disabled={field.readOnly}
+                            onFocus={() => locateFormField(field)}
+                            onChange={(event) => updateFormValue(field.name, event.target.value)}
+                          />
+                        ) : field.kind === "checkbox" ? (
+                          <label className="flex min-h-10 items-center gap-3 text-sm text-[var(--color-ink-soft)]" htmlFor={`pdf-form-${field.name}`}>
+                            <input
+                              id={`pdf-form-${field.name}`}
+                              type="checkbox"
+                              checked={value === true}
+                              disabled={field.readOnly}
+                              onFocus={() => locateFormField(field)}
+                              onChange={(event) => updateFormValue(field.name, event.target.checked)}
+                            />
+                            Checked
+                          </label>
+                        ) : field.kind === "radio" || field.kind === "dropdown" || field.kind === "listbox" ? (
+                          <select
+                            id={`pdf-form-${field.name}`}
+                            className="select w-full"
+                            multiple={field.multiselect}
+                            size={field.kind === "listbox" ? Math.min(6, Math.max(2, field.options.length)) : undefined}
+                            value={field.multiselect ? selections : selections[0] ?? ""}
+                            disabled={field.readOnly}
+                            onFocus={() => locateFormField(field)}
+                            onChange={(event) => updateFormValue(
+                              field.name,
+                              field.multiselect
+                                ? Array.from(event.target.selectedOptions, (option) => option.value)
+                                : field.kind === "radio"
+                                  ? event.target.value
+                                  : event.target.value ? [event.target.value] : [],
+                            )}
+                          >
+                            {!field.required && !field.multiselect ? <option value="">None</option> : null}
+                            {field.options.map((option) => <option key={option} value={option}>{option}</option>)}
+                          </select>
+                        ) : (
+                          <p className="rounded-md bg-[var(--color-surface-muted)] px-3 py-2 text-xs text-[var(--color-ink-soft)]">
+                            {field.kind === "signature" ? "Digital signature field · editing can invalidate certification" : field.kind === "button" ? "Form action preserved" : "Unsupported field preserved"}
+                          </p>
+                        )}
+                        {field.appearance.editStrategy === "standard-font" ? (
+                          <p className="mt-1.5 text-[0.68rem] text-[var(--color-ink-faint)]">
+                            Appearance font preserved: {field.appearance.fontName}
+                          </p>
+                        ) : field.appearance.editStrategy === "helvetica-fallback" ? (
+                          <p className="mt-1.5 text-[0.68rem] text-[var(--color-warn)]">
+                            Appearance fallback on edit: Helvetica. {field.appearance.fontName ? `The ${field.appearance.fontName} font resource` : "The original font"} cannot be safely reused by this editor.
+                          </p>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             )}
           </aside>
         </div>
@@ -1831,7 +2060,7 @@ export default function PdfEditorWorkspace({
 
       {!mobileInspectorOpen ? (
         <div className="fixed inset-x-3 bottom-3 z-30 lg:hidden">
-          <div className="segmented-control grid w-full grid-cols-2 border border-[var(--color-rule-strong)] bg-white p-1 shadow-xl" role="group" aria-label="Open PDF inspector">
+          <div className="segmented-control grid w-full grid-cols-3 border border-[var(--color-rule-strong)] bg-white p-1 shadow-xl" role="group" aria-label="Open PDF inspector">
             <button
               type="button"
               disabled={!selected}
@@ -1853,6 +2082,18 @@ export default function PdfEditorWorkspace({
             >
               <Type className="h-4 w-4" aria-hidden />
               Source text
+            </button>
+            <button
+              type="button"
+              disabled={formFields.length === 0}
+              onClick={() => {
+                setInspectorTab("form");
+                setActiveTool("select");
+                setMobileInspectorOpen(true);
+              }}
+            >
+              <ListChecks className="h-4 w-4" aria-hidden />
+              Form
             </button>
           </div>
         </div>

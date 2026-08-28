@@ -2,6 +2,7 @@ import { type NextRequest } from "next/server";
 import { canOperateSettlementObligations, getSettlementOperator } from "@/lib/auth/settlement-operator";
 import { jsonError, readJson, redactError, resultResponse, sameOriginOrFail } from "@/lib/http";
 import { applySettlementCredit, recordObligationPayment, settleObligations } from "@/lib/manage/settlements";
+import { agencyDate } from "@/lib/business/agency-time";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,7 +14,7 @@ export async function POST(request: NextRequest) {
   const cross = sameOriginOrFail(request);
   if (cross) return cross;
   const body = await readJson(request);
-  const occurredOn = String(body.occurredOn ?? new Date().toISOString().slice(0, 10));
+  const occurredOn = String(body.occurredOn ?? agencyDate());
   try {
     if (body.action === "settle") {
       const obligationIds = Array.isArray(body.obligationIds)

@@ -81,5 +81,9 @@ describe("strategy actual-vs-plan analytics", () => {
     });
     const billedCall = calls.find(({ sql }) => sql.includes("WITH win AS"));
     expect(billedCall?.params?.[4]).toBe("2026-08-24");
+    expect(billedCall?.sql).toContain(
+      "canonical_service_date(t.period_begin, t.check_date, t.period_end)",
+    );
+    expect(billedCall?.sql).not.toContain("AND t.period_begin >=");
   });
 });

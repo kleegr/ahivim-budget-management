@@ -8,6 +8,7 @@ import {
 } from "@/lib/manage/reconciliation";
 import { listPrograms } from "@/lib/data/app-queries";
 import { formatHours, formatMoney } from "@/lib/money";
+import { agencyDate } from "@/lib/business/agency-time";
 import { PageHeader, StatTile, ErrorPanel, ButtonLink } from "@/components/ui";
 import ReconcileClient from "@/components/reconciliation/reconcile-client";
 
@@ -16,9 +17,9 @@ export const metadata = { title: "Schedule Matching - Ahivim Budget Management" 
 
 /** Default window: the first day of three months ago through today. */
 function defaultRange(): { from: string; to: string } {
-  const now = new Date();
-  const to = now.toISOString().slice(0, 10);
-  const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 3, 1))
+  const to = agencyDate();
+  const [year, month] = to.split("-").map(Number);
+  const from = new Date(Date.UTC(year!, month! - 4, 1))
     .toISOString()
     .slice(0, 10);
   return { from, to };

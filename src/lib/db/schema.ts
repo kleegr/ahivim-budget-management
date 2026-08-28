@@ -69,6 +69,8 @@ export const users = pgTable(
     canSeeBudgets: boolean("can_see_budgets").default(true).notNull(),
     canSeeEmployeeDeals: boolean("can_see_employee_deals").default(false).notNull(),
     canSeeSettlements: boolean("can_see_settlements").default(false).notNull(),
+    /** May create, reverse, or refresh settlement and collection records. */
+    canManageSettlements: boolean("can_manage_settlements").default(false).notNull(),
     /** Operational planning permission (mirror of drizzle/0021_planner_access.sql). */
     canPlan: boolean("can_plan").default(false).notNull(),
     /** Class revenue is financial and remains separate from hours-only planning. */
@@ -191,6 +193,218 @@ export const employeeAliases = pgTable(
   (table) => [uniqueIndex("employee_aliases_alias_key").on(table.normalizedAlias)],
 );
 
+/* -------------------------------------------------------------------------- */
+/* Agencies and portal authorization (0029)                                  */
+/* -------------------------------------------------------------------------- */
+
+export const agencies = pgTable(
+  "agencies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    code: text("code").notNull(),
+    name: text("name").notNull(),
+    /** 'active' | 'inactive' | 'archived' */
+    status: text("status").default("active").notNull(),
+    isHomeAgency: boolean("is_home_agency").default(false).notNull(),
+    contactName: text("contact_name"),
+    contactEmail: text("contact_email"),
+    contactPhone: text("contact_phone"),
+    notes: text("notes"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("agencies_code_key").on(sql`lower(${table.code})`),
+    uniqueIndex("agencies_single_home_key")
+      .on(table.isHomeAgency)
+      .where(sql`${table.isHomeAgency} = true`),
+    index("agencies_status_name_idx").on(table.status, table.name),
+    check("agencies_code_check", sql`length(btrim(${table.code})) > 0`),
+    check("agencies_name_check", sql`length(btrim(${table.name})) > 0`),
+    check("agencies_status_check", sql`${table.status} in ('active', 'inactive', 'archived')`),
+  ],
+);
+
+export const userPortalRoles = pgTable(
+  "user_portal_roles",
+  {
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    /** Installation roles only. Agency-scoped roles live in user_agency_access. */
+    portalRole: text("portal_role").notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    capabilityGrants: text("capability_grants").array().default(sql`ARRAY[]::text[]`).notNull(),
+    capabilityDenials: text("capability_denials").array().default(sql`ARRAY[]::text[]`).notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.portalRole] }),
+    index("user_portal_roles_active_idx").on(table.userId, table.isActive, table.portalRole),
+    check(
+      "user_portal_roles_role_check",
+      sql`${table.portalRole} in ('owner', 'individual', 'parent', 'employee')`,
+    ),
+  ],
+);
+
+export const userAgencyAccess = pgTable(
+  "user_agency_access",
+  {
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    agencyId: uuid("agency_id").notNull().references(() => agencies.id, { onDelete: "cascade" }),
+    portalRole: text("portal_role").notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    capabilityGrants: text("capability_grants").array().default(sql`ARRAY[]::text[]`).notNull(),
+    capabilityDenials: text("capability_denials").array().default(sql`ARRAY[]::text[]`).notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.agencyId, table.portalRole] }),
+    index("user_agency_access_user_idx").on(table.userId, table.isActive, table.agencyId),
+    index("user_agency_access_agency_idx").on(table.agencyId, table.isActive, table.portalRole),
+    check(
+      "user_agency_access_role_check",
+      sql`${table.portalRole} in ('agency', 'staffing_manager', 'scheduler', 'collector')`,
+    ),
+  ],
+);
+
+export const userIndividualRelationships = pgTable(
+  "user_individual_relationships",
+  {
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    individualId: uuid("individual_id").notNull().references(() => individuals.id, { onDelete: "cascade" }),
+    relationshipType: text("relationship_type").notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    capabilityGrants: text("capability_grants").array().default(sql`ARRAY[]::text[]`).notNull(),
+    capabilityDenials: text("capability_denials").array().default(sql`ARRAY[]::text[]`).notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.individualId, table.relationshipType] }),
+    index("user_individual_relationships_user_idx").on(table.userId, table.isActive, table.individualId),
+    index("user_individual_relationships_individual_idx").on(table.individualId, table.isActive, table.userId),
+    check(
+      "user_individual_relationships_type_check",
+      sql`${table.relationshipType} in ('self', 'parent', 'guardian', 'representative')`,
+    ),
+  ],
+);
+
+export const userEmployeeRelationships = pgTable(
+  "user_employee_relationships",
+  {
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id").notNull().references(() => employees.id, { onDelete: "cascade" }),
+    relationshipType: text("relationship_type").default("self").notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    capabilityGrants: text("capability_grants").array().default(sql`ARRAY[]::text[]`).notNull(),
+    capabilityDenials: text("capability_denials").array().default(sql`ARRAY[]::text[]`).notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.employeeId, table.relationshipType] }),
+    index("user_employee_relationships_user_idx").on(table.userId, table.isActive, table.employeeId),
+    index("user_employee_relationships_employee_idx").on(table.employeeId, table.isActive, table.userId),
+    check("user_employee_relationships_type_check", sql`${table.relationshipType} in ('self')`),
+  ],
+);
+
+export const agencyIndividuals = pgTable(
+  "agency_individuals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agencyId: uuid("agency_id").notNull().references(() => agencies.id, { onDelete: "cascade" }),
+    individualId: uuid("individual_id").notNull().references(() => individuals.id, { onDelete: "cascade" }),
+    managesBudget: boolean("manages_budget").default(false).notNull(),
+    billsServices: boolean("bills_services").default(true).notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    effectiveFrom: date("effective_from")
+      .default(sql`(now() at time zone 'America/New_York')::date`)
+      .notNull(),
+    effectiveTo: date("effective_to"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("agency_individuals_agency_idx").on(
+      table.agencyId,
+      table.isActive,
+      table.individualId,
+      table.effectiveFrom,
+      table.effectiveTo,
+    ),
+    index("agency_individuals_individual_idx").on(
+      table.individualId,
+      table.isActive,
+      table.agencyId,
+      table.effectiveFrom,
+      table.effectiveTo,
+    ),
+    index("agency_individuals_budget_idx")
+      .on(table.agencyId, table.managesBudget, table.billsServices)
+      .where(sql`${table.isActive} = true`),
+    check(
+      "agency_individuals_range_check",
+      sql`${table.effectiveTo} is null or ${table.effectiveTo} >= ${table.effectiveFrom}`,
+    ),
+    check("agency_individuals_purpose_check", sql`${table.managesBudget} or ${table.billsServices}`),
+  ],
+);
+
+export const agencyEmployees = pgTable(
+  "agency_employees",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agencyId: uuid("agency_id").notNull().references(() => agencies.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id").notNull().references(() => employees.id, { onDelete: "cascade" }),
+    isActive: boolean("is_active").default(true).notNull(),
+    effectiveFrom: date("effective_from")
+      .default(sql`(now() at time zone 'America/New_York')::date`)
+      .notNull(),
+    effectiveTo: date("effective_to"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("agency_employees_agency_idx").on(
+      table.agencyId,
+      table.isActive,
+      table.employeeId,
+      table.effectiveFrom,
+      table.effectiveTo,
+    ),
+    index("agency_employees_employee_idx").on(
+      table.employeeId,
+      table.isActive,
+      table.agencyId,
+      table.effectiveFrom,
+      table.effectiveTo,
+    ),
+    check(
+      "agency_employees_range_check",
+      sql`${table.effectiveTo} is null or ${table.effectiveTo} >= ${table.effectiveFrom}`,
+    ),
+  ],
+);
+
 export const programs = pgTable(
   "programs",
   {
@@ -210,12 +424,34 @@ export const programs = pgTable(
     selfHireConverts: boolean("self_hire_converts").default(false).notNull(),
     agencyAdditionalRate: numeric("agency_additional_rate", { precision: 14, scale: 4 }),
     requiredAuthType: text("required_auth_type").default("hours").notNull(),
+    /** Catalog/billing metadata (0028). Category is intentionally configurable. */
+    serviceCategory: text("service_category").default("direct_service").notNull(),
+    paymentRecipient: text("payment_recipient").default("agency").notNull(),
+    consumptionSource: text("consumption_source").default("payroll").notNull(),
+    rateScope: text("rate_scope").default("per_individual").notNull(),
+    renewalPolicy: text("renewal_policy").default("individual").notNull(),
     notes: text("notes"),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (table) => [uniqueIndex("programs_code_key").on(table.code)],
+  (table) => [
+    uniqueIndex("programs_code_key").on(table.code),
+    check(
+      "programs_payment_recipient_check",
+      sql`${table.paymentRecipient} in ('agency', 'employee', 'external', 'not_applicable')`,
+    ),
+    check(
+      "programs_consumption_source_check",
+      sql`${table.consumptionSource} in ('payroll', 'invoice', 'manual', 'mixed')`,
+    ),
+    check("programs_rate_scope_check", sql`${table.rateScope} in ('per_individual', 'per_group', 'flat')`),
+    check(
+      "programs_renewal_policy_check",
+      sql`${table.renewalPolicy} in ('individual', 'calendar', 'rolling', 'custom')`,
+    ),
+    check("programs_required_auth_type_check", sql`${table.requiredAuthType} in ('hours', 'dollars', 'both')`),
+  ],
 );
 
 export const programAliases = pgTable(
@@ -250,6 +486,8 @@ export const programRateSchedules = pgTable(
     agencyRate: numeric("agency_rate", { precision: 14, scale: 4 }),
     internalRate: numeric("internal_rate", { precision: 14, scale: 4 }).notNull(),
     notes: text("notes"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -347,7 +585,10 @@ export const budgetPeriods = pgTable(
     /** Actual months in the period (e.g. 7.000), for monthly planning. */
     planningMonths: numeric("planning_months", { precision: 6, scale: 3 }),
     isPartialPeriod: boolean("is_partial_period").default(false).notNull(),
+    status: text("status").default("active").notNull(),
+    source: text("source"),
     notes: text("notes"),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -369,7 +610,7 @@ export const budgetAuthorizations = pgTable(
       .notNull()
       .references(() => programs.id),
     authorizedHours: numeric("authorized_hours", { precision: 10, scale: 4 }).notNull(),
-    /** The internal rate in force when this authorization was recorded. */
+    /** Effective employee/internal rate in force for this authorization revision. */
     internalRate: numeric("internal_rate", { precision: 14, scale: 4 }).notNull(),
     rateOverride: boolean("rate_override").default(false).notNull(),
     sourceRowRef: text("source_row_ref"),
@@ -377,8 +618,9 @@ export const budgetAuthorizations = pgTable(
     supersedesId: uuid("supersedes_id"),
     status: text("status").default("active").notNull(),
     authorizedDollars: numeric("authorized_dollars", { precision: 14, scale: 4 }),
-    // Individual-specific rate overrides on an authorization (0005).
+    /** Effective funder/agency rate, kept separate from the employee rate. */
     agencyRate: numeric("agency_rate", { precision: 14, scale: 4 }),
+    /** Set when the effective employee rate differs from the catalog default. */
     individualRateOverride: numeric("individual_rate_override", { precision: 14, scale: 4 }),
     rateBasis: text("rate_basis"),
     notes: text("notes"),
@@ -389,8 +631,66 @@ export const budgetAuthorizations = pgTable(
     updatedAt: updatedAt(),
   },
   (table) => [
-    uniqueIndex("budget_auth_period_program_key").on(table.budgetPeriodId, table.programId),
+    uniqueIndex("budget_auth_active_period_program_key")
+      .on(table.budgetPeriodId, table.programId)
+      .where(sql`${table.status} = 'active'`),
     index("budget_auth_individual_idx").on(table.individualId),
+  ],
+);
+
+/**
+ * Signed, append-only consumption for invoice/manual programs and corrections.
+ * Payroll remains authoritative and is unioned in the balance read model.
+ */
+export const programBudgetEvents = pgTable(
+  "program_budget_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    budgetPeriodId: uuid("budget_period_id").notNull().references(() => budgetPeriods.id),
+    individualId: uuid("individual_id").notNull().references(() => individuals.id),
+    programId: uuid("program_id").notNull().references(() => programs.id),
+    /** 'consume' | 'adjust' | 'reverse' */
+    eventType: text("event_type").notNull(),
+    serviceDate: date("service_date").notNull(),
+    hours: numeric("hours", { precision: 10, scale: 4 }).default("0").notNull(),
+    amount: numeric("amount", { precision: 14, scale: 4 }).default("0").notNull(),
+    sourceType: text("source_type").notNull(),
+    sourceId: text("source_id").notNull(),
+    reversesEventId: uuid("reverses_event_id").references(
+      (): AnyPgColumn => programBudgetEvents.id,
+    ),
+    note: text("note"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("program_budget_events_source_key").on(
+      table.sourceType,
+      table.sourceId,
+      table.eventType,
+    ),
+    uniqueIndex("program_budget_events_one_reversal_key")
+      .on(table.reversesEventId)
+      .where(sql`${table.reversesEventId} is not null`),
+    index("program_budget_events_budget_idx").on(
+      table.budgetPeriodId,
+      table.programId,
+      table.serviceDate,
+      table.createdAt,
+    ),
+    index("program_budget_events_individual_idx").on(table.individualId, table.serviceDate),
+    check("program_budget_events_type_check", sql`${table.eventType} in ('consume', 'adjust', 'reverse')`),
+    check(
+      "program_budget_events_value_check",
+      sql`(${table.eventType} = 'consume' and ${table.hours} >= 0 and ${table.amount} >= 0
+            and (${table.hours} > 0 or ${table.amount} > 0))
+        or (${table.eventType} = 'adjust' and (${table.hours} <> 0 or ${table.amount} <> 0))
+        or (${table.eventType} = 'reverse' and (${table.hours} <> 0 or ${table.amount} <> 0))`,
+    ),
+    check(
+      "program_budget_events_reverse_link_check",
+      sql`(${table.eventType} = 'reverse') = (${table.reversesEventId} is not null)`,
+    ),
   ],
 );
 
@@ -592,6 +892,122 @@ export const importWarnings = pgTable(
 /* Transactions and group services                                            */
 /* -------------------------------------------------------------------------- */
 
+/** Canonical payroll facts for one employee check (0030). */
+export const employeePayrollChecks = pgTable(
+  "employee_payroll_checks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    employeeId: uuid("employee_id").notNull().references(() => employees.id),
+    checkNumber: text("check_number"),
+    checkDate: date("check_date"),
+    periodBegin: date("period_begin"),
+    periodEnd: date("period_end"),
+    actualGross: numeric("actual_gross", { precision: 14, scale: 4 }),
+    actualNet: numeric("actual_net", { precision: 14, scale: 4 }).notNull(),
+    taxWithheld: numeric("tax_withheld", { precision: 14, scale: 4 }),
+    source: text("source").default("manual").notNull(),
+    sourceRef: text("source_ref"),
+    verificationStatus: text("verification_status").default("verified").notNull(),
+    notes: text("notes"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("employee_payroll_checks_identity_key").on(
+      table.employeeId,
+      sql`coalesce(nullif(btrim(${table.checkNumber}), ''), '')`,
+      sql`coalesce(${table.checkDate}, 'infinity'::date)`,
+      sql`coalesce(${table.periodBegin}, 'infinity'::date)`,
+      sql`coalesce(${table.periodEnd}, 'infinity'::date)`,
+    ),
+    index("employee_payroll_checks_employee_date_idx").on(
+      table.employeeId,
+      table.checkDate.desc(),
+      table.periodEnd.desc(),
+    ),
+    check(
+      "employee_payroll_checks_identity_check",
+      sql`nullif(btrim(${table.checkNumber}), '') is not null
+        or ${table.checkDate} is not null
+        or ${table.periodBegin} is not null
+        or ${table.periodEnd} is not null`,
+    ),
+    check(
+      "employee_payroll_checks_period_check",
+      sql`${table.periodEnd} is null or ${table.periodBegin} is null or ${table.periodEnd} >= ${table.periodBegin}`,
+    ),
+    check("employee_payroll_checks_gross_check", sql`${table.actualGross} is null or ${table.actualGross} >= 0`),
+    check("employee_payroll_checks_net_check", sql`${table.actualNet} >= 0`),
+    check("employee_payroll_checks_tax_check", sql`${table.taxWithheld} is null or ${table.taxWithheld} >= 0`),
+    check(
+      "employee_payroll_checks_source_check",
+      sql`${table.source} in ('manual', 'import', 'sync', 'legacy_transaction')`,
+    ),
+    check(
+      "employee_payroll_checks_verification_check",
+      sql`${table.verificationStatus} in ('unverified', 'verified', 'void')`,
+    ),
+  ],
+);
+
+/** Manager-defined direct-pay gross targets, converted to planner-safe hours (0030). */
+export const employeeDirectPayTargets = pgTable(
+  "employee_direct_pay_targets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    employeeId: uuid("employee_id").notNull().references(() => employees.id),
+    targetBasis: text("target_basis").default("gross").notNull(),
+    intervalUnit: text("interval_unit").default("week").notNull(),
+    intervalCount: integer("interval_count").default(1).notNull(),
+    grossTargetAmount: numeric("gross_target_amount", { precision: 14, scale: 4 }).notNull(),
+    planningHourlyRate: numeric("planning_hourly_rate", { precision: 14, scale: 4 }).notNull(),
+    targetHours: numeric("target_hours", { precision: 10, scale: 4 })
+      .generatedAlwaysAs(sql`round("gross_target_amount" / "planning_hourly_rate", 4)`),
+    effectiveFrom: date("effective_from").notNull(),
+    effectiveTo: date("effective_to"),
+    status: text("status").default("active").notNull(),
+    notes: text("notes"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    archivedByUserId: uuid("archived_by_user_id").references(() => users.id),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("employee_direct_pay_targets_employee_effective_key")
+      .on(table.employeeId, table.effectiveFrom)
+      .where(sql`${table.status} = 'active'`),
+    index("employee_direct_pay_targets_active_idx")
+      .on(table.employeeId, table.effectiveFrom, table.effectiveTo)
+      .where(sql`${table.status} = 'active'`),
+    check("employee_direct_pay_targets_basis_check", sql`${table.targetBasis} = 'gross'`),
+    check(
+      "employee_direct_pay_targets_interval_unit_check",
+      sql`${table.intervalUnit} in ('week', 'month', 'custom')`,
+    ),
+    check("employee_direct_pay_targets_interval_count_check", sql`${table.intervalCount} > 0`),
+    check("employee_direct_pay_targets_amount_check", sql`${table.grossTargetAmount} > 0`),
+    check("employee_direct_pay_targets_rate_check", sql`${table.planningHourlyRate} > 0`),
+    check(
+      "employee_direct_pay_targets_period_check",
+      sql`${table.effectiveTo} is null or ${table.effectiveTo} >= ${table.effectiveFrom}`,
+    ),
+    check(
+      "employee_direct_pay_targets_custom_period_check",
+      sql`${table.intervalUnit} <> 'custom'
+        or (${table.effectiveTo} is not null and ${table.intervalCount} = 1)`,
+    ),
+    check("employee_direct_pay_targets_status_check", sql`${table.status} in ('active', 'archived')`),
+    check(
+      "employee_direct_pay_targets_archive_state_check",
+      sql`(${table.status} = 'archived') = (${table.archivedAt} is not null)`,
+    ),
+  ],
+);
+
 export const payrollTransactions = pgTable(
   "payroll_transactions",
   {
@@ -608,6 +1024,7 @@ export const payrollTransactions = pgTable(
     individualId: uuid("individual_id").references(() => individuals.id),
     employeeId: uuid("employee_id").references(() => employees.id),
     programId: uuid("program_id").references(() => programs.id),
+    payrollCheckId: uuid("payroll_check_id").references(() => employeePayrollChecks.id),
     individualRaw: text("individual_raw"),
     employeeRaw: text("employee_raw"),
     programRaw: text("program_raw"),
@@ -656,6 +1073,9 @@ export const payrollTransactions = pgTable(
     index("payroll_tx_individual_idx").on(table.individualId, table.periodBegin),
     index("payroll_tx_employee_idx").on(table.employeeId),
     index("payroll_tx_check_idx").on(table.checkNumber),
+    index("payroll_transactions_payroll_check_idx")
+      .on(table.payrollCheckId)
+      .where(sql`${table.payrollCheckId} is not null`),
   ],
 );
 
@@ -1360,6 +1780,10 @@ export const classBudgetPeriods = pgTable(
     startDate: date("start_date").notNull(),
     endDate: date("end_date").notNull(),
     authorizedAmount: numeric("authorized_amount", { precision: 14, scale: 4 }).notNull(),
+    /** Canonical service-program budget links (0028); nullable for legacy repair. */
+    programId: uuid("program_id").references(() => programs.id),
+    budgetPeriodId: uuid("budget_period_id").references(() => budgetPeriods.id),
+    budgetAuthorizationId: uuid("budget_authorization_id").references(() => budgetAuthorizations.id),
     /** 'active' | 'closed' */
     status: text("status").default("active").notNull(),
     notes: text("notes"),

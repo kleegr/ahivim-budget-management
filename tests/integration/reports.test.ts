@@ -82,8 +82,9 @@ async function insertUsage(opts: {
   amount: string;
 }): Promise<void> {
   const session = await testPool().query<{ id: string }>(
-    `INSERT INTO service_sessions (program_id, physical_hours, group_size)
-     VALUES ($1,$2,1) RETURNING id`,
+    `INSERT INTO service_sessions
+       (program_id, period_begin, period_end, physical_hours, group_size)
+     VALUES ($1, '2025-05-01', '2025-05-15', $2, 1) RETURNING id`,
     [opts.programId, opts.hours],
   );
   await testPool().query(
@@ -144,6 +145,23 @@ suite("phase 4D — reporting read models (real PostgreSQL)", () => {
     const janDay = jan.find((r) => r.programCode === "DAY_HAB")!;
     expect(dec(janDay.agencyGross).toNumber()).toBe(1000);
     expect(dec(janDay.agencyAdditional).toNumber()).toBe(100);
+
+    // A valid check date is the canonical fallback when the import omitted both
+    // period fields. It belongs in January and is never assigned by created_at.
+    await pool.query(
+      `INSERT INTO payroll_transactions
+         (individual_id, program_id, check_date, imported_amount,
+          calculated_internal_amount, agency_additional_amount, transaction_fingerprint)
+       VALUES ($1, $2, '2026-01-20', '50', '45', '5', $3)`,
+      [ind.id, dayHab, `rep-fp-${fpSeq++}`],
+    );
+    const withCheckDate = await agencyEarningsReport(pool, {
+      from: "2026-01-01",
+      to: "2026-01-31",
+    });
+    const checkDatedDay = withCheckDate.find((r) => r.programCode === "DAY_HAB")!;
+    expect(dec(checkDatedDay.agencyGross).toNumber()).toBe(1050);
+    expect(dec(checkDatedDay.agencyAdditional).toNumber()).toBe(105);
   });
 
   it("budgetUtilizationReport computes %used and %committed correctly", async () => {
@@ -210,8 +228,9 @@ suite("phase 4D — reporting read models (real PostgreSQL)", () => {
     const r = rows[0];
     expect(dec(r.totalPayment).toNumber()).toBe(150);
     expect(dec(r.paidToEmployee).toNumber()).toBe(100);
-    expect(dec(r.payableByAgency).toNumber()).toBe(40);
-    expect(dec(r.unknownRecipient).toNumber()).toBe(10);
+    // Null transaction routing inherits the program's agency default.
+    expect(dec(r.payableByAgency).toNumber()).toBe(50);
+    expect(dec(r.unknownRecipient).toNumber()).toBe(0);
     expect(dec(r.physicalHours).toNumber()).toBe(9);
     expect(r.checkCount).toBe(3);
     // Buckets reconcile to the total exactly.

@@ -107,7 +107,9 @@ export async function listEmployeeDirectory(
               : "'0'::text"} AS billed_hours,
             (count(DISTINCT t.individual_id) FILTER (WHERE t.individual_id IS NOT NULL))::text
               AS individuals_served,
-            to_char(max(COALESCE(t.check_date, t.period_end, t.period_begin)), 'YYYY-MM-DD')
+            to_char(max(canonical_service_date(
+              t.period_begin, t.check_date, t.period_end
+            )), 'YYYY-MM-DD')
               AS last_activity_date
        FROM payroll_transactions t
       WHERE t.employee_id = ANY($1::uuid[])${activityScope}
@@ -138,28 +140,26 @@ export async function listEmployeeDirectory(
                        AND (current_deal.effective_to IS NULL OR current_deal.effective_to >= CURRENT_DATE)
                   ) AS has_current_deal,
                   (count(t.id) FILTER (
-                    WHERE t.payment_recipient IN ('employee', 'excellent_staffing')
+                    WHERE effective_payment_recipient(
+                      t.payment_recipient, p.payment_recipient
+                    ) IN ('employee', 'excellent_staffing')
                   ))::text AS applicable_transactions,
                   (count(t.id) FILTER (
-                    WHERE t.payment_recipient IN ('employee', 'excellent_staffing')
+                    WHERE effective_payment_recipient(
+                      t.payment_recipient, p.payment_recipient
+                    ) IN ('employee', 'excellent_staffing')
                       AND NOT EXISTS (
                         SELECT 1
                           FROM employee_deals effective_deal
                          WHERE effective_deal.employee_id = pe.employee_id
                            AND effective_deal.status = 'active'
-                           AND effective_deal.effective_from <= COALESCE(
-                             t.check_date,
-                             t.period_end,
-                             t.period_begin,
-                             t.created_at::date
+                           AND effective_deal.effective_from <= canonical_service_date(
+                             t.period_begin, t.check_date, t.period_end
                            )
                            AND (
                              effective_deal.effective_to IS NULL
-                             OR effective_deal.effective_to >= COALESCE(
-                               t.check_date,
-                               t.period_end,
-                               t.period_begin,
-                               t.created_at::date
+                             OR effective_deal.effective_to >= canonical_service_date(
+                               t.period_begin, t.check_date, t.period_end
                              )
                            )
                       )
@@ -167,6 +167,7 @@ export async function listEmployeeDirectory(
              FROM permitted_employees pe
              LEFT JOIN payroll_transactions t
                ON t.employee_id = pe.employee_id${transactionScope}
+             LEFT JOIN programs p ON p.id = t.program_id
             GROUP BY pe.employee_id`,
           params,
         );

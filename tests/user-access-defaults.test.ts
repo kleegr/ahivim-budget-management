@@ -19,6 +19,7 @@ describe("new user access defaults", () => {
       canSeeTaxes: false,
       canSeeEmployeeDeals: false,
       canSeeSettlements: false,
+      canManageSettlements: false,
       canSeeClassFinancials: false,
       canManageClassInvoices: false,
       canEditDocuments: false,
@@ -41,6 +42,7 @@ describe("new user access defaults", () => {
       canSeeBudgets: false,
       canSeeEmployeeDeals: false,
       canSeeSettlements: false,
+      canManageSettlements: false,
       canSeeClassFinancials: false,
       canManageClassInvoices: false,
       canEditDocuments: false,
@@ -52,13 +54,14 @@ describe("new user access defaults", () => {
 
   it("honors permissions that an administrator explicitly grants to a viewer", () => {
     const config = userAccessConfigFromInput({
-      accessScope: "full",
+      accessScope: "scoped",
       canSeeTransactions: true,
       canSeeMoney: true,
       canSeeHours: true,
       canSeeBudgets: true,
       canSeeEmployeeDeals: true,
       canSeeSettlements: true,
+      canManageSettlements: true,
       canSeeClassFinancials: true,
       canManageClassInvoices: true,
       canEditDocuments: true,
@@ -68,13 +71,14 @@ describe("new user access defaults", () => {
     }, "viewer");
 
     expect(config).toMatchObject({
-      accessScope: "full",
+      accessScope: "scoped",
       canSeeTransactions: true,
       canSeeMoney: true,
       canSeeHours: true,
       canSeeBudgets: true,
       canSeeEmployeeDeals: true,
       canSeeSettlements: true,
+      canManageSettlements: true,
       canSeeClassFinancials: true,
       canManageClassInvoices: true,
       canEditDocuments: true,
@@ -82,6 +86,21 @@ describe("new user access defaults", () => {
       individualIds: ["individual-1"],
       employeeIds: ["employee-1"],
     });
+  });
+
+  it("does not reinterpret stale full-scope staff flags as viewer grants", () => {
+    expect(userAccessConfigFromInput({
+      accessScope: "full",
+      seeAllIndividuals: true,
+      seeAllEmployees: true,
+      canSeeTransactions: true,
+      canSeeMoney: true,
+      canSeeHours: true,
+      canSeeBudgets: true,
+      canSeeSettlements: true,
+      canManageSettlements: true,
+      individualIds: ["00000000-0000-4000-8000-000000000003"],
+    }, "viewer")).toEqual(userAccessConfigFromInput({}, "viewer"));
   });
 
   it("does not grant budgets without the hours they are built from", () => {
@@ -108,6 +127,7 @@ describe("new user access defaults", () => {
       canSeeBudgets: true,
       canSeeEmployeeDeals: false,
       canSeeSettlements: false,
+      canManageSettlements: false,
       canSeeClassFinancials: true,
       canManageClassInvoices: true,
       canEditDocuments: true,
@@ -115,10 +135,14 @@ describe("new user access defaults", () => {
     });
   });
 
-  it("inserts a viewer closed before the API applies any explicit grants", async () => {
+  it("creates a viewer and its locked access in one transaction", async () => {
     const query = vi.fn(async (sql: string, params?: unknown[]) => {
       void params;
       if (sql.includes("FROM users") && sql.includes("WHERE email")) return { rows: [] };
+      return { rows: [], rowCount: 1 };
+    });
+    const clientQuery = vi.fn(async (sql: string, params?: unknown[]) => {
+      void params;
       if (sql.includes("INSERT INTO users")) {
         return {
           rows: [{
@@ -135,7 +159,11 @@ describe("new user access defaults", () => {
       }
       return { rows: [], rowCount: 1 };
     });
-    const pool = { query, connect: vi.fn() } as unknown as PgLikePool;
+    const release = vi.fn();
+    const pool = {
+      query,
+      connect: vi.fn(async () => ({ query: clientQuery, release })),
+    } as unknown as PgLikePool;
 
     const result = await createUser(pool, {
       email: "viewer@example.test",
@@ -145,7 +173,16 @@ describe("new user access defaults", () => {
     }, "00000000-0000-4000-8000-000000000002");
 
     expect(result.ok).toBe(true);
-    const insert = query.mock.calls.find(([sql]) => sql.includes("INSERT INTO users"));
+    const insert = clientQuery.mock.calls.find(([sql]) => sql.includes("INSERT INTO users"));
     expect(insert?.[1]?.slice(4)).toEqual(["scoped", ...Array(15).fill(false)]);
+    const accessUpdate = clientQuery.mock.calls.find(([sql]) => sql.includes("SET access_scope"));
+    expect(accessUpdate?.[1]).toEqual([
+      "scoped",
+      ...Array(18).fill(false),
+      "00000000-0000-4000-8000-000000000001",
+    ]);
+    expect(clientQuery.mock.calls[0]?.[0]).toBe("BEGIN");
+    expect(clientQuery.mock.calls.at(-1)?.[0]).toBe("COMMIT");
+    expect(release).toHaveBeenCalledOnce();
   });
 });

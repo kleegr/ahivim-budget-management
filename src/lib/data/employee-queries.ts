@@ -20,11 +20,11 @@ import { transactionScopeClause, type AccessScope } from "@/lib/auth/access";
  *     three individuals is 13 physical hours and 39 allocation hours.
  *
  * The payment split (paid directly to the employee vs. payable by the agency,
- * "Excellent Staffing") reads the three attribution columns that
- * payment-attribution.ts back-fills: payment_recipient, employee_payment_amount
- * and agency_additional_amount. Those are null until a back-fill runs, so every
- * function reports how many rows carry an attribution, letting the screen say
- * "not yet attributed" instead of printing a misleading $0.
+ * "Excellent Staffing") resolves the transaction attribution first, then the
+ * program default when that transaction value is missing or unknown. The amount
+ * columns are populated by payment-attribution.ts back-fills. Those amounts may
+ * remain null until a back-fill runs, so the screen can distinguish routing from
+ * a calculated payment amount.
  */
 
 const isUuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
@@ -39,15 +39,15 @@ export interface EmployeePaymentSummary {
   agencyAdditional: string;
   /** Total internal amount owed to the employee (paid directly + via agency). */
   totalPayment: string;
-  /** Paid straight to the employee (payment_recipient = 'employee'). */
+  /** Paid straight to the employee after canonical route resolution. */
   paidToEmployee: string;
   /** Owed to the employee but routed through the agency ('excellent_staffing'). */
   payableByAgency: string;
   /** Neither classified as direct nor agency ('unknown' or not yet attributed). */
   unknownRecipient: string;
   transactionCount: number;
-  /** Rows carrying a non-null payment_recipient. Zero here with transactions
-   *  present means the attribution back-fill has not been run yet. */
+  /** Rows whose transaction override or program default resolves to a known
+   *  payment recipient. */
   attributedCount: number;
   /** Distinct check numbers seen for this employee. */
   checkCount: number;
@@ -83,16 +83,24 @@ export async function getEmployeePaymentSummary(
        COALESCE(sum(t.agency_additional_amount), 0)::text             AS agency_additional,
        COALESCE(sum(t.employee_payment_amount), 0)::text              AS total_payment,
        COALESCE(sum(t.employee_payment_amount)
-         FILTER (WHERE t.payment_recipient = 'employee'), 0)::text     AS paid_to_employee,
+         FILTER (WHERE effective_payment_recipient(
+           t.payment_recipient, p.payment_recipient
+         ) = 'employee'), 0)::text     AS paid_to_employee,
        COALESCE(sum(t.employee_payment_amount)
-         FILTER (WHERE t.payment_recipient = 'excellent_staffing'), 0)::text AS payable_by_agency,
+         FILTER (WHERE effective_payment_recipient(
+           t.payment_recipient, p.payment_recipient
+         ) = 'excellent_staffing'), 0)::text AS payable_by_agency,
        COALESCE(sum(t.employee_payment_amount)
-         FILTER (WHERE t.payment_recipient = 'unknown'
-                    OR t.payment_recipient IS NULL), 0)::text          AS unknown_recipient,
+         FILTER (WHERE effective_payment_recipient(
+           t.payment_recipient, p.payment_recipient
+         ) = 'unknown'), 0)::text          AS unknown_recipient,
        count(*)::text                                                 AS transaction_count,
-       count(*) FILTER (WHERE t.payment_recipient IS NOT NULL)::text  AS attributed_count,
+       count(*) FILTER (WHERE effective_payment_recipient(
+         t.payment_recipient, p.payment_recipient
+       ) <> 'unknown')::text                                          AS attributed_count,
        count(DISTINCT t.check_number)::text                           AS check_count
      FROM payroll_transactions t
+     LEFT JOIN programs p ON p.id = t.program_id
      WHERE t.employee_id = $1${scopeClause}`,
     params,
   );
@@ -116,57 +124,46 @@ export async function getEmployeePaymentSummary(
 /* -------------------------------------------------------------------------- */
 
 export interface EmployeeWithholding {
-  /** Σ over this employee's non-agency checks of max(check gross − net, 0). */
+  /** Explicit tax/withholding recorded on canonical employee payroll checks. */
   withheld: string;
-  /** Gross and NET the employee actually received across those checks. `net` is
-   *  the base for the payout cut ("what to give him after the net"). */
+  /** Actual payroll gross and NET; funder billed is never substituted for gross. */
   gross: string;
   net: string;
-  /** Number of checks paid to the employee (non-agency, with a net figure). */
+  grossKnownChecks: number;
   checks: number;
 }
 
 /**
- * What was withheld from this employee's own paychecks — the check's gross wages
- * minus the net they actually received (total_net_pay is per check). This is the
- * money the employee did NOT keep and that must be set aside separately; it is a
- * real payroll fact, not derived from any plan cut. Checks routed through the
- * agency ("excellent_staffing") are excluded — the agency withholds on its own.
- * Computed per check (never double-counting the net across a check's rows).
+ * Read actual check facts once per canonical payroll record. Tax/withholding is
+ * explicit source data; it is never inferred from Funder billed or gross − net.
  */
 export async function getEmployeeWithholding(
   pool: PgLikePool,
   employeeId: string,
   scope?: AccessScope,
 ): Promise<EmployeeWithholding> {
-  const empty: EmployeeWithholding = { withheld: toMoney(0), gross: toMoney(0), net: toMoney(0), checks: 0 };
+  const empty: EmployeeWithholding = { withheld: toMoney(0), gross: toMoney(0), net: toMoney(0), grossKnownChecks: 0, checks: 0 };
   if (!isUuid(employeeId)) return empty;
-  const params: unknown[] = [employeeId];
-  const scopeClause = scope
-    ? transactionScopeClause(scope, "individual_id", "employee_id", params)
-    : "";
-  const { rows } = await pool.query<{ withheld: string; gross: string; net: string; checks: string }>(
-    `WITH ct AS (
-       SELECT check_number,
-              sum(COALESCE(imported_amount, 0)) AS cg,
-              max(total_net_pay)                AS cn
-         FROM payroll_transactions
-        WHERE employee_id = $1
-          AND check_number IS NOT NULL
-          AND payment_recipient IS DISTINCT FROM 'excellent_staffing'${scopeClause}
-        GROUP BY check_number
-     )
-     SELECT COALESCE(sum(GREATEST(cg - cn, 0)), 0)::text AS withheld,
-            COALESCE(sum(cg), 0)::text                   AS gross,
-            COALESCE(sum(cn), 0)::text                   AS net,
-            count(*)::text                               AS checks
-       FROM ct
-      WHERE cn IS NOT NULL`,
-    params,
+  if (scope && !(scope.full || scope.allEmployees || scope.grantedEmployeeIds.includes(employeeId))) return empty;
+  const { rows } = await pool.query<{ withheld: string; gross: string; net: string; gross_known_checks: string; checks: string }>(
+    `SELECT COALESCE(sum(tax_withheld), 0)::text AS withheld,
+            COALESCE(sum(actual_gross), 0)::text AS gross,
+            COALESCE(sum(actual_net), 0)::text AS net,
+            count(actual_gross)::text AS gross_known_checks,
+            count(*)::text AS checks
+       FROM employee_payroll_checks
+       WHERE employee_id = $1 AND verification_status = 'verified'`,
+    [employeeId],
   );
   const r = rows[0];
   if (!r) return empty;
-  return { withheld: toMoney(r.withheld), gross: toMoney(r.gross), net: toMoney(r.net), checks: Number(r.checks) };
+  return {
+    withheld: toMoney(r.withheld),
+    gross: toMoney(r.gross),
+    net: toMoney(r.net),
+    grossKnownChecks: Number(r.gross_known_checks),
+    checks: Number(r.checks),
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -304,7 +301,7 @@ export async function getEmployeeUsageByProgram(
 /* -------------------------------------------------------------------------- */
 
 export interface EmployeeMonthlyPaymentRow {
-  /** 'YYYY-MM', or null when a transaction has neither a period nor a check date. */
+  /** 'YYYY-MM', or null when all three canonical service-date fields are absent. */
   month: string | null;
   agencyGross: string;
   internalAmount: string;
@@ -316,9 +313,9 @@ export interface EmployeeMonthlyPaymentRow {
 }
 
 /**
- * One row per calendar month (service period begin, falling back to check date),
- * newest first, with the money and the direct-vs-agency split. Undated rows fall
- * into a single null-month bucket rather than being dropped.
+ * One row per canonical service month (period begin, then check date, then
+ * period end), newest first, with the money and direct-vs-agency split. Undated
+ * rows remain in one explicit null-month bucket for review.
  */
 export async function getEmployeeMonthlyPayments(
   pool: PgLikePool,
@@ -340,17 +337,24 @@ export async function getEmployeeMonthlyPayments(
     check_count: string;
     transaction_count: string;
   }>(
-    `SELECT to_char(date_trunc('month', COALESCE(t.period_begin, t.check_date)), 'YYYY-MM') AS month,
+    `SELECT to_char(date_trunc('month', canonical_service_date(
+              t.period_begin, t.check_date, t.period_end
+            )), 'YYYY-MM') AS month,
             COALESCE(sum(t.imported_amount), 0)::text                       AS agency_gross,
             COALESCE(sum(t.calculated_internal_amount), 0)::text            AS internal_amount,
             COALESCE(sum(t.employee_payment_amount), 0)::text               AS total_payment,
             COALESCE(sum(t.employee_payment_amount)
-              FILTER (WHERE t.payment_recipient = 'employee'), 0)::text      AS paid_to_employee,
+              FILTER (WHERE effective_payment_recipient(
+                t.payment_recipient, p.payment_recipient
+              ) = 'employee'), 0)::text      AS paid_to_employee,
             COALESCE(sum(t.employee_payment_amount)
-              FILTER (WHERE t.payment_recipient = 'excellent_staffing'), 0)::text AS payable_by_agency,
+              FILTER (WHERE effective_payment_recipient(
+                t.payment_recipient, p.payment_recipient
+              ) = 'excellent_staffing'), 0)::text AS payable_by_agency,
             count(DISTINCT t.check_number)::text                            AS check_count,
             count(*)::text                                                  AS transaction_count
        FROM payroll_transactions t
+       LEFT JOIN programs p ON p.id = t.program_id
       WHERE t.employee_id = $1${scopeClause}
       GROUP BY 1
       ORDER BY 1 DESC NULLS LAST`,

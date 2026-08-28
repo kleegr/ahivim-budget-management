@@ -212,7 +212,8 @@ function calculationForClient(
   }
   const keys = [
     "flow", "dealRevision", "directRule", "directPercent", "agencyCutPercent",
-    "checkNet", "checkGross", "withholdingDisplayOnly", "employeeKeeps", "employeeOwesAgency",
+    "checkNet", "checkGross", "taxWithheldDisplayOnly", "totalDeductionsDisplayOnly",
+    "payrollCheckId", "payrollVerificationStatus", "employeeKeeps", "employeeOwesAgency",
     "billedAmount", "baseAmount", "agencySpread", "agencyCut", "employeePayable", "agencyKeepsTotal",
     "reconciles", "netValueCount", "targetLabel", "strategyLabel", "strategyRevisionCount", "account", "formula",
     "monthlyAmount", "yearlyGross", "plannedHours", "actualHours", "actualInternal",
@@ -228,7 +229,8 @@ function calculationForClient(
       delete result.directPercent;
     }
     if (!scope.canSeeTaxes) {
-      delete result.withholdingDisplayOnly;
+      delete result.taxWithheldDisplayOnly;
+      delete result.totalDeductionsDisplayOnly;
       delete result.checkGross;
     }
     if (!scope.canSeeBilledAmounts) delete result.billedAmount;
@@ -450,17 +452,29 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
       `SELECT t.employee_id,
               COALESCE(e.display_name, e.normalized_name) AS employee_name,
               count(*)::text AS transaction_count,
-              to_char(min(COALESCE(t.check_date, t.period_end, t.period_begin)), 'YYYY-MM-DD') AS first_transaction_date,
-              to_char(max(COALESCE(t.check_date, t.period_end, t.period_begin)), 'YYYY-MM-DD') AS last_transaction_date
+              to_char(min(canonical_service_date(
+                t.period_begin, t.check_date, t.period_end
+              )), 'YYYY-MM-DD') AS first_transaction_date,
+              to_char(max(canonical_service_date(
+                t.period_begin, t.check_date, t.period_end
+              )), 'YYYY-MM-DD') AS last_transaction_date
          FROM payroll_transactions t
          JOIN employees e ON e.id = t.employee_id
+         LEFT JOIN programs p ON p.id = t.program_id
         WHERE t.employee_id IS NOT NULL
-          AND t.payment_recipient IN ('employee', 'excellent_staffing')
+          AND effective_payment_recipient(
+            t.payment_recipient,
+            p.payment_recipient
+          ) IN ('employee', 'excellent_staffing')
           AND NOT EXISTS (
             SELECT 1 FROM employee_deals d
              WHERE d.employee_id = t.employee_id AND d.status = 'active'
-               AND d.effective_from <= COALESCE(t.check_date, t.period_end, t.period_begin, t.created_at::date)
-               AND (d.effective_to IS NULL OR d.effective_to >= COALESCE(t.check_date, t.period_end, t.period_begin, t.created_at::date))
+               AND d.effective_from <= canonical_service_date(
+                 t.period_begin, t.check_date, t.period_end
+               )
+               AND (d.effective_to IS NULL OR d.effective_to >= canonical_service_date(
+                 t.period_begin, t.check_date, t.period_end
+               ))
           )
         GROUP BY t.employee_id, COALESCE(e.display_name, e.normalized_name)
         ORDER BY employee_name`,
@@ -501,8 +515,12 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
                 END AS source_id
            FROM payroll_transactions t
            JOIN employees e ON e.id = t.employee_id
+           LEFT JOIN programs p ON p.id = t.program_id
           WHERE t.employee_id IS NOT NULL
-            AND t.payment_recipient = 'employee'
+            AND effective_payment_recipient(
+              t.payment_recipient,
+              p.payment_recipient
+            ) = 'employee'
             AND (
               (t.check_number IS NOT NULL AND btrim(t.check_number) <> '')
               OR t.check_date IS NOT NULL OR t.period_begin IS NOT NULL OR t.period_end IS NOT NULL
@@ -557,7 +575,12 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
               'missing_check_identity'::text AS issue
          FROM payroll_transactions t
          JOIN employees e ON e.id = t.employee_id
-        WHERE t.employee_id IS NOT NULL AND t.payment_recipient = 'employee'
+         LEFT JOIN programs p ON p.id = t.program_id
+        WHERE t.employee_id IS NOT NULL
+          AND effective_payment_recipient(
+            t.payment_recipient,
+            p.payment_recipient
+          ) = 'employee'
           AND (t.check_number IS NULL OR btrim(t.check_number) = '')
           AND t.check_date IS NULL AND t.period_begin IS NULL AND t.period_end IS NULL
        UNION ALL
@@ -571,7 +594,12 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
               'missing_base'::text AS issue
          FROM payroll_transactions t
          JOIN employees e ON e.id = t.employee_id
-        WHERE t.employee_id IS NOT NULL AND t.payment_recipient = 'excellent_staffing'
+         LEFT JOIN programs p ON p.id = t.program_id
+        WHERE t.employee_id IS NOT NULL
+          AND effective_payment_recipient(
+            t.payment_recipient,
+            p.payment_recipient
+          ) = 'excellent_staffing'
           AND COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
                        t.internal_rate_applied * t.imported_hours) IS NULL
        UNION ALL
@@ -585,8 +613,12 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
               'unknown_recipient'::text AS issue
          FROM payroll_transactions t
          JOIN employees e ON e.id = t.employee_id
+         LEFT JOIN programs p ON p.id = t.program_id
         WHERE t.employee_id IS NOT NULL
-          AND (t.payment_recipient IS NULL OR t.payment_recipient NOT IN ('employee', 'excellent_staffing'))
+          AND effective_payment_recipient(
+            t.payment_recipient,
+            p.payment_recipient
+          ) = 'unknown'
        ORDER BY employee_name, check_date DESC NULLS LAST`,
     ),
     getSettlementLedgerFreshness(pool),

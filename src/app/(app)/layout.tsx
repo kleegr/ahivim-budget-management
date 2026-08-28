@@ -3,6 +3,7 @@ import { canAccessPlanning, isPlanningOnlyAccess, resolveAccessScope } from "@/l
 import AppNav from "@/components/app-nav";
 import { withDb } from "@/lib/data/pool";
 import { exceptionCounts } from "@/lib/data/queries";
+import { hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
 
 export const dynamic = "force-dynamic";
 
@@ -38,8 +39,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   let canSeeClassFinancials = false;
   let canSeeEmployees = false;
   let canEditDocuments = false;
+  let canUsePortal = false;
+  let canManageAgencies = false;
   const access = await withDb(async (pool) => {
-    const scope = await resolveAccessScope(pool, user);
+    const [scope, portal] = await Promise.all([
+      resolveAccessScope(pool, user),
+      resolvePortalAccess(pool, user),
+    ]);
     return {
       canSeeTransactions: scope.canSeeTransactions,
       canSeeSettlements: scope.canSeeSettlements,
@@ -50,6 +56,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         !isPlanningOnlyAccess(scope)
         && (scope.full || scope.allEmployees || scope.employeeIds.length > 0),
       canEditDocuments: scope.canEditDocuments,
+      canUsePortal:
+        portal.globalRoles.length > 0
+        || portal.agencyAccess.length > 0
+        || portal.individualLinks.length > 0
+        || portal.employeeLinks.length > 0,
+      canManageAgencies: hasPortalCapability(portal, "agencies.manage"),
     };
   });
   if (access.ok) {
@@ -61,6 +73,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     canSeeClassFinancials = access.data.canSeeClassFinancials;
     canSeeEmployees = access.data.canSeeEmployees;
     canEditDocuments = access.data.canEditDocuments;
+    canUsePortal = access.data.canUsePortal;
+    canManageAgencies = access.data.canManageAgencies;
   }
 
   // Badge availability must not affect authorization. If this query fails, the
@@ -91,6 +105,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         canSeeClassFinancials={canSeeClassFinancials}
         canSeeEmployees={canSeeEmployees}
         canEditDocuments={canEditDocuments}
+        canUsePortal={canUsePortal}
+        canManageAgencies={canManageAgencies}
       />
       <div className="flex min-h-screen min-w-0 flex-1 flex-col">
         <main id="main" className="mx-auto w-full max-w-[100rem] flex-1 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">

@@ -42,7 +42,14 @@ Re-running skips everything already applied. Editing a migration that has
 already been applied fails migration and health checks immediately rather than
 silently accepting a changed checksum. Add a new migration instead.
 
-Three ways to apply them:
+Production also calls the runner from the Node instrumentation hook. The normal
+current-schema path is one lock-free checksum query. When a deployment is
+behind, one instance takes a nonblocking advisory lock and applies the pending
+migrations; other cold starts continue instead of waiting on that lock. Set
+`DISABLE_AUTO_MIGRATE=1` only when migrations are deliberately managed outside
+the application.
+
+The same runner can be invoked manually in three ways:
 
 ```bash
 # 1. Directly, from a machine that can reach the database
@@ -59,12 +66,9 @@ There is **no** unauthenticated migration path. An earlier revision allowed one
 "first run" call while the ledger table did not exist; on a publicly reachable
 deployment that is a race anyone can win, so it was removed.
 
-There is also no start-up bootstrap hook. `src/instrumentation.ts` used to
-apply migrations and create an administrator on the first request, printing a
-generated password to the runtime log. It was removed because it ran sensitive
-initialisation from an uncontrolled trigger, printed a credential to a log, and
-forced Node-only crypto into the Edge bundle (which produced a build full of
-misleading `'timingSafeEqual' is not exported from 'node:crypto'` warnings).
+The instrumentation hook applies schema migrations only. It never creates an
+account, generates a password, or prints credentials. Administrator bootstrap
+remains confined to the explicit first sign-in flow below.
 
 ## First administrator
 

@@ -1,4 +1,5 @@
 import type { PgLikePool, PgLikeClient } from "@/lib/import/commit";
+import { agencyDate } from "@/lib/business/agency-time";
 import { ok, fail, type Result } from "@/lib/manage/errors";
 import { recordChange } from "@/lib/manage/audit";
 import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
@@ -162,7 +163,7 @@ export async function listStrategies(
     asOf?: string;
   } = {},
 ): Promise<{ rows: StrategyGridRow[]; programs: ProgramRate[] }> {
-  const asOf = (opts.asOf ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const asOf = (opts.asOf ?? agencyDate()).slice(0, 10);
   const params: unknown[] = [];
   const where: string[] = [];
   if (opts.individualId) {
@@ -358,16 +359,21 @@ async function attachStrategyAnalytics(
             count(*)::text AS observations
        FROM payroll_transactions t
        JOIN programs pr ON pr.id = t.program_id
-       LEFT JOIN win w ON w.individual_id = t.individual_id
+      LEFT JOIN win w ON w.individual_id = t.individual_id
       WHERE t.individual_id = ANY($4::uuid[]) AND t.program_id IS NOT NULL
+        AND canonical_service_date(t.period_begin, t.check_date, t.period_end) IS NOT NULL
         AND (
           -- Day Hab / Supplemental always bill on the calendar year …
           (pr.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
-             AND t.period_begin >= make_date(EXTRACT(YEAR FROM $5::date)::int, 1, 1)
-             AND t.period_begin <  make_date(EXTRACT(YEAR FROM $5::date)::int + 1, 1, 1))
+             AND canonical_service_date(t.period_begin, t.check_date, t.period_end)
+                 >= make_date(EXTRACT(YEAR FROM $5::date)::int, 1, 1)
+             AND canonical_service_date(t.period_begin, t.check_date, t.period_end)
+                 < make_date(EXTRACT(YEAR FROM $5::date)::int + 1, 1, 1))
           -- … everything else uses the individual's own renewal window.
           OR (pr.code NOT IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
-             AND (w.individual_id IS NULL OR (t.period_begin >= w.start_date AND t.period_begin <= w.end_date)))
+             AND (w.individual_id IS NULL OR canonical_service_date(
+                    t.period_begin, t.check_date, t.period_end
+                  ) BETWEEN w.start_date AND w.end_date))
         )
       GROUP BY t.individual_id, t.program_id, pr.code`,
     [winIds, winStarts, winEnds, individualIds, asOf],
@@ -579,7 +585,11 @@ function toFractionStr(value: unknown): string {
   if (value === null || value === undefined || value === "") return "0";
   const raw = typeof value === "string" ? value.replace("%", "") : value;
   const d = dec(raw as string | number);
-  return (d.abs().greaterThan(1) ? d.dividedBy(100) : d).toString();
+  const fraction = d.abs().greaterThan(1) ? d.dividedBy(100) : d;
+  if (fraction.lessThan(0) || fraction.greaterThan(1)) {
+    throw new RangeError("Cut percentages must be between 0% and 100%.");
+  }
+  return fraction.toString();
 }
 
 export async function createStrategy(
@@ -735,8 +745,11 @@ export async function duplicateStrategy(
     );
     const newId = created.rows[0]!.id;
     await client.query(
-      `INSERT INTO calculation_strategy_lines (strategy_id, program_id, authorized_hours)
-       SELECT $2, program_id, authorized_hours FROM calculation_strategy_lines WHERE strategy_id = $1`,
+      `INSERT INTO calculation_strategy_lines
+         (strategy_id, program_id, authorized_hours, rate_override, rate_override_effective_from)
+       SELECT $2, program_id, authorized_hours, rate_override, rate_override_effective_from
+         FROM calculation_strategy_lines
+        WHERE strategy_id = $1`,
       [input.id, newId],
     );
     await recordChange(client, { actorId, action: "strategy_duplicated", entityType: "calculation_strategy", entityId: newId, extra: { from: input.id } });

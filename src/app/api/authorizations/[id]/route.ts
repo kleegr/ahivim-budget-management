@@ -24,8 +24,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const { id } = await params;
   const body = await readJson(request);
-  const reason = typeof body.reason === "string" ? body.reason : null;
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
   const action = body.action;
+  if (reason.length < 5) {
+    return jsonError("Enter a change reason of at least 5 characters for the audit history.", 400);
+  }
 
   try {
     const pool = getPool();

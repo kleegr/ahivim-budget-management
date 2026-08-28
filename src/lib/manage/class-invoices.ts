@@ -13,7 +13,7 @@ import {
   type ClassInvoiceRecord,
 } from "@/lib/data/class-invoices";
 import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
-import { dec, toMoney } from "@/lib/money";
+import { dec, toHours, toMoney } from "@/lib/money";
 import { recordChange } from "./audit";
 import { ok, type ResultCode } from "./errors";
 
@@ -21,6 +21,114 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIVITY_CODE = /^[A-Z0-9][A-Z0-9_-]{0,39}$/;
 
 type Queryable = Pick<PgLikePool, "query"> | Pick<PgLikeClient, "query">;
+
+/** Mirror a class invoice lifecycle into the canonical program budget ledger. */
+async function postClassProgramBudgetIssue(
+  client: PgLikeClient,
+  classBudgetPeriodId: string,
+  classInvoiceId: string,
+  serviceDate: string,
+  amount: string,
+  actorId: string,
+): Promise<void> {
+  const link = await client.query<{
+    budget_period_id: string | null;
+    individual_id: string;
+    program_id: string | null;
+  }>(
+    `SELECT budget_period_id, individual_id, program_id
+       FROM class_budget_periods WHERE id = $1`,
+    [classBudgetPeriodId],
+  );
+  const budget = link.rows[0];
+  if (!budget?.budget_period_id || !budget.program_id) {
+    throw new Error("Class budget is missing its canonical program authorization link.");
+  }
+  await client.query(
+    `INSERT INTO program_budget_events
+       (budget_period_id, individual_id, program_id, event_type, service_date,
+        hours, amount, source_type, source_id, note, created_by_user_id)
+     VALUES ($1, $2, $3, 'consume', $4, 0, $5, 'class_invoice', $6,
+             'Issued class invoice.', $7)
+     ON CONFLICT (source_type, source_id, event_type) DO NOTHING`,
+    [budget.budget_period_id, budget.individual_id, budget.program_id, serviceDate, amount, classInvoiceId, actorId],
+  );
+  const existing = await client.query<{
+    budget_period_id: string;
+    program_id: string;
+    amount: string;
+  }>(
+    `SELECT budget_period_id, program_id, amount::text AS amount
+       FROM program_budget_events
+      WHERE source_type = 'class_invoice' AND source_id = $1 AND event_type = 'consume'`,
+    [classInvoiceId],
+  );
+  if (!existing.rows[0]
+      || existing.rows[0].budget_period_id !== budget.budget_period_id
+      || existing.rows[0].program_id !== budget.program_id
+      || !dec(existing.rows[0].amount).eq(amount)) {
+    throw new Error("Class invoice program-budget issue link is inconsistent.");
+  }
+}
+
+async function postClassProgramBudgetReversal(
+  client: PgLikeClient,
+  classInvoiceId: string,
+  actorId: string,
+  reason: string,
+): Promise<void> {
+  const original = await client.query<{
+    id: string;
+    budget_period_id: string;
+    individual_id: string;
+    program_id: string;
+    service_date: string;
+    hours: string;
+    amount: string;
+    source_type: string;
+    source_id: string;
+  }>(
+    `SELECT id, budget_period_id, individual_id, program_id,
+            service_date::text AS service_date, hours::text AS hours,
+            amount::text AS amount, source_type, source_id
+       FROM program_budget_events
+      WHERE source_type = 'class_invoice' AND source_id = $1 AND event_type = 'consume'
+      FOR UPDATE`,
+    [classInvoiceId],
+  );
+  const source = original.rows[0];
+  if (!source) {
+    throw new Error("Class invoice is missing its canonical program-budget issue event.");
+  }
+  await client.query(
+    `INSERT INTO program_budget_events
+       (budget_period_id, individual_id, program_id, event_type, service_date,
+        hours, amount, source_type, source_id, reverses_event_id, note, created_by_user_id)
+     VALUES ($1, $2, $3, 'reverse', $4, $5, $6, $7, $8, $9, $10, $11)
+     ON CONFLICT (source_type, source_id, event_type) DO NOTHING`,
+    [
+      source.budget_period_id,
+      source.individual_id,
+      source.program_id,
+      source.service_date,
+      toHours(dec(source.hours).negated()),
+      toMoney(dec(source.amount).negated()),
+      source.source_type,
+      source.source_id,
+      source.id,
+      reason,
+      actorId,
+    ],
+  );
+  const reversal = await client.query<{ reverses_event_id: string }>(
+    `SELECT reverses_event_id FROM program_budget_events
+      WHERE source_type = 'class_invoice' AND source_id = $1 AND event_type = 'reverse'`,
+    [classInvoiceId],
+  );
+  if (reversal.rows[0]?.reverses_event_id !== source.id) {
+    throw new Error("Class invoice program-budget reversal link is inconsistent.");
+  }
+}
 
 export type ClassOperationResult<T> =
   | { ok: true; data: T }
@@ -279,13 +387,58 @@ export async function createClassBudget(
       return classFail("conflict", "This individual already has an active class budget covering part of that period.");
     }
     const label = input.label?.trim() || `${input.startDate} to ${input.endDate}`;
+    const program = await client.query<{ id: string }>(
+      `SELECT id FROM programs WHERE code = 'CLASSES' AND is_active FOR SHARE`,
+    );
+    if (!program.rows[0]) {
+      await client.query("ROLLBACK");
+      return classFail("conflict", "The Classes service program is not available.");
+    }
+    const period = await client.query<{ id: string }>(
+      `INSERT INTO budget_periods
+         (individual_id, label, start_date, end_date, period_type, renewal_date,
+          status, source, notes)
+       VALUES ($1, $2, $3, $4, 'custom', ($4::date + 1), 'active',
+               'class_bridge', $5)
+       RETURNING id`,
+      [input.individualId, label, input.startDate, input.endDate, input.notes?.trim() || null],
+    );
+    const authorization = await client.query<{ id: string }>(
+      `INSERT INTO budget_authorizations
+         (budget_period_id, individual_id, program_id, authorized_hours,
+          internal_rate, authorized_dollars, rate_basis, revision, status,
+          source, notes, created_by_user_id)
+       VALUES ($1, $2, $3, 0, 0, $4, 'dollars', 1, 'active',
+               'class_bridge', $5, $6)
+       RETURNING id`,
+      [
+        period.rows[0]!.id,
+        input.individualId,
+        program.rows[0].id,
+        toMoney(input.authorizedAmount),
+        input.notes?.trim() || null,
+        actorId,
+      ],
+    );
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO class_budget_periods
          (individual_id, label, start_date, end_date, authorized_amount, notes,
+          program_id, budget_period_id, budget_authorization_id,
           created_by_user_id, updated_by_user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
        RETURNING id`,
-      [input.individualId, label, input.startDate, input.endDate, toMoney(input.authorizedAmount), input.notes?.trim() || null, actorId],
+      [
+        input.individualId,
+        label,
+        input.startDate,
+        input.endDate,
+        toMoney(input.authorizedAmount),
+        input.notes?.trim() || null,
+        program.rows[0].id,
+        period.rows[0]!.id,
+        authorization.rows[0]!.id,
+        actorId,
+      ],
     );
     await recordChange(client, {
       actorId,
@@ -330,8 +483,12 @@ export async function updateClassBudget(
       authorized_amount: string;
       status: "active" | "closed";
       notes: string | null;
+      program_id: string | null;
+      budget_period_id: string | null;
+      budget_authorization_id: string | null;
     }>(
-      `SELECT individual_id, label, authorized_amount::text AS authorized_amount, status, notes
+      `SELECT individual_id, label, authorized_amount::text AS authorized_amount, status, notes,
+              program_id, budget_period_id, budget_authorization_id
          FROM class_budget_periods
         WHERE id = $1
         FOR UPDATE`,
@@ -341,6 +498,9 @@ export async function updateClassBudget(
     if (!before) {
       await client.query("ROLLBACK");
       return classFail("not_found", "That class budget no longer exists.");
+    }
+    if (!before.program_id || !before.budget_period_id || !before.budget_authorization_id) {
+      throw new Error("Class budget is missing its canonical program authorization link.");
     }
     let authorizedAmount = before.authorized_amount;
     if (input.authorizedAmount !== undefined && input.authorizedAmount !== null) {
@@ -422,6 +582,43 @@ export async function updateClassBudget(
         WHERE id = $6`,
       [next.label, next.authorizedAmount, next.status, next.notes, actorId, id],
     );
+    if (before.budget_period_id) {
+      await client.query(
+        `UPDATE budget_periods
+            SET label = $1, status = $2, notes = $3,
+                archived_at = CASE WHEN $2 = 'closed' THEN COALESCE(archived_at, now()) ELSE NULL END,
+                updated_at = now()
+          WHERE id = $4`,
+        [next.label, next.status, next.notes, before.budget_period_id],
+      );
+    }
+    if (before.budget_authorization_id && !dec(next.authorizedAmount).eq(before.authorized_amount)) {
+      const revised = await client.query<{ id: string }>(
+        `WITH prior AS (
+           UPDATE budget_authorizations
+              SET status = 'superseded', updated_at = now()
+            WHERE id = $1 AND status = 'active'
+            RETURNING *
+         )
+         INSERT INTO budget_authorizations
+           (budget_period_id, individual_id, program_id, authorized_hours,
+            internal_rate, rate_override, source_row_ref, revision, supersedes_id,
+            status, authorized_dollars, agency_rate, individual_rate_override,
+            rate_basis, notes, source, created_by_user_id)
+         SELECT budget_period_id, individual_id, program_id, authorized_hours,
+                internal_rate, rate_override, source_row_ref, revision + 1, id,
+                'active', $2, agency_rate, individual_rate_override,
+                rate_basis, $3, source, $4
+           FROM prior
+         RETURNING id`,
+        [before.budget_authorization_id, next.authorizedAmount, next.notes, actorId],
+      );
+      if (!revised.rows[0]) throw new Error("The linked class budget authorization is no longer active.");
+      await client.query(
+        `UPDATE class_budget_periods SET budget_authorization_id = $1 WHERE id = $2`,
+        [revised.rows[0].id, id],
+      );
+    }
     await recordChange(client, {
       actorId,
       action: "class_budget_updated",
@@ -841,8 +1038,10 @@ export async function issueClassInvoice(
       class_budget_period_id: string;
       status: string;
       total_amount: string;
+      service_period_end: string;
     }>(
-      `SELECT class_budget_period_id, status, total_amount::text AS total_amount
+      `SELECT class_budget_period_id, status, total_amount::text AS total_amount,
+              service_period_end::text AS service_period_end
          FROM class_invoices WHERE id = $1 FOR UPDATE`,
       [id],
     );
@@ -934,6 +1133,14 @@ export async function issueClassInvoice(
        VALUES ($1, $2, 'issue', $3, $4)`,
       [invoice.class_budget_period_id, id, details.invoiceAmount, actorId],
     );
+    await postClassProgramBudgetIssue(
+      client,
+      invoice.class_budget_period_id,
+      id,
+      invoice.service_period_end,
+      details.invoiceAmount,
+      actorId,
+    );
     await recordChange(client, {
       actorId,
       action: "class_invoice_issued",
@@ -1004,6 +1211,7 @@ export async function voidClassInvoice(
        VALUES ($1, $2, 'void', $3, $4)`,
       [invoice.class_budget_period_id, id, toMoney(dec(invoice.total_amount).negated()), actorId],
     );
+    await postClassProgramBudgetReversal(client, id, actorId, voidReason);
     await recordChange(client, {
       actorId,
       action: "class_invoice_voided",

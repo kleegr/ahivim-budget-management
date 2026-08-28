@@ -1,4 +1,5 @@
 import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
+import { agencyDate } from "@/lib/business/agency-time";
 
 export const SETTLEMENT_SOURCE_LOCK = "ahivim:settlement-ledger-source";
 
@@ -23,9 +24,9 @@ interface FreshnessRow {
 
 type Queryable = Pick<PgLikePool, "query"> | Pick<PgLikeClient, "query">;
 
-/** The UTC date basis also used by currentBudgetPeriod's default clock. */
+/** The New York business date shared by operational screens and ledgers. */
 export function settlementApplicationDate(now: Date = new Date()): string {
-  return now.toISOString().slice(0, 10);
+  return agencyDate(now);
 }
 
 /** Acquire before any row lock in a transaction that reads or writes ledger sources. */

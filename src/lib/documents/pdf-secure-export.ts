@@ -2,8 +2,9 @@ import { PDFDocument } from "pdf-lib";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api";
 import type { PdfOverlay } from "./pdf-editor";
 import type { PdfImageSource } from "./pdf-export";
+import { resolvePdfExportMode, type PdfExportMode } from "./pdf-export-mode";
 
-export type PdfExportMode = "standard" | "secure";
+export type { PdfExportMode } from "./pdf-export-mode";
 
 interface RasterPage {
   pngBytes: Uint8Array;
@@ -413,7 +414,10 @@ export function requiresSecureRasterExport(
   pageRotations: Record<number, number>,
   overlays: PdfOverlay[] = [],
 ): boolean {
-  return mode === "secure"
-    || Object.values(pageRotations).some((rotation) => rotation % 360 !== 0)
-    || overlays.some((overlay) => overlay.rotation % 360 !== 0);
+  return resolvePdfExportMode(mode, {
+    hasPageRotation: Object.values(pageRotations).some((rotation) => rotation % 360 !== 0),
+    hasRotatedOverlay: overlays.some((overlay) => overlay.rotation % 360 !== 0),
+    pageOrderChanged: false,
+    hasFormFields: false,
+  }).mode === "secure";
 }

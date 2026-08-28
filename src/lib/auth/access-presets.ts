@@ -16,6 +16,7 @@ export const BUDGET_PLANNER_ACCESS = {
   canSeeBudgets: true,
   canSeeEmployeeDeals: false,
   canSeeSettlements: false,
+  canManageSettlements: false,
   canSeeClassFinancials: false,
   canManageClassInvoices: false,
   canEditDocuments: false,

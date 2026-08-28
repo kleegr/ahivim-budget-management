@@ -4,8 +4,6 @@ import { apiUser } from "@/lib/auth/session";
 import {
   createUser,
   listUsersWithAccess,
-  setUserAccessConfig,
-  userAccessConfigFromInput,
 } from "@/lib/auth/users";
 import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
 
@@ -49,6 +47,7 @@ export async function GET() {
         canSeeBudgets: u.canSeeBudgets,
         canSeeEmployeeDeals: u.canSeeEmployeeDeals,
         canSeeSettlements: u.canSeeSettlements,
+        canManageSettlements: u.canManageSettlements,
         canSeeClassFinancials: u.canSeeClassFinancials,
         canManageClassInvoices: u.canManageClassInvoices,
         canEditDocuments: u.canEditDocuments,
@@ -82,12 +81,9 @@ export async function POST(request: NextRequest) {
         role,
       },
       actor.id,
+      body,
     );
     if (!outcome.ok) return jsonError(REASONS[outcome.reason] ?? "Could not create that user.", 400);
-
-    // Apply the access configuration (scope only ever bites for the viewer role,
-    // but we store it as chosen so the setting persists if the role changes).
-    await setUserAccessConfig(pool, outcome.user.id, userAccessConfigFromInput(body, role), actor.id);
 
     return NextResponse.json(
       {

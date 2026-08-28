@@ -213,6 +213,12 @@ suite("class invoice ledger (real PostgreSQL)", () => {
       consumedAmount: "3300.0000",
       remainingAmount: "16700.0000",
     });
+    expect((await pool.query<{ event_type: string; amount: string }>(
+      `SELECT event_type, amount::text AS amount
+         FROM program_budget_events
+        WHERE source_type = 'class_invoice' AND source_id = $1`,
+      [draft.id],
+    )).rows).toEqual([{ event_type: "consume", amount: "3300.0000" }]);
 
     await expect(updateClassInvoiceDraft(pool, draft.id, { notes: "too late" }, ACTOR))
       .resolves.toMatchObject({ ok: false, code: "immutable" });
@@ -242,6 +248,16 @@ suite("class invoice ledger (real PostgreSQL)", () => {
       { event_type: "issue", amount: "3300.0000" },
       { event_type: "void", amount: "-3300.0000" },
     ]));
+    expect((await pool.query<{ event_type: string; amount: string }>(
+      `SELECT event_type, amount::text AS amount
+         FROM program_budget_events
+        WHERE source_type = 'class_invoice' AND source_id = $1
+        ORDER BY event_type`,
+      [draft.id],
+    )).rows).toEqual([
+      { event_type: "consume", amount: "3300.0000" },
+      { event_type: "reverse", amount: "-3300.0000" },
+    ]);
     await expect(pool.query(
       `UPDATE class_budget_ledger SET amount = 1 WHERE class_invoice_id = $1`,
       [draft.id],

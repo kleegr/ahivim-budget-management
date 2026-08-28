@@ -115,6 +115,12 @@ describe("computeStrategy — workbook Calculation-tab parity", () => {
     expect(multi["Fradel Ostreicher"]).toEqual(["Fradel Ostreicher 1", "Fradel Ostreicher 2"]);
     expect(multi["Mendel Stern"]).toEqual(["Mendel Stern 1", "Mendel Stern 2"]);
   });
+
+  it("rejects cuts outside the 0% to 100% range", () => {
+    const lines = [{ programLabel: "Com Hab", hours: "10", internalRate: "21" }];
+    expect(() => computeStrategy({ lines, cut1Percent: "-1" })).toThrow(/between 0% and 100%/);
+    expect(() => computeStrategy({ lines, cut2Percent: "101" })).toThrow(/between 0% and 100%/);
+  });
 });
 
 describe("derivePeriodFromRenewal — renewal-date-only", () => {

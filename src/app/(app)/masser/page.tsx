@@ -6,6 +6,7 @@ import { getSettlementDashboard, type SettlementRow } from "@/lib/data/settlemen
 import { dec } from "@/lib/money";
 import { PageHeader, ErrorPanel } from "@/components/ui";
 import MasserDashboard, { type AnnualFundingProgress } from "@/components/financial/masser-dashboard";
+import { agencyDate } from "@/lib/business/agency-time";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Annual plans - Ahivim Budget Management" };
@@ -61,7 +62,7 @@ function annualFunding(rows: SettlementRow[]): Record<string, AnnualFundingProgr
   for (const [key, value] of periods) {
     const personId = key.split(":", 1)[0];
     const existing = byPerson[personId];
-    const today = new Date().toISOString().slice(0, 10);
+    const today = agencyDate();
     const valueCurrent = Boolean(value.periodBegin && value.periodEnd && value.periodBegin <= today && value.periodEnd >= today);
     const existingCurrent = Boolean(existing?.periodBegin && existing.periodEnd && existing.periodBegin <= today && existing.periodEnd >= today);
     if (!existing || (valueCurrent && !existingCurrent) || (valueCurrent === existingCurrent && value.sortDate > existing.sortDate)) {

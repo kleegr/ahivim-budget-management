@@ -31,7 +31,7 @@ export async function getSettlementOperator(): Promise<SettlementOperator | null
   if (!user) return null;
   const pool = getPool();
   const scope = await resolveAccessScope(pool, user);
-  return scope.canSeeSettlements ? { user, scope, pool } : null;
+  return scope.canManageSettlements ? { user, scope, pool } : null;
 }
 
 export async function canOperateSettlementObligations(

@@ -68,6 +68,88 @@ export async function mergeEmployees(
         WHERE table_schema = current_schema() AND column_name = 'employee_id'`,
     );
     const repointed: Record<string, number> = await repointSettlementPerson(client, "employee", keepId, mergeId);
+    const movedLegacyAccess = await client.query(
+      `INSERT INTO user_employee_access (user_id, employee_id, created_at)
+       SELECT user_id, $1, created_at
+         FROM user_employee_access
+        WHERE employee_id = $2
+       ON CONFLICT (user_id, employee_id) DO NOTHING`,
+      [keepId, mergeId],
+    );
+    await client.query(`DELETE FROM user_employee_access WHERE employee_id = $1`, [mergeId]);
+    if (movedLegacyAccess.rowCount) repointed.user_employee_access = movedLegacyAccess.rowCount;
+
+    const movedPortalRelationships = await client.query(
+      `INSERT INTO user_employee_relationships
+         (user_id, employee_id, relationship_type, is_active, capability_grants,
+          capability_denials, created_by_user_id, updated_by_user_id, created_at, updated_at)
+       SELECT user_id, $1, relationship_type, is_active, capability_grants,
+              capability_denials, created_by_user_id, $3, created_at, now()
+         FROM user_employee_relationships
+        WHERE employee_id = $2
+       ON CONFLICT (user_id, employee_id, relationship_type) DO UPDATE SET
+         is_active = user_employee_relationships.is_active OR EXCLUDED.is_active,
+         capability_grants = ARRAY(
+           SELECT DISTINCT capability
+             FROM unnest(user_employee_relationships.capability_grants || EXCLUDED.capability_grants) capability
+            ORDER BY capability
+         ),
+         capability_denials = ARRAY(
+           SELECT DISTINCT capability
+             FROM unnest(user_employee_relationships.capability_denials || EXCLUDED.capability_denials) capability
+            ORDER BY capability
+         ),
+         updated_by_user_id = $3,
+         updated_at = now()`,
+      [keepId, mergeId, actorId],
+    );
+    await client.query(`DELETE FROM user_employee_relationships WHERE employee_id = $1`, [mergeId]);
+    if (movedPortalRelationships.rowCount) {
+      repointed.user_employee_relationships = movedPortalRelationships.rowCount;
+    }
+
+    await client.query(
+      `SELECT pg_advisory_xact_lock(lock_key)
+         FROM (
+           SELECT DISTINCT hashtextextended(
+                    'agency_employees:' || agency_id::text || ':' || person_id::text,
+                    0
+                  ) AS lock_key
+             FROM agency_employees
+             CROSS JOIN LATERAL unnest($1::uuid[]) AS people(person_id)
+            WHERE employee_id = ANY($1::uuid[])
+            ORDER BY lock_key
+         ) timeline_locks`,
+      [[keepId, mergeId]],
+    );
+    const overlappingAgencyMemberships = await client.query<{ id: string }>(
+      `SELECT source.id
+         FROM agency_employees source
+         JOIN agency_employees target
+           ON target.agency_id = source.agency_id
+          AND target.employee_id = $1
+          AND target.is_active = true
+          AND daterange(target.effective_from, target.effective_to, '[]')
+              && daterange(source.effective_from, source.effective_to, '[]')
+        WHERE source.employee_id = $2
+          AND source.is_active = true
+        LIMIT 1`,
+      [keepId, mergeId],
+    );
+    if (overlappingAgencyMemberships.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail(
+        "conflict",
+        "Resolve overlapping agency membership history before merging these employees.",
+      );
+    }
+    const movedAgencyMemberships = await client.query(
+      `UPDATE agency_employees
+          SET employee_id = $1, updated_by_user_id = $3, updated_at = now()
+        WHERE employee_id = $2`,
+      [keepId, mergeId, actorId],
+    );
+    if (movedAgencyMemberships.rowCount) repointed.agency_employees = movedAgencyMemberships.rowCount;
     if (mergeDealCount > 0) {
       const deals = await client.query(
         `UPDATE employee_deals SET employee_id = $1, updated_at = now() WHERE employee_id = $2`,
@@ -77,7 +159,14 @@ export async function mergeEmployees(
     }
     for (const { table_name } of cols.rows) {
       if (!/^[a-z_][a-z0-9_]*$/.test(table_name)) continue;
-      if (["employee_deals", "settlement_events", "settlement_obligations"].includes(table_name)) continue;
+      if ([
+        "employee_deals",
+        "settlement_events",
+        "settlement_obligations",
+        "user_employee_access",
+        "user_employee_relationships",
+        "agency_employees",
+      ].includes(table_name)) continue;
       const res = await client.query(
         `UPDATE "${table_name}" SET employee_id = $1 WHERE employee_id = $2`,
         [keepId, mergeId],

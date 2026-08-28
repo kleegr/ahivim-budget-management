@@ -55,7 +55,118 @@ export async function mergeIndividuals(
           AND c.column_name = 'individual_id'
           AND t.table_type = 'BASE TABLE'`,
     );
+
+    const overlappingProgramBudgets = await client.query<{ id: string }>(
+      `SELECT source.id
+         FROM budget_authorizations source
+         JOIN budget_periods source_period ON source_period.id = source.budget_period_id
+         JOIN budget_authorizations target
+           ON target.individual_id = $1
+          AND target.program_id = source.program_id
+          AND target.status = 'active'
+          AND target.archived_at IS NULL
+         JOIN budget_periods target_period ON target_period.id = target.budget_period_id
+        WHERE source.individual_id = $2
+          AND source.status = 'active'
+          AND source.archived_at IS NULL
+          AND source_period.archived_at IS NULL
+          AND target_period.archived_at IS NULL
+          AND daterange(target_period.start_date, target_period.end_date, '[]')
+              && daterange(source_period.start_date, source_period.end_date, '[]')
+        LIMIT 1`,
+      [keepId, mergeId],
+    );
+    if (overlappingProgramBudgets.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail(
+        "conflict",
+        "Resolve overlapping active program authorizations before merging these individuals.",
+      );
+    }
     const repointed: Record<string, number> = await repointSettlementPerson(client, "individual", keepId, mergeId);
+
+    const movedLegacyAccess = await client.query(
+      `INSERT INTO user_individual_access (user_id, individual_id, created_at)
+       SELECT user_id, $1, created_at
+         FROM user_individual_access
+        WHERE individual_id = $2
+       ON CONFLICT (user_id, individual_id) DO NOTHING`,
+      [keepId, mergeId],
+    );
+    await client.query(`DELETE FROM user_individual_access WHERE individual_id = $1`, [mergeId]);
+    if (movedLegacyAccess.rowCount) repointed.user_individual_access = movedLegacyAccess.rowCount;
+
+    const movedPortalRelationships = await client.query(
+      `INSERT INTO user_individual_relationships
+         (user_id, individual_id, relationship_type, is_active, capability_grants,
+          capability_denials, created_by_user_id, updated_by_user_id, created_at, updated_at)
+       SELECT user_id, $1, relationship_type, is_active, capability_grants,
+              capability_denials, created_by_user_id, $3, created_at, now()
+         FROM user_individual_relationships
+        WHERE individual_id = $2
+       ON CONFLICT (user_id, individual_id, relationship_type) DO UPDATE SET
+         is_active = user_individual_relationships.is_active OR EXCLUDED.is_active,
+         capability_grants = ARRAY(
+           SELECT DISTINCT capability
+             FROM unnest(user_individual_relationships.capability_grants || EXCLUDED.capability_grants) capability
+            ORDER BY capability
+         ),
+         capability_denials = ARRAY(
+           SELECT DISTINCT capability
+             FROM unnest(user_individual_relationships.capability_denials || EXCLUDED.capability_denials) capability
+            ORDER BY capability
+         ),
+         updated_by_user_id = $3,
+         updated_at = now()`,
+      [keepId, mergeId, actorId],
+    );
+    await client.query(`DELETE FROM user_individual_relationships WHERE individual_id = $1`, [mergeId]);
+    if (movedPortalRelationships.rowCount) {
+      repointed.user_individual_relationships = movedPortalRelationships.rowCount;
+    }
+
+    await client.query(
+      `SELECT pg_advisory_xact_lock(lock_key)
+         FROM (
+           SELECT DISTINCT hashtextextended(
+                    'agency_individuals:' || agency_id::text || ':' || person_id::text,
+                    0
+                  ) AS lock_key
+             FROM agency_individuals
+             CROSS JOIN LATERAL unnest($1::uuid[]) AS people(person_id)
+            WHERE individual_id = ANY($1::uuid[])
+            ORDER BY lock_key
+         ) timeline_locks`,
+      [[keepId, mergeId]],
+    );
+    const overlappingAgencyMemberships = await client.query<{ id: string }>(
+      `SELECT source.id
+         FROM agency_individuals source
+         JOIN agency_individuals target
+           ON target.agency_id = source.agency_id
+          AND target.individual_id = $1
+          AND target.is_active = true
+          AND daterange(target.effective_from, target.effective_to, '[]')
+              && daterange(source.effective_from, source.effective_to, '[]')
+        WHERE source.individual_id = $2
+          AND source.is_active = true
+        LIMIT 1`,
+      [keepId, mergeId],
+    );
+    if (overlappingAgencyMemberships.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail(
+        "conflict",
+        "Resolve overlapping agency membership history before merging these individuals.",
+      );
+    }
+    const movedAgencyMemberships = await client.query(
+      `UPDATE agency_individuals
+          SET individual_id = $1, updated_by_user_id = $3, updated_at = now()
+        WHERE individual_id = $2`,
+      [keepId, mergeId, actorId],
+    );
+    if (movedAgencyMemberships.rowCount) repointed.agency_individuals = movedAgencyMemberships.rowCount;
 
     const overlappingClassBudgets = await client.query<{ id: string }>(
       `SELECT source.id
@@ -169,6 +280,9 @@ export async function mergeIndividuals(
         "class_budget_periods",
         "class_invoices",
         "class_reimbursement_profiles",
+        "user_individual_access",
+        "user_individual_relationships",
+        "agency_individuals",
       ].includes(table_name)) continue;
       const res = await client.query(
         `UPDATE "${table_name}" SET individual_id = $1 WHERE individual_id = $2`,

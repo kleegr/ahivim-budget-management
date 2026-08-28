@@ -119,14 +119,32 @@ suite("calculation strategies (real PostgreSQL)", () => {
     const ind = unwrap(await createIndividual(pool, { displayName: "Multi Strategy" }, ACTOR));
     const p = await program("COMHAB", "Com Hab", "21");
     const first = unwrap(await createStrategy(pool, { individualId: ind.id }, ACTOR));
-    unwrap(await updateStrategy(pool, { id: first.id, hours: { [p]: "500" } }, ACTOR));
-    unwrap(await duplicateStrategy(pool, { id: first.id, label: "2" }, ACTOR));
+    unwrap(await updateStrategy(pool, {
+      id: first.id,
+      hours: { [p]: "500" },
+      rateOverrides: { [p]: "30" },
+    }, ACTOR));
+    await pool.query(
+      `UPDATE calculation_strategy_lines
+          SET rate_override_effective_from = '2026-09-01'
+        WHERE strategy_id = $1 AND program_id = $2`,
+      [first.id, p],
+    );
+    const duplicate = unwrap(await duplicateStrategy(pool, { id: first.id, label: "2" }, ACTOR));
 
     const { rows } = await listStrategies(pool, { individualId: ind.id });
     expect(rows).toHaveLength(2); // two strategies…
     expect(new Set(rows.map((r) => r.individualId)).size).toBe(1); // …ONE canonical individual
     const individualsCount = await pool.query<{ c: string }>(`SELECT count(*)::text c FROM individuals`);
     expect(Number(individualsCount.rows[0]!.c)).toBe(1); // no duplicate individual created
+    const copied = await pool.query<{ rate_override: string; effective_from: string }>(
+      `SELECT rate_override::text,
+              to_char(rate_override_effective_from, 'YYYY-MM-DD') AS effective_from
+         FROM calculation_strategy_lines
+        WHERE strategy_id = $1 AND program_id = $2`,
+      [duplicate.id, p],
+    );
+    expect(copied.rows[0]).toMatchObject({ rate_override: "30.0000", effective_from: "2026-09-01" });
   });
 
   it("applies a per-strategy program rate override and recalculates immediately", async () => {

@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { currentUser, roleAtLeast } from "@/lib/auth/session";
 import { canAccessPlanning, resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
+import { resolvePortalAccess } from "@/lib/auth/portal-access";
 
 export const dynamic = "force-dynamic";
 
@@ -16,12 +17,26 @@ export default async function HomePage() {
   if (!user) redirect("/signin");
   if (roleAtLeast(user.role, "manager")) redirect("/dashboard");
 
-  const access = await withDb((pool) => resolveAccessScope(pool, user));
-  if (access.ok) {
-    if (canAccessPlanning(access.data)) redirect("/schedule");
-    if (access.data.canSeeBudgets) redirect("/individuals");
-    if (access.data.canSeeSettlements) redirect("/settlements");
-    if (access.data.canSeeTransactions) redirect("/transactions");
+  const resolved = await withDb(async (pool) => {
+    const [access, portal] = await Promise.all([
+      resolveAccessScope(pool, user),
+      resolvePortalAccess(pool, user),
+    ]);
+    return { access, portal };
+  });
+  if (resolved.ok) {
+    const { access, portal } = resolved.data;
+    const agencyRoles = new Set(portal.agencyAccess.map((assignment) => assignment.role));
+    if (canAccessPlanning(access)) redirect("/schedule");
+    if (access.canSeeSettlements && agencyRoles.has("collector")) redirect("/collections");
+    const externalPortal = portal.globalRoles.some((assignment) => assignment.role !== "owner")
+      || portal.agencyAccess.length > 0
+      || portal.individualLinks.length > 0
+      || portal.employeeLinks.length > 0;
+    if (externalPortal) redirect("/portal");
+    if (access.canSeeBudgets) redirect("/individuals");
+    if (access.canSeeSettlements) redirect("/collections");
+    if (access.canSeeTransactions) redirect("/transactions");
   }
   redirect("/employees");
 }

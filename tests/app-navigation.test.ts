@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getCommandDestinations, getVisibleWorkspaces } from "@/lib/nav/app-navigation";
+import { getCommandDestinations, getVisibleAdminDestinations, getVisibleWorkspaces } from "@/lib/nav/app-navigation";
 
 describe("role-specific workspaces", () => {
   it("gives a finance-only viewer Money operations without budget navigation", () => {
@@ -16,7 +16,7 @@ describe("role-specific workspaces", () => {
 
     expect(workspaces.map((workspace) => workspace.label)).toContain("Money operations");
     expect(workspaces.map((workspace) => workspace.label)).not.toContain("Budgets");
-    expect(workspaces.find((workspace) => workspace.id === "payroll")?.href).toBe("/settlements");
+    expect(workspaces.find((workspace) => workspace.id === "payroll")?.href).toBe("/collections");
     expect(getCommandDestinations(access).some((item) => item.href === "/individuals")).toBe(false);
   });
 
@@ -133,5 +133,20 @@ describe("role-specific workspaces", () => {
 
     expect(getCommandDestinations(base).map((item) => item.href)).toContain("/documents/pdf-editor");
     expect(getCommandDestinations({ ...base, canEditDocuments: false }).map((item) => item.href)).not.toContain("/documents/pdf-editor");
+  });
+
+  it("shows agency administration only to a portal owner", () => {
+    const base = {
+      role: "manager",
+      accessResolved: true,
+      canSeeTransactions: true,
+      canSeeSettlements: true,
+      canSeeBudgets: true,
+      canPlan: true,
+      canEditDocuments: true,
+    };
+
+    expect(getVisibleAdminDestinations(base).map((item) => item.href)).not.toContain("/settings/agencies");
+    expect(getVisibleAdminDestinations({ ...base, canManageAgencies: true }).map((item) => item.href)).toContain("/settings/agencies");
   });
 });

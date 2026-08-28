@@ -3,6 +3,7 @@ import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import { resolveAccessScope } from "@/lib/auth/access";
 import { readJson, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
+import { agencyDate } from "@/lib/business/agency-time";
 import {
   buildXlsx,
   buildCsv,
@@ -73,7 +74,7 @@ export async function POST(request: NextRequest) {
       return out;
     });
 
-    const filename = `${baseName}-${new Date().toISOString().slice(0, 10)}.${format}`;
+    const filename = `${baseName}-${agencyDate()}.${format}`;
 
     if (format === "xlsx") {
       const buffer = await buildXlsx(title, [{ title, columns, rows }]);

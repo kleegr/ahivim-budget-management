@@ -256,6 +256,13 @@ describe("settlement refresh certification", () => {
     const result = await refreshSettlementObligations(pool, {}, null);
 
     expect(result).toMatchObject({ ok: true, data: { skippedMissingNet: 1 } });
+    expect(statements.filter((sql) => sql.includes("effective_payment_recipient("))).toHaveLength(2);
+    expect(statements.some((sql) => sql.includes("canonical_service_date("))).toBe(true);
+    expect(statements.some((sql) => sql.includes("t.created_at::date"))).toBe(false);
+    const employeeSource = statements.find((sql) => sql.includes("LEFT JOIN employee_payroll_checks pc"));
+    expect(employeeSource).toContain("pc.actual_net::text AS total_net_pay");
+    expect(employeeSource).toContain("AND pc.id IS NOT NULL");
+    expect(employeeSource).not.toContain("COALESCE(pc.actual_net, t.total_net_pay)");
     expect(statements.some((sql) => sql.includes("WHEN source_version = refreshed_version"))).toBe(true);
     expect(statements.some((sql) => sql.includes("SET refreshed_version = source_version"))).toBe(false);
     expect(statements.at(-1)).toBe("COMMIT");

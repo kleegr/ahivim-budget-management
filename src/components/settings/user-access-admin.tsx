@@ -89,6 +89,7 @@ interface UserRow {
   canSeeBudgets: boolean;
   canSeeEmployeeDeals: boolean;
   canSeeSettlements: boolean;
+  canManageSettlements: boolean;
   canSeeClassFinancials: boolean;
   canManageClassInvoices: boolean;
   canEditDocuments: boolean;
@@ -112,6 +113,7 @@ interface AccessState {
   canSeeBudgets: boolean;
   canSeeEmployeeDeals: boolean;
   canSeeSettlements: boolean;
+  canManageSettlements: boolean;
   canSeeClassFinancials: boolean;
   canManageClassInvoices: boolean;
   canEditDocuments: boolean;
@@ -135,6 +137,7 @@ const emptyAccess = (): AccessState => ({
   canSeeBudgets: false,
   canSeeEmployeeDeals: false,
   canSeeSettlements: false,
+  canManageSettlements: false,
   canSeeClassFinancials: false,
   canManageClassInvoices: false,
   canEditDocuments: false,
@@ -158,6 +161,7 @@ const accessToBody = (a: AccessState) => ({
   canSeeBudgets: a.canSeeBudgets && a.canSeeHours,
   canSeeEmployeeDeals: a.canSeeEmployeeDeals,
   canSeeSettlements: a.canSeeSettlements,
+  canManageSettlements: a.canSeeSettlements && a.canManageSettlements,
   canSeeClassFinancials: a.canSeeMoney && a.canSeeClassFinancials,
   canManageClassInvoices: a.canSeeMoney && a.canSeeClassFinancials && a.canManageClassInvoices,
   canEditDocuments: a.canEditDocuments,
@@ -192,7 +196,7 @@ const VISIBILITY_OPTIONS: Array<{
   { key: "canSeeTaxes", label: "Taxes and withholding", description: "gross, net and payroll withholding details", requiresMoney: true },
   { key: "canSeeBudgets", label: "Budgets", description: "individual budgets and annual plans; enabling this also enables Hours" },
   { key: "canSeeEmployeeDeals", label: "Employee deals", description: "deal terms and calculated obligations", requiresMoney: true },
-  { key: "canSeeSettlements", label: "Money operations", description: "view balances and record payments, collections, credits, and set-asides", requiresMoney: true },
+  { key: "canSeeSettlements", label: "Collection reports", description: "balances, collections, credits, and set-aside reporting", requiresMoney: true },
   { key: "canSeeClassFinancials", label: "Class revenue", description: "annual class allowances, invoices, and reimbursement profiles", requiresMoney: true },
 ];
 
@@ -293,10 +297,11 @@ function AccessConfig({
     canSeeEmployeeAmounts: true,
     canSeeAgencySpread: false,
     canSeeCheckNet: true,
-    canSeeTaxes: false,
+    canSeeTaxes: true,
     canSeeBudgets: false,
     canSeeEmployeeDeals: true,
     canSeeSettlements: true,
+    canManageSettlements: true,
     canSeeClassFinancials: false,
     canManageClassInvoices: false,
     canEditDocuments: false,
@@ -324,6 +329,7 @@ function AccessConfig({
     canSeeBudgets: false,
     canSeeEmployeeDeals: false,
     canSeeSettlements: false,
+    canManageSettlements: false,
     canSeeClassFinancials: true,
     canManageClassInvoices: true,
     canEditDocuments: true,
@@ -338,6 +344,10 @@ function AccessConfig({
     }
     if (key === "canSeeBudgets" && checked) {
       set({ canSeeBudgets: true, canSeeHours: true });
+      return;
+    }
+    if (key === "canSeeSettlements" && !checked) {
+      set({ canSeeSettlements: false, canManageSettlements: false });
       return;
     }
     set({ [key]: checked } as Partial<AccessState>);
@@ -460,6 +470,16 @@ function AccessConfig({
           onChange={(e) => set({ canManageClassInvoices: e.target.checked })}
         />
         <span>Can manage class invoices</span>
+      </label>
+      <label className={`flex items-center gap-2 text-sm ${!value.canSeeMoney || !value.canSeeSettlements ? "opacity-50" : ""}`}>
+        <input
+          type="checkbox"
+          checked={value.canManageSettlements}
+          disabled={!value.canSeeMoney || !value.canSeeSettlements}
+          onChange={(event) => set({ canManageSettlements: event.target.checked })}
+        />
+        <span>Can record and reverse collections</span>
+        <span className="text-xs text-[var(--color-ink-faint)]">write access to the money ledger</span>
       </label>
 
       <fieldset className="border-t border-[var(--color-rule)] pt-3">
@@ -585,6 +605,7 @@ export default function UserAccessAdmin({
           canSeeBudgets: boolean;
           canSeeEmployeeDeals: boolean;
           canSeeSettlements: boolean;
+          canManageSettlements: boolean;
           canSeeClassFinancials: boolean;
           canManageClassInvoices: boolean;
           canEditDocuments: boolean;
@@ -610,6 +631,7 @@ export default function UserAccessAdmin({
           canSeeBudgets: data.access.canSeeBudgets !== false && data.access.canSeeHours !== false,
           canSeeEmployeeDeals: data.access.canSeeEmployeeDeals === true,
           canSeeSettlements: data.access.canSeeSettlements === true,
+          canManageSettlements: data.access.canManageSettlements === true,
           canSeeClassFinancials: data.access.canSeeClassFinancials === true,
           canManageClassInvoices: data.access.canManageClassInvoices === true,
           canEditDocuments: data.access.canEditDocuments === true,

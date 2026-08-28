@@ -5,6 +5,7 @@ import { createEmployee } from "@/lib/manage/employees";
 import { mergeEmployees } from "@/lib/manage/employee-merge";
 import { createIndividual } from "@/lib/manage/individuals";
 import { saveEmployeeDeal } from "@/lib/manage/employee-deals";
+import { savePayrollCheck } from "@/lib/manage/direct-pay-operations";
 import {
   applySettlementCredit,
   recordObligationPayment,
@@ -30,6 +31,20 @@ const operationKey = (value: number) => `00000000-0000-4000-9000-${String(value)
 function unwrap<T>(result: { ok: true; data: T } | { ok: false; code: string; message: string }): T {
   if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
   return result.data;
+}
+
+async function verifyPayrollCheck(input: {
+  employeeId: string;
+  checkNumber: string;
+  checkDate: string;
+  actualNet: string;
+  periodBegin?: string;
+  periodEnd?: string;
+}) {
+  return unwrap(await savePayrollCheck(pool, {
+    ...input,
+    verificationStatus: "verified",
+  }, ACTOR));
 }
 
 suite("employee deals and settlement ledger (real PostgreSQL)", () => {
@@ -71,6 +86,19 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       [employee.id, individual.id],
     );
 
+    const payrollCheck = unwrap(await savePayrollCheck(pool, {
+      employeeId: employee.id,
+      checkNumber: "DIRECT-1",
+      checkDate: "2026-02-15",
+      periodBegin: "2026-02-01",
+      periodEnd: "2026-02-14",
+      actualGross: "1500",
+      actualNet: "1200",
+      taxWithheld: "300",
+      verificationStatus: "verified",
+    }, ACTOR));
+    expect(payrollCheck.linkedTransactions).toBe(2);
+
     const refreshed = unwrap(await refreshSettlementObligations(pool, {}, ACTOR));
     expect(refreshed.created).toBe(2);
     const dashboard = await getSettlementDashboard(pool);
@@ -82,7 +110,8 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     expect(direct.calculation).toMatchObject({
       checkNet: "1200.0000",
       checkGross: "1500.0000",
-      withholdingDisplayOnly: "300.0000",
+      taxWithheldDisplayOnly: "300.0000",
+      totalDeductionsDisplayOnly: "300.0000",
       employeeKeeps: "1080.0000",
     });
     expect(agency.originalAmount).toBe("16.8000");
@@ -93,6 +122,24 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       agencyCut: "4.2000",
       employeePayable: "16.8000",
     });
+
+    const correctedCheck = unwrap(await savePayrollCheck(pool, {
+      id: payrollCheck.id,
+      employeeId: employee.id,
+      checkNumber: "DIRECT-1-CORRECTED",
+      checkDate: "2026-02-16",
+      periodBegin: "2026-02-01",
+      periodEnd: "2026-02-14",
+      actualGross: "1500",
+      actualNet: "1200",
+      taxWithheld: "300",
+      verificationStatus: "verified",
+    }, ACTOR));
+    expect(correctedCheck.linkedTransactions).toBe(2);
+    unwrap(await refreshSettlementObligations(pool, {}, ACTOR));
+    const afterCorrection = await getSettlementDashboard(pool);
+    expect(afterCorrection.rows.filter((row) => row.kind === "employee_giveback")).toHaveLength(1);
+    expect(afterCorrection.rows.find((row) => row.kind === "employee_giveback")?.id).toBe(direct.id);
 
     const partial = unwrap(await recordObligationPayment(pool, {
       obligationId: direct.id,
@@ -142,6 +189,75 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     expect((await getSettlementDashboard(pool)).rows).toHaveLength(2);
   });
 
+  it("keeps an unverified payroll check pending until verification", async () => {
+    const employee = unwrap(await createEmployee(pool, { displayName: "Pending Check Employee" }, ACTOR));
+    unwrap(await saveEmployeeDeal(pool, {
+      employeeId: employee.id,
+      directRule: "giveback_percent",
+      directPercent: "0.10",
+      agencyCutPercent: "0",
+      effectiveFrom: "2026-01-01",
+      reason: "Initial direct-pay agreement",
+    }, ACTOR));
+    await pool.query(
+      `INSERT INTO payroll_transactions
+         (employee_id, check_number, check_date, period_begin, period_end,
+          payment_recipient, imported_amount, total_net_pay, transaction_fingerprint)
+       VALUES ($1, 'PENDING-1', '2026-02-15', '2026-02-01', '2026-02-14',
+               'employee', '900', '800', 'settle-pending-check-1')`,
+      [employee.id],
+    );
+
+    const pending = unwrap(await savePayrollCheck(pool, {
+      employeeId: employee.id,
+      checkNumber: "PENDING-1",
+      checkDate: "2026-02-15",
+      periodBegin: "2026-02-01",
+      periodEnd: "2026-02-14",
+      actualGross: "900",
+      actualNet: "700",
+      taxWithheld: "200",
+      verificationStatus: "unverified",
+    }, ACTOR));
+    expect(pending.linkedTransactions).toBe(1);
+    unwrap(await refreshSettlementObligations(pool, { employeeId: employee.id }, ACTOR));
+    expect((await getSettlementDashboard(pool)).rows).toHaveLength(0);
+
+    unwrap(await savePayrollCheck(pool, {
+      id: pending.id,
+      employeeId: employee.id,
+      checkNumber: "PENDING-1",
+      checkDate: "2026-02-15",
+      periodBegin: "2026-02-01",
+      periodEnd: "2026-02-14",
+      actualGross: "900",
+      actualNet: "700",
+      taxWithheld: "200",
+      verificationStatus: "verified",
+    }, ACTOR));
+    unwrap(await refreshSettlementObligations(pool, { employeeId: employee.id }, ACTOR));
+    const verified = (await getSettlementDashboard(pool)).rows.find((row) => row.kind === "employee_giveback")!;
+    expect(verified.originalAmount).toBe("70.0000");
+
+    unwrap(await savePayrollCheck(pool, {
+      id: pending.id,
+      employeeId: employee.id,
+      checkNumber: "PENDING-1",
+      checkDate: "2026-02-15",
+      periodBegin: "2026-02-01",
+      periodEnd: "2026-02-14",
+      actualGross: "900",
+      actualNet: "700",
+      taxWithheld: "200",
+      verificationStatus: "unverified",
+    }, ACTOR));
+    unwrap(await refreshSettlementObligations(pool, { employeeId: employee.id }, ACTOR));
+    expect((await getSettlementDashboard(pool)).rows.find((row) => row.id === verified.id)).toMatchObject({
+      state: "void",
+      balance: "0.0000",
+    });
+  });
+
   it("retires an existing obligation through reconciliation when its derived balance becomes zero", async () => {
     const employee = unwrap(await createEmployee(pool, { displayName: "Zero Balance Employee" }, ACTOR));
     unwrap(await saveEmployeeDeal(pool, {
@@ -160,6 +276,14 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
                'employee','100','100','settle-zero-retire-1')`,
       [employee.id],
     );
+    await verifyPayrollCheck({
+      employeeId: employee.id,
+      checkNumber: "ZERO-RETIRE-1",
+      checkDate: "2026-02-15",
+      periodBegin: "2026-02-01",
+      periodEnd: "2026-02-14",
+      actualNet: "100",
+    });
 
     expect(unwrap(await refreshSettlementObligations(pool, { employeeId: employee.id }, ACTOR))).toMatchObject({
       created: 1,
@@ -231,6 +355,12 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
        VALUES ($1,$2,'D-2','2026-02-01','employee','1000','900','1000','settle-revision-1')`,
       [employee.id, individual.id],
     );
+    await verifyPayrollCheck({
+      employeeId: employee.id,
+      checkNumber: "D-2",
+      checkDate: "2026-02-01",
+      actualNet: "1000",
+    });
     unwrap(await refreshSettlementObligations(pool, { employeeId: employee.id }, ACTOR));
     let dashboard = await getSettlementDashboard(pool);
     const original = dashboard.rows[0];
@@ -295,6 +425,22 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     const source = unwrap(await createEmployee(pool, { displayName: "Rachel Greenberg" }, ACTOR));
     const target = unwrap(await createEmployee(pool, { displayName: "R. Greenberg" }, ACTOR));
     const individual = unwrap(await createIndividual(pool, { displayName: "David Klein" }, ACTOR));
+    const homeAgency = await pool.query<{ id: string }>(`SELECT id FROM agencies WHERE is_home_agency = true`);
+    await pool.query(
+      `INSERT INTO agency_employees (agency_id, employee_id, is_active, effective_from)
+       VALUES ($1, $2, true, '2025-01-01')`,
+      [homeAgency.rows[0]!.id, target.id],
+    );
+    await pool.query(
+      `INSERT INTO agency_employees
+         (agency_id, employee_id, is_active, effective_from, effective_to)
+       VALUES ($1, $2, true, '2024-01-01', '2024-12-31')`,
+      [homeAgency.rows[0]!.id, source.id],
+    );
+    await pool.query(
+      `INSERT INTO user_employee_access (user_id, employee_id) VALUES ($1, $2), ($1, $3)`,
+      [ACTOR, target.id, source.id],
+    );
     unwrap(await saveEmployeeDeal(pool, {
       employeeId: source.id,
       directRule: "giveback_percent",
@@ -310,6 +456,12 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
        VALUES ($1,$2,'MERGE-1','2026-03-15','employee','1000','1000','settle-identity-merge-1')`,
       [source.id, individual.id],
     );
+    await verifyPayrollCheck({
+      employeeId: source.id,
+      checkNumber: "MERGE-1",
+      checkDate: "2026-03-15",
+      actualNet: "1000",
+    });
 
     unwrap(await refreshSettlementObligations(pool, {}, ACTOR));
     let dashboard = await getSettlementDashboard(pool);
@@ -337,7 +489,18 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       payroll_transactions: 1,
       settlement_events: 1,
       settlement_obligations: 1,
+      agency_employees: 1,
     });
+    expect((await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM agency_employees
+        WHERE agency_id = $1 AND employee_id = $2`,
+      [homeAgency.rows[0]!.id, target.id],
+    )).rows[0]?.count).toBe("2");
+    expect((await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM user_employee_access
+        WHERE user_id = $1 AND employee_id = $2`,
+      [ACTOR, target.id],
+    )).rows[0]?.count).toBe("1");
 
     const refreshed = unwrap(await refreshSettlementObligations(pool, {}, ACTOR));
     expect(refreshed).toMatchObject({ created: 0, adjusted: 0, voided: 0 });
@@ -396,6 +559,18 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
          ($1,$2,'CREDIT-2','2026-04-15','employee','200','200','credit-target')`,
       [employee.id, individual.id],
     );
+    await verifyPayrollCheck({
+      employeeId: employee.id,
+      checkNumber: "CREDIT-1",
+      checkDate: "2026-04-01",
+      actualNet: "100",
+    });
+    await verifyPayrollCheck({
+      employeeId: employee.id,
+      checkNumber: "CREDIT-2",
+      checkDate: "2026-04-15",
+      actualNet: "200",
+    });
     unwrap(await refreshSettlementObligations(pool, { employeeId: employee.id }, ACTOR));
     let dashboard = await getSettlementDashboard(pool);
     const source = dashboard.rows.find((row) => row.checkNumber === "CREDIT-1")!;
@@ -461,6 +636,12 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
        VALUES ($1,$2,'FRESH-1','2026-05-01','employee','100','100','freshness-source')`,
       [employee.id, individual.id],
     );
+    const verifiedCheck = await verifyPayrollCheck({
+      employeeId: employee.id,
+      checkNumber: "FRESH-1",
+      checkDate: "2026-05-01",
+      actualNet: "100",
+    });
 
     unwrap(await refreshSettlementObligations(pool, {}, ACTOR));
     let dashboard = await getSettlementDashboard(pool);
@@ -468,8 +649,9 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     const obligation = dashboard.rows.find((row) => row.checkNumber === "FRESH-1")!;
 
     await pool.query(
-      `UPDATE payroll_transactions SET total_net_pay = '200', updated_at = now()
-        WHERE transaction_fingerprint = 'freshness-source'`,
+      `UPDATE employee_payroll_checks SET actual_net = '200', updated_at = now()
+        WHERE id = $1`,
+      [verifiedCheck.id],
     );
     dashboard = await getSettlementDashboard(pool);
     expect(dashboard.freshness.dirty).toBe(true);

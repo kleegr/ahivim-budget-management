@@ -24,6 +24,7 @@ import {
   planSecureRasterWorkload,
   requiresSecureRasterExport,
 } from "@/lib/documents/pdf-secure-export";
+import { resolvePdfExportMode } from "@/lib/documents/pdf-export-mode";
 
 const ONE_PIXEL_PNG = Uint8Array.from(Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -244,5 +245,44 @@ describe("PDF overlay export", () => {
       maxPixelsPerPage: 2_000_000,
       maxScale: 2,
     })).toThrow(/too large to flatten securely/i);
+  });
+});
+
+describe("PDF export mode resolution", () => {
+  const unconstrained = {
+    hasPageRotation: false,
+    hasRotatedOverlay: false,
+    pageOrderChanged: false,
+    hasFormFields: false,
+  };
+
+  it("keeps high-fidelity as the default when the working copy supports it", () => {
+    expect(resolvePdfExportMode("standard", unconstrained)).toEqual({
+      mode: "standard",
+      forced: false,
+      reason: null,
+    });
+    expect(resolvePdfExportMode("secure", unconstrained)).toEqual({
+      mode: "secure",
+      forced: false,
+      reason: null,
+    });
+  });
+
+  it("forces and explains sanitized output before reordered form pages export", () => {
+    const resolution = resolvePdfExportMode("standard", {
+      ...unconstrained,
+      pageOrderChanged: true,
+      hasFormFields: true,
+    });
+
+    expect(resolution.mode).toBe("secure");
+    expect(resolution.forced).toBe(true);
+    expect(resolution.reason).toMatch(/reordering pages in a fillable PDF/i);
+    expect(resolvePdfExportMode("standard", {
+      ...unconstrained,
+      pageOrderChanged: true,
+      hasFormFields: false,
+    }).mode).toBe("standard");
   });
 });

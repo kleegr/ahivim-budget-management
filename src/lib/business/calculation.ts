@@ -33,8 +33,6 @@ export interface CalculationInput {
   basis?: "annual" | "monthly";
   cut1Percent?: MoneyInput | null;
   cut2Percent?: MoneyInput | null;
-  /** 'sequential' applies cut 2 to the post-cut-1 amount; 'parallel' to the base. */
-  cutOrder?: "sequential" | "parallel";
   /** Clock or manual adjustment (signed) applied after the cuts. */
   clockAdjustment?: MoneyInput | null;
   /** Signed adjustment from final gross to final net. */
@@ -143,14 +141,14 @@ export function computeCalculation(input: CalculationInput): CalculationResult {
     value: toMoney(afterCut1),
   });
 
-  // 4. Second cut (sequential by default: applied to the post-cut-1 amount).
+  // 4. The second cut always applies to the remainder after the first cut.
   const cut2 = pct(input.cut2Percent);
-  const cut2Base = input.cutOrder === "parallel" ? base : afterCut1;
+  const cut2Base = afterCut1;
   const cut2Amount = cut2Base.times(cut2);
   const afterCut2 = afterCut1.minus(cut2Amount);
   steps.push({
     key: "cut2",
-    label: `Second cut (${input.cutOrder === "parallel" ? "parallel" : "sequential"})`,
+    label: "Second cut (sequential)",
     formula: `${toMoney(cut2Base)} x ${fmtPct(cut2)} = ${toMoney(cut2Amount)} cut -> ${toMoney(afterCut2)}`,
     value: toMoney(afterCut2),
   });

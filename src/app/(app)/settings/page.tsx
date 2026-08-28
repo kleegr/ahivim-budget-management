@@ -119,6 +119,7 @@ export default async function SettingsPage() {
                   canSeeBudgets: u.canSeeBudgets,
                   canSeeEmployeeDeals: u.canSeeEmployeeDeals,
                   canSeeSettlements: u.canSeeSettlements,
+                  canManageSettlements: u.canManageSettlements,
                   canSeeClassFinancials: u.canSeeClassFinancials,
                   canManageClassInvoices: u.canManageClassInvoices,
                   canPlan: u.canPlan,

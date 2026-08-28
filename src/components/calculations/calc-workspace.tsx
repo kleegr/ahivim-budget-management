@@ -73,7 +73,6 @@ interface FormState {
   basis: "annual" | "monthly";
   cut1Percent: string;
   cut2Percent: string;
-  cutOrder: "sequential" | "parallel";
   clockAdjustment: string;
   netAdjustment: string;
   afterAllAdjustment: string;
@@ -92,7 +91,6 @@ const EMPTY_FORM: FormState = {
   basis: "annual",
   cut1Percent: "",
   cut2Percent: "",
-  cutOrder: "sequential",
   clockAdjustment: "",
   netAdjustment: "",
   afterAllAdjustment: "",
@@ -112,7 +110,6 @@ function toPreviewBody(f: FormState): Record<string, unknown> {
     basis: f.basis,
     cut1Percent: f.cut1Percent,
     cut2Percent: f.cut2Percent,
-    cutOrder: f.cutOrder,
     clockAdjustment: f.clockAdjustment,
     netAdjustment: f.netAdjustment,
     afterAllAdjustment: f.afterAllAdjustment,
@@ -348,15 +345,6 @@ export default function CalcWorkspace({
               value={form.cut2Percent}
               onChange={(v) => update({ cut2Percent: v })}
               placeholder="optional"
-            />
-            <LabeledSelect
-              label="Cut order"
-              value={form.cutOrder}
-              onChange={(v) => update({ cutOrder: v === "parallel" ? "parallel" : "sequential" })}
-              options={[
-                { value: "sequential", label: "Sequential (cut 2 on post-cut-1)" },
-                { value: "parallel", label: "Parallel (both on the base)" },
-              ]}
             />
             <LabeledInput
               label="Clock adjustment"

@@ -22,6 +22,7 @@ import { exceptionCounts, listIndividualBudgetBoard } from "@/lib/data/queries";
 import { dec, formatMoney } from "@/lib/money";
 import { ErrorPanel, PageHeader, ButtonLink } from "@/components/ui";
 import FirstRunWelcome from "@/components/first-run-welcome";
+import { agencyDate } from "@/lib/business/agency-time";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Overview - Ahivim Budget Management" };
@@ -220,8 +221,8 @@ export default async function DashboardPage({
   const user = await requireUser("manager");
   const canManage = user.role !== "viewer";
   const denied = (await searchParams).denied;
-  const now = new Date();
-  const asOf = now.toISOString().slice(0, 10);
+  const asOf = agencyDate();
+  const now = new Date(`${asOf}T12:00:00Z`);
 
   const result = await withDb(async (pool) => {
     const [financial, settlements, budgets, review, imports, reconciliation] = await Promise.all([

@@ -1,5 +1,10 @@
 # Ahivim Budget Management
 
+The canonical business and role-visibility rules are documented in
+[`docs/OPERATING_MODEL.md`](docs/OPERATING_MODEL.md). Read that contract before
+changing program rates, budget consumption, employee give-backs, settlements,
+or external portal access.
+
 Authorization, utilization and payroll-import tracking for individual service
 programs. Replaces a spreadsheet that people have read for years, and adds the
 one thing the spreadsheet could not show: whether an individual's authorized

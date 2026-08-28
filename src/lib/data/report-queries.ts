@@ -167,7 +167,13 @@ export async function budgetUtilizationReport(
        SELECT COALESCE(sum(sa.allocation_hours), 0) AS h
        FROM service_allocations sa
        JOIN service_sessions ss ON ss.id = sa.service_session_id
+       LEFT JOIN payroll_transactions source_t ON source_t.id = sa.payroll_transaction_id
        WHERE sa.individual_id = ba.individual_id AND ss.program_id = ba.program_id
+         AND COALESCE(
+               canonical_service_date(source_t.period_begin, source_t.check_date, source_t.period_end),
+               canonical_service_date(ss.period_begin, NULL, ss.period_end)
+             )
+             BETWEEN bp.start_date AND bp.end_date
      ) used
      CROSS JOIN LATERAL (
        SELECT COALESCE(sum(sca.allocation_hours), 0) AS h
@@ -175,6 +181,7 @@ export async function budgetUtilizationReport(
        JOIN scheduled_sessions scs ON scs.id = sca.scheduled_session_id
        WHERE sca.individual_id = ba.individual_id AND scs.program_id = ba.program_id
          AND scs.status = 'pending' AND scs.matched_transaction_id IS NULL
+         AND scs.session_date BETWEEN bp.start_date AND bp.end_date
      ) sched
      WHERE ba.status = 'active' AND bp.status = 'active'
        AND ($1::text IS NULL OR bp.period_type = $1)
@@ -221,7 +228,7 @@ export interface AgencyEarningsRow {
 /**
  * Per program: agency gross, internal amount, and agency additional kept as
  * three separate columns (agency additional = agency gross − internal). Filter
- * on the service period begin date; a null filter means every transaction.
+ * on the canonical service date; a null filter means every transaction.
  */
 export async function agencyEarningsReport(
   pool: PgLikePool,
@@ -247,8 +254,12 @@ export async function agencyEarningsReport(
             count(*)::text                                     AS transaction_count
      FROM payroll_transactions t
      LEFT JOIN programs p ON p.id = t.program_id
-     WHERE ($1::date IS NULL OR t.period_begin >= $1)
-       AND ($2::date IS NULL OR t.period_begin <= $2)
+     WHERE ($1::date IS NULL OR canonical_service_date(
+              t.period_begin, t.check_date, t.period_end
+            ) >= $1)
+       AND ($2::date IS NULL OR canonical_service_date(
+              t.period_begin, t.check_date, t.period_end
+            ) <= $2)
      GROUP BY t.program_id, p.code, p.name
      ORDER BY p.code NULLS LAST`,
     [from, to],
@@ -280,10 +291,9 @@ export interface EmployeePayableRow {
 }
 
 /**
- * Per employee: total employee payment, split three ways by payment_recipient
- * ('employee' paid directly, 'excellent_staffing' payable by the agency, and
- * 'unknown'/unset), plus physical hours and the number of distinct checks. The
- * three recipient buckets always sum to the total.
+ * Per employee: total employee payment, split three ways by the canonical route
+ * (transaction override, then program default), plus physical hours and the
+ * number of distinct checks. The three recipient buckets always sum to total.
  */
 export async function employeePayableReport(
   pool: PgLikePool,
@@ -305,18 +315,29 @@ export async function employeePayableReport(
             e.display_name                                AS employee_name,
             COALESCE(sum(t.employee_payment_amount), 0)::text AS total_payment,
             COALESCE(sum(t.employee_payment_amount)
-              FILTER (WHERE t.payment_recipient = 'employee'), 0)::text AS paid_to_employee,
+              FILTER (WHERE effective_payment_recipient(
+                t.payment_recipient, p.payment_recipient
+              ) = 'employee'), 0)::text AS paid_to_employee,
             COALESCE(sum(t.employee_payment_amount)
-              FILTER (WHERE t.payment_recipient = 'excellent_staffing'), 0)::text AS payable_by_agency,
+              FILTER (WHERE effective_payment_recipient(
+                t.payment_recipient, p.payment_recipient
+              ) = 'excellent_staffing'), 0)::text AS payable_by_agency,
             COALESCE(sum(t.employee_payment_amount)
-              FILTER (WHERE t.payment_recipient = 'unknown' OR t.payment_recipient IS NULL), 0)::text
+              FILTER (WHERE effective_payment_recipient(
+                t.payment_recipient, p.payment_recipient
+              ) = 'unknown'), 0)::text
                                                           AS unknown_recipient,
             COALESCE(sum(t.imported_hours), 0)::text      AS physical_hours,
             count(DISTINCT t.check_number)::text          AS check_count
      FROM employees e
      JOIN payroll_transactions t ON t.employee_id = e.id
-     WHERE ($1::date IS NULL OR t.period_begin >= $1)
-       AND ($2::date IS NULL OR t.period_begin <= $2)
+     LEFT JOIN programs p ON p.id = t.program_id
+     WHERE ($1::date IS NULL OR canonical_service_date(
+              t.period_begin, t.check_date, t.period_end
+            ) >= $1)
+       AND ($2::date IS NULL OR canonical_service_date(
+              t.period_begin, t.check_date, t.period_end
+            ) <= $2)
      GROUP BY e.id, e.display_name
      ORDER BY e.display_name`,
     [from, to],
@@ -458,7 +479,13 @@ export async function expiringAuthorizationsReport(
        SELECT COALESCE(sum(sa.allocation_hours), 0) AS h
        FROM service_allocations sa
        JOIN service_sessions ss ON ss.id = sa.service_session_id
+       LEFT JOIN payroll_transactions source_t ON source_t.id = sa.payroll_transaction_id
        WHERE sa.individual_id = ba.individual_id AND ss.program_id = ba.program_id
+         AND COALESCE(
+               canonical_service_date(source_t.period_begin, source_t.check_date, source_t.period_end),
+               canonical_service_date(ss.period_begin, NULL, ss.period_end)
+             )
+             BETWEEN bp.start_date AND bp.end_date
      ) used
      WHERE ba.status = 'active' AND bp.status = 'active'
        AND (
@@ -594,13 +621,20 @@ export async function dashboardReportMetrics(pool: PgLikePool): Promise<Dashboar
               (SELECT COALESCE(sum(sa.allocation_hours), 0)
                  FROM service_allocations sa
                  JOIN service_sessions ss ON ss.id = sa.service_session_id
-                WHERE sa.individual_id = ba.individual_id AND ss.program_id = ba.program_id) AS used,
+                 LEFT JOIN payroll_transactions source_t ON source_t.id = sa.payroll_transaction_id
+                WHERE sa.individual_id = ba.individual_id AND ss.program_id = ba.program_id
+                  AND COALESCE(
+                        canonical_service_date(source_t.period_begin, source_t.check_date, source_t.period_end),
+                        canonical_service_date(ss.period_begin, NULL, ss.period_end)
+                      )
+                      BETWEEN bp.start_date AND bp.end_date) AS used,
               (SELECT COALESCE(sum(sca.allocation_hours), 0)
                  FROM scheduled_allocations sca
                  JOIN scheduled_sessions scs ON scs.id = sca.scheduled_session_id
                 WHERE sca.individual_id = ba.individual_id AND scs.program_id = ba.program_id
                   AND scs.status = 'pending'
-                  AND scs.matched_transaction_id IS NULL) AS sched
+                  AND scs.matched_transaction_id IS NULL
+                  AND scs.session_date BETWEEN bp.start_date AND bp.end_date) AS sched
        FROM budget_authorizations ba
        JOIN budget_periods bp ON bp.id = ba.budget_period_id
        WHERE ba.status = 'active' AND bp.status = 'active'
@@ -938,11 +972,29 @@ export async function groupActivityReport(
      FROM service_sessions ss
      LEFT JOIN programs p  ON p.id = ss.program_id
      LEFT JOIN employees e ON e.id = ss.employee_id
+     LEFT JOIN LATERAL (
+       SELECT min(canonical_service_date(
+                source_t.period_begin, source_t.check_date, source_t.period_end
+              )) AS service_date
+         FROM service_allocations source_a
+         JOIN payroll_transactions source_t ON source_t.id = source_a.payroll_transaction_id
+        WHERE source_a.service_session_id = ss.id
+     ) source_date ON true
      WHERE ss.group_size > 1
-       AND ($1::date IS NULL OR ss.period_begin >= $1)
-       AND ($2::date IS NULL OR ss.period_begin <= $2)
+       AND ($1::date IS NULL OR COALESCE(
+              canonical_service_date(ss.period_begin, NULL, ss.period_end),
+              source_date.service_date
+            ) >= $1)
+       AND ($2::date IS NULL OR COALESCE(
+              canonical_service_date(ss.period_begin, NULL, ss.period_end),
+              source_date.service_date
+            ) <= $2)
        AND ($3::text IS NULL OR p.code ILIKE '%' || $3 || '%' OR p.name ILIKE '%' || $3 || '%')
-     ORDER BY ss.period_begin NULLS LAST, p.code`,
+     ORDER BY COALESCE(
+                canonical_service_date(ss.period_begin, NULL, ss.period_end),
+                source_date.service_date
+              ) NULLS LAST,
+              p.code`,
     [from, to, program],
   );
 
@@ -1157,7 +1209,13 @@ export async function utilizationOutliersReport(
          SELECT COALESCE(sum(sa.allocation_hours), 0) AS h
          FROM service_allocations sa
          JOIN service_sessions ss ON ss.id = sa.service_session_id
+         LEFT JOIN payroll_transactions source_t ON source_t.id = sa.payroll_transaction_id
          WHERE sa.individual_id = ba.individual_id AND ss.program_id = ba.program_id
+           AND COALESCE(
+                 canonical_service_date(source_t.period_begin, source_t.check_date, source_t.period_end),
+                 canonical_service_date(ss.period_begin, NULL, ss.period_end)
+               )
+               BETWEEN bp.start_date AND bp.end_date
        ) used
        WHERE ba.status = 'active' AND bp.status = 'active'
      ) x

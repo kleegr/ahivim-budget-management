@@ -86,17 +86,19 @@ export async function userCount(pool: PgLikePool): Promise<number> {
   return Number(rows[0]?.c ?? 0);
 }
 
-export async function writeAudit(
-  pool: PgLikePool,
-  entry: {
-    userId?: string | null;
-    action: string;
-    entityType?: string | null;
-    entityId?: string | null;
-    metadata?: Record<string, unknown>;
-  },
+type AuditEntry = {
+  userId?: string | null;
+  action: string;
+  entityType?: string | null;
+  entityId?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+async function writeAuditQuery(
+  queryable: Pick<PgLikePool, "query">,
+  entry: AuditEntry,
 ): Promise<void> {
-  await pool.query(
+  await queryable.query(
     `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, metadata)
      VALUES ($1, $2, $3, $4, $5)`,
     [
@@ -107,6 +109,10 @@ export async function writeAudit(
       entry.metadata ? JSON.stringify(entry.metadata) : null,
     ],
   );
+}
+
+export async function writeAudit(pool: PgLikePool, entry: AuditEntry): Promise<void> {
+  await writeAuditQuery(pool, entry);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -238,6 +244,7 @@ export async function createUser(
   pool: PgLikePool,
   input: { email: string; displayName: string; password: string; role: string },
   actorId: string | null,
+  accessInput: Record<string, unknown> = {},
 ): Promise<CreateUserOutcome> {
   const email = normalizeEmail(input.email);
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { ok: false, reason: "invalid_email" };
@@ -247,50 +254,68 @@ export async function createUser(
 
   const passwordHash = await hashPassword(input.password);
   const trustedStaff = input.role !== "viewer";
-  const { rows } = await pool.query<UserRow>(
-    `INSERT INTO users (
-       email, display_name, password_hash, role, access_scope,
-       can_see_transactions, can_see_money, can_see_hours, can_see_billed_amounts,
-       can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
-       can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements,
-       can_see_class_financials, can_manage_class_invoices, can_edit_documents, can_plan
-     )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
-     ON CONFLICT (email) DO NOTHING
-     RETURNING id, email, display_name, password_hash, role, is_active,
-               last_login_at::text AS last_login_at, created_at::text AS created_at`,
-    [
-      email,
-      input.displayName.trim() || email,
-      passwordHash,
-      input.role,
-      trustedStaff ? "full" : "scoped",
-      trustedStaff,
-      trustedStaff,
-      trustedStaff,
-      trustedStaff,
-      trustedStaff,
-      trustedStaff,
-      trustedStaff,
-      trustedStaff,
-      trustedStaff,
-      false,
-      false,
-      trustedStaff,
-      trustedStaff,
-      trustedStaff,
-      trustedStaff,
-    ],
-  );
-  if (!rows[0]) return { ok: false, reason: "duplicate_email" };
-  await writeAudit(pool, {
-    userId: actorId,
-    action: "user_created",
-    entityType: "user",
-    entityId: rows[0].id,
-    metadata: { email, role: input.role },
-  });
-  return { ok: true, user: toUser(rows[0]) };
+  const access = userAccessConfigFromInput(accessInput, input.role);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<UserRow>(
+      `INSERT INTO users (
+         email, display_name, password_hash, role, access_scope,
+         can_see_transactions, can_see_money, can_see_hours, can_see_billed_amounts,
+         can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
+         can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements,
+         can_see_class_financials, can_manage_class_invoices, can_edit_documents, can_plan
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+       ON CONFLICT (email) DO NOTHING
+       RETURNING id, email, display_name, password_hash, role, is_active,
+                 last_login_at::text AS last_login_at, created_at::text AS created_at`,
+      [
+        email,
+        input.displayName.trim() || email,
+        passwordHash,
+        input.role,
+        trustedStaff ? "full" : "scoped",
+        trustedStaff,
+        trustedStaff,
+        trustedStaff,
+        trustedStaff,
+        trustedStaff,
+        trustedStaff,
+        trustedStaff,
+        trustedStaff,
+        trustedStaff,
+        false,
+        false,
+        trustedStaff,
+        trustedStaff,
+        trustedStaff,
+        trustedStaff,
+      ],
+    );
+    if (!rows[0]) {
+      await client.query("ROLLBACK");
+      return { ok: false, reason: "duplicate_email" };
+    }
+
+    const accessCreated = await writeUserAccessConfigQuery(client, rows[0].id, access);
+    if (!accessCreated) throw new Error("New user disappeared while its access was being created.");
+    await writeAuditQuery(client, {
+      userId: actorId,
+      action: "user_created",
+      entityType: "user",
+      entityId: rows[0].id,
+      metadata: { email, role: input.role },
+    });
+    await writeUserAccessAuditQuery(client, rows[0].id, access, actorId);
+    await client.query("COMMIT");
+    return { ok: true, user: toUser(rows[0]) };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function setUserRole(
@@ -299,20 +324,7 @@ export async function setUserRole(
   role: string,
   actorId: string | null,
 ): Promise<boolean> {
-  if (!isRole(role)) return false;
-  const { rowCount } = await pool.query(
-    `UPDATE users SET role = $1, updated_at = now() WHERE id = $2`,
-    [role, userId],
-  );
-  if (!rowCount) return false;
-  await writeAudit(pool, {
-    userId: actorId,
-    action: "user_role_changed",
-    entityType: "user",
-    entityId: userId,
-    metadata: { role },
-  });
-  return true;
+  return setUserRoleAndAccess(pool, userId, role, undefined, actorId);
 }
 
 export async function setUserActive(
@@ -346,18 +358,52 @@ export interface UserAccessConfig extends VisibilityPermissions {
   seeAllIndividuals: boolean;
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
+  canManageSettlements: boolean;
   canPlan: boolean;
   canEditDocuments: boolean;
   individualIds: string[];
   employeeIds: string[];
 }
 
-/** Parse a new account's access settings. Viewer omissions always fail closed. */
+function restrictedViewerDefaults(): UserAccessConfig {
+  return {
+    accessScope: "scoped",
+    seeAllIndividuals: false,
+    seeAllEmployees: false,
+    canSeeTransactions: false,
+    canSeeMoney: false,
+    canSeeHours: false,
+    canSeeBilledAmounts: false,
+    canSeeEmployeeAmounts: false,
+    canSeeAgencySpread: false,
+    canSeeCheckNet: false,
+    canSeeTaxes: false,
+    canSeeBudgets: false,
+    canSeeEmployeeDeals: false,
+    canSeeSettlements: false,
+    canManageSettlements: false,
+    canSeeClassFinancials: false,
+    canManageClassInvoices: false,
+    canEditDocuments: false,
+    canPlan: false,
+    individualIds: [],
+    employeeIds: [],
+  };
+}
+
+/**
+ * Parse access submitted by an administrator. A viewer only receives submitted
+ * grants when the request explicitly declares a scoped configuration. This is
+ * deliberately stricter than the client form: stale `full` manager/admin flags
+ * are never reinterpreted as an intentional viewer configuration.
+ */
 export function userAccessConfigFromInput(
   input: Record<string, unknown>,
   role: string,
 ): UserAccessConfig {
   const viewer = role === "viewer";
+  if (viewer && input.accessScope !== "scoped") return restrictedViewerDefaults();
+
   const legacyDefault = !viewer;
   const flag = (key: string, fallback = legacyDefault): boolean => {
     const value = input[key];
@@ -366,14 +412,14 @@ export function userAccessConfigFromInput(
   const canSeeHours = flag("canSeeHours");
   const canSeeMoney = flag("canSeeMoney");
   const canSeeClassFinancials = canSeeMoney && flag("canSeeClassFinancials");
+  const canSeeSettlements = canSeeMoney && flag("canSeeSettlements", false);
 
   return {
-    accessScope:
-      input.accessScope === "full" || input.accessScope === "scoped"
+    accessScope: viewer
+      ? "scoped"
+      : input.accessScope === "full" || input.accessScope === "scoped"
         ? input.accessScope
-        : viewer
-          ? "scoped"
-          : "full",
+        : "full",
     seeAllIndividuals: flag("seeAllIndividuals", false),
     seeAllEmployees: flag("seeAllEmployees", false),
     canSeeTransactions: flag("canSeeTransactions"),
@@ -387,7 +433,9 @@ export function userAccessConfigFromInput(
     canSeeTaxes: flag("canSeeTaxes"),
     canSeeBudgets: canSeeHours && flag("canSeeBudgets"),
     canSeeEmployeeDeals: flag("canSeeEmployeeDeals", false),
-    canSeeSettlements: flag("canSeeSettlements", false),
+    canSeeSettlements,
+    canManageSettlements:
+      canSeeSettlements && flag("canManageSettlements", false),
     canSeeClassFinancials,
     canManageClassInvoices:
       canSeeClassFinancials && flag("canManageClassInvoices"),
@@ -402,6 +450,7 @@ export interface UserWithAccess extends UserRecord, VisibilityPermissions {
   seeAllIndividuals: boolean;
   seeAllEmployees: boolean;
   canSeeTransactions: boolean;
+  canManageSettlements: boolean;
   canPlan: boolean;
   canEditDocuments: boolean;
   individualCount: number;
@@ -419,6 +468,7 @@ interface VisibilityRow {
   can_see_budgets: boolean;
   can_see_employee_deals: boolean;
   can_see_settlements: boolean;
+  can_manage_settlements: boolean;
   can_see_class_financials: boolean;
   can_manage_class_invoices: boolean;
   can_edit_documents: boolean;
@@ -465,6 +515,7 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
             u.can_see_money, u.can_see_hours, u.can_see_billed_amounts,
             u.can_see_employee_amounts, u.can_see_agency_spread, u.can_see_check_net,
             u.can_see_taxes, u.can_see_budgets, u.can_see_employee_deals, u.can_see_settlements,
+            u.can_manage_settlements,
             u.can_see_class_financials, u.can_manage_class_invoices, u.can_edit_documents, u.can_plan,
             (SELECT count(*) FROM user_individual_access a WHERE a.user_id = u.id)::int AS individual_count,
             (SELECT count(*) FROM user_employee_access a WHERE a.user_id = u.id)::int AS employee_count
@@ -477,6 +528,8 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
     seeAllIndividuals: r.see_all_individuals === true,
     seeAllEmployees: r.see_all_employees === true,
     canSeeTransactions: r.can_see_transactions !== false,
+    canManageSettlements:
+      r.can_see_settlements === true && r.can_manage_settlements === true,
     canPlan: r.can_plan === true,
     canEditDocuments: r.can_edit_documents === true,
     ...storedVisibility(r),
@@ -500,6 +553,7 @@ export async function getUserAccessConfig(
             can_see_money, can_see_hours, can_see_billed_amounts,
             can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
             can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements,
+            can_manage_settlements,
             can_see_class_financials, can_manage_class_invoices, can_edit_documents, can_plan
        FROM users WHERE id = $1`,
     [userId],
@@ -523,6 +577,8 @@ export async function getUserAccessConfig(
     seeAllIndividuals: u.see_all_individuals === true,
     seeAllEmployees: u.see_all_employees === true,
     canSeeTransactions: u.can_see_transactions !== false,
+    canManageSettlements:
+      u.can_see_settlements === true && u.can_manage_settlements === true,
     canPlan: u.can_plan === true,
     canEditDocuments: u.can_edit_documents === true,
     ...storedVisibility(u),
@@ -531,132 +587,239 @@ export async function getUserAccessConfig(
   };
 }
 
-/**
- * Replace a user's access configuration. The column flags and the two grant
- * tables are written together in one transaction so a scoped user is never left
- * half-configured. Grants are cleared when the user is 'full' (they're ignored
- * then anyway) to keep the tables tidy.
- */
-export async function setUserAccessConfig(
-  pool: PgLikePool,
+function normalizeAccessConfigForRole(
+  config: UserAccessConfig | undefined,
+  role: Role,
+): UserAccessConfig {
+  return userAccessConfigFromInput(config ? { ...config } : {}, role);
+}
+
+function validAccessIds(values: string[] | undefined): string[] {
+  return [...new Set((values ?? []).filter((value) => UUID_RE.test(value)))];
+}
+
+/** Write one already-normalized access record inside the caller's transaction. */
+async function writeUserAccessConfigQuery(
+  queryable: Pick<PgLikePool, "query">,
   userId: string,
   config: UserAccessConfig,
-  actorId: string | null,
 ): Promise<boolean> {
   const scope = config.accessScope === "scoped" ? "scoped" : "full";
-  const individualIds = (config.individualIds ?? []).filter((v) => UUID_RE.test(v));
-  const employeeIds = (config.employeeIds ?? []).filter((v) => UUID_RE.test(v));
-  const canSeeHours = config.canSeeHours !== false;
-  const canSeeBudgets = canSeeHours && config.canSeeBudgets !== false;
-  const canSeeMoney = config.canSeeMoney !== false;
+  const individualIds = validAccessIds(config.individualIds);
+  const employeeIds = validAccessIds(config.employeeIds);
+  const canSeeMoney = config.canSeeMoney === true;
+  const canSeeHours = config.canSeeHours === true;
+  const canSeeBudgets = canSeeHours && config.canSeeBudgets === true;
   const canSeeClassFinancials = canSeeMoney && config.canSeeClassFinancials === true;
+  const canSeeSettlements = canSeeMoney && config.canSeeSettlements === true;
+  const canManageSettlements = canSeeSettlements && config.canManageSettlements === true;
   const canManageClassInvoices =
     canSeeClassFinancials && config.canManageClassInvoices === true;
 
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query(
-      `UPDATE users
-          SET access_scope = $1,
-              see_all_individuals = $2,
-              see_all_employees = $3,
-              can_see_transactions = $4,
-              can_see_money = $5,
-              can_see_hours = $6,
-              can_see_billed_amounts = $7,
-              can_see_employee_amounts = $8,
-              can_see_agency_spread = $9,
-              can_see_check_net = $10,
-              can_see_taxes = $11,
-              can_see_budgets = $12,
-              can_see_employee_deals = $13,
-              can_see_settlements = $14,
-              can_see_class_financials = $15,
-              can_manage_class_invoices = $16,
-              can_edit_documents = $17,
-              can_plan = $18,
-              updated_at = now()
-        WHERE id = $19`,
-      [
-        scope,
-        config.seeAllIndividuals === true,
-        config.seeAllEmployees === true,
-        config.canSeeTransactions !== false,
-        canSeeMoney,
-        canSeeHours,
-        config.canSeeBilledAmounts !== false,
-        config.canSeeEmployeeAmounts !== false,
-        config.canSeeAgencySpread !== false,
-        config.canSeeCheckNet !== false,
-        config.canSeeTaxes !== false,
-        canSeeBudgets,
-        config.canSeeEmployeeDeals === true,
-        config.canSeeSettlements === true,
-        canSeeClassFinancials,
-        canManageClassInvoices,
-        config.canEditDocuments === true,
-        config.canPlan === true,
-        userId,
-      ],
-    );
-    await client.query(`DELETE FROM user_individual_access WHERE user_id = $1`, [userId]);
-    await client.query(`DELETE FROM user_employee_access WHERE user_id = $1`, [userId]);
-    if (scope === "scoped") {
-      if (individualIds.length > 0) {
-        await client.query(
-          `INSERT INTO user_individual_access (user_id, individual_id)
-           SELECT $1, x FROM unnest($2::uuid[]) x
-           ON CONFLICT DO NOTHING`,
-          [userId, individualIds],
-        );
-      }
-      if (employeeIds.length > 0) {
-        await client.query(
-          `INSERT INTO user_employee_access (user_id, employee_id)
-           SELECT $1, x FROM unnest($2::uuid[]) x
-           ON CONFLICT DO NOTHING`,
-          [userId, employeeIds],
-        );
-      }
-    }
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
-    throw error;
-  } finally {
-    client.release();
-  }
+  const { rowCount } = await queryable.query(
+    `UPDATE users
+        SET access_scope = $1,
+            see_all_individuals = $2,
+            see_all_employees = $3,
+            can_see_transactions = $4,
+            can_see_money = $5,
+            can_see_hours = $6,
+            can_see_billed_amounts = $7,
+            can_see_employee_amounts = $8,
+            can_see_agency_spread = $9,
+            can_see_check_net = $10,
+            can_see_taxes = $11,
+            can_see_budgets = $12,
+            can_see_employee_deals = $13,
+            can_see_settlements = $14,
+            can_manage_settlements = $15,
+            can_see_class_financials = $16,
+            can_manage_class_invoices = $17,
+            can_edit_documents = $18,
+            can_plan = $19,
+            updated_at = now()
+      WHERE id = $20`,
+    [
+      scope,
+      config.seeAllIndividuals === true,
+      config.seeAllEmployees === true,
+      config.canSeeTransactions === true,
+      canSeeMoney,
+      canSeeHours,
+      canSeeMoney && config.canSeeBilledAmounts === true,
+      canSeeMoney && config.canSeeEmployeeAmounts === true,
+      canSeeMoney && config.canSeeAgencySpread === true,
+      canSeeMoney && config.canSeeCheckNet === true,
+      canSeeMoney && config.canSeeTaxes === true,
+      canSeeBudgets,
+      canSeeMoney && config.canSeeEmployeeDeals === true,
+      canSeeSettlements,
+      canManageSettlements,
+      canSeeClassFinancials,
+      canManageClassInvoices,
+      config.canEditDocuments === true,
+      config.canPlan === true,
+      userId,
+    ],
+  );
+  if (!rowCount) return false;
 
-  await writeAudit(pool, {
+  await queryable.query(`DELETE FROM user_individual_access WHERE user_id = $1`, [userId]);
+  await queryable.query(`DELETE FROM user_employee_access WHERE user_id = $1`, [userId]);
+  if (scope === "scoped" && individualIds.length > 0) {
+    await queryable.query(
+      `INSERT INTO user_individual_access (user_id, individual_id)
+       SELECT $1, x FROM unnest($2::uuid[]) x
+       ON CONFLICT DO NOTHING`,
+      [userId, individualIds],
+    );
+  }
+  if (scope === "scoped" && employeeIds.length > 0) {
+    await queryable.query(
+      `INSERT INTO user_employee_access (user_id, employee_id)
+       SELECT $1, x FROM unnest($2::uuid[]) x
+       ON CONFLICT DO NOTHING`,
+      [userId, employeeIds],
+    );
+  }
+  return true;
+}
+
+async function writeUserAccessAuditQuery(
+  queryable: Pick<PgLikePool, "query">,
+  userId: string,
+  config: UserAccessConfig,
+  actorId: string | null,
+): Promise<void> {
+  const individualIds = validAccessIds(config.individualIds);
+  const employeeIds = validAccessIds(config.employeeIds);
+  const canSeeMoney = config.canSeeMoney === true;
+  const canSeeHours = config.canSeeHours === true;
+  const canSeeClassFinancials = canSeeMoney && config.canSeeClassFinancials === true;
+  const canSeeSettlements = canSeeMoney && config.canSeeSettlements === true;
+  await writeAuditQuery(queryable, {
     userId: actorId,
     action: "user_access_changed",
     entityType: "user",
     entityId: userId,
     metadata: {
-      scope,
+      scope: config.accessScope,
       seeAllIndividuals: config.seeAllIndividuals === true,
       seeAllEmployees: config.seeAllEmployees === true,
-      canSeeTransactions: config.canSeeTransactions !== false,
-      canSeeMoney: config.canSeeMoney !== false,
+      canSeeTransactions: config.canSeeTransactions === true,
+      canSeeMoney,
       canSeeHours,
-      canSeeBilledAmounts: config.canSeeBilledAmounts !== false,
-      canSeeEmployeeAmounts: config.canSeeEmployeeAmounts !== false,
-      canSeeAgencySpread: config.canSeeAgencySpread !== false,
-      canSeeCheckNet: config.canSeeCheckNet !== false,
-      canSeeTaxes: config.canSeeTaxes !== false,
-      canSeeBudgets,
-      canSeeEmployeeDeals: config.canSeeEmployeeDeals === true,
-      canSeeSettlements: config.canSeeSettlements === true,
+      canSeeBilledAmounts: canSeeMoney && config.canSeeBilledAmounts === true,
+      canSeeEmployeeAmounts: canSeeMoney && config.canSeeEmployeeAmounts === true,
+      canSeeAgencySpread: canSeeMoney && config.canSeeAgencySpread === true,
+      canSeeCheckNet: canSeeMoney && config.canSeeCheckNet === true,
+      canSeeTaxes: canSeeMoney && config.canSeeTaxes === true,
+      canSeeBudgets: canSeeHours && config.canSeeBudgets === true,
+      canSeeEmployeeDeals: canSeeMoney && config.canSeeEmployeeDeals === true,
+      canSeeSettlements,
+      canManageSettlements: canSeeSettlements && config.canManageSettlements === true,
       canSeeClassFinancials,
-      canManageClassInvoices,
+      canManageClassInvoices:
+        canSeeClassFinancials && config.canManageClassInvoices === true,
       canEditDocuments: config.canEditDocuments === true,
       canPlan: config.canPlan === true,
       individuals: individualIds.length,
       employees: employeeIds.length,
     },
   });
-  return true;
+}
+
+/**
+ * Atomically replace role and access. Demoting to viewer always writes a
+ * least-privilege scoped record unless a scoped configuration is supplied in
+ * this same operation.
+ */
+export async function setUserRoleAndAccess(
+  pool: PgLikePool,
+  userId: string,
+  role: string,
+  config: UserAccessConfig | undefined,
+  actorId: string | null,
+): Promise<boolean> {
+  if (!isRole(role)) return false;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{ role: string }>(
+      `SELECT role FROM users WHERE id = $1 FOR UPDATE`,
+      [userId],
+    );
+    if (!rows[0]) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+
+    const normalizedAccess = role === "viewer"
+      ? normalizeAccessConfigForRole(config, role)
+      : config
+        ? normalizeAccessConfigForRole(config, role)
+        : undefined;
+    const { rowCount } = await client.query(
+      `UPDATE users SET role = $1, updated_at = now() WHERE id = $2`,
+      [role, userId],
+    );
+    if (!rowCount) throw new Error("User disappeared while its role was being updated.");
+    if (normalizedAccess) {
+      const accessUpdated = await writeUserAccessConfigQuery(client, userId, normalizedAccess);
+      if (!accessUpdated) throw new Error("User disappeared while its access was being updated.");
+    }
+
+    await writeAuditQuery(client, {
+      userId: actorId,
+      action: "user_role_changed",
+      entityType: "user",
+      entityId: userId,
+      metadata: { previousRole: rows[0].role, role },
+    });
+    if (normalizedAccess) {
+      await writeUserAccessAuditQuery(client, userId, normalizedAccess, actorId);
+    }
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Replace one user's access flags and grants as a single transaction. */
+export async function setUserAccessConfig(
+  pool: PgLikePool,
+  userId: string,
+  config: UserAccessConfig,
+  actorId: string | null,
+): Promise<boolean> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{ role: string }>(
+      `SELECT role FROM users WHERE id = $1 FOR UPDATE`,
+      [userId],
+    );
+    if (!rows[0]) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    const role = isRole(rows[0].role) ? rows[0].role : "viewer";
+    const normalizedAccess = normalizeAccessConfigForRole(config, role);
+    const updated = await writeUserAccessConfigQuery(client, userId, normalizedAccess);
+    if (!updated) throw new Error("User disappeared while its access was being updated.");
+    await writeUserAccessAuditQuery(client, userId, normalizedAccess, actorId);
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /** Admin password reset — sets a new password without knowing the old one. */

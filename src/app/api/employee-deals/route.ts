@@ -5,6 +5,7 @@ import { getPool } from "@/lib/db";
 import { jsonError, readJson, redactError, resultResponse, sameOriginOrFail } from "@/lib/http";
 import { percentToFraction, saveEmployeeDeal, type DirectDealRule } from "@/lib/manage/employee-deals";
 import { refreshSettlementObligations } from "@/lib/manage/settlements";
+import { agencyDate } from "@/lib/business/agency-time";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest) {
         directRule: String(body.directRule ?? "keep_all") as DirectDealRule,
         directPercent: percentToFraction(body.directPercent),
         agencyCutPercent: percentToFraction(body.agencyCutPercent),
-        effectiveFrom: String(body.effectiveFrom ?? new Date().toISOString().slice(0, 10)),
+        effectiveFrom: String(body.effectiveFrom ?? agencyDate()),
         effectiveTo: body.effectiveTo ? String(body.effectiveTo) : null,
         notes: body.notes ? String(body.notes) : null,
         reason: String(body.reason ?? ""),

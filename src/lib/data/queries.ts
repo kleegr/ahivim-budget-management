@@ -19,6 +19,7 @@ import {
   budgetStatusFromHours,
 } from "@/lib/business/budget-status";
 import { actionableRateExceptionSource } from "@/lib/data/rate-exception-scope";
+import { agencyDate } from "@/lib/business/agency-time";
 
 /**
  * READ MODEL
@@ -54,7 +55,7 @@ import { actionableRateExceptionSource } from "@/lib/data/rate-exception-scope";
  */
 export async function currentRatesByProgram(
   pool: PgLikePool,
-  asOf: string = new Date().toISOString().slice(0, 10),
+  asOf: string = agencyDate(),
 ): Promise<Record<string, RateConfig>> {
   const { rows } = await pool.query<{
     code: string;
@@ -322,7 +323,8 @@ export async function getIndividualReport(
   // individual named on that row its full hours). Two sums are returned per
   // program: all-time actual activity, and the amount that falls inside the
   // current budget period window — the window the authorization is measured
-  // against, matching the workbook's SUMIFS over Period Begin.
+  // against. Imports may carry the service date in period begin, check date, or
+  // period end, so every date window uses the canonical database rule.
   const periodStart = period?.start_date ?? null;
   const periodEnd = period?.end_date ?? null;
   const { rows: usage } = await pool.query<{
@@ -341,18 +343,21 @@ export async function getIndividualReport(
             coalesce(sum(t.imported_hours), 0)::text             AS used_hours,
             coalesce(sum(t.imported_hours) FILTER (
               WHERE $2::date IS NULL
-                 OR (t.period_begin >= $2::date AND t.period_begin <= $3::date)), 0)::text
+                 OR canonical_service_date(t.period_begin, t.check_date, t.period_end)
+                    BETWEEN $2::date AND $3::date), 0)::text
                                                                  AS used_hours_period,
             count(DISTINCT t.id)::text                           AS transaction_count,
             coalesce(sum(t.imported_amount), 0)::text            AS agency_gross,
             coalesce(sum(t.imported_amount) FILTER (
               WHERE $2::date IS NULL
-                 OR (t.period_begin >= $2::date AND t.period_begin <= $3::date)), 0)::text
+                 OR canonical_service_date(t.period_begin, t.check_date, t.period_end)
+                    BETWEEN $2::date AND $3::date), 0)::text
                                                                  AS agency_gross_period,
             coalesce(sum(t.calculated_internal_amount), 0)::text AS internal_amount,
             coalesce(sum(t.calculated_internal_amount) FILTER (
               WHERE $2::date IS NULL
-                 OR (t.period_begin >= $2::date AND t.period_begin <= $3::date)), 0)::text
+                 OR canonical_service_date(t.period_begin, t.check_date, t.period_end)
+                    BETWEEN $2::date AND $3::date), 0)::text
                                                                  AS internal_amount_period
        FROM payroll_transactions t
        JOIN programs p ON p.id = t.program_id
@@ -548,7 +553,7 @@ export async function listIndividualBudgetBoard(
   asOf: Date = new Date(),
   scope?: AccessScope,
 ): Promise<IndividualBudgetBoardRow[]> {
-  const today = asOf.toISOString().slice(0, 10);
+  const today = agencyDate(asOf);
   const params: unknown[] = [today];
   const scopeClause = scope ? individualScopeClause(scope, "i.id", params) : "";
   const billedScopeClause = scope
@@ -642,11 +647,11 @@ export async function listIndividualBudgetBoard(
            WHERE t.individual_id = i.id
              AND t.program_id = el.program_id
              ${billedScopeClause}
-             AND t.period_begin >= el.period_start
-             AND t.period_begin < el.period_end
+             AND canonical_service_date(t.period_begin, t.check_date, t.period_end) >= el.period_start
+             AND canonical_service_date(t.period_begin, t.check_date, t.period_end) < el.period_end
        ) b ON el.line_id IS NOT NULL
        LEFT JOIN LATERAL (
-         SELECT max(t.period_begin)::date AS last_billed_on,
+         SELECT max(canonical_service_date(t.period_begin, t.check_date, t.period_end)) AS last_billed_on,
                 count(*)::int AS total_count
            FROM payroll_transactions t
           WHERE t.individual_id = i.id
@@ -928,10 +933,15 @@ export async function exceptionCounts(pool: PgLikePool): Promise<ExceptionCounts
        (SELECT count(*) FROM (
           SELECT b.id
             FROM budget_authorizations b
+            JOIN budget_periods bp ON bp.id = b.budget_period_id
             LEFT JOIN payroll_transactions t ON t.individual_id = b.individual_id
                                             AND t.program_id = b.program_id
+                                            AND canonical_service_date(
+                                                  t.period_begin, t.check_date, t.period_end
+                                                ) BETWEEN bp.start_date AND bp.end_date
             LEFT JOIN service_allocations a ON a.payroll_transaction_id = t.id
-           GROUP BY b.id, b.authorized_hours
+           WHERE b.status = 'active' AND bp.status = 'active'
+           GROUP BY b.id, b.authorized_hours, bp.start_date, bp.end_date
           HAVING coalesce(sum(a.allocation_hours), 0) > b.authorized_hours
        ) AS over_auth)::text                                                                    AS over_authorization`,
   );
@@ -1028,6 +1038,7 @@ export async function getIndividualBudgetView(
   strategyId?: string,
   scope?: AccessScope,
 ): Promise<IndividualBudgetView> {
+  const today = agencyDate();
   // The individual's account status decides whether the renewal auto-rolls.
   const indRes = await pool.query<{ status: string }>(`SELECT status FROM individuals WHERE id = $1`, [individualId]);
   const active = (indRes.rows[0]?.status ?? "active") === "active";
@@ -1051,7 +1062,7 @@ export async function getIndividualBudgetView(
   const plan = planRes.rows[0] ?? null;
   const renewalDate = plan?.renewal_date ?? null;
   // Auto-rolls to the current year for active accounts; stays put for inactive.
-  const period = currentBudgetPeriod(renewalDate, active);
+  const period = currentBudgetPeriod(renewalDate, active, today);
   const effectiveRenewal = period.effectiveRenewal;
 
   // Authorized hours (and any per-hour rate override) per program from the plan.
@@ -1096,7 +1107,7 @@ export async function getIndividualBudgetView(
   // always use the calendar year (Jan 1 → Jan 1), so their used/left never mixes
   // with the person's own renewal. When the individual has no renewal window at
   // all, only the calendar-year programs still resolve (the rest are excluded).
-  const billedParams: unknown[] = [individualId, period.start, period.end];
+  const billedParams: unknown[] = [individualId, period.start, period.end, today];
   const billedScope = scope
     ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", billedParams)
     : "";
@@ -1104,14 +1115,15 @@ export async function getIndividualBudgetView(
     await pool.query<{ program_id: string; program_name: string; program_code: string; hours: string; agency: string; internal: string; cnt: number }>(
       `WITH scoped AS (
          SELECT t.program_id, p.name AS program_name, p.code AS program_code,
-                t.imported_hours, t.imported_amount, t.period_begin,
+                t.imported_hours, t.imported_amount,
+                canonical_service_date(t.period_begin, t.check_date, t.period_end) AS service_date,
                 COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
                          t.internal_rate_applied * t.imported_hours, 0) AS internal_amt,
                 CASE WHEN p.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
-                     THEN make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int, 1, 1)
+                     THEN make_date(EXTRACT(YEAR FROM $4::date)::int, 1, 1)
                      ELSE $2::date END AS win_start,
                 CASE WHEN p.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
-                     THEN make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int + 1, 1, 1)
+                     THEN make_date(EXTRACT(YEAR FROM $4::date)::int + 1, 1, 1)
                      ELSE $3::date END AS win_end
            FROM payroll_transactions t
            JOIN programs p ON p.id = t.program_id
@@ -1124,7 +1136,7 @@ export async function getIndividualBudgetView(
               sum(internal_amt)::text    AS internal,
               count(*)::int              AS cnt
          FROM scoped
-        WHERE win_start IS NOT NULL AND period_begin >= win_start AND period_begin < win_end
+        WHERE win_start IS NOT NULL AND service_date >= win_start AND service_date < win_end
         GROUP BY program_id, program_name, program_code`,
       billedParams,
     )
@@ -1135,8 +1147,7 @@ export async function getIndividualBudgetView(
   const allProgramIds = new Set<string>([...authByProgram.keys(), ...billedByProgram.keys()]);
 
   const dayMs = 24 * 60 * 60 * 1000;
-  const nowD = new Date();
-  const todayUtc = Date.UTC(nowD.getUTCFullYear(), nowD.getUTCMonth(), nowD.getUTCDate());
+  const todayUtc = Date.parse(`${today}T00:00:00Z`);
   const daysTo = (d: string | null) => (d ? Math.round((Date.parse(`${d}T00:00:00Z`) - todayUtc) / dayMs) : null);
 
   let totAuth = dec(0), totUsed = dec(0), totAgency = dec(0), totInternal = dec(0), totTx = 0;
@@ -1147,7 +1158,7 @@ export async function getIndividualBudgetView(
     const a = authByProgram.get(pid);
     const b = billedByProgram.get(pid);
     const code = a?.program_code ?? b?.program_code ?? "";
-    const lp = programBudgetPeriod(code, renewalDate, active);
+    const lp = programBudgetPeriod(code, renewalDate, active, today);
     // The plan's own per-hour rate (override if set, else the program default).
     // Needed here (not just for display) because group-session "used" hours are
     // backed out of the money at this rate.
@@ -1405,7 +1416,7 @@ export async function getIndividualPeriodActivity(
   plannedPrograms: PlannedPeriodProgram[] = [],
   asOf: Date = new Date(),
 ): Promise<IndividualPeriodActivity> {
-  const today = asOf.toISOString().slice(0, 10);
+  const today = agencyDate(asOf);
   const calendarPeriod = programBudgetPeriod("DAY_HAB", null, true, today);
   const calendarStart = calendarPeriod.start!;
   const calendarEnd = calendarPeriod.end!;
@@ -1417,10 +1428,13 @@ export async function getIndividualPeriodActivity(
       ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
       : "";
     const periodClause = `AND (
-      (COALESCE(p.code, '') IN ('DAY_HAB','SUPP_GROUP_DAY_HAB') AND t.period_begin >= $4::date AND t.period_begin < $5::date)
+      (COALESCE(p.code, '') IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
+       AND canonical_service_date(t.period_begin, t.check_date, t.period_end) >= $4::date
+       AND canonical_service_date(t.period_begin, t.check_date, t.period_end) < $5::date)
       OR
       (COALESCE(p.code, '') NOT IN ('DAY_HAB','SUPP_GROUP_DAY_HAB') AND $2::date IS NOT NULL AND $3::date IS NOT NULL
-       AND t.period_begin >= $2::date AND t.period_begin < $3::date)
+       AND canonical_service_date(t.period_begin, t.check_date, t.period_end) >= $2::date
+       AND canonical_service_date(t.period_begin, t.check_date, t.period_end) < $3::date)
     )`;
     return { params, clause, periodClause };
   };
@@ -1480,7 +1494,10 @@ export async function getIndividualPeriodActivity(
   // calendar-year services.
   const pmScope = scopedTransaction();
   const pmRes = await pool.query<{ month: string; program_id: string | null; program_name: string; program_code: string; hours: string; agency: string; internal: string }>(
-    `SELECT to_char(date_trunc('month', t.period_begin), 'YYYY-MM') AS month,
+    `SELECT to_char(
+              date_trunc('month', canonical_service_date(t.period_begin, t.check_date, t.period_end)),
+              'YYYY-MM'
+            ) AS month,
             t.program_id,
             COALESCE(p.name, t.program_raw, 'Unknown') AS program_name,
             COALESCE(p.code, '')                       AS program_code,
@@ -1535,7 +1552,8 @@ export async function getIndividualPeriodActivity(
        WHERE t.individual_id = $1
          ${transactionScope.periodClause}
          ${transactionScope.clause}
-      ORDER BY COALESCE(e.display_name, t.employee_raw, 'Unknown'), t.period_begin`,
+      ORDER BY COALESCE(e.display_name, t.employee_raw, 'Unknown'),
+               canonical_service_date(t.period_begin, t.check_date, t.period_end)`,
     transactionScope.params,
   );
 

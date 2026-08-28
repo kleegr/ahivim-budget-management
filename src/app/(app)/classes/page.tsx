@@ -11,6 +11,7 @@ import {
 } from "@/lib/data/class-invoices";
 import { withDb } from "@/lib/data/pool";
 import { listIndividualsManaged } from "@/lib/manage/individuals";
+import { agencyMonth } from "@/lib/business/agency-time";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Classes - Ahivim Budget Management" };
@@ -31,7 +32,7 @@ export default async function ClassesPage({
   const requestedMonth = one(params.month);
   const month = requestedMonth && YEAR_MONTH.test(requestedMonth)
     ? requestedMonth
-    : new Date().toISOString().slice(0, 7);
+    : agencyMonth();
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);

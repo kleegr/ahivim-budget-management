@@ -16,8 +16,8 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`CREATE SCHEMA public`);
 
     const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
-    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 28]);
-    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 28]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 33]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 33]);
   }, 60_000);
 
   it("creates the ledger and every expected table", async () => {
@@ -41,16 +41,21 @@ suite("migration runner (real PostgreSQL)", () => {
       "class_activities", "class_budget_periods", "class_invoices",
       "class_invoice_lines", "class_budget_ledger", "class_reimbursement_profiles",
       "class_cover_sheet_snapshots",
+      "program_budget_events",
+      "agencies", "user_portal_roles", "user_agency_access",
+      "user_individual_relationships", "user_employee_relationships",
+      "agency_individuals", "agency_employees",
+      "employee_payroll_checks", "employee_direct_pay_targets",
     ]) {
       expect(tables, `missing table ${table}`).toContain(table);
     }
-    expect(tables.length).toBe(53);
+    expect(tables.length).toBe(63);
   });
 
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(28);
+    expect(again.skipped).toBe(33);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -58,7 +63,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(28);
+    expect(rows).toHaveLength(33);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -87,15 +92,20 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[25].name).toBe("0025_class_revenue_invoicing.sql");
     expect(rows[26].name).toBe("0026_document_editor_access.sql");
     expect(rows[27].name).toBe("0027_class_reimbursement_profiles.sql");
+    expect(rows[28].name).toBe("0028_service_program_budgets.sql");
+    expect(rows[29].name).toBe("0029_agencies_portal_access.sql");
+    expect(rows[30].name).toBe("0030_direct_pay_targets_and_payroll_checks.sql");
+    expect(rows[31].name).toBe("0031_settlement_manage_permission.sql");
+    expect(rows[32].name).toBe("0032_enforce_sequential_calculations.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("seeds six programs, their aliases and effective-dated rates", async () => {
+  it("seeds the service catalog, aliases and effective-dated rates", async () => {
     const counts = await tableCounts(
       ["programs", "program_aliases", "program_rate_schedules"],
       testPool(),
     );
-    expect(counts.programs).toBe(6);
+    expect(counts.programs).toBe(7);
     expect(counts.program_aliases).toBe(23);
     expect(counts.program_rate_schedules).toBe(6);
   });
@@ -118,6 +128,118 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(byCode.SH_COM_HAB.agency_rate).toBeNull();
     expect(Number(byCode.SH_COM_HAB.internal_rate)).toBe(38);
     expect(Number(byCode.SH_RESPITE.internal_rate)).toBe(18);
+  });
+
+  it("installs canonical payment routing and universal authorization overlap guards", async () => {
+    const routing = await testPool().query<{
+      explicit_employee: string;
+      explicit_agency: string;
+      fallback_employee: string;
+      fallback_agency: string;
+      unsupported: string;
+      volatility: string;
+      period_begin_date: string;
+      check_date: string;
+      period_end_date: string;
+      no_date: string | null;
+      service_date_volatility: string;
+    }>(
+      `SELECT effective_payment_recipient('employee', 'agency') AS explicit_employee,
+              effective_payment_recipient('excellent_staffing', 'employee') AS explicit_agency,
+              effective_payment_recipient(NULL, 'employee') AS fallback_employee,
+              effective_payment_recipient('unknown', 'agency') AS fallback_agency,
+              effective_payment_recipient('other', 'agency') AS unsupported,
+              (SELECT provolatile::text FROM pg_proc WHERE oid = 'effective_payment_recipient(text,text)'::regprocedure) AS volatility,
+              canonical_service_date('2026-01-01', '2026-01-15', '2026-01-31')::text AS period_begin_date,
+              canonical_service_date(NULL, '2026-01-15', '2026-01-31')::text AS check_date,
+              canonical_service_date(NULL, NULL, '2026-01-31')::text AS period_end_date,
+              canonical_service_date(NULL, NULL, NULL)::text AS no_date,
+              (SELECT provolatile::text FROM pg_proc WHERE oid = 'canonical_service_date(date,date,date)'::regprocedure) AS service_date_volatility`,
+    );
+    expect(routing.rows[0]).toEqual({
+      explicit_employee: "employee",
+      explicit_agency: "excellent_staffing",
+      fallback_employee: "employee",
+      fallback_agency: "excellent_staffing",
+      unsupported: "unknown",
+      volatility: "i",
+      period_begin_date: "2026-01-01",
+      check_date: "2026-01-15",
+      period_end_date: "2026-01-31",
+      no_date: null,
+      service_date_volatility: "i",
+    });
+    const budgetHelper = await testPool().query<{ definition: string }>(
+      `SELECT pg_get_functiondef('effective_billed_hours(uuid,uuid,date,date,numeric)'::regprocedure) AS definition`,
+    );
+    expect(budgetHelper.rows[0]?.definition).toContain(
+      "canonical_service_date(t.period_begin, t.check_date, t.period_end)",
+    );
+    const triggers = await testPool().query<{ tgname: string }>(
+      `SELECT tgname FROM pg_trigger
+        WHERE NOT tgisinternal
+          AND tgname IN ('budget_authorizations_non_overlap_guard', 'budget_periods_non_overlap_guard')
+        ORDER BY tgname`,
+    );
+    expect(triggers.rows.map((row) => row.tgname)).toEqual([
+      "budget_authorizations_non_overlap_guard",
+      "budget_periods_non_overlap_guard",
+    ]);
+
+    const seeded = await testPool().query<{
+      individual_id: string;
+      program_id: string;
+      first_period_id: string;
+      second_period_id: string;
+    }>(
+      `WITH person AS (
+         INSERT INTO individuals (display_name, normalized_name)
+         VALUES ('Migration overlap guard', 'migration overlap guard')
+         RETURNING id
+       ), program AS (
+         SELECT id FROM programs WHERE code = 'COM_HAB'
+       ), first_period AS (
+         INSERT INTO budget_periods (individual_id, label, start_date, end_date, status)
+         SELECT person.id, 'First', '2026-01-01', '2026-12-31', 'active' FROM person
+         RETURNING id, individual_id
+       ), second_period AS (
+         INSERT INTO budget_periods (individual_id, label, start_date, end_date, status)
+         SELECT person.id, 'Second', '2027-01-01', '2027-12-31', 'active' FROM person
+         RETURNING id
+       )
+       SELECT person.id AS individual_id, program.id AS program_id,
+              first_period.id AS first_period_id, second_period.id AS second_period_id
+         FROM person, program, first_period, second_period`,
+    );
+    const ids = seeded.rows[0]!;
+    await testPool().query(
+      `INSERT INTO budget_authorizations
+         (budget_period_id, individual_id, program_id, authorized_hours, internal_rate, status)
+       VALUES ($1, $2, $3, 100, 21, 'active')`,
+      [ids.first_period_id, ids.individual_id, ids.program_id],
+    );
+    await testPool().query(
+      `INSERT INTO budget_authorizations
+         (budget_period_id, individual_id, program_id, authorized_hours, internal_rate, status)
+       VALUES ($1, $2, $3, 100, 21, 'active')`,
+      [ids.second_period_id, ids.individual_id, ids.program_id],
+    );
+    await expect(testPool().query(
+      `UPDATE budget_periods SET start_date = '2026-06-01' WHERE id = $1`,
+      [ids.second_period_id],
+    )).rejects.toThrow(/may not overlap/i);
+
+    const overlappingPeriod = await testPool().query<{ id: string }>(
+      `INSERT INTO budget_periods (individual_id, label, start_date, end_date, status)
+       VALUES ($1, 'Overlapping', '2026-06-01', '2027-05-31', 'active') RETURNING id`,
+      [ids.individual_id],
+    );
+    await expect(testPool().query(
+      `INSERT INTO budget_authorizations
+         (budget_period_id, individual_id, program_id, authorized_hours, internal_rate, status)
+       VALUES ($1, $2, $3, 100, 21, 'active')`,
+      [overlappingPeriod.rows[0]!.id, ids.individual_id, ids.program_id],
+    )).rejects.toThrow(/may not overlap/i);
   });
 
   it("detects a migration whose contents changed after it was applied", async () => {

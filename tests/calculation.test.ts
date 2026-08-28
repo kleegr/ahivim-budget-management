@@ -19,7 +19,7 @@ describe("calculation engine — cuts and monthly", () => {
   it("applies a first cut and a SECOND SEQUENTIAL cut, preserving each amount", () => {
     const r = computeCalculation({
       annualAuthorizedHours: "1000", programRate: "17",
-      cut1Percent: "10", cut2Percent: "5", cutOrder: "sequential",
+      cut1Percent: "10", cut2Percent: "5",
     });
     // base 17000 - 10% = 15300; then 5% of 15300 = 765 -> 14535
     expect(n(r.cut1Amount)).toBe(1700);
@@ -28,14 +28,14 @@ describe("calculation engine — cuts and monthly", () => {
     expect(n(r.afterCut2)).toBe(14535);
   });
 
-  it("a parallel cut order takes both cuts off the original base", () => {
+  it("cannot be switched away from the sequential cut rule", () => {
     const r = computeCalculation({
       annualAuthorizedHours: "1000", programRate: "17",
-      cut1Percent: "10", cut2Percent: "5", cutOrder: "parallel",
+      cut1Percent: "10", cut2Percent: "5",
+      ...({ cutOrder: "parallel" } as Record<string, unknown>),
     });
-    // 17000 - 1700 - (5% of 17000 = 850) = 14450
-    expect(n(r.cut2Amount)).toBe(850);
-    expect(n(r.afterCut2)).toBe(14450);
+    expect(n(r.cut2Amount)).toBe(765);
+    expect(n(r.afterCut2)).toBe(14535);
   });
 
   it("adds the clock/manual adjustment then derives final gross, net and After All", () => {

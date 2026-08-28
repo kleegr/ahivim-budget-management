@@ -4,9 +4,12 @@ import { listIndividualsManaged } from "@/lib/manage/individuals";
 import { listEmployeesManaged } from "@/lib/manage/employees";
 import { listPrograms } from "@/lib/data/app-queries";
 import { getPlanningWorkspace } from "@/lib/data/planning-queries";
+import { listPlannerDirectPayTargets } from "@/lib/data/direct-pay-operations";
 import { PageHeader, ErrorPanel } from "@/components/ui";
 import PlanningWorkspace from "@/components/schedule/planning-workspace";
+import DirectPayTargetsPanel from "@/components/schedule/direct-pay-targets-panel";
 import type { View } from "@/components/schedule/shared";
+import { agencyDate } from "@/lib/business/agency-time";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Planning — Ahivim Budget Management" };
@@ -22,7 +25,7 @@ export default async function SchedulePage({
 }) {
   await requirePlanningUser();
   const canManage = true;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = agencyDate();
   const sp = await searchParams;
   const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
   const requestedView = one(sp.view);
@@ -44,13 +47,14 @@ export default async function SchedulePage({
   };
 
   const result = await withDb(async (pool) => {
-    const [individuals, employees, programs, planning] = await Promise.all([
+    const [individuals, employees, programs, planning, directPayTargets] = await Promise.all([
       listIndividualsManaged(pool, { status: "active" }),
       listEmployeesManaged(pool, { status: "active" }),
       listPrograms(pool),
       getPlanningWorkspace(pool, today),
+      listPlannerDirectPayTargets(pool, today),
     ]);
-    return { individuals, employees, programs, planning };
+    return { individuals, employees, programs, planning, directPayTargets };
   });
 
   return (
@@ -64,20 +68,25 @@ export default async function SchedulePage({
       {!result.ok ? (
         <ErrorPanel title="Could not load scheduling data">{result.error}</ErrorPanel>
       ) : (
-        <PlanningWorkspace
-          data={result.data.planning}
-          canManage={canManage}
-          today={today}
-          initialView={initialView}
-          initialCalendarDate={initialCalendarDate}
-          initialCalendarView={initialCalendarView}
-          initialFilters={initialFilters}
-          individuals={result.data.individuals.map((i) => ({ id: i.id, label: i.displayName }))}
-          employees={result.data.employees.map((e) => ({ id: e.id, label: e.displayName }))}
-          programs={result.data.programs
-            .filter((p) => p.isActive)
-            .map((p) => ({ id: p.id, code: p.code, name: p.name, isGroupCapable: p.isGroupCapable }))}
-        />
+        <>
+          <DirectPayTargetsPanel rows={result.data.directPayTargets} />
+          <PlanningWorkspace
+            data={result.data.planning}
+            canManage={canManage}
+            today={today}
+            initialView={initialView}
+            initialCalendarDate={initialCalendarDate}
+            initialCalendarView={initialCalendarView}
+            initialFilters={initialFilters}
+            individuals={result.data.individuals.map((i) => ({ id: i.id, label: i.displayName }))}
+            employees={result.data.employees.map((e) => ({ id: e.id, label: e.displayName }))}
+            programs={result.data.programs
+              .filter((p) => p.isActive
+                && p.requiredAuthType !== "dollars"
+                && (p.consumptionSource === "payroll" || p.consumptionSource === "mixed"))
+              .map((p) => ({ id: p.id, code: p.code, name: p.name, isGroupCapable: p.isGroupCapable }))}
+          />
+        </>
       )}
     </>
   );

@@ -28,6 +28,7 @@ function scoped(overrides: Partial<AccessScope> = {}): AccessScope {
     role: "viewer",
     full: false,
     canSeeTransactions: true,
+    canManageSettlements: false,
     canSeeMoney: true,
     canSeeHours: true,
     canSeeBilledAmounts: true,

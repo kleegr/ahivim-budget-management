@@ -6,6 +6,7 @@ import {
   type PeriodElapsed,
   type UtilizationStatus,
 } from "@/lib/business/utilization";
+import { agencyDate } from "@/lib/business/agency-time";
 
 type ScheduleQueryPool = Pick<PgLikePool, "query">;
 
@@ -289,10 +290,15 @@ async function authorizationUsage(
     ? await pool.query<{ h: string; amt: string }>(
         `SELECT COALESCE(sum(al.allocation_hours),0)::text AS h,
                 COALESCE(sum(al.allocated_amount),0)::text AS amt
-           FROM service_allocations al
-           JOIN service_sessions ss ON ss.id = al.service_session_id
-          WHERE al.individual_id = $1 AND ss.program_id = $2
-            AND COALESCE(ss.period_begin, ss.period_end) BETWEEN $3::date AND $4::date`,
+          FROM service_allocations al
+          JOIN service_sessions ss ON ss.id = al.service_session_id
+          LEFT JOIN payroll_transactions source_t ON source_t.id = al.payroll_transaction_id
+         WHERE al.individual_id = $1 AND ss.program_id = $2
+            AND COALESCE(
+                  canonical_service_date(source_t.period_begin, source_t.check_date, source_t.period_end),
+                  canonical_service_date(ss.period_begin, NULL, ss.period_end)
+                )
+                BETWEEN $3::date AND $4::date`,
         [individualId, authorization.program_id, authorization.start_date, authorization.end_date],
       )
     : await pool.query<{ h: string; amt: string }>(
@@ -304,9 +310,10 @@ async function authorizationUsage(
                     t.internal_rate_applied * t.imported_hours,
                     0
                   ))
-                    FROM payroll_transactions t
-                   WHERE t.individual_id = $1 AND t.program_id = $2
-                     AND t.period_begin BETWEEN $3::date AND $4::date
+                   FROM payroll_transactions t
+                  WHERE t.individual_id = $1 AND t.program_id = $2
+                     AND canonical_service_date(t.period_begin, t.check_date, t.period_end)
+                         BETWEEN $3::date AND $4::date
                 ), 0)::text AS amt`,
         [
           individualId,
@@ -355,7 +362,7 @@ export async function individualProgramForecast(
   individualId: string,
   programId: string,
   excludeSessionId?: string | null,
-  asOfDate: string = new Date().toISOString().slice(0, 10),
+  asOfDate: string = agencyDate(),
 ): Promise<ProgramForecast> {
   const empty: ProgramForecast = {
     authorizedHours: null, authStart: null, authEnd: null,
@@ -480,7 +487,7 @@ export async function individualScheduleSummary(
   asOf: Date = new Date(),
 ): Promise<ScheduleUtilizationSummary | null> {
   if (!isUuid(individualId)) return null;
-  const asOfDate = asOf.toISOString().slice(0, 10);
+  const asOfDate = agencyDate(asOf);
   const person = await pool.query<{ display_name: string }>(
     `SELECT display_name FROM individuals WHERE id = $1`,
     [individualId],
@@ -699,9 +706,18 @@ export async function listSessionWarningFlags(
                               SELECT sum(actual_a.allocation_hours)
                               FROM service_allocations actual_a
                               JOIN service_sessions actual_s ON actual_s.id = actual_a.service_session_id
+                              LEFT JOIN payroll_transactions actual_t
+                                ON actual_t.id = actual_a.payroll_transaction_id
                               WHERE actual_a.individual_id = target.individual_id
                                 AND actual_s.program_id = s.program_id
-                                AND COALESCE(actual_s.period_begin, actual_s.period_end)
+                                AND COALESCE(
+                                      canonical_service_date(
+                                        actual_t.period_begin, actual_t.check_date, actual_t.period_end
+                                      ),
+                                      canonical_service_date(
+                                        actual_s.period_begin, NULL, actual_s.period_end
+                                      )
+                                    )
                                     BETWEEN ea.start_date AND ea.end_date
                             ), 0)
                             ELSE effective_billed_hours(

@@ -3,6 +3,7 @@ import { dec } from "@/lib/money";
 import { recordChange } from "@/lib/manage/audit";
 import { fail, ok, type Result } from "@/lib/manage/errors";
 import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
+import { agencyDate } from "@/lib/business/agency-time";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -133,7 +134,7 @@ export async function listEmployeeDeals(pool: PgLikePool, employeeId: string): P
 export async function getEmployeeDealAsOf(
   pool: PgLikePool,
   employeeId: string,
-  asOf = new Date().toISOString().slice(0, 10),
+  asOf = agencyDate(),
 ): Promise<EmployeeDeal | null> {
   if (!UUID.test(employeeId) || !validDate(asOf)) return null;
   const { rows } = await pool.query<DealRow>(

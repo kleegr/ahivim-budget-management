@@ -25,6 +25,7 @@ import { ErrorPanel, PageHeader, ButtonLink, Button } from "@/components/ui";
 import ReportGrid from "@/components/reports/report-grid";
 import { REPORT_LIBRARY, REPORT_PRESENTATION } from "@/components/reports/report-library";
 import { ReportInlineChart } from "@/components/charts";
+import { agencyDate } from "@/lib/business/agency-time";
 
 export const dynamic = "force-dynamic";
 
@@ -192,7 +193,7 @@ export default async function ReportPage({
   const group = REPORT_LIBRARY.find((item) => item.reports.some((candidate) => candidate.key === report));
   const raw = await searchParams;
   const filters = selectFilters(report, raw);
-  const asOf = new Date().toISOString().slice(0, 10);
+  const asOf = agencyDate();
 
   const exportQuery = new URLSearchParams();
   for (const spec of def.filters) {

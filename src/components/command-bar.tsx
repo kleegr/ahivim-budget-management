@@ -15,6 +15,8 @@ export default function CommandBar({
   canSeeClassFinancials = false,
   canSeeEmployees = false,
   canEditDocuments = false,
+  canUsePortal = false,
+  canManageAgencies = false,
 }: {
   role?: string;
   accessResolved?: boolean;
@@ -25,6 +27,8 @@ export default function CommandBar({
   canSeeClassFinancials?: boolean;
   canSeeEmployees?: boolean;
   canEditDocuments?: boolean;
+  canUsePortal?: boolean;
+  canManageAgencies?: boolean;
 } = {}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -33,8 +37,8 @@ export default function CommandBar({
   const inputRef = useRef<HTMLInputElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const access = useMemo<NavigationAccess>(
-    () => ({ role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments }),
-    [role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments],
+    () => ({ role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies }),
+    [role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies],
   );
   const available = useMemo(() => getCommandDestinations(access), [access]);
 

@@ -179,11 +179,78 @@ suite("individual matching + merge (real PostgreSQL)", () => {
     unwrap(await createStrategy(pool, { individualId: gone.id, label: "1" }, ACTOR));
     // a budget period on the folded individual
     await pool.query(`INSERT INTO budget_periods (individual_id, label, start_date, end_date) VALUES ($1, 'P1', '2024-01-01', '2025-01-01')`, [gone.id]);
+    const homeAgency = await pool.query<{ id: string }>(`SELECT id FROM agencies WHERE is_home_agency = true`);
+    await pool.query(
+      `INSERT INTO agency_individuals
+       (agency_id, individual_id, manages_budget, bills_services, effective_from)
+       VALUES ($1, $2, true, false, '2025-01-01')`,
+      [homeAgency.rows[0]!.id, keep.id],
+    );
+    await pool.query(
+      `INSERT INTO agency_individuals
+         (agency_id, individual_id, manages_budget, bills_services, effective_from, effective_to)
+       VALUES ($1, $2, false, true, '2024-01-01', '2024-12-31')`,
+      [homeAgency.rows[0]!.id, gone.id],
+    );
+    await pool.query(
+      `INSERT INTO user_individual_access (user_id, individual_id)
+       VALUES ($1, $2), ($1, $3)`,
+      [ACTOR, keep.id, gone.id],
+    );
+    await pool.query(
+      `INSERT INTO user_individual_relationships
+         (user_id, individual_id, relationship_type, capability_grants, capability_denials)
+       VALUES ($1, $2, 'parent', ARRAY['hours_budgets.direct.read'], ARRAY[]::text[]),
+              ($1, $3, 'parent', ARRAY['dollar_budgets.direct.read'], ARRAY['financials.direct.billed_totals.read'])`,
+      [ACTOR, keep.id, gone.id],
+    );
 
     const res = unwrap(await mergeIndividuals(pool, { keepId: keep.id, mergeId: gone.id }, ACTOR));
     expect(res.repointed.payroll_transactions).toBe(1);
     expect(res.repointed.calculation_strategies).toBe(1);
     expect(res.repointed.budget_periods).toBe(1);
+    expect(res.repointed.agency_individuals).toBe(1);
+
+    const agencyMembership = await pool.query<{
+      manages_budget: boolean;
+      bills_services: boolean;
+      effective_from: string;
+      effective_to: string | null;
+    }>(
+      `SELECT manages_budget, bills_services, effective_from::text, effective_to::text
+         FROM agency_individuals WHERE agency_id = $1 AND individual_id = $2
+        ORDER BY effective_from`,
+      [homeAgency.rows[0]!.id, keep.id],
+    );
+    expect(agencyMembership.rows).toEqual([
+      {
+        manages_budget: false,
+        bills_services: true,
+        effective_from: "2024-01-01",
+        effective_to: "2024-12-31",
+      },
+      {
+        manages_budget: true,
+        bills_services: false,
+        effective_from: "2025-01-01",
+        effective_to: null,
+      },
+    ]);
+    expect((await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM user_individual_access WHERE user_id = $1 AND individual_id = $2`,
+      [ACTOR, keep.id],
+    )).rows[0]?.count).toBe("1");
+    const portalRelationship = await pool.query<{ grants: string[]; denials: string[] }>(
+      `SELECT capability_grants AS grants, capability_denials AS denials
+         FROM user_individual_relationships
+        WHERE user_id = $1 AND individual_id = $2 AND relationship_type = 'parent'`,
+      [ACTOR, keep.id],
+    );
+    expect(portalRelationship.rows[0]?.grants).toEqual([
+      "dollar_budgets.direct.read",
+      "hours_budgets.direct.read",
+    ]);
+    expect(portalRelationship.rows[0]?.denials).toEqual(["financials.direct.billed_totals.read"]);
 
     // Nothing still references the folded row.
     for (const table of ["payroll_transactions", "calculation_strategies", "budget_periods"]) {
@@ -259,6 +326,31 @@ suite("individual matching + merge (real PostgreSQL)", () => {
       medicaidId: "PROFILE-B",
       lifePlanConfirmed: true,
     }, ACTOR));
+
+    await expect(mergeIndividuals(pool, { keepId: keep.id, mergeId: duplicate.id }, ACTOR))
+      .resolves.toMatchObject({ ok: false, code: "conflict" });
+    expect(await loadIndividualsForMatch(pool)).toHaveLength(2);
+  });
+
+  it("blocks a merge that would create overlapping active program authorizations", async () => {
+    const keep = unwrap(await createIndividual(pool, { displayName: "Program Keep" }, ACTOR));
+    const duplicate = unwrap(await createIndividual(pool, { displayName: "Program Duplicate" }, ACTOR));
+    const program = await pool.query<{ id: string }>(`SELECT id FROM programs WHERE code = 'COM_HAB'`);
+    const periods = await pool.query<{ id: string; individual_id: string }>(
+      `INSERT INTO budget_periods (individual_id, label, start_date, end_date, status)
+       VALUES ($1, 'Keep period', '2026-01-01', '2026-12-31', 'active'),
+              ($2, 'Duplicate period', '2026-06-01', '2027-05-31', 'active')
+       RETURNING id, individual_id`,
+      [keep.id, duplicate.id],
+    );
+    const keepPeriod = periods.rows.find((row) => row.individual_id === keep.id)!;
+    const duplicatePeriod = periods.rows.find((row) => row.individual_id === duplicate.id)!;
+    await pool.query(
+      `INSERT INTO budget_authorizations
+         (budget_period_id, individual_id, program_id, authorized_hours, internal_rate, status)
+       VALUES ($1, $2, $5, 100, 21, 'active'), ($3, $4, $5, 100, 21, 'active')`,
+      [keepPeriod.id, keep.id, duplicatePeriod.id, duplicate.id, program.rows[0]!.id],
+    );
 
     await expect(mergeIndividuals(pool, { keepId: keep.id, mergeId: duplicate.id }, ACTOR))
       .resolves.toMatchObject({ ok: false, code: "conflict" });

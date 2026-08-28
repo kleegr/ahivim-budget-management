@@ -13,6 +13,10 @@ import { toMoney } from "@/lib/money";
 
 const isUuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
 const AUTH_TYPES = new Set(["hours", "dollars", "both"]);
+const PAYMENT_RECIPIENTS = new Set(["agency", "employee", "external", "not_applicable"]);
+const CONSUMPTION_SOURCES = new Set(["payroll", "invoice", "manual", "mixed"]);
+const RATE_SCOPES = new Set(["per_individual", "per_group", "flat"]);
+const RENEWAL_POLICIES = new Set(["individual", "calendar", "rolling", "custom"]);
 
 export interface ProgramRulesRow {
   id: string;
@@ -27,6 +31,11 @@ export interface ProgramRulesRow {
   selfHireConverts: boolean;
   agencyAdditionalRate: string | null;
   requiredAuthType: string;
+  serviceCategory: string;
+  paymentRecipient: string;
+  consumptionSource: string;
+  rateScope: string;
+  renewalPolicy: string;
 }
 
 /** Only the fields actually supplied are changed; absent fields are left as-is. */
@@ -40,6 +49,11 @@ export interface ProgramRulesInput {
   selfHireConverts?: boolean;
   agencyAdditionalRate?: string | null;
   requiredAuthType?: string;
+  serviceCategory?: string;
+  paymentRecipient?: string;
+  consumptionSource?: string;
+  rateScope?: string;
+  renewalPolicy?: string;
 }
 
 interface RulesDbRow {
@@ -55,13 +69,19 @@ interface RulesDbRow {
   self_hire_converts: boolean;
   agency_additional_rate: string | null;
   required_auth_type: string;
+  service_category: string;
+  payment_recipient: string;
+  consumption_source: string;
+  rate_scope: string;
+  renewal_policy: string;
 }
 
 const RULE_COLS = `id, code, name,
   one_to_one_required, groups_allowed, max_group_size,
   allow_multiple_employees, allow_multiple_individuals,
   allow_individual_rate_override, self_hire_converts,
-  agency_additional_rate::text AS agency_additional_rate, required_auth_type`;
+  agency_additional_rate::text AS agency_additional_rate, required_auth_type,
+  service_category, payment_recipient, consumption_source, rate_scope, renewal_policy`;
 
 function toRules(r: RulesDbRow): ProgramRulesRow {
   return {
@@ -77,6 +97,11 @@ function toRules(r: RulesDbRow): ProgramRulesRow {
     selfHireConverts: r.self_hire_converts,
     agencyAdditionalRate: r.agency_additional_rate,
     requiredAuthType: r.required_auth_type,
+    serviceCategory: r.service_category,
+    paymentRecipient: r.payment_recipient,
+    consumptionSource: r.consumption_source,
+    rateScope: r.rate_scope,
+    renewalPolicy: r.renewal_policy,
   };
 }
 
@@ -128,6 +153,21 @@ export async function updateProgramRules(
   if (rules.requiredAuthType !== undefined && !AUTH_TYPES.has(rules.requiredAuthType)) {
     return fail("validation", "Required authorization type must be hours, dollars or both.");
   }
+  if (rules.serviceCategory !== undefined && !rules.serviceCategory.trim()) {
+    return fail("validation", "Choose a service category.");
+  }
+  if (rules.paymentRecipient !== undefined && !PAYMENT_RECIPIENTS.has(rules.paymentRecipient)) {
+    return fail("validation", "Choose who receives payment for this program.");
+  }
+  if (rules.consumptionSource !== undefined && !CONSUMPTION_SOURCES.has(rules.consumptionSource)) {
+    return fail("validation", "Choose how this program consumes its budget.");
+  }
+  if (rules.rateScope !== undefined && !RATE_SCOPES.has(rules.rateScope)) {
+    return fail("validation", "Choose whether this program's rate applies per individual, per group, or as a flat amount.");
+  }
+  if (rules.renewalPolicy !== undefined && !RENEWAL_POLICIES.has(rules.renewalPolicy)) {
+    return fail("validation", "Choose the program's renewal policy.");
+  }
 
   // Build the SET clause from only the provided fields; $1 is the program id.
   const values: unknown[] = [programId];
@@ -145,6 +185,11 @@ export async function updateProgramRules(
   if (rules.selfHireConverts !== undefined) set("self_hire_converts", rules.selfHireConverts);
   if (agencyAdditional !== undefined) set("agency_additional_rate", agencyAdditional);
   if (rules.requiredAuthType !== undefined) set("required_auth_type", rules.requiredAuthType);
+  if (rules.serviceCategory !== undefined) set("service_category", rules.serviceCategory.trim());
+  if (rules.paymentRecipient !== undefined) set("payment_recipient", rules.paymentRecipient);
+  if (rules.consumptionSource !== undefined) set("consumption_source", rules.consumptionSource);
+  if (rules.rateScope !== undefined) set("rate_scope", rules.rateScope);
+  if (rules.renewalPolicy !== undefined) set("renewal_policy", rules.renewalPolicy);
 
   if (sets.length === 0) return fail("validation", "No rule changes were provided.");
 

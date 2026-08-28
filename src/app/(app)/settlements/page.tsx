@@ -36,7 +36,7 @@ export default async function SettlementsPage({
       denied: false as const,
       planningOnly: false,
       data: await getSettlementDashboard(pool, scope),
-      canManage: true,
+      canManage: scope.canManageSettlements,
     };
   });
 

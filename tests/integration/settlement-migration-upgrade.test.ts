@@ -192,6 +192,27 @@ suite("settlement migrations from a populated 0016 database (real PostgreSQL)", 
     );
     expect(preserved.rows[0]!.count).toBe("1");
 
+    const legacyCheck = await pool.query<{
+      source: string;
+      verification_status: string;
+      actual_net: string;
+      linked: boolean;
+    }>(
+      `SELECT check_fact.source, check_fact.verification_status,
+              check_fact.actual_net::text,
+              (t.payroll_check_id = check_fact.id) AS linked
+         FROM payroll_transactions t
+         JOIN employee_payroll_checks check_fact
+           ON check_fact.id = t.payroll_check_id
+        WHERE t.transaction_fingerprint = 'legacy-0016-settlement-source'`,
+    );
+    expect(legacyCheck.rows).toEqual([{
+      source: "legacy_transaction",
+      verification_status: "unverified",
+      actual_net: "80.0000",
+      linked: true,
+    }]);
+
     const state = await pool.query<{
       source_version: string;
       refreshed_version: string;

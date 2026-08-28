@@ -79,8 +79,10 @@ export async function getDashboardData(pool: PgLikePool): Promise<DashboardData>
        FROM account_periods`,
     ),
     pool.query<{ authorized: string | null; used: string | null }>(
-      `SELECT (SELECT COALESCE(sum(authorized_hours), 0)::text FROM budget_authorizations) AS authorized,
-              (SELECT COALESCE(sum(allocation_hours), 0)::text FROM service_allocations)   AS used`,
+      `SELECT COALESCE(sum(authorized_hours), 0)::text AS authorized,
+              COALESCE(sum(consumed_hours), 0)::text AS used
+         FROM program_budget_balances
+        WHERE period_status = 'active'`,
     ),
     pool.query<Record<string, string>>(
       `SELECT (SELECT count(*) FROM individuals)::text           AS individuals,
@@ -169,12 +171,41 @@ export async function getPortfolioForecast(
     used: string | null;
     observations: string;
   }>(
-    `SELECT min(bp.start_date)::text AS start_date,
-            max(bp.end_date)::text   AS end_date,
-            (SELECT COALESCE(sum(authorized_hours), 0)::text FROM budget_authorizations) AS authorized,
-            (SELECT COALESCE(sum(allocation_hours), 0)::text FROM service_allocations)   AS used,
-            (SELECT count(*)::text FROM payroll_transactions)                            AS observations
-     FROM budget_periods bp`,
+    `WITH active_budget AS (
+       SELECT *
+         FROM program_budget_balances
+        WHERE period_status = 'active'
+     )
+     SELECT min(budget.start_date)::text AS start_date,
+            max(budget.end_date)::text AS end_date,
+            COALESCE(sum(budget.authorized_hours), 0)::text AS authorized,
+            COALESCE(sum(budget.consumed_hours), 0)::text AS used,
+            (
+              (SELECT count(DISTINCT source_t.id)
+                 FROM payroll_transactions source_t
+                WHERE EXISTS (
+                  SELECT 1
+                    FROM active_budget authorization
+                   WHERE authorization.individual_id = source_t.individual_id
+                     AND authorization.program_id = source_t.program_id
+                     AND canonical_service_date(
+                           source_t.period_begin,
+                           source_t.check_date,
+                           source_t.period_end
+                         ) BETWEEN authorization.start_date AND authorization.end_date
+                ))
+              +
+              (SELECT count(*)
+                 FROM program_budget_events event
+                WHERE EXISTS (
+                  SELECT 1
+                    FROM active_budget authorization
+                   WHERE authorization.budget_period_id = event.budget_period_id
+                     AND authorization.program_id = event.program_id
+                     AND event.service_date BETWEEN authorization.start_date AND authorization.end_date
+                ))
+            )::text AS observations
+       FROM active_budget budget`,
   );
 
   const row = rows[0];
@@ -795,6 +826,9 @@ export interface ProgramRow {
   internalRate: string | null;
   effectiveFrom: string | null;
   aliasCount: number;
+  allowIndividualRateOverride: boolean;
+  requiredAuthType: "hours" | "dollars" | "both";
+  consumptionSource: "payroll" | "invoice" | "manual" | "mixed";
 }
 
 export async function listPrograms(pool: PgLikePool): Promise<ProgramRow[]> {
@@ -806,8 +840,13 @@ export async function listPrograms(pool: PgLikePool): Promise<ProgramRow[]> {
     is_active: boolean;
     alias_count: string;
     as_of: string;
+    allow_individual_rate_override: boolean;
+    required_auth_type: "hours" | "dollars" | "both";
+    consumption_source: "payroll" | "invoice" | "manual" | "mixed";
   }>(
     `SELECT p.id, p.code, p.name, p.is_group_capable, p.is_active,
+            p.allow_individual_rate_override,
+            p.required_auth_type, p.consumption_source,
             (SELECT count(*)::text FROM program_aliases a WHERE a.program_id = p.id) AS alias_count,
             CURRENT_DATE::text AS as_of
      FROM programs p
@@ -853,6 +892,9 @@ export async function listPrograms(pool: PgLikePool): Promise<ProgramRow[]> {
       internalRate: chosen ? chosen.internalRate : null,
       effectiveFrom: chosen ? chosen.effectiveFrom : null,
       aliasCount: Number(r.alias_count),
+      allowIndividualRateOverride: r.allow_individual_rate_override,
+      requiredAuthType: r.required_auth_type,
+      consumptionSource: r.consumption_source,
     };
   });
 }

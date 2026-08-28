@@ -16,8 +16,9 @@ const certifiedRow = {
 };
 
 describe("settlement clock freshness", () => {
-  it("uses the same UTC calendar-date basis as rolling budget periods", () => {
+  it("uses the New York agency business date rather than the server date", () => {
     expect(settlementApplicationDate(new Date("2026-08-25T00:30:00+02:00"))).toBe("2026-08-24");
+    expect(settlementApplicationDate(new Date("2026-08-25T02:30:00Z"))).toBe("2026-08-24");
   });
 
   it("expires a source-current certification when the application date advances", async () => {

@@ -54,6 +54,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if ("agencyAdditionalRate" in body) rules.agencyAdditionalRate = asNumStrOrNull(body.agencyAdditionalRate);
   if ("requiredAuthType" in body && typeof body.requiredAuthType === "string")
     rules.requiredAuthType = body.requiredAuthType;
+  if ("serviceCategory" in body && typeof body.serviceCategory === "string")
+    rules.serviceCategory = body.serviceCategory;
+  if ("paymentRecipient" in body && typeof body.paymentRecipient === "string")
+    rules.paymentRecipient = body.paymentRecipient;
+  if ("consumptionSource" in body && typeof body.consumptionSource === "string")
+    rules.consumptionSource = body.consumptionSource;
+  if ("rateScope" in body && typeof body.rateScope === "string")
+    rules.rateScope = body.rateScope;
+  if ("renewalPolicy" in body && typeof body.renewalPolicy === "string")
+    rules.renewalPolicy = body.renewalPolicy;
 
   try {
     const result = await updateProgramRules(getPool(), id, rules, user.id, reason);

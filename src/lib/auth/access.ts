@@ -53,6 +53,8 @@ export interface AccessScope extends VisibilityPermissions {
   full: boolean;
   /** May the Transactions surface (grid, drill-throughs, exports) be shown. */
   canSeeTransactions: boolean;
+  /** May create, reverse, or refresh settlement and collection records. */
+  canManageSettlements: boolean;
   /** May this account read and manage the operational Planning workspace. */
   canPlan: boolean;
   /** May use the PDF editing workspace. Independent of money permissions. */
@@ -88,6 +90,7 @@ export function fullAccess(userId: string, role: string): AccessScope {
     canSeeBudgets: true,
     canSeeEmployeeDeals: true,
     canSeeSettlements: true,
+    canManageSettlements: true,
     canSeeClassFinancials: true,
     canManageClassInvoices: true,
     canEditDocuments: true,
@@ -152,6 +155,7 @@ export async function resolveAccessScope(
     can_see_budgets: boolean;
     can_see_employee_deals: boolean;
     can_see_settlements: boolean;
+    can_manage_settlements: boolean;
     can_plan: boolean;
     can_see_class_financials: boolean;
     can_manage_class_invoices: boolean;
@@ -160,7 +164,7 @@ export async function resolveAccessScope(
     `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions, can_see_money,
             can_see_hours, can_see_billed_amounts, can_see_employee_amounts,
             can_see_agency_spread, can_see_check_net, can_see_taxes,
-            can_see_budgets, can_see_employee_deals, can_see_settlements, can_plan,
+            can_see_budgets, can_see_employee_deals, can_see_settlements, can_manage_settlements, can_plan,
             can_see_class_financials, can_manage_class_invoices, can_edit_documents
        FROM users WHERE id = $1`,
     [user.id],
@@ -184,6 +188,7 @@ export async function resolveAccessScope(
       canSeeBudgets: false,
       canSeeEmployeeDeals: false,
       canSeeSettlements: false,
+      canManageSettlements: false,
       canSeeClassFinancials: false,
       canManageClassInvoices: false,
       canEditDocuments: false,
@@ -218,6 +223,7 @@ export async function resolveAccessScope(
   };
   const canPlan = u.can_plan === true;
   const canEditDocuments = u.can_edit_documents === true;
+  const canManageSettlements = visibility.canSeeSettlements && u.can_manage_settlements === true;
 
   if (u.access_scope !== "scoped") {
     // Full-access user: sees all data, but the transactions / money toggles still apply.
@@ -225,6 +231,7 @@ export async function resolveAccessScope(
       ...fullAccess(user.id, user.role),
       canSeeTransactions: u.can_see_transactions !== false,
       ...visibility,
+      canManageSettlements,
       canPlan,
       canEditDocuments,
     };
@@ -286,6 +293,7 @@ export async function resolveAccessScope(
     full: false,
     canSeeTransactions: u.can_see_transactions === true,
     ...visibility,
+    canManageSettlements,
     canPlan,
     canEditDocuments,
     allIndividuals: seeAllIndividuals,

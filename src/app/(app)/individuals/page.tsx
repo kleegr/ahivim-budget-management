@@ -5,6 +5,7 @@ import { listIndividualBudgetBoard } from "@/lib/data/queries";
 import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
 import IndividualsList from "@/components/individuals/individuals-list";
+import { agencyDate } from "@/lib/business/agency-time";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Individuals — Ahivim Budget Management" };
@@ -29,7 +30,7 @@ export default async function IndividualsPage() {
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
-    const rows = await listIndividualBudgetBoard(pool, new Date(), scope);
+    const rows = await listIndividualBudgetBoard(pool, new Date(`${agencyDate()}T12:00:00Z`), scope);
     return rows.map((row) => (
       scope.canSeeBudgets && scope.canSeeHours && hasDirectIndividualAccess(scope, row.id)
         ? {

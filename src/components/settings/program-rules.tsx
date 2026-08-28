@@ -72,6 +72,11 @@ function RuleEditor({ program }: { program: ProgramRulesRow }) {
       selfHireConverts: form.selfHireConverts,
       agencyAdditionalRate: form.agencyAdditionalRate,
       requiredAuthType: form.requiredAuthType,
+      serviceCategory: form.serviceCategory,
+      paymentRecipient: form.paymentRecipient,
+      consumptionSource: form.consumptionSource,
+      rateScope: form.rateScope,
+      renewalPolicy: form.renewalPolicy,
     });
     setBusy(false);
     if (!res.ok) {
@@ -113,7 +118,7 @@ function RuleEditor({ program }: { program: ProgramRulesRow }) {
           onChange={(v) => set("allowMultipleIndividuals", v)}
         />
         <Toggle
-          label="Individual rate override"
+          label="Individual funder / employee rate overrides"
           checked={form.allowIndividualRateOverride}
           onChange={(v) => set("allowIndividualRateOverride", v)}
         />
@@ -160,6 +165,80 @@ function RuleEditor({ program }: { program: ProgramRulesRow }) {
             <option value="hours">Hours</option>
             <option value="dollars">Dollars</option>
             <option value="both">Both</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="eyebrow">Service category</span>
+          <select
+            value={form.serviceCategory}
+            onChange={(e) => set("serviceCategory", e.target.value)}
+            className={fieldCls}
+          >
+            {![
+              "direct_service",
+              "self_hire",
+              "group_service",
+              "classes",
+              "other",
+            ].includes(form.serviceCategory) ? (
+              <option value={form.serviceCategory}>{form.serviceCategory}</option>
+            ) : null}
+            <option value="direct_service">Direct service</option>
+            <option value="self_hire">Self-hire</option>
+            <option value="group_service">Group service</option>
+            <option value="classes">Classes</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="eyebrow">Payment recipient</span>
+          <select
+            value={form.paymentRecipient}
+            onChange={(e) => set("paymentRecipient", e.target.value)}
+            className={fieldCls}
+          >
+            <option value="agency">Agency</option>
+            <option value="employee">Employee</option>
+            <option value="external">External provider</option>
+            <option value="not_applicable">Not applicable</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="eyebrow">Budget consumption</span>
+          <select
+            value={form.consumptionSource}
+            onChange={(e) => set("consumptionSource", e.target.value)}
+            className={fieldCls}
+          >
+            <option value="payroll">Payroll transactions</option>
+            <option value="invoice">Issued invoices</option>
+            <option value="manual">Manual events</option>
+            <option value="mixed">Payroll and events</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="eyebrow">Rate scope</span>
+          <select
+            value={form.rateScope}
+            onChange={(e) => set("rateScope", e.target.value)}
+            className={fieldCls}
+          >
+            <option value="per_individual">Per individual</option>
+            <option value="per_group">Per group</option>
+            <option value="flat">Flat amount</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="eyebrow">Renewal policy</span>
+          <select
+            value={form.renewalPolicy}
+            onChange={(e) => set("renewalPolicy", e.target.value)}
+            className={fieldCls}
+          >
+            <option value="individual">Individual-specific dates</option>
+            <option value="calendar">Calendar year</option>
+            <option value="rolling">Rolling 12 months</option>
+            <option value="custom">Custom period</option>
           </select>
         </label>
       </div>

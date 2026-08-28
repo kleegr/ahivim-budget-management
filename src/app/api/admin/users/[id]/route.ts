@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import {
+  isRole,
   setUserActive,
-  setUserRole,
+  setUserRoleAndAccess,
   setUserPassword,
   listUsers,
   getUserAccessConfig,
-  setUserAccessConfig,
+  userAccessConfigFromInput,
   type UserAccessConfig,
 } from "@/lib/auth/users";
 import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
@@ -31,6 +32,7 @@ const ACCESS_KEYS = [
   "canSeeBudgets",
   "canSeeEmployeeDeals",
   "canSeeSettlements",
+  "canManageSettlements",
   "canSeeClassFinancials",
   "canManageClassInvoices",
   "canEditDocuments",
@@ -85,10 +87,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const target = users.find((u) => u.id === id);
     if (!target) return jsonError("Not found", 404);
 
+    if (typeof body.role === "string" && !isRole(body.role)) {
+      return jsonError("Role must be viewer, manager or admin.", 400);
+    }
+    const requestedRole = typeof body.role === "string" ? body.role : target.role;
     const activeAdmins = users.filter((u) => u.role === "admin" && u.isActive);
     const removingAdmin =
       target.role === "admin" &&
-      ((typeof body.role === "string" && body.role !== "admin") || body.isActive === false);
+      (requestedRole !== "admin" || body.isActive === false);
     if (removingAdmin && activeAdmins.length <= 1) {
       return jsonError(
         "This is the last enabled administrator. Promote another account first.",
@@ -96,64 +102,35 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       );
     }
 
-    if (typeof body.role === "string" && !(await setUserRole(pool, id, body.role, actor.id))) {
-      return jsonError("Role must be viewer, manager or admin.", 400);
-    }
-    if (typeof body.isActive === "boolean") {
-      await setUserActive(pool, id, body.isActive, actor.id);
+    const accessSubmitted = ACCESS_KEYS.some((key) => key in body);
+    if (typeof body.role === "string" || accessSubmitted) {
+      let access: UserAccessConfig | undefined;
+      if (requestedRole === "viewer") {
+        // A viewer request must explicitly include accessScope="scoped". Any
+        // omitted or stale full-scope manager payload is reduced to the locked
+        // viewer defaults by the server parser.
+        access = userAccessConfigFromInput(body, requestedRole);
+      } else if (accessSubmitted) {
+        const current = await getUserAccessConfig(pool, id);
+        const mergedInput: Record<string, unknown> = {
+          ...(current ?? {}),
+          ...body,
+          individualIds: Array.isArray(body.individualIds)
+            ? body.individualIds.map(String)
+            : current?.individualIds ?? [],
+          employeeIds: Array.isArray(body.employeeIds)
+            ? body.employeeIds.map(String)
+            : current?.employeeIds ?? [],
+        };
+        access = userAccessConfigFromInput(mergedInput, requestedRole);
+      }
+      if (!(await setUserRoleAndAccess(pool, id, requestedRole, access, actor.id))) {
+        return jsonError("Not found", 404);
+      }
     }
 
-    // Access scope — merge any provided fields over the user's current config so a
-    // partial update never silently clears the rest.
-    if (ACCESS_KEYS.some((k) => k in body)) {
-      const current = await getUserAccessConfig(pool, id);
-      const merged: UserAccessConfig = {
-        accessScope:
-          body.accessScope === "scoped" ? "scoped" : body.accessScope === "full" ? "full" : current?.accessScope ?? "full",
-        seeAllIndividuals:
-          typeof body.seeAllIndividuals === "boolean" ? body.seeAllIndividuals : current?.seeAllIndividuals ?? false,
-        seeAllEmployees:
-          typeof body.seeAllEmployees === "boolean" ? body.seeAllEmployees : current?.seeAllEmployees ?? false,
-        canSeeTransactions:
-          typeof body.canSeeTransactions === "boolean" ? body.canSeeTransactions : current?.canSeeTransactions ?? true,
-        canSeeMoney:
-          typeof body.canSeeMoney === "boolean" ? body.canSeeMoney : current?.canSeeMoney ?? true,
-        canSeeHours:
-          typeof body.canSeeHours === "boolean" ? body.canSeeHours : current?.canSeeHours ?? true,
-        canSeeBilledAmounts:
-          typeof body.canSeeBilledAmounts === "boolean" ? body.canSeeBilledAmounts : current?.canSeeBilledAmounts ?? true,
-        canSeeEmployeeAmounts:
-          typeof body.canSeeEmployeeAmounts === "boolean" ? body.canSeeEmployeeAmounts : current?.canSeeEmployeeAmounts ?? true,
-        canSeeAgencySpread:
-          typeof body.canSeeAgencySpread === "boolean" ? body.canSeeAgencySpread : current?.canSeeAgencySpread ?? true,
-        canSeeCheckNet:
-          typeof body.canSeeCheckNet === "boolean" ? body.canSeeCheckNet : current?.canSeeCheckNet ?? true,
-        canSeeTaxes:
-          typeof body.canSeeTaxes === "boolean" ? body.canSeeTaxes : current?.canSeeTaxes ?? true,
-        canSeeBudgets:
-          typeof body.canSeeBudgets === "boolean" ? body.canSeeBudgets : current?.canSeeBudgets ?? true,
-        canSeeEmployeeDeals:
-          typeof body.canSeeEmployeeDeals === "boolean" ? body.canSeeEmployeeDeals : current?.canSeeEmployeeDeals ?? false,
-        canSeeSettlements:
-          typeof body.canSeeSettlements === "boolean" ? body.canSeeSettlements : current?.canSeeSettlements ?? false,
-        canSeeClassFinancials:
-          typeof body.canSeeClassFinancials === "boolean"
-            ? body.canSeeClassFinancials
-            : current?.canSeeClassFinancials ?? false,
-        canManageClassInvoices:
-          typeof body.canManageClassInvoices === "boolean"
-            ? body.canManageClassInvoices
-            : current?.canManageClassInvoices ?? false,
-        canEditDocuments:
-          typeof body.canEditDocuments === "boolean"
-            ? body.canEditDocuments
-            : current?.canEditDocuments ?? false,
-        canPlan:
-          typeof body.canPlan === "boolean" ? body.canPlan : current?.canPlan ?? false,
-        individualIds: Array.isArray(body.individualIds) ? body.individualIds.map(String) : current?.individualIds ?? [],
-        employeeIds: Array.isArray(body.employeeIds) ? body.employeeIds.map(String) : current?.employeeIds ?? [],
-      };
-      await setUserAccessConfig(pool, id, merged, actor.id);
+    if (typeof body.isActive === "boolean") {
+      await setUserActive(pool, id, body.isActive, actor.id);
     }
 
     // Admin password reset (hand out a new credential).

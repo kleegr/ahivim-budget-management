@@ -178,8 +178,8 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
   }));
 
   // 3. Actual money per individual — all-time and windowed to the current period.
-  //    The window is each individual's primary-plan budget period; individuals
-  //    with no dated plan fall back to all-time for the "period" figures too.
+  //    The window is each individual's primary-plan budget period. A plan with
+  //    no dates has no defensible period figure, so its period totals stay zero.
   const winIds: string[] = [];
   const winStarts: string[] = [];
   const winEnds: string[] = [];
@@ -193,17 +193,18 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
   const ids = people.map((p) => p.id);
 
   const inWindow =
-    `(w.start_date IS NULL OR (t.period_begin >= w.start_date AND t.period_begin <= w.end_date))`;
+    `(w.start_date IS NOT NULL AND canonical_service_date(
+       t.period_begin, t.check_date, t.period_end
+     ) BETWEEN w.start_date AND w.end_date)`;
   const internalExpr =
     `COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount, t.internal_rate_applied * t.imported_hours, 0)`;
   // Taxes = the ACTUAL withholding on a paycheck: the check's gross minus the
   // net the employee really received (total_net_pay is per-check). It has nothing
-  // to do with the plan's cuts. The agency ("excellent_staffing") handles its own
-  // withholding (its checks show ~no gap), so we count the gap only on checks NOT
-  // paid to the agency, and spread each check's gap across its rows by gross share
-  // so it attributes cleanly to each individual.
+  // to do with the plan's cuts. Only checks canonically routed to the employee are
+  // self-hire payroll checks; their gap is spread across rows by gross share so it
+  // attributes cleanly to each individual.
   const whExpr =
-    `CASE WHEN t.payment_recipient IS DISTINCT FROM 'excellent_staffing'
+    `CASE WHEN effective_payment_recipient(t.payment_recipient, p.payment_recipient) = 'employee'
             AND ct.cg > 0 AND ct.cn IS NOT NULL AND ct.cg > ct.cn
           THEN (ct.cg - ct.cn) * COALESCE(t.imported_amount, 0) / ct.cg
           ELSE 0 END`;
@@ -226,13 +227,16 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
          SELECT * FROM unnest($1::uuid[], $2::date[], $3::date[]) AS w(individual_id, start_date, end_date)
        ),
        check_tot AS (
-         SELECT check_number,
-                sum(COALESCE(imported_amount, 0)) AS cg,
-                max(total_net_pay)                AS cn
-           FROM payroll_transactions
-          WHERE check_number IS NOT NULL
-            AND payment_recipient IS DISTINCT FROM 'excellent_staffing'
-          GROUP BY check_number
+         SELECT check_row.check_number,
+                sum(COALESCE(check_row.imported_amount, 0)) AS cg,
+                max(check_row.total_net_pay)                AS cn
+           FROM payroll_transactions check_row
+           LEFT JOIN programs check_program ON check_program.id = check_row.program_id
+          WHERE check_row.check_number IS NOT NULL
+            AND effective_payment_recipient(
+                  check_row.payment_recipient, check_program.payment_recipient
+                ) = 'employee'
+          GROUP BY check_row.check_number
        )
        SELECT t.individual_id,
               COALESCE(sum(t.imported_amount), 0)::text                          AS gross_all,
@@ -248,6 +252,7 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
               count(*) FILTER (WHERE ${inWindow})::text                          AS tx_period,
               COALESCE(sum(${whExpr}) FILTER (WHERE ${inWindow}), 0)::text       AS wh_period
          FROM payroll_transactions t
+         LEFT JOIN programs p ON p.id = t.program_id
          LEFT JOIN win w ON w.individual_id = t.individual_id
          LEFT JOIN check_tot ct ON ct.check_number = t.check_number
         WHERE t.individual_id = ANY($4::uuid[])

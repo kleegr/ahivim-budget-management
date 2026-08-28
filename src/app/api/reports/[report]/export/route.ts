@@ -3,6 +3,7 @@ import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import { jsonError, redactError } from "@/lib/http";
 import { dec, formatHours } from "@/lib/money";
+import { agencyDate } from "@/lib/business/agency-time";
 import {
   REPORTS,
   isReportKey,
@@ -45,7 +46,7 @@ export async function GET(
   try {
     const def = REPORTS[report];
     const tables = await def.run(getPool(), filters);
-    const stamp = new Date().toISOString().slice(0, 10);
+    const stamp = agencyDate();
     const filename = `${report}-${stamp}.${format}`;
 
     if (format === "xlsx") {

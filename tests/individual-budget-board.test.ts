@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { listIndividualBudgetBoard } from "@/lib/data/queries";
+import { agencyDate } from "@/lib/business/agency-time";
 
 describe("individual budget portfolio read model", () => {
   it("converts group-session internal money to used hours before every portfolio calculation", async () => {
@@ -48,8 +49,10 @@ describe("individual budget portfolio read model", () => {
     const asOf = new Date("2026-08-24T00:00:00.000Z");
     const [row] = await listIndividualBudgetBoard(pool as never, asOf);
     const budget = row?.budget;
+    const businessDate = agencyDate(asOf);
     const daysToCalendarRenewal = Math.round(
-      (Date.parse("2027-01-01T00:00:00Z") - asOf.getTime()) / (24 * 60 * 60 * 1000),
+      (Date.parse("2027-01-01T00:00:00Z") - Date.parse(`${businessDate}T00:00:00Z`))
+        / (24 * 60 * 60 * 1000),
     );
     const expectedMonthly = 100 / (daysToCalendarRenewal / 30.4375);
 
@@ -59,7 +62,12 @@ describe("individual budget portfolio read model", () => {
     expect(budget?.mustUseMonthly).toBeCloseTo(expectedMonthly, 8);
     expect(budget?.billedAmount).toBe("2500.00");
     expect(capturedSql[0]).toContain("l.rate_override");
-    expect(capturedSql[0]).toContain("t.period_begin < el.period_end");
+    expect(capturedSql[0]).toContain(
+      "canonical_service_date(t.period_begin, t.check_date, t.period_end) < el.period_end",
+    );
+    expect(capturedSql[0]).toContain(
+      "max(canonical_service_date(t.period_begin, t.check_date, t.period_end))",
+    );
     expect(capturedSql[0]).toContain("t.spreadsheet_internal_amount");
     expect(capturedSql[1]).toContain("FROM program_rate_schedules");
   });

@@ -1,4 +1,4 @@
-export type NavigationGate = "manager" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents";
+export type NavigationGate = "manager" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents" | "portal" | "agencies";
 
 export interface NavigationAccess {
   role: string;
@@ -9,6 +9,8 @@ export interface NavigationAccess {
   canSeeClassFinancials?: boolean;
   canSeeEmployees?: boolean;
   canEditDocuments: boolean;
+  canUsePortal?: boolean;
+  canManageAgencies?: boolean;
   /** Every gated destination stays hidden until capability lookup succeeds. */
   accessResolved: boolean;
 }
@@ -23,7 +25,7 @@ export interface NavigationDestination {
 }
 
 export interface NavigationWorkspace {
-  id: "overview" | "budgets" | "payroll" | "activity" | "review" | "reports";
+  id: "overview" | "portal" | "budgets" | "payroll" | "activity" | "review" | "reports";
   label: string;
   hint: string;
   activePrefixes: readonly string[];
@@ -49,6 +51,22 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         hint: "Today's priorities and portfolio health",
         keywords: "home dashboard attention start",
         gate: "manager",
+      },
+    ],
+  },
+  {
+    id: "portal",
+    label: "My portal",
+    hint: "Your profiles, organizations, and approved information",
+    activePrefixes: ["/portal"],
+    destinations: [
+      {
+        id: "portal-home",
+        label: "My portal",
+        href: "/portal",
+        hint: "Your profiles, organizations, and approved information",
+        keywords: "parent guardian employee agency portal organization access",
+        gate: "portal",
       },
     ],
   },
@@ -88,8 +106,16 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
     id: "payroll",
     label: "Money operations",
     hint: "Amounts to pay, collect, set aside and reconcile",
-    activePrefixes: ["/settlements", "/classes", "/employees"],
+    activePrefixes: ["/collections", "/settlements", "/classes", "/employees"],
     destinations: [
+      {
+        id: "collections",
+        label: "Collections",
+        href: "/collections",
+        hint: "Monthly give-backs, set-asides, targets and payroll checks",
+        keywords: "collector receivable monthly check gross net reserve target",
+        gate: "settlements",
+      },
       {
         id: "open-balances",
         label: "Balances and collections",
@@ -208,10 +234,18 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
 
 const ADMIN_DESTINATIONS: readonly NavigationDestination[] = [
   {
+    id: "agency-settings",
+    label: "Agencies and roles",
+    href: "/settings/agencies",
+    hint: "Organizations, memberships, and portal assignments",
+    keywords: "agency organization parent guardian employee staffing scheduler collector portal",
+    gate: "agencies",
+  },
+  {
     id: "pdf-editor",
     label: "PDF editor",
     href: "/documents/pdf-editor",
-    hint: "Edit text, scans, forms, signatures and page artwork",
+    hint: "Visually replace text; edit forms, signatures and page artwork",
     keywords: "documents pdf ocr scans cover sheets forms editor signature redact",
     gate: "documents",
   },
@@ -292,6 +326,8 @@ function allowed(gate: NavigationGate | undefined, access: NavigationAccess): bo
   if (gate === "planning") return access.canPlan;
   if (gate === "classes") return access.canSeeClassFinancials ?? false;
   if (gate === "documents") return access.canEditDocuments;
+  if (gate === "portal") return access.canUsePortal ?? false;
+  if (gate === "agencies") return access.canManageAgencies ?? false;
   if (gate === "employees") {
     if (access.canSeeEmployees !== undefined) return access.canSeeEmployees;
     return access.role === "manager" || access.role === "admin" || !access.canPlan || access.canSeeTransactions || access.canSeeSettlements;
