@@ -209,13 +209,13 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
-  authorization record;
+  auth_row record;
 BEGIN
   IF NEW."status" <> 'active' OR NEW."archived_at" IS NOT NULL THEN
     RETURN NEW;
   END IF;
 
-  FOR authorization IN
+  FOR auth_row IN
     SELECT ba."id", ba."program_id"
       FROM "budget_authorizations" ba
      WHERE ba."budget_period_id" = NEW."id"
@@ -224,16 +224,16 @@ BEGIN
      ORDER BY ba."program_id"
   LOOP
     PERFORM pg_advisory_xact_lock(
-      hashtextextended('budget_authorization:' || NEW."individual_id"::text || ':' || authorization."program_id"::text, 0)
+      hashtextextended('budget_authorization:' || NEW."individual_id"::text || ':' || auth_row."program_id"::text, 0)
     );
     IF EXISTS (
       SELECT 1
         FROM "budget_authorizations" existing
         JOIN "budget_periods" existing_period
           ON existing_period."id" = existing."budget_period_id"
-       WHERE existing."id" <> authorization."id"
+       WHERE existing."id" <> auth_row."id"
          AND existing."individual_id" = NEW."individual_id"
-         AND existing."program_id" = authorization."program_id"
+         AND existing."program_id" = auth_row."program_id"
          AND existing."status" = 'active'
          AND existing."archived_at" IS NULL
          AND existing_period."status" = 'active'
