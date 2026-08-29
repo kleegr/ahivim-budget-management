@@ -37,6 +37,10 @@ const PUBLIC_API_PREFIXES = [
   "/api/health/",
   "/api/sync/cron",
   "/api/sync/bootstrap",
+  // Vercel Blob calls this endpoint without the application's session cookie
+  // after a direct upload. The route verifies Blob's signed callback itself;
+  // browser token requests still require the normal session and capability.
+  "/api/documents/uploads",
 ];
 
 export function middleware(request: NextRequest) {

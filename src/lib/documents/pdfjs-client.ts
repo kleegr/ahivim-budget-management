@@ -185,6 +185,213 @@ function sourcePosition(
   };
 }
 
+interface PdfSourceTextBlock {
+  item: PdfSourceTextItem;
+  sourceIds: string[];
+}
+
+function textCenterY(item: PdfSourceTextItem): number {
+  return item.y + item.height / 2;
+}
+
+function rotationDistance(left: number, right: number): number {
+  const difference = Math.abs(((left - right + 180) % 360 + 360) % 360 - 180);
+  return Math.min(difference, 360 - difference);
+}
+
+function compatibleTypography(left: PdfSourceTextItem, right: PdfSourceTextItem): boolean {
+  const sizeTolerance = Math.max(0.6, Math.max(left.fontSize, right.fontSize) * 0.08);
+  return left.fontId === right.fontId
+    && left.fontName === right.fontName
+    && left.fontWeight === right.fontWeight
+    && left.fontStyle === right.fontStyle
+    && left.direction === right.direction
+    && left.color === right.color
+    && Math.abs(left.fontSize - right.fontSize) <= sizeTolerance
+    && rotationDistance(left.rotation, right.rotation) <= 1;
+}
+
+function readingGap(left: PdfSourceTextItem, right: PdfSourceTextItem): number {
+  return left.direction === "rtl"
+    ? left.x - (right.x + right.width)
+    : right.x - (left.x + left.width);
+}
+
+function averageCharacterWidth(item: PdfSourceTextItem): number {
+  return item.width / Math.max(1, [...item.text.trim()].length);
+}
+
+function canShareLine(left: PdfSourceTextItem, right: PdfSourceTextItem): boolean {
+  if (!compatibleTypography(left, right)) return false;
+  const centerTolerance = Math.max(0.0025, Math.min(left.height, right.height) * 0.42);
+  return Math.abs(textCenterY(left) - textCenterY(right)) <= centerTolerance;
+}
+
+function canJoinLineRuns(left: PdfSourceTextItem, right: PdfSourceTextItem): boolean {
+  const gap = readingGap(left, right);
+  const maximumGap = Math.max(
+    0.006,
+    Math.max(left.height, right.height) * 0.8,
+    Math.max(averageCharacterWidth(left), averageCharacterWidth(right)) * 1.5,
+  );
+  return gap >= -Math.max(left.height, right.height) * 0.55 && gap <= maximumGap;
+}
+
+function textRunSeparator(left: PdfSourceTextItem, right: PdfSourceTextItem): string {
+  if (/\s$/u.test(left.text) || /^\s/u.test(right.text)) return "";
+  if (/^[,.;:!?%\u2026)\]}]/u.test(right.text) || /[(\[{]$/u.test(left.text)) return "";
+  const compactGap = Math.max(averageCharacterWidth(left), averageCharacterWidth(right)) * 0.35;
+  return readingGap(left, right) <= compactGap ? "" : " ";
+}
+
+function blockId(sourceIds: string[]): string {
+  const first = sourceIds[0] ?? "empty";
+  const last = sourceIds.at(-1) ?? first;
+  return first === last ? `native-block:${first}` : `native-block:${first}:${last}`;
+}
+
+function mergeRuns(runs: PdfSourceTextItem[]): PdfSourceTextBlock {
+  const ordered = [...runs].sort((left, right) => (
+    left.direction === "rtl" ? right.x - left.x : left.x - right.x
+  ));
+  const first = ordered[0]!;
+  const sourceIds = ordered.map((item) => item.id);
+  const minimumX = Math.min(...ordered.map((item) => item.x));
+  const minimumY = Math.min(...ordered.map((item) => item.y));
+  const maximumX = Math.max(...ordered.map((item) => item.x + item.width));
+  const maximumY = Math.max(...ordered.map((item) => item.y + item.height));
+  const text = ordered.slice(1).reduce(
+    (value, item, index) => `${value}${textRunSeparator(ordered[index]!, item)}${item.text}`,
+    first.text,
+  ).trim();
+
+  return {
+    sourceIds,
+    item: {
+      ...first,
+      id: blockId(sourceIds),
+      text,
+      x: minimumX,
+      y: minimumY,
+      width: maximumX - minimumX,
+      height: maximumY - minimumY,
+      alignment: first.direction === "rtl" ? "right" : first.alignment,
+    },
+  };
+}
+
+function horizontalOverlap(left: PdfSourceTextItem, right: PdfSourceTextItem): number {
+  return Math.max(0, Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x));
+}
+
+function paragraphAlignmentDistance(left: PdfSourceTextItem, right: PdfSourceTextItem): number {
+  return left.direction === "rtl"
+    ? Math.abs(left.x + left.width - right.x - right.width)
+    : Math.abs(left.x - right.x);
+}
+
+function canJoinParagraph(previous: PdfSourceTextItem, next: PdfSourceTextItem): boolean {
+  if (!compatibleTypography(previous, next)) return false;
+  const height = Math.max(previous.height, next.height);
+  const centerDistance = textCenterY(next) - textCenterY(previous);
+  if (centerDistance < Math.min(previous.height, next.height) * 0.58 || centerDistance > height * 2.45) {
+    return false;
+  }
+
+  const overlap = horizontalOverlap(previous, next);
+  const overlapRatio = overlap / Math.max(0.001, Math.min(previous.width, next.width));
+  const edgeAligned = paragraphAlignmentDistance(previous, next) <= Math.max(0.015, height * 1.25);
+  return overlapRatio >= 0.3 || edgeAligned;
+}
+
+function mergeParagraph(lines: PdfSourceTextBlock[]): PdfSourceTextItem {
+  const first = lines[0]!.item;
+  const sourceIds = lines.flatMap((line) => line.sourceIds);
+  const minimumX = Math.min(...lines.map(({ item }) => item.x));
+  const minimumY = Math.min(...lines.map(({ item }) => item.y));
+  const maximumX = Math.max(...lines.map(({ item }) => item.x + item.width));
+  const maximumY = Math.max(...lines.map(({ item }) => item.y + item.height));
+  return {
+    ...first,
+    id: blockId(sourceIds),
+    text: lines.map(({ item }) => item.text).join("\n"),
+    x: minimumX,
+    y: minimumY,
+    width: maximumX - minimumX,
+    height: maximumY - minimumY,
+  };
+}
+
+function visualOrder(left: PdfSourceTextItem, right: PdfSourceTextItem): number {
+  const centerDifference = textCenterY(left) - textCenterY(right);
+  const sameVisualRow = Math.abs(centerDifference) <= Math.max(left.height, right.height) * 0.45;
+  if (!sameVisualRow) return centerDifference;
+  return left.direction === "rtl" && right.direction === "rtl"
+    ? right.x - left.x
+    : left.x - right.x;
+}
+
+/**
+ * Reconstructs the fragmented text runs returned by PDF.js into editable
+ * blocks. Geometry and typography gates keep adjacent columns and visibly
+ * different fonts independent, while direction-aware ordering preserves RTL.
+ */
+export function groupPdfNativeTextItems(items: PdfSourceTextItem[]): PdfSourceTextItem[] {
+  if (items.length < 2) return items;
+  const nativeItems = items.filter((item) => item.origin === "native" && item.text.trim());
+  const passthrough = items.filter((item) => item.origin !== "native" || !item.text.trim());
+  const rows: PdfSourceTextItem[][] = [];
+
+  for (const item of [...nativeItems].sort(visualOrder)) {
+    const row = rows
+      .filter((candidate) => canShareLine(candidate[0]!, item))
+      .sort((left, right) => (
+        Math.abs(textCenterY(left[0]!) - textCenterY(item))
+        - Math.abs(textCenterY(right[0]!) - textCenterY(item))
+      ))[0];
+    if (row) row.push(item);
+    else rows.push([item]);
+  }
+
+  const lines: PdfSourceTextBlock[] = [];
+  for (const row of rows) {
+    const ordered = [...row].sort((left, right) => (
+      left.direction === "rtl" ? right.x - left.x : left.x - right.x
+    ));
+    let segment: PdfSourceTextItem[] = [];
+    for (const item of ordered) {
+      const previous = segment.at(-1);
+      if (previous && !canJoinLineRuns(previous, item)) {
+        lines.push(mergeRuns(segment));
+        segment = [];
+      }
+      segment.push(item);
+    }
+    if (segment.length > 0) lines.push(mergeRuns(segment));
+  }
+
+  const paragraphs: PdfSourceTextBlock[][] = [];
+  for (const line of lines.sort((left, right) => visualOrder(left.item, right.item))) {
+    const candidate = paragraphs
+      .filter((paragraph) => canJoinParagraph(paragraph.at(-1)!.item, line.item))
+      .sort((left, right) => {
+        const leftLast = left.at(-1)!.item;
+        const rightLast = right.at(-1)!.item;
+        const verticalDifference = Math.abs(textCenterY(leftLast) - textCenterY(line.item))
+          - Math.abs(textCenterY(rightLast) - textCenterY(line.item));
+        return verticalDifference || paragraphAlignmentDistance(leftLast, line.item)
+          - paragraphAlignmentDistance(rightLast, line.item);
+      })[0];
+    if (candidate) candidate.push(line);
+    else paragraphs.push([line]);
+  }
+
+  return [
+    ...paragraphs.map(mergeParagraph),
+    ...passthrough,
+  ].sort(visualOrder);
+}
+
 export async function inspectPdfPage(
   document: PDFDocumentProxy,
   pageNumber: number,
@@ -195,7 +402,7 @@ export async function inspectPdfPage(
   const content = await page.getTextContent();
   const fontMap = new Map<string, PdfDetectedFont>();
 
-  const items = content.items.flatMap((item, index): PdfSourceTextItem[] => {
+  const runs = content.items.flatMap((item, index): PdfSourceTextItem[] => {
     if (!("str" in item) || !item.str.trim()) return [];
     const style = content.styles[item.fontName];
     const font = fontMap.get(item.fontName) ?? fontDefinition(page, item.fontName, style);
@@ -223,7 +430,7 @@ export async function inspectPdfPage(
     }];
   });
 
-  return { items, fonts: [...fontMap.values()] };
+  return { items: groupPdfNativeTextItems(runs), fonts: [...fontMap.values()] };
 }
 
 export async function inspectPdfPageText(

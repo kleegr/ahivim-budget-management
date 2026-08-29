@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 import {
   EMPTY_PDF_HISTORY,
   commitPdfHistory,
@@ -18,7 +18,11 @@ import {
   rotateOverlayPosition,
   undoPdfHistory,
 } from "@/lib/documents/pdf-editor";
-import { exportPdfWithOverlays } from "@/lib/documents/pdf-export";
+import { exportPdfWithOverlays, fitPdfTextToBox } from "@/lib/documents/pdf-export";
+import {
+  groupPdfNativeTextItems,
+  type PdfSourceTextItem,
+} from "@/lib/documents/pdfjs-client";
 import {
   buildPdfFromRasterPages,
   planSecureRasterWorkload,
@@ -30,6 +34,90 @@ const ONE_PIXEL_PNG = Uint8Array.from(Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
   "base64",
 ));
+
+function nativeTextItem(patch: Partial<PdfSourceTextItem> = {}): PdfSourceTextItem {
+  return {
+    id: "native-1-0",
+    text: "Text",
+    x: 0.1,
+    y: 0.1,
+    width: 0.04,
+    height: 0.02,
+    fontSize: 12,
+    fontId: "helvetica",
+    fontName: "Helvetica",
+    cssFamily: "Arial, sans-serif",
+    fontWeight: 400,
+    fontStyle: "normal",
+    color: "#111111",
+    backgroundColor: "#ffffff",
+    alignment: "left",
+    opacity: 1,
+    lineHeight: 1.15,
+    letterSpacing: 0,
+    rotation: 0,
+    direction: "ltr",
+    origin: "native",
+    ...patch,
+  };
+}
+
+describe("PDF native text reconstruction", () => {
+  it("groups fragmented runs and neighboring lines into one stable editable block", () => {
+    const grouped = groupPdfNativeTextItems([
+      nativeTextItem({ id: "native-1-3", text: "line", x: 0.154, y: 0.13, width: 0.03 }),
+      nativeTextItem({ id: "native-1-0", text: "Hel", x: 0.1, width: 0.022 }),
+      nativeTextItem({ id: "native-1-2", text: "Second", x: 0.1, y: 0.13, width: 0.048 }),
+      nativeTextItem({ id: "native-1-1", text: "lo world", x: 0.123, width: 0.065 }),
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]).toMatchObject({
+      id: "native-block:native-1-0:native-1-3",
+      text: "Hello world\nSecond line",
+      x: 0.1,
+      y: 0.1,
+      fontId: "helvetica",
+      fontSize: 12,
+    });
+    expect(grouped[0]!.width).toBeCloseTo(0.088);
+    expect(grouped[0]!.height).toBeCloseTo(0.05);
+  });
+
+  it("keeps separate columns and visibly different fonts in separate blocks", () => {
+    const grouped = groupPdfNativeTextItems([
+      nativeTextItem({ id: "native-1-0", text: "Left one", x: 0.08, y: 0.1, width: 0.16 }),
+      nativeTextItem({ id: "native-1-1", text: "Right one", x: 0.62, y: 0.1, width: 0.16 }),
+      nativeTextItem({ id: "native-1-2", text: "Left two", x: 0.08, y: 0.13, width: 0.16 }),
+      nativeTextItem({ id: "native-1-3", text: "Right two", x: 0.62, y: 0.13, width: 0.16 }),
+      nativeTextItem({
+        id: "native-1-4",
+        text: "Other font",
+        x: 0.25,
+        y: 0.1,
+        width: 0.1,
+        fontName: "Calibri",
+        cssFamily: "Calibri, sans-serif",
+      }),
+    ]);
+
+    expect(grouped.map((item) => item.text)).toEqual([
+      "Left one\nLeft two",
+      "Other font",
+      "Right one\nRight two",
+    ]);
+  });
+
+  it("orders RTL fragments from right to left and retains right alignment", () => {
+    const grouped = groupPdfNativeTextItems([
+      nativeTextItem({ id: "native-1-1", text: "\u05e2\u05d5\u05dc\u05dd", x: 0.2, width: 0.045, direction: "rtl", alignment: "right" }),
+      nativeTextItem({ id: "native-1-0", text: "\u05e9\u05dc\u05d5\u05dd", x: 0.255, width: 0.05, direction: "rtl", alignment: "right" }),
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]).toMatchObject({ text: "\u05e9\u05dc\u05d5\u05dd \u05e2\u05d5\u05dc\u05dd", direction: "rtl", alignment: "right" });
+  });
+});
 
 describe("PDF editor history", () => {
   it("undoes and redoes complete editing gestures", () => {
@@ -156,6 +244,32 @@ describe("PDF editor history", () => {
 });
 
 describe("PDF overlay export", () => {
+  it("reduces the font size until all multiline text fits without dropping words", async () => {
+    const document = await PDFDocument.create();
+    const font = await document.embedFont(StandardFonts.Helvetica);
+    const text = "First explicit line with several words\nSecond explicit line also needs room";
+    const layout = fitPdfTextToBox(text, font, 18, 125, 42, 1.2);
+
+    expect(layout.fontSize).toBeLessThan(18);
+    expect(layout.lines.length * layout.lineHeight).toBeLessThanOrEqual(42.001);
+    expect(layout.lines.join(" ").split(/\s+/)).toEqual(text.split(/\s+/));
+  });
+
+  it("fits a long unbroken value without omitting any characters", async () => {
+    const document = await PDFDocument.create();
+    const font = await document.embedFont(StandardFonts.Courier);
+    const text = "LONGREFERENCEVALUE".repeat(12);
+    const layout = fitPdfTextToBox(text, font, 16, 72, 30, 1.15, 0.2);
+
+    expect(layout.fontSize).toBeLessThan(16);
+    expect(layout.lines.join("")).toBe(text);
+    expect(layout.lines.length * layout.lineHeight).toBeLessThanOrEqual(30.001);
+    expect(layout.lines.every((line) => (
+      font.widthOfTextAtSize(line, layout.fontSize)
+      + Math.max(0, [...line].length - 1) * 0.2
+    ) <= 72.001)).toBe(true);
+  });
+
   it("preserves the source bytes and every source page while flattening a multi-page copy", async () => {
     const sourceDocument = await PDFDocument.create();
     sourceDocument.addPage([612, 792]);

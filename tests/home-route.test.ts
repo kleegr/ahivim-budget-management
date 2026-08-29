@@ -49,7 +49,7 @@ describe("viewerHomePath", () => {
 
   it("opens the PDF editor for a document-only account", () => {
     expect(viewerHomePath(viewerAccess({ canEditDocuments: true }), EMPTY_PORTAL))
-      .toBe("/documents/pdf-editor");
+      .toBe("/documents");
   });
 
   it("uses Employees only when the account can actually see employees", () => {

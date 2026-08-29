@@ -67,7 +67,7 @@ describe("role-specific workspaces", () => {
     const hrefs = getCommandDestinations(access).map((item) => item.href);
 
     expect(hrefs).toContain("/classes");
-    expect(hrefs).toContain("/documents/pdf-editor");
+    expect(hrefs).toContain("/documents");
     expect(hrefs).not.toContain("/employees");
     expect(hrefs).not.toContain("/transactions");
     expect(hrefs).not.toContain("/settlements");
@@ -117,7 +117,7 @@ describe("role-specific workspaces", () => {
     expect(hrefs).toContain("/employees");
     expect(hrefs).toContain("/classes");
     expect(hrefs).toContain("/reports");
-    expect(hrefs).toContain("/documents/pdf-editor");
+    expect(hrefs).toContain("/documents");
   });
 
   it("shows the PDF workspace only after document access resolves", () => {
@@ -131,8 +131,8 @@ describe("role-specific workspaces", () => {
       canEditDocuments: true,
     };
 
-    expect(getCommandDestinations(base).map((item) => item.href)).toContain("/documents/pdf-editor");
-    expect(getCommandDestinations({ ...base, canEditDocuments: false }).map((item) => item.href)).not.toContain("/documents/pdf-editor");
+    expect(getCommandDestinations(base).map((item) => item.href)).toContain("/documents");
+    expect(getCommandDestinations({ ...base, canEditDocuments: false }).map((item) => item.href)).not.toContain("/documents");
   });
 
   it("shows agency administration only to a portal owner", () => {

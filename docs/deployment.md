@@ -11,6 +11,8 @@
 | `MIGRATION_TOKEN` | optional | Allows `POST /api/admin/migrate` without a signed-in administrator. Needed only for a database that has no administrator yet, or for automated deploys. |
 | `CRON_SECRET` | recommended | Authenticates Vercel Cron calls to `/api/sync/cron`. Use a separate random secret; signed-in administrators may also trigger the endpoint. |
 | `MAX_UPLOAD_BYTES` | optional | Upload ceiling in bytes. Defaults to 20 MiB. |
+| `BLOB_READ_WRITE_TOKEN` | PDF library | Private Vercel Blob store token. Connect a Blob store to the Vercel project so original and edited PDFs remain private. |
+| `MAX_PDF_UPLOAD_BYTES` | optional | Direct PDF upload ceiling in bytes. Defaults to 100 MiB and is capped at 500 MiB. |
 | `NEON_WS_PROXY` | local dev only | `host:port` of a WebSocket-to-TCP bridge, so the Neon driver can reach a local PostgreSQL. Never set in production. |
 
 Generate a secret with:
@@ -33,6 +35,9 @@ a deployment check can call them.
   read) in the deployed runtime. Confirms the upload engine works without an
   authenticated upload; returns `{ok:true}` or, on a require-of-ESM regression,
   `{ok:false, code:"ERR_REQUIRE_ESM"}`. See the dependency note below.
+
+`GET /api/health/env` also reports `documentStorageConfigured`; the PDF library
+cannot accept or serve documents until a private Blob store is connected.
 
 ## Migrations
 

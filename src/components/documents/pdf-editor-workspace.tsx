@@ -13,6 +13,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Circle,
+  Clock3,
   Copy,
   Download,
   Eraser,
@@ -29,6 +30,7 @@ import {
   Redo2,
   RotateCcw,
   RotateCw,
+  Save,
   ScanText,
   Search,
   Settings2,
@@ -40,6 +42,8 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
+import { upload } from "@vercel/blob/client";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api";
 import { PdfPageCanvas, PdfThumbnailCanvas } from "./pdf-page-canvas";
@@ -113,8 +117,135 @@ interface EditorImage extends PdfImageSource {
   objectUrl: string;
 }
 
+interface StoredDocument {
+  id: string;
+  title: string;
+  description: string | null;
+  category: string;
+  status: "uploading" | "active" | "archived";
+  originalVersionId: string | null;
+  currentVersionId: string | null;
+  currentVersionNumber: number | null;
+  currentFilename: string | null;
+  currentByteSize: number | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface StoredDocumentVersion {
+  id: string;
+  documentId: string;
+  versionNumber: number;
+  versionKind: "original" | "saved" | "restored";
+  parentVersionId: string | null;
+  restoredFromVersionId: string | null;
+  exportMode: "source" | "standard" | "secure";
+  editorSchemaVersion: number;
+  editorState: Record<string, unknown>;
+  pageCount: number | null;
+  changeSummary: string | null;
+  filename: string;
+  byteSize: number;
+  createdBy: string;
+  createdAt: string;
+}
+
+interface StoredDocumentDraft {
+  baseVersionId: string;
+  revision: number;
+  editorSchemaVersion: number;
+  editorState: Record<string, unknown>;
+  updatedAt: string;
+}
+
+interface StoredDocumentDetail {
+  document: StoredDocument;
+  versions: StoredDocumentVersion[];
+  draft: StoredDocumentDraft | null;
+}
+
+interface UploadReservation {
+  intentId: string;
+  pathname: string;
+  handleUploadUrl: string;
+  maximumSizeInBytes: number;
+  expiresAt: string;
+}
+
+interface DocumentCreationReservation {
+  document: StoredDocument;
+  upload: UploadReservation;
+}
+
+interface PdfEditorManifest {
+  schemaVersion: 1;
+  overlays: PdfOverlay[];
+  pageOrder: number[];
+  pageRotations: Record<number, number>;
+  formValues: Record<string, PdfFormValue>;
+  exportMode: PdfExportMode;
+}
+
+interface ApiEnvelope<T> {
+  ok: boolean;
+  data?: T;
+  error?: string | { message?: string };
+}
+
+async function documentApi<T>(url: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body && !(init.body instanceof FormData)) headers.set("content-type", "application/json");
+  const response = await fetch(url, { ...init, headers, cache: "no-store" });
+  const body = await response.json().catch(() => ({})) as ApiEnvelope<T>;
+  if (!response.ok || !body.ok || body.data === undefined) {
+    const message = typeof body.error === "string" ? body.error : body.error?.message;
+    throw new Error(message || "The document request could not be completed.");
+  }
+  return body.data;
+}
+
+function bytesAsArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+function editorManifest(
+  overlays: PdfOverlay[],
+  pageOrder: number[],
+  pageRotations: Record<number, number>,
+  formValues: Record<string, PdfFormValue>,
+  exportMode: PdfExportMode,
+): PdfEditorManifest {
+  return { schemaVersion: 1, overlays, pageOrder, pageRotations, formValues, exportMode };
+}
+
+function parseEditorManifest(value: Record<string, unknown>): PdfEditorManifest | null {
+  if (value.schemaVersion !== 1 || !Array.isArray(value.overlays) || !Array.isArray(value.pageOrder)) return null;
+  if (!value.pageRotations || typeof value.pageRotations !== "object") return null;
+  if (!value.formValues || typeof value.formValues !== "object") return null;
+  if (value.exportMode !== "standard" && value.exportMode !== "secure") return null;
+  return value as unknown as PdfEditorManifest;
+}
+
+function formatStoredBytes(value: number): string {
+  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
+  return `${(value / (1024 * 1024)).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+}
+
+function formatStoredDate(value: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
 function downloadName(sourceName: string, secure: boolean): string {
-  const base = sourceName.replace(/\.pdf$/i, "") || "document";
+  const base = sourceName
+    .replace(/\.pdf$/i, "")
+    .replace(/(?:-edited(?:-secure)?)+$/i, "") || "document";
   return `${base}-edited${secure ? "-secure" : ""}.pdf`;
 }
 
@@ -182,8 +313,10 @@ function ToolButton({
 
 export default function PdfEditorWorkspace({
   initialSourcePath = null,
+  initialDocumentId = null,
 }: {
   initialSourcePath?: string | null;
+  initialDocumentId?: string | null;
 }) {
   const [loaded, setLoaded] = useState<LoadedPdf | null>(null);
   const [history, setHistory] = useState<PdfEditorHistory>(EMPTY_PDF_HISTORY);
@@ -217,10 +350,19 @@ export default function PdfEditorWorkspace({
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const [activeTool, setActiveTool] = useState<PdfEditorTool>("select");
   const [inkDraft, setInkDraft] = useState<PdfInkPoint[] | null>(null);
+  const [inlineEditingId, setInlineEditingId] = useState<string | null>(null);
+  const [storedDocument, setStoredDocument] = useState<StoredDocument | null>(null);
+  const [versions, setVersions] = useState<StoredDocumentVersion[]>([]);
+  const [draftRevision, setDraftRevision] = useState<number | null>(null);
+  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved" | "save-needed">("idle");
+  const [savingVersion, setSavingVersion] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fontInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const inlineTextAreaRef = useRef<HTMLTextAreaElement>(null);
   const pageViewportRef = useRef<HTMLDivElement>(null);
   const pageSurfaceRef = useRef<HTMLDivElement>(null);
   const customFontsRef = useRef<EditorFont[]>([]);
@@ -228,6 +370,13 @@ export default function PdfEditorWorkspace({
   const loadedDocumentRef = useRef<PDFDocumentProxy | null>(null);
   const mountedRef = useRef(true);
   const initialSourceLoadedRef = useRef<string | null>(null);
+  const initialDocumentLoadedRef = useRef<string | null>(null);
+  const lastDraftSignatureRef = useRef<string | null>(null);
+  const draftRevisionRef = useRef<number | null>(null);
+  const currentEditorSignatureRef = useRef("");
+  const draftSaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const inlineCancelHistoryRef = useRef<PdfEditorHistory | null>(null);
+  const inlineChangedRef = useRef(false);
   const detectedFontIdsRef = useRef(new Set<string>());
   const displayOverlays = draft ?? history.present;
   const selected = displayOverlays.find((overlay) => overlay.id === selectedId) ?? null;
@@ -253,12 +402,34 @@ export default function PdfEditorWorkspace({
     : null;
   const hasFormChanges = JSON.stringify(formValues) !== JSON.stringify(initialFormValues);
   const hasChanges = hasPdfEditorChanges(history.present, pageRotations) || pageOrderChanged || hasFormChanges;
+  const unsavedWorkAtRisk = hasChanges && (!storedDocument || draftStatus !== "saved");
+  const currentEditorManifest = useMemo(() => editorManifest(
+    displayOverlays,
+    pageOrder,
+    pageRotations,
+    formValues,
+    exportModeResolution.mode,
+  ), [displayOverlays, exportModeResolution.mode, formValues, pageOrder, pageRotations]);
+  const currentEditorSignature = useMemo(
+    () => JSON.stringify(currentEditorManifest),
+    [currentEditorManifest],
+  );
+  const draftNeedsVersionSave = history.present.some((overlay) => overlay.kind === "image")
+    || customFonts.some((font) => font.source === "imported");
   const sourceText = nativeSourceText && nativeSourceText.length > 0
     ? nativeSourceText
     : ocrTextByPage[pageNumber] ?? nativeSourceText;
   const filteredSourceText = (sourceText ?? []).filter((item) => (
     !sourceQuery.trim() || item.text.toLocaleLowerCase().includes(sourceQuery.trim().toLocaleLowerCase())
   ));
+
+  useEffect(() => {
+    draftRevisionRef.current = draftRevision;
+  }, [draftRevision]);
+
+  useEffect(() => {
+    currentEditorSignatureRef.current = currentEditorSignature;
+  }, [currentEditorSignature]);
 
   const effectiveScale = useMemo(() => {
     if (!fitPage) return manualScale;
@@ -351,11 +522,40 @@ export default function PdfEditorWorkspace({
   }, [history.present, selectedId]);
 
   useEffect(() => {
-    if (!hasChanges) return;
+    if (!inlineEditingId) return;
+    const frame = window.requestAnimationFrame(() => {
+      inlineTextAreaRef.current?.focus();
+      inlineTextAreaRef.current?.scrollIntoView({ block: "center", inline: "nearest" });
+      inlineTextAreaRef.current?.setSelectionRange(
+        inlineTextAreaRef.current.value.length,
+        inlineTextAreaRef.current.value.length,
+      );
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [inlineEditingId]);
+
+  useEffect(() => {
+    if (!unsavedWorkAtRisk) return;
     const protectWork = (event: BeforeUnloadEvent) => event.preventDefault();
+    const protectClientNavigation = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const anchor = target?.closest<HTMLAnchorElement>("a[href]");
+      if (!anchor || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
+      const destination = new URL(anchor.href, window.location.href);
+      if (destination.origin !== window.location.origin || destination.href === window.location.href) return;
+      if (destination.pathname.includes("/versions/") && destination.pathname.endsWith("/file")) return;
+      if (window.confirm("Leave this PDF and discard changes that are not safely stored?")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
     window.addEventListener("beforeunload", protectWork);
-    return () => window.removeEventListener("beforeunload", protectWork);
-  }, [hasChanges]);
+    document.addEventListener("click", protectClientNavigation, true);
+    return () => {
+      window.removeEventListener("beforeunload", protectWork);
+      document.removeEventListener("click", protectClientNavigation, true);
+    };
+  }, [unsavedWorkAtRisk]);
 
   useEffect(() => {
     customFontsRef.current = customFonts;
@@ -416,12 +616,61 @@ export default function PdfEditorWorkspace({
     commit(replaceOverlay(history.present, moveOverlay(current, deltaX, deltaY)));
   }, [commit, history.present, selectedId]);
 
+  const beginInlineEdit = useCallback((id: string) => {
+    const overlay = history.present.find((item) => item.id === id);
+    if (!overlay || overlay.kind !== "text") return;
+    setSelectedId(id);
+    setInlineEditingId(id);
+    inlineCancelHistoryRef.current = null;
+    inlineChangedRef.current = false;
+    setInspectorTab("properties");
+    setMobileInspectorOpen(false);
+    setActiveTool("select");
+  }, [history.present]);
+
+  const updateInlineText = useCallback((id: string, text: string) => {
+    const overlay = history.present.find((item) => item.id === id);
+    if (!overlay || overlay.kind !== "text") return;
+    if (overlay.text !== text) inlineChangedRef.current = true;
+    setDraft(replaceOverlay(history.present, { ...overlay, text }));
+  }, [history.present]);
+
+  const finishInlineEdit = useCallback(() => {
+    if (!inlineEditingId) return;
+    if (!inlineChangedRef.current && inlineCancelHistoryRef.current) {
+      setHistory(inlineCancelHistoryRef.current);
+      setDraft(null);
+      setSelectedId(null);
+    } else if (draft) {
+      commit(draft);
+    }
+    inlineCancelHistoryRef.current = null;
+    inlineChangedRef.current = false;
+    setInlineEditingId(null);
+  }, [commit, draft, inlineEditingId]);
+
+  const cancelInlineEdit = useCallback(() => {
+    if (!inlineEditingId) return;
+    if (inlineCancelHistoryRef.current) {
+      setHistory(inlineCancelHistoryRef.current);
+      setSelectedId(null);
+    }
+    setDraft(null);
+    inlineCancelHistoryRef.current = null;
+    inlineChangedRef.current = false;
+    setInlineEditingId(null);
+  }, [inlineEditingId]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target;
       const editingText = target instanceof HTMLInputElement
         || target instanceof HTMLTextAreaElement
         || target instanceof HTMLSelectElement;
+      const interactiveTarget = target instanceof Element
+        && Boolean(target.closest("button, a, [contenteditable='true']"));
+      const canvasTarget = target instanceof Element
+        && Boolean(target.closest("[data-pdf-page-surface='true']"));
       if ((event.metaKey || event.ctrlKey) && !editingText && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) redo();
@@ -429,13 +678,13 @@ export default function PdfEditorWorkspace({
       } else if ((event.metaKey || event.ctrlKey) && !editingText && event.key.toLowerCase() === "y") {
         event.preventDefault();
         redo();
-      } else if ((event.metaKey || event.ctrlKey) && !editingText && event.key.toLowerCase() === "d") {
+      } else if ((event.metaKey || event.ctrlKey) && !editingText && !interactiveTarget && canvasTarget && event.key.toLowerCase() === "d") {
         event.preventDefault();
         duplicateSelected();
-      } else if (!editingText && (event.key === "Delete" || event.key === "Backspace")) {
+      } else if (!editingText && !interactiveTarget && canvasTarget && (event.key === "Delete" || event.key === "Backspace")) {
         event.preventDefault();
         removeSelected();
-      } else if (!editingText && selectedId && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+      } else if (!editingText && !interactiveTarget && canvasTarget && selectedId && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
         event.preventDefault();
         const distance = event.shiftKey ? 0.01 : 0.002;
         nudgeSelected(
@@ -443,13 +692,16 @@ export default function PdfEditorWorkspace({
           event.key === "ArrowUp" ? -distance : event.key === "ArrowDown" ? distance : 0,
         );
       } else if (event.key === "Escape") {
-        setSelectedId(null);
-        setActiveTool("select");
+        if (inlineEditingId) cancelInlineEdit();
+        else {
+          setSelectedId(null);
+          setActiveTool("select");
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [duplicateSelected, nudgeSelected, redo, removeSelected, selectedId, undo]);
+  }, [cancelInlineEdit, duplicateSelected, inlineEditingId, nudgeSelected, redo, removeSelected, selectedId, undo]);
 
   const clearCustomFonts = useCallback(() => {
     setCustomFonts((fonts) => {
@@ -469,16 +721,20 @@ export default function PdfEditorWorkspace({
     });
   }, []);
 
-  const openPdf = useCallback(async (file: File, skipDiscardConfirmation = false) => {
+  const openPdf = useCallback(async (
+    file: File,
+    skipDiscardConfirmation = false,
+    retainStoredDocument = false,
+  ) => {
     setError(null);
     setNotice(null);
     if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
       setError("Choose a PDF file.");
-      return;
+      return false;
     }
     if (file.size > MAX_PDF_BYTES) {
       setError("This PDF is larger than 100 MB.");
-      return;
+      return false;
     }
     if (
       !skipDiscardConfirmation
@@ -486,7 +742,7 @@ export default function PdfEditorWorkspace({
       && hasChanges
       && !window.confirm("Open a new PDF and discard the current edits?")
     ) {
-      return;
+      return false;
     }
 
     setOpening(true);
@@ -502,7 +758,7 @@ export default function PdfEditorWorkspace({
       ]);
       if (!mountedRef.current) {
         void pdfDocument.destroy();
-        return;
+        return false;
       }
       const previousDocument = loadedDocumentRef.current;
       loadedDocumentRef.current = pdfDocument;
@@ -528,16 +784,30 @@ export default function PdfEditorWorkspace({
       setSelectedFormWidget(null);
       setActiveTool("select");
       setInkDraft(null);
+      setInlineEditingId(null);
+      inlineCancelHistoryRef.current = null;
+      inlineChangedRef.current = false;
+      if (!retainStoredDocument) {
+        setStoredDocument(null);
+        setVersions([]);
+        setDraftRevision(null);
+        setDraftStatus("idle");
+        lastDraftSignatureRef.current = null;
+        initialDocumentLoadedRef.current = initialDocumentId;
+        if (initialDocumentId) window.history.replaceState(null, "", "/documents/pdf-editor");
+      }
       clearCustomFonts();
       clearImages();
       void previousDocument?.destroy();
+      return true;
     } catch (openError) {
       setError(errorMessage(openError));
+      return false;
     } finally {
       setOpening(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
-  }, [clearCustomFonts, clearImages, hasChanges, loaded]);
+  }, [clearCustomFonts, clearImages, hasChanges, initialDocumentId, loaded]);
 
   useEffect(() => {
     if (!initialSourcePath || initialSourceLoadedRef.current === initialSourcePath) return;
@@ -559,8 +829,8 @@ export default function PdfEditorWorkspace({
       })
       .then(async (file) => {
         if (!active) return;
+        if (!await openPdf(file, true)) return;
         initialSourceLoadedRef.current = initialSourcePath;
-        await openPdf(file, true);
         window.history.replaceState(null, "", "/documents/pdf-editor");
       })
       .catch((sourceError: unknown) => {
@@ -576,6 +846,160 @@ export default function PdfEditorWorkspace({
       controller.abort();
     };
   }, [initialSourcePath, openPdf]);
+
+  const loadStoredDocument = useCallback(async (
+    documentId: string,
+    options: { includeDraft?: boolean; signal?: AbortSignal } = {},
+  ) => {
+    const detail = await documentApi<StoredDocumentDetail>(`/api/documents/${documentId}`, {
+      signal: options.signal,
+    });
+    const currentVersion = detail.versions.find((version) => version.id === detail.document.currentVersionId);
+    if (!currentVersion) throw new Error("This document does not have a saved PDF version yet.");
+    const response = await fetch(`/api/documents/${documentId}/versions/${currentVersion.id}/file`, {
+      cache: "no-store",
+      credentials: "same-origin",
+      signal: options.signal,
+    });
+    if (!response.ok || !response.headers.get("content-type")?.includes("application/pdf")) {
+      throw new Error("The saved PDF could not be opened.");
+    }
+    const file = new File([await response.blob()], currentVersion.filename, { type: "application/pdf" });
+    if (!await openPdf(file, true, true)) {
+      throw new Error("The saved PDF could not be parsed. The previously open document was left unchanged.");
+    }
+
+    setStoredDocument(detail.document);
+    setVersions(detail.versions);
+    setDraftRevision(null);
+    setDraftStatus("idle");
+    lastDraftSignatureRef.current = null;
+
+    const savedDraft = options.includeDraft !== false
+      && detail.draft?.baseVersionId === currentVersion.id
+      ? parseEditorManifest(detail.draft.editorState)
+      : null;
+    if (options.includeDraft !== false && detail.draft && detail.draft.baseVersionId !== currentVersion.id) {
+      try {
+        await documentApi<{ discarded: boolean }>(`/api/documents/${documentId}/draft`, { method: "DELETE" });
+        setNotice("An older autosave was cleared because this document has a newer saved version.");
+      } catch (draftError) {
+        setDraftStatus("save-needed");
+        setError(`An older autosave could not be cleared. ${errorMessage(draftError)}`);
+      }
+    }
+    if (savedDraft && detail.draft) {
+      const recoverableOverlays = savedDraft.overlays
+        .filter((overlay) => overlay.kind !== "image")
+        .map((overlay) => normalizeOverlay(overlay));
+      setHistory({ past: [], present: recoverableOverlays, future: [] });
+      if (savedDraft.pageOrder.length > 0) setPageOrder(savedDraft.pageOrder);
+      setPageRotations(savedDraft.pageRotations);
+      setFormValues(savedDraft.formValues);
+      setExportMode(savedDraft.exportMode);
+      setDraftRevision(detail.draft.revision);
+      setDraftStatus("saved");
+      lastDraftSignatureRef.current = JSON.stringify({ ...savedDraft, overlays: recoverableOverlays });
+      if (recoverableOverlays.length !== savedDraft.overlays.length) {
+        setNotice("Text and layout changes were recovered. Save versions after adding images so their source files stay attached.");
+      } else {
+        setNotice("Your autosaved changes were recovered.");
+      }
+    }
+    return { ...detail, currentVersion, file };
+  }, [openPdf]);
+
+  useEffect(() => {
+    if (!initialDocumentId || initialDocumentLoadedRef.current === initialDocumentId) return;
+    const controller = new AbortController();
+    let active = true;
+    initialDocumentLoadedRef.current = initialDocumentId;
+    setOpening(true);
+    setError(null);
+    void loadStoredDocument(initialDocumentId, { signal: controller.signal })
+      .then(() => undefined)
+      .catch((documentError: unknown) => {
+        if (active && !(documentError instanceof DOMException && documentError.name === "AbortError")) {
+          setError(errorMessage(documentError));
+        }
+      })
+      .finally(() => {
+        if (active) setOpening(false);
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [initialDocumentId, loadStoredDocument]);
+
+  useEffect(() => {
+    const documentId = storedDocument?.id;
+    const baseVersionId = storedDocument?.currentVersionId;
+    if (!documentId || !baseVersionId || opening || savingVersion) return;
+
+    if (!hasChanges) {
+      if (draftRevisionRef.current === null) {
+        setDraftStatus("idle");
+        return;
+      }
+      const timeout = window.setTimeout(() => {
+        draftSaveChainRef.current = draftSaveChainRef.current.then(async () => {
+          await documentApi<{ discarded: boolean }>(`/api/documents/${documentId}/draft`, { method: "DELETE" });
+          draftRevisionRef.current = null;
+          setDraftRevision(null);
+          lastDraftSignatureRef.current = null;
+          setDraftStatus("idle");
+        }).catch((draftError: unknown) => {
+          setDraftStatus("save-needed");
+          setError(`Autosave could not clear the old draft. ${errorMessage(draftError)}`);
+        });
+      }, 900);
+      return () => window.clearTimeout(timeout);
+    }
+
+    if (draftNeedsVersionSave) {
+      setDraftStatus("save-needed");
+      return;
+    }
+    if (lastDraftSignatureRef.current === currentEditorSignature) {
+      setDraftStatus("saved");
+      return;
+    }
+
+    setDraftStatus("saving");
+    const manifest = currentEditorManifest;
+    const signature = currentEditorSignature;
+    const timeout = window.setTimeout(() => {
+      draftSaveChainRef.current = draftSaveChainRef.current.then(async () => {
+        const savedDraft = await documentApi<StoredDocumentDraft>(`/api/documents/${documentId}/draft`, {
+          method: "PUT",
+          body: JSON.stringify({
+            baseVersionId,
+            expectedRevision: draftRevisionRef.current,
+            editorSchemaVersion: 1,
+            editorState: manifest,
+          }),
+        });
+        draftRevisionRef.current = savedDraft.revision;
+        setDraftRevision(savedDraft.revision);
+        lastDraftSignatureRef.current = signature;
+        if (currentEditorSignatureRef.current === signature) setDraftStatus("saved");
+      }).catch((draftError: unknown) => {
+        setDraftStatus("save-needed");
+        setError(`Autosave paused. ${errorMessage(draftError)}`);
+      });
+    }, 1_200);
+    return () => window.clearTimeout(timeout);
+  }, [
+    currentEditorManifest,
+    currentEditorSignature,
+    draftNeedsVersionSave,
+    hasChanges,
+    opening,
+    savingVersion,
+    storedDocument?.currentVersionId,
+    storedDocument?.id,
+  ]);
 
   const addText = (source?: PdfSourceTextItem) => {
     const overlay = createTextOverlay(pageNumber, source ? {
@@ -597,18 +1021,25 @@ export default function PdfEditorWorkspace({
       rotation: source.rotation,
       direction: source.direction,
     } : {});
+    inlineCancelHistoryRef.current = history;
+    inlineChangedRef.current = false;
     commit([...history.present, overlay]);
     setSelectedId(overlay.id);
     setInspectorTab("properties");
-    setMobileInspectorOpen(true);
+    setMobileInspectorOpen(false);
+    setInlineEditingId(overlay.id);
+    setActiveTool("select");
   };
 
   const replaceSourceText = (source: PdfSourceTextItem) => {
     const [cover, text] = createSourceTextReplacement(pageNumber, source);
+    inlineCancelHistoryRef.current = history;
+    inlineChangedRef.current = false;
     commit([...history.present, cover, text]);
     setSelectedId(text.id);
     setInspectorTab("properties");
-    setMobileInspectorOpen(true);
+    setMobileInspectorOpen(false);
+    setInlineEditingId(text.id);
     setActiveTool("select");
   };
 
@@ -828,9 +1259,9 @@ export default function PdfEditorWorkspace({
   };
 
   const updateSelected = (patch: Partial<PdfOverlay>) => {
-    const current = history.present.find((overlay) => overlay.id === selectedId);
+    const current = displayOverlays.find((overlay) => overlay.id === selectedId);
     if (!current) return;
-    commit(replaceOverlay(history.present, normalizeOverlay({ ...current, ...patch } as PdfOverlay)));
+    commit(replaceOverlay(displayOverlays, normalizeOverlay({ ...current, ...patch } as PdfOverlay)));
   };
 
   const updateFormValue = (name: string, value: PdfFormValue) => {
@@ -970,11 +1401,8 @@ export default function PdfEditorWorkspace({
     }
   };
 
-  const exportPdf = async () => {
-    if (!loaded) return;
-    setExporting(true);
-    setError(null);
-    setNotice(null);
+  const buildPdfOutput = async (): Promise<{ output: Uint8Array; secure: boolean }> => {
+    if (!loaded) throw new Error("Open a PDF before exporting it.");
     let temporaryDocument: PDFDocumentProxy | null = null;
     try {
       const secureExport = await import("@/lib/documents/pdf-secure-export");
@@ -1002,7 +1430,7 @@ export default function PdfEditorWorkspace({
       const output = secure
         ? await secureExport.exportSecureRasterizedPdf({
             document: exportDocument,
-            overlays: history.present,
+            overlays: displayOverlays,
             pageRotations,
             pageOrder,
             fontFamilies,
@@ -1011,13 +1439,34 @@ export default function PdfEditorWorkspace({
           })
         : await (await import("@/lib/documents/pdf-export")).exportPdfWithOverlays(
             formSource,
-            history.present,
+            displayOverlays,
             customFonts.flatMap(({ id, bytes }) => bytes ? [{ id, bytes }] : []),
             images,
             pageOrder,
           );
-      const buffer = output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength) as ArrayBuffer;
-      const url = URL.createObjectURL(new Blob([buffer], { type: "application/pdf" }));
+      return { output, secure };
+    } finally {
+      void temporaryDocument?.destroy();
+    }
+  };
+
+  const uploadPdf = async (reservation: UploadReservation, file: File) => {
+    await upload(reservation.pathname, file, {
+      access: "private",
+      handleUploadUrl: reservation.handleUploadUrl,
+      clientPayload: JSON.stringify({ intentId: reservation.intentId }),
+      multipart: true,
+    });
+  };
+
+  const downloadPdf = async () => {
+    if (!loaded) return;
+    setExporting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const { output, secure } = await buildPdfOutput();
+      const url = URL.createObjectURL(new Blob([bytesAsArrayBuffer(output)], { type: "application/pdf" }));
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = downloadName(loaded.name, secure);
@@ -1027,18 +1476,212 @@ export default function PdfEditorWorkspace({
     } catch (exportError) {
       setError(errorMessage(exportError));
     } finally {
-      void temporaryDocument?.destroy();
       setExporting(false);
       setExportProgress(null);
+    }
+  };
+
+  const finalizeUploadedVersion = async ({
+    documentId,
+    reservation,
+    baseVersionId,
+    manifest,
+    exportMode: savedExportMode,
+    changeSummary,
+    pageCount: savedPageCount,
+  }: {
+    documentId: string;
+    reservation: UploadReservation;
+    baseVersionId: string | null;
+    manifest: PdfEditorManifest;
+    exportMode: "source" | "standard" | "secure";
+    changeSummary: string;
+    pageCount: number;
+  }) => {
+    const requestBody = JSON.stringify({
+      intentId: reservation.intentId,
+      idempotencyKey: crypto.randomUUID(),
+      baseVersionId,
+      exportMode: savedExportMode,
+      editorSchemaVersion: 1,
+      editorState: manifest,
+      pageCount: savedPageCount,
+      changeSummary,
+    });
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        return await documentApi<StoredDocumentVersion>(`/api/documents/${documentId}/versions`, {
+          method: "POST",
+          body: requestBody,
+        });
+      } catch (finalizeError) {
+        if (!/upload has not completed/i.test(errorMessage(finalizeError)) || attempt === 7) throw finalizeError;
+        await new Promise((resolve) => window.setTimeout(resolve, 300 + attempt * 250));
+      }
+    }
+    throw new Error("The uploaded PDF could not be finalized.");
+  };
+
+  const saveToLibrary = async () => {
+    if (!loaded || savingVersion) return;
+    setSavingVersion(true);
+    setDraftStatus("saving");
+    setError(null);
+    setNotice(null);
+    try {
+      const manifest = currentEditorManifest;
+      const edited = hasChanges;
+      const built = edited ? await buildPdfOutput() : null;
+      const sourceFile = new File([bytesAsArrayBuffer(loaded.bytes)], loaded.name, { type: "application/pdf" });
+      const creation = await documentApi<DocumentCreationReservation>("/api/documents", {
+        method: "POST",
+        body: JSON.stringify({
+          title: loaded.name.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ").trim() || "Untitled PDF",
+          filename: sourceFile.name,
+          byteSize: sourceFile.size,
+          category: "general",
+        }),
+      });
+      const documentId = creation.document.id;
+      await uploadPdf(creation.upload, sourceFile);
+      const originalManifest = editorManifest(
+        [],
+        Array.from({ length: loaded.document.numPages }, (_, index) => index + 1),
+        {},
+        initialFormValues,
+        "standard",
+      );
+      const originalVersion = await finalizeUploadedVersion({
+        documentId,
+        reservation: creation.upload,
+        baseVersionId: null,
+        manifest: originalManifest,
+        exportMode: "source",
+        changeSummary: "Original uploaded",
+        pageCount: loaded.document.numPages,
+      });
+
+      if (built) {
+        const editedName = downloadName(loaded.name, built.secure);
+        const editedFile = new File([bytesAsArrayBuffer(built.output)], editedName, { type: "application/pdf" });
+        const versionReservation = await documentApi<UploadReservation>(`/api/documents/${documentId}/uploads`, {
+          method: "POST",
+          body: JSON.stringify({
+            filename: editedFile.name,
+            byteSize: editedFile.size,
+            baseVersionId: originalVersion.id,
+          }),
+        });
+        await uploadPdf(versionReservation, editedFile);
+        await finalizeUploadedVersion({
+          documentId,
+          reservation: versionReservation,
+          baseVersionId: originalVersion.id,
+          manifest,
+          exportMode: built.secure ? "secure" : "standard",
+          changeSummary: "Saved edits",
+          pageCount,
+        });
+      }
+
+      window.history.replaceState(null, "", `/documents/pdf-editor?document=${documentId}`);
+      initialDocumentLoadedRef.current = initialDocumentId ?? documentId;
+      await loadStoredDocument(documentId, { includeDraft: false });
+      setDraftStatus("saved");
+      setNotice(edited ? "Saved to the library with the original and edited version." : "Original saved to the document library.");
+    } catch (saveError) {
+      setDraftStatus("save-needed");
+      setError(`The PDF could not be saved. ${errorMessage(saveError)}`);
+    } finally {
+      setSavingVersion(false);
+      setExportProgress(null);
+    }
+  };
+
+  const saveNewVersion = async () => {
+    if (!loaded || !storedDocument?.currentVersionId || savingVersion) return;
+    setSavingVersion(true);
+    setDraftStatus("saving");
+    setError(null);
+    setNotice(null);
+    try {
+      const manifest = currentEditorManifest;
+      const { output, secure } = await buildPdfOutput();
+      const filename = downloadName(storedDocument.currentFilename ?? loaded.name, secure);
+      const file = new File([bytesAsArrayBuffer(output)], filename, { type: "application/pdf" });
+      const reservation = await documentApi<UploadReservation>(`/api/documents/${storedDocument.id}/uploads`, {
+        method: "POST",
+        body: JSON.stringify({
+          filename: file.name,
+          byteSize: file.size,
+          baseVersionId: storedDocument.currentVersionId,
+        }),
+      });
+      await uploadPdf(reservation, file);
+      await finalizeUploadedVersion({
+        documentId: storedDocument.id,
+        reservation,
+        baseVersionId: storedDocument.currentVersionId,
+        manifest,
+        exportMode: secure ? "secure" : "standard",
+        changeSummary: hasChanges ? "Saved edits" : "Saved checkpoint",
+        pageCount,
+      });
+      await documentApi<{ discarded: boolean }>(`/api/documents/${storedDocument.id}/draft`, { method: "DELETE" })
+        .catch(() => ({ discarded: false }));
+      draftRevisionRef.current = null;
+      lastDraftSignatureRef.current = null;
+      await loadStoredDocument(storedDocument.id, { includeDraft: false });
+      setDraftStatus("saved");
+      setNotice("A new version was saved. Earlier versions remain available in history.");
+    } catch (saveError) {
+      setDraftStatus("save-needed");
+      setError(`The new version could not be saved. ${errorMessage(saveError)}`);
+    } finally {
+      setSavingVersion(false);
+      setExportProgress(null);
+    }
+  };
+
+  const restoreVersion = async (version: StoredDocumentVersion) => {
+    if (!storedDocument?.currentVersionId || restoringVersionId) return;
+    if (hasChanges) {
+      setHistoryOpen(false);
+      setError("Save the current work as a version before restoring an earlier version.");
+      return;
+    }
+    if (!window.confirm(`Restore version ${version.versionNumber}? The current version will remain in history.`)) return;
+    setRestoringVersionId(version.id);
+    setError(null);
+    try {
+      await documentApi<StoredDocumentVersion>(`/api/documents/${storedDocument.id}/versions/${version.id}/restore`, {
+        method: "POST",
+        body: JSON.stringify({
+          expectedCurrentVersionId: storedDocument.currentVersionId,
+          idempotencyKey: crypto.randomUUID(),
+          reason: `Restored version ${version.versionNumber}`,
+        }),
+      });
+      await loadStoredDocument(storedDocument.id, { includeDraft: false });
+      setNotice(`Version ${version.versionNumber} was restored as a new version.`);
+    } catch (restoreError) {
+      setError(`That version could not be restored. ${errorMessage(restoreError)}`);
+    } finally {
+      setRestoringVersionId(null);
     }
   };
 
   if (!loaded) {
     return (
       <div className="mx-auto max-w-5xl space-y-6">
-        <header>
-          <p className="eyebrow">Documents</p>
-          <h1 className="display mt-1 text-2xl text-[var(--color-ink)] sm:text-3xl">PDF editor</h1>
+        <header className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="eyebrow">Documents</p>
+            <h1 className="display mt-1 text-2xl text-[var(--color-ink)] sm:text-3xl">PDF editor</h1>
+          </div>
+          <Link href="/documents" className="btn btn-secondary">
+            <ArrowLeft className="h-4 w-4" aria-hidden /> Document library
+          </Link>
         </header>
 
         <section
@@ -1059,8 +1702,8 @@ export default function PdfEditorWorkspace({
             <div className="mx-auto grid h-14 w-14 place-items-center rounded-lg bg-[var(--color-primary-tint)] text-[var(--color-primary)]">
               {opening ? <LoaderCircle className="h-7 w-7 animate-spin" aria-hidden /> : <FileText className="h-7 w-7" aria-hidden />}
             </div>
-            <h2 className="mt-5 text-lg font-semibold">Open a PDF</h2>
-            <p className="mt-2 text-xs text-[var(--color-ink-faint)]">PDF · 100 MB maximum · Local session</p>
+            <h2 className="mt-5 text-lg font-semibold">{opening && initialDocumentId ? "Opening saved PDF" : "Open a PDF"}</h2>
+            <p className="mt-2 text-xs text-[var(--color-ink-faint)]">PDF · 100 MB maximum · Save it to the library when ready</p>
             <button
               type="button"
               className="btn btn-primary mt-5"
@@ -1098,9 +1741,12 @@ export default function PdfEditorWorkspace({
     <div className="space-y-4 pb-16 lg:pb-0">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
-          <p className="eyebrow">Documents / PDF editor</p>
-          <h1 className="display mt-1 truncate text-2xl text-[var(--color-ink)]">{loaded.name}</h1>
+          <Link href="/documents" className="eyebrow inline-flex items-center gap-1 hover:text-[var(--color-primary)]">
+            <ArrowLeft className="h-3.5 w-3.5" aria-hidden /> Documents
+          </Link>
+          <h1 className="display mt-1 truncate text-2xl text-[var(--color-ink)]">{storedDocument?.title ?? loaded.name}</h1>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--color-ink-faint)]">
+            {storedDocument ? <><span className="font-semibold text-[var(--color-ink-soft)]">v{storedDocument.currentVersionNumber ?? 1}</span><span aria-hidden>·</span></> : null}
             <span>{pageCount} {pageCount === 1 ? "page" : "pages"}</span>
             <span aria-hidden>·</span>
             <span>{textSourceState}</span>
@@ -1108,10 +1754,30 @@ export default function PdfEditorWorkspace({
               <><span aria-hidden>·</span><span>{formFields.length} form {formFields.length === 1 ? "field" : "fields"}</span></>
             ) : null}
             <span aria-hidden>·</span>
-            <span>Original preserved</span>
+            <span>{storedDocument ? "Original preserved in library" : "Not saved to library"}</span>
+            {storedDocument ? (
+              <><span aria-hidden>·</span><span className="inline-flex items-center gap-1 font-medium">
+                <Clock3 className="h-3.5 w-3.5" aria-hidden />
+                {draftStatus === "saving" ? "Saving draft" : draftStatus === "saved" ? "Changes autosaved" : draftStatus === "save-needed" ? "Save a version" : "Saved"}
+              </span></>
+            ) : null}
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
+          {storedDocument ? (
+            <button type="button" className="btn btn-secondary" onClick={() => setHistoryOpen(true)}>
+              <Clock3 className="h-4 w-4" aria-hidden /> History
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={savingVersion || exporting || opening}
+            onClick={() => void (storedDocument ? saveNewVersion() : saveToLibrary())}
+          >
+            {savingVersion ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <Save className="h-4 w-4" aria-hidden />}
+            {savingVersion ? "Saving" : storedDocument ? "Save version" : "Save to library"}
+          </button>
           <label className="sr-only" htmlFor="pdf-export-mode">Export mode</label>
           <select
             id="pdf-export-mode"
@@ -1124,13 +1790,13 @@ export default function PdfEditorWorkspace({
             <option value="standard" disabled={exportModeResolution.forced}>High-fidelity PDF</option>
             <option value="secure">Sanitized flattened PDF</option>
           </select>
-          <button type="button" className="btn btn-secondary" disabled={opening || exporting} onClick={() => fileInputRef.current?.click()}>
+          <button type="button" className="btn btn-secondary" disabled={opening || exporting || savingVersion} onClick={() => fileInputRef.current?.click()}>
             <Upload className="h-4 w-4" aria-hidden />
-            Replace PDF
+            Open another
           </button>
-          <button type="button" className="btn btn-primary" disabled={exporting || opening} onClick={() => void exportPdf()}>
+          <button type="button" className="btn btn-secondary" disabled={exporting || opening || savingVersion} onClick={() => void downloadPdf()}>
             {exporting ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <Download className="h-4 w-4" aria-hidden />}
-            {exportProgress ? `Flattening ${exportProgress.completed}/${exportProgress.total}` : "Download copy"}
+            {exportProgress ? `Flattening ${exportProgress.completed}/${exportProgress.total}` : "Download"}
           </button>
         </div>
       </header>
@@ -1305,216 +1971,10 @@ export default function PdfEditorWorkspace({
           </div>
         </div>
 
-        <div className="grid min-h-[42rem] min-w-0 grid-cols-1 lg:grid-cols-[8.5rem_minmax(0,1fr)_19rem]">
-          <aside className="scroll-thin flex gap-2 overflow-x-auto border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] p-2 lg:block lg:space-y-3 lg:overflow-x-hidden lg:overflow-y-auto lg:border-b-0 lg:border-r">
-            {Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => (
-              <button
-                key={page}
-                type="button"
-                onClick={() => setPageNumber(page)}
-                aria-current={page === pageNumber ? "page" : undefined}
-                aria-label={`Open page ${page}`}
-                className={`w-24 shrink-0 rounded-md border p-1.5 text-left transition-colors lg:w-full ${page === pageNumber ? "border-[var(--color-primary)] bg-[var(--color-primary-tint)]" : "border-transparent hover:border-[var(--color-rule-strong)]"}`}
-              >
-                <PdfThumbnailCanvas document={loaded.document} pageNumber={pageOrder[page - 1] ?? page} rotation={pageRotations[page] ?? 0} />
-                <span className="mt-1 block text-center text-[0.7rem] font-medium text-[var(--color-ink-soft)]">Page {page}</span>
-              </button>
-            ))}
-          </aside>
-
-          <div
-            ref={pageViewportRef}
-            className="scroll-thin min-w-0 overflow-auto bg-[var(--color-surface-strong)] p-3 sm:p-5"
-          >
-            <div
-              ref={pageSurfaceRef}
-              onPointerDown={(event) => {
-                if (activeTool === "ink") startInkGesture(event);
-                else setSelectedId(null);
-              }}
-              className={`relative mx-auto bg-white shadow-md ${activeTool === "ink" ? "cursor-crosshair" : activeTool === "edit-text" ? "cursor-text" : "cursor-default"}`}
-              style={{
-                width: pageSize.width * effectiveScale,
-                height: pageSize.height * effectiveScale,
-              }}
-              role="region"
-              aria-label={`Editing page ${pageNumber}`}
-            >
-              <PdfPageCanvas
-                document={loaded.document}
-                pageNumber={sourcePageNumber}
-                scale={effectiveScale}
-                rotation={pageRotation}
-                onBaseSize={setBasePageSize}
-                className="block"
-              />
-              {formWidgetHighlight && selectedFormField ? (
-                <div
-                  className="pointer-events-none absolute z-[190] border-2 border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] outline outline-2 outline-offset-2 outline-white"
-                  style={{
-                    left: `${formWidgetHighlight.x * 100}%`,
-                    top: `${formWidgetHighlight.y * 100}%`,
-                    width: `${formWidgetHighlight.width * 100}%`,
-                    height: `${formWidgetHighlight.height * 100}%`,
-                  }}
-                  title={`Form field ${selectedFormField.name}`}
-                  aria-hidden
-                />
-              ) : null}
-              {activeTool === "edit-text" ? filteredSourceText.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  aria-label={`Visually replace detected text: ${item.text}`}
-                  title={`${item.origin === "ocr" ? "Recognized" : "Document"} text · ${item.fontName}${item.confidence === undefined ? "" : ` · ${Math.round(item.confidence)}% confidence`}`}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onClick={() => replaceSourceText(item)}
-                  className="absolute z-[200] border border-dashed border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_8%,transparent)] opacity-50 transition-opacity hover:opacity-100 focus:opacity-100 focus:outline focus:outline-2 focus:outline-[var(--color-accent)]"
-                  style={{
-                    left: `${item.x * 100}%`,
-                    top: `${item.y * 100}%`,
-                    width: `${item.width * 100}%`,
-                    height: `${item.height * 100}%`,
-                    transform: `rotate(${item.rotation}deg)`,
-                    transformOrigin: "left top",
-                  }}
-                />
-              )) : null}
-              {inkDraft && inkDraft.length > 0 ? (
-                <svg className="pointer-events-none absolute inset-0 z-[220] h-full w-full" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden>
-                  <polyline
-                    points={inkDraft.map((point) => `${point.x * 1000},${point.y * 1000}`).join(" ")}
-                    fill="none"
-                    stroke="#17212b"
-                    strokeWidth={Math.max(2, 2 / Math.max(0.1, effectiveScale))}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                </svg>
-              ) : null}
-              {pageOverlays.map((overlay, index) => {
-                const isSelected = overlay.id === selectedId;
-                return (
-                  <div
-                    key={overlay.id}
-                    role="button"
-                    tabIndex={0}
-                    aria-pressed={isSelected}
-                    aria-label={overlay.kind === "text" ? `Text: ${overlay.text}` : itemLabel(overlay)}
-                    onPointerDown={(event) => startGesture(event, overlay, "move")}
-                    onFocus={() => {
-                      setSelectedId(overlay.id);
-                      setInspectorTab("properties");
-                      setMobileInspectorOpen(true);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        setSelectedId(overlay.id);
-                        setInspectorTab("properties");
-                        setMobileInspectorOpen(true);
-                      }
-                    }}
-                    className={`absolute select-none ${isSelected ? "outline outline-2 outline-offset-1 outline-[var(--color-accent)]" : "hover:outline hover:outline-1 hover:outline-[var(--color-accent)]"}`}
-                    style={{
-                      left: `${overlay.x * 100}%`,
-                      top: `${overlay.y * 100}%`,
-                      width: `${overlay.width * 100}%`,
-                      height: `${overlay.height * 100}%`,
-                      zIndex: index + 1,
-                      touchAction: "none",
-                      transform: `rotate(${overlay.rotation}deg)`,
-                      transformOrigin: "left top",
-                      color: overlay.kind === "text" ? overlay.color : undefined,
-                      fontFamily: overlay.kind === "text" ? fontCss(overlay.fontId, customFonts) : undefined,
-                      fontSize: overlay.kind === "text" ? `${overlay.fontSize * effectiveScale}px` : undefined,
-                      fontWeight: overlay.kind === "text" ? overlay.fontWeight : undefined,
-                      fontStyle: overlay.kind === "text" ? overlay.fontStyle : undefined,
-                      lineHeight: overlay.kind === "text" ? overlay.lineHeight : undefined,
-                      letterSpacing: overlay.kind === "text" ? `${overlay.letterSpacing * effectiveScale}px` : undefined,
-                      textAlign: overlay.kind === "text" ? overlay.alignment : undefined,
-                      direction: overlay.kind === "text" ? overlay.direction : undefined,
-                      opacity: overlay.kind === "text" ? overlay.opacity : undefined,
-                      whiteSpace: overlay.kind === "text" ? "pre-wrap" : undefined,
-                    }}
-                  >
-                    <div
-                      className="h-full w-full overflow-hidden"
-                      style={{ background: overlay.kind === "cover" ? overlay.color : "transparent" }}
-                    >
-                      {overlay.kind === "text" ? overlay.text : null}
-                      {overlay.kind === "image" ? (
-                        // eslint-disable-next-line @next/next/no-img-element -- local object URLs are not image-optimizer inputs.
-                        <img
-                          src={images.find((image) => image.id === overlay.imageId)?.objectUrl}
-                          alt=""
-                          draggable={false}
-                          className="h-full w-full object-contain"
-                          style={{ opacity: overlay.opacity }}
-                        />
-                      ) : null}
-                      {overlay.kind === "shape" && overlay.shape === "line" ? (
-                        <svg className="block h-full w-full overflow-visible" aria-hidden>
-                          <line
-                            x1="0"
-                            y1="0"
-                            x2="100%"
-                            y2="100%"
-                            stroke={overlay.strokeColor}
-                            strokeWidth={Math.max(1, overlay.strokeWidth * effectiveScale)}
-                            strokeOpacity={overlay.opacity}
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        </svg>
-                      ) : null}
-                      {overlay.kind === "shape" && overlay.shape !== "line" ? (
-                        <span
-                          className="block h-full w-full"
-                          style={{
-                            background: overlay.fillColor,
-                            border: overlay.strokeWidth > 0 ? `${Math.max(1, overlay.strokeWidth * effectiveScale)}px solid ${overlay.strokeColor}` : undefined,
-                            borderRadius: overlay.shape === "ellipse" ? "50%" : undefined,
-                            opacity: overlay.opacity,
-                          }}
-                        />
-                      ) : null}
-                      {overlay.kind === "ink" ? (
-                        <svg className="block h-full w-full overflow-visible" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden>
-                          <polyline
-                            points={overlay.points.map((point) => `${point.x * 1000},${point.y * 1000}`).join(" ")}
-                            fill="none"
-                            stroke={overlay.color}
-                            strokeWidth={Math.max(1, overlay.strokeWidth * effectiveScale)}
-                            strokeOpacity={overlay.opacity}
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        </svg>
-                      ) : null}
-                    </div>
-                    {isSelected ? (
-                      <button
-                        type="button"
-                        aria-label="Resize selected item"
-                        title="Resize"
-                        onPointerDown={(event) => startGesture(event, overlay, "resize")}
-                        className="absolute -bottom-3.5 -right-3.5 grid h-11 w-11 cursor-se-resize place-items-center bg-transparent p-0"
-                        style={{ touchAction: "none" }}
-                      >
-                        <span className="h-4 w-4 border border-white bg-[var(--color-accent)] shadow-sm" aria-hidden />
-                      </button>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
+        <div className="grid min-h-[42rem] min-w-0 grid-cols-1 lg:grid-cols-[19rem_minmax(0,1fr)_9rem]">
           <aside
             aria-label="PDF inspector"
-            className={`${mobileInspectorOpen ? "fixed" : "hidden"} inset-x-2 bottom-2 z-40 min-w-0 max-h-[58vh] overflow-hidden rounded-lg border border-[var(--color-rule-strong)] bg-white shadow-2xl lg:static lg:inset-auto lg:z-auto lg:block lg:max-h-none lg:rounded-none lg:border-y-0 lg:border-r-0 lg:shadow-none`}
+            className={`${mobileInspectorOpen ? "fixed" : "hidden"} inset-x-2 bottom-2 z-40 min-w-0 max-h-[58vh] overflow-hidden rounded-lg border border-[var(--color-rule-strong)] bg-white shadow-2xl lg:order-1 lg:static lg:inset-auto lg:z-auto lg:block lg:max-h-none lg:rounded-none lg:border-y-0 lg:border-l-0 lg:border-r lg:shadow-none`}
           >
             <div className="flex items-center gap-2 p-3">
               <div className="segmented-control grid min-w-0 flex-1 grid-cols-3" role="group" aria-label="Inspector view">
@@ -2055,8 +2515,375 @@ export default function PdfEditorWorkspace({
               </div>
             )}
           </aside>
+
+          <div
+            ref={pageViewportRef}
+            className="scroll-thin min-w-0 overflow-auto bg-[var(--color-surface-strong)] p-3 sm:p-5 lg:order-2"
+          >
+            <div
+              ref={pageSurfaceRef}
+              onPointerDown={(event) => {
+                if (activeTool === "ink") startInkGesture(event);
+                else setSelectedId(null);
+              }}
+              className={`relative mx-auto bg-white shadow-md ${activeTool === "ink" ? "cursor-crosshair" : activeTool === "edit-text" ? "cursor-text" : "cursor-default"}`}
+              data-pdf-page-surface="true"
+              style={{
+                width: pageSize.width * effectiveScale,
+                height: pageSize.height * effectiveScale,
+              }}
+              role="region"
+              aria-label={`Editing page ${pageNumber}`}
+            >
+              <PdfPageCanvas
+                document={loaded.document}
+                pageNumber={sourcePageNumber}
+                scale={effectiveScale}
+                rotation={pageRotation}
+                onBaseSize={setBasePageSize}
+                className="block"
+              />
+              {formWidgetHighlight && selectedFormField ? (
+                <div
+                  className="pointer-events-none absolute z-[190] border-2 border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] outline outline-2 outline-offset-2 outline-white"
+                  style={{
+                    left: `${formWidgetHighlight.x * 100}%`,
+                    top: `${formWidgetHighlight.y * 100}%`,
+                    width: `${formWidgetHighlight.width * 100}%`,
+                    height: `${formWidgetHighlight.height * 100}%`,
+                  }}
+                  title={`Form field ${selectedFormField.name}`}
+                  aria-hidden
+                />
+              ) : null}
+              {activeTool === "edit-text" ? filteredSourceText.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-label={`Visually replace detected text: ${item.text}`}
+                  title={`${item.origin === "ocr" ? "Recognized" : "Document"} text · ${item.fontName}${item.confidence === undefined ? "" : ` · ${Math.round(item.confidence)}% confidence`}`}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => replaceSourceText(item)}
+                  className="absolute z-[200] border border-dashed border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_8%,transparent)] opacity-50 transition-opacity hover:opacity-100 focus:opacity-100 focus:outline focus:outline-2 focus:outline-[var(--color-accent)]"
+                  style={{
+                    left: `${item.x * 100}%`,
+                    top: `${item.y * 100}%`,
+                    width: `${item.width * 100}%`,
+                    height: `${item.height * 100}%`,
+                    transform: `rotate(${item.rotation}deg)`,
+                    transformOrigin: "left top",
+                  }}
+                />
+              )) : null}
+              {inkDraft && inkDraft.length > 0 ? (
+                <svg className="pointer-events-none absolute inset-0 z-[220] h-full w-full" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden>
+                  <polyline
+                    points={inkDraft.map((point) => `${point.x * 1000},${point.y * 1000}`).join(" ")}
+                    fill="none"
+                    stroke="#17212b"
+                    strokeWidth={Math.max(2, 2 / Math.max(0.1, effectiveScale))}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </svg>
+              ) : null}
+              {pageOverlays.map((overlay, index) => {
+                const isSelected = overlay.id === selectedId;
+                return (
+                  <div
+                    key={overlay.id}
+                    role="group"
+                    tabIndex={0}
+                    aria-label={overlay.kind === "text" ? `Text: ${overlay.text}` : itemLabel(overlay)}
+                    onPointerDown={(event) => {
+                      if (inlineEditingId === overlay.id) event.stopPropagation();
+                      else startGesture(event, overlay, "move");
+                    }}
+                    onDoubleClick={(event) => {
+                      if (overlay.kind !== "text") return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      beginInlineEdit(overlay.id);
+                    }}
+                    onFocus={() => {
+                      setSelectedId(overlay.id);
+                      setInspectorTab("properties");
+                      setMobileInspectorOpen(true);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return;
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedId(overlay.id);
+                        setInspectorTab("properties");
+                        setMobileInspectorOpen(true);
+                      }
+                    }}
+                    className={`absolute select-none ${isSelected ? "outline outline-2 outline-offset-1 outline-[var(--color-accent)]" : "hover:outline hover:outline-1 hover:outline-[var(--color-accent)]"}`}
+                    style={{
+                      left: `${overlay.x * 100}%`,
+                      top: `${overlay.y * 100}%`,
+                      width: `${overlay.width * 100}%`,
+                      height: `${overlay.height * 100}%`,
+                      zIndex: index + 1,
+                      touchAction: "none",
+                      transform: `rotate(${overlay.rotation}deg)`,
+                      transformOrigin: "left top",
+                      color: overlay.kind === "text" ? overlay.color : undefined,
+                      fontFamily: overlay.kind === "text" ? fontCss(overlay.fontId, customFonts) : undefined,
+                      fontSize: overlay.kind === "text" ? `${overlay.fontSize * effectiveScale}px` : undefined,
+                      fontWeight: overlay.kind === "text" ? overlay.fontWeight : undefined,
+                      fontStyle: overlay.kind === "text" ? overlay.fontStyle : undefined,
+                      lineHeight: overlay.kind === "text" ? overlay.lineHeight : undefined,
+                      letterSpacing: overlay.kind === "text" ? `${overlay.letterSpacing * effectiveScale}px` : undefined,
+                      textAlign: overlay.kind === "text" ? overlay.alignment : undefined,
+                      direction: overlay.kind === "text" ? overlay.direction : undefined,
+                      opacity: overlay.kind === "text" ? overlay.opacity : undefined,
+                      whiteSpace: overlay.kind === "text" ? "pre-wrap" : undefined,
+                    }}
+                  >
+                    {isSelected && overlay.kind === "text" ? (
+                      <div
+                        className="absolute bottom-[calc(100%+0.45rem)] left-0 z-[260] flex h-9 min-w-max items-center gap-0.5 rounded-md border border-[var(--color-rule-strong)] bg-white p-1 text-[var(--color-ink)] shadow-lg"
+                        role="toolbar"
+                        aria-label="Selected text formatting"
+                        onPointerDown={(event) => event.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-icon h-7 w-7"
+                          aria-label="Edit text in place"
+                          title="Edit text in place"
+                          onClick={() => beginInlineEdit(overlay.id)}
+                        >
+                          <Type className="h-3.5 w-3.5" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-icon h-7 w-7"
+                          aria-label="Bold"
+                          aria-pressed={overlay.fontWeight === 700}
+                          title="Bold"
+                          onClick={() => updateSelected({ fontWeight: overlay.fontWeight === 700 ? 400 : 700 } as Partial<PdfTextOverlay>)}
+                        >
+                          <Bold className="h-3.5 w-3.5" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-icon h-7 w-7"
+                          aria-label="Italic"
+                          aria-pressed={overlay.fontStyle === "italic"}
+                          title="Italic"
+                          onClick={() => updateSelected({ fontStyle: overlay.fontStyle === "italic" ? "normal" : "italic" } as Partial<PdfTextOverlay>)}
+                        >
+                          <Italic className="h-3.5 w-3.5" aria-hidden />
+                        </button>
+                        <label className="flex h-7 items-center gap-1 border-l border-[var(--color-rule)] pl-1 text-[0.65rem] font-medium">
+                          <span className="sr-only">Font size</span>
+                          <input
+                            type="number"
+                            min={6}
+                            max={144}
+                            value={overlay.fontSize}
+                            onChange={(event) => updateSelected({ fontSize: Math.max(6, Math.min(144, Number(event.target.value) || 6)) } as Partial<PdfTextOverlay>)}
+                            className="h-7 w-12 border-0 bg-transparent px-1 text-center outline-none"
+                            title="Font size"
+                          />
+                        </label>
+                        <label className="grid h-7 w-7 cursor-pointer place-items-center" title="Text color">
+                          <span className="sr-only">Text color</span>
+                          <input
+                            type="color"
+                            value={overlay.color}
+                            onChange={(event) => updateSelected({ color: event.target.value } as Partial<PdfTextOverlay>)}
+                            className="h-4 w-4 cursor-pointer border-0 bg-transparent p-0"
+                          />
+                        </label>
+                      </div>
+                    ) : null}
+                    <div
+                      className={`h-full w-full ${overlay.kind === "text" && inlineEditingId === overlay.id ? "overflow-visible" : "overflow-hidden"}`}
+                      style={{ background: overlay.kind === "cover" ? overlay.color : "transparent" }}
+                    >
+                      {overlay.kind === "text" && inlineEditingId === overlay.id ? (
+                        <textarea
+                          ref={inlineTextAreaRef}
+                          value={overlay.text}
+                          onChange={(event) => updateInlineText(overlay.id, event.target.value)}
+                          onBlur={finishInlineEdit}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => {
+                            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                              event.preventDefault();
+                              finishInlineEdit();
+                            }
+                          }}
+                          aria-label="Edit selected PDF text"
+                          className="h-full w-full resize-none overflow-auto border-0 bg-transparent p-0 text-inherit outline-none"
+                          style={{
+                            color: "inherit",
+                            font: "inherit",
+                            lineHeight: "inherit",
+                            letterSpacing: "inherit",
+                            textAlign: "inherit",
+                            direction: "inherit",
+                          }}
+                        />
+                      ) : overlay.kind === "text" ? overlay.text : null}
+                      {overlay.kind === "image" ? (
+                        // eslint-disable-next-line @next/next/no-img-element -- local object URLs are not image-optimizer inputs.
+                        <img
+                          src={images.find((image) => image.id === overlay.imageId)?.objectUrl}
+                          alt=""
+                          draggable={false}
+                          className="h-full w-full object-contain"
+                          style={{ opacity: overlay.opacity }}
+                        />
+                      ) : null}
+                      {overlay.kind === "shape" && overlay.shape === "line" ? (
+                        <svg className="block h-full w-full overflow-visible" aria-hidden>
+                          <line
+                            x1="0"
+                            y1="0"
+                            x2="100%"
+                            y2="100%"
+                            stroke={overlay.strokeColor}
+                            strokeWidth={Math.max(1, overlay.strokeWidth * effectiveScale)}
+                            strokeOpacity={overlay.opacity}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        </svg>
+                      ) : null}
+                      {overlay.kind === "shape" && overlay.shape !== "line" ? (
+                        <span
+                          className="block h-full w-full"
+                          style={{
+                            background: overlay.fillColor,
+                            border: overlay.strokeWidth > 0 ? `${Math.max(1, overlay.strokeWidth * effectiveScale)}px solid ${overlay.strokeColor}` : undefined,
+                            borderRadius: overlay.shape === "ellipse" ? "50%" : undefined,
+                            opacity: overlay.opacity,
+                          }}
+                        />
+                      ) : null}
+                      {overlay.kind === "ink" ? (
+                        <svg className="block h-full w-full overflow-visible" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden>
+                          <polyline
+                            points={overlay.points.map((point) => `${point.x * 1000},${point.y * 1000}`).join(" ")}
+                            fill="none"
+                            stroke={overlay.color}
+                            strokeWidth={Math.max(1, overlay.strokeWidth * effectiveScale)}
+                            strokeOpacity={overlay.opacity}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        </svg>
+                      ) : null}
+                    </div>
+                    {isSelected ? (
+                      <button
+                        type="button"
+                        aria-label="Resize selected item"
+                        title="Resize"
+                        onPointerDown={(event) => startGesture(event, overlay, "resize")}
+                        className="absolute -bottom-3.5 -right-3.5 grid h-11 w-11 cursor-se-resize place-items-center bg-transparent p-0"
+                        style={{ touchAction: "none" }}
+                      >
+                        <span className="h-4 w-4 border border-white bg-[var(--color-accent)] shadow-sm" aria-hidden />
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <aside className="scroll-thin flex gap-2 overflow-x-auto border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] p-2 lg:order-3 lg:block lg:space-y-3 lg:overflow-x-hidden lg:overflow-y-auto lg:border-b-0 lg:border-l">
+            {Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => (
+              <button
+                key={page}
+                type="button"
+                onClick={() => setPageNumber(page)}
+                aria-current={page === pageNumber ? "page" : undefined}
+                aria-label={`Open page ${page}`}
+                className={`w-24 shrink-0 rounded-md border p-1.5 text-left transition-colors lg:w-full ${page === pageNumber ? "border-[var(--color-primary)] bg-[var(--color-primary-tint)]" : "border-transparent hover:border-[var(--color-rule-strong)]"}`}
+              >
+                <PdfThumbnailCanvas document={loaded.document} pageNumber={pageOrder[page - 1] ?? page} rotation={pageRotations[page] ?? 0} />
+                <span className="mt-1 block text-center text-[0.7rem] font-medium text-[var(--color-ink-soft)]">Page {page}</span>
+              </button>
+            ))}
+          </aside>
         </div>
       </section>
+
+      {historyOpen && storedDocument ? (
+        <div className="fixed inset-0 z-[400] flex justify-end" role="dialog" aria-modal="true" aria-labelledby="pdf-history-title">
+          <button
+            type="button"
+            className="absolute inset-0 cursor-default bg-black/25"
+            aria-label="Close version history"
+            onClick={() => setHistoryOpen(false)}
+          />
+          <aside className="relative flex h-full w-full max-w-md flex-col border-l border-[var(--color-rule-strong)] bg-white shadow-2xl">
+            <header className="flex items-start justify-between gap-4 border-b border-[var(--color-rule)] px-5 py-4">
+              <div>
+                <p className="eyebrow">Saved document</p>
+                <h2 id="pdf-history-title" className="mt-1 text-lg font-semibold">Version history</h2>
+                <p className="mt-1 text-xs text-[var(--color-ink-faint)]">Restoring creates a new version. Nothing in this list is overwritten.</p>
+              </div>
+              <button type="button" className="btn btn-ghost btn-icon" aria-label="Close version history" title="Close" onClick={() => setHistoryOpen(false)}>
+                <span className="text-xl leading-none" aria-hidden>×</span>
+              </button>
+            </header>
+            <div className="scroll-thin flex-1 overflow-y-auto px-5 py-2">
+              <ol className="divide-y divide-[var(--color-rule)]">
+                {versions.map((version) => {
+                  const current = version.id === storedDocument.currentVersionId;
+                  return (
+                    <li key={version.id} className="py-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="tnum font-semibold text-[var(--color-ink)]">Version {version.versionNumber}</span>
+                            {current ? <span className="badge bg-[var(--color-primary-tint)] text-[var(--color-primary)]">Current</span> : null}
+                            {version.versionKind === "original" ? <span className="badge bg-[var(--color-surface-muted)] text-[var(--color-ink-soft)]">Original</span> : null}
+                            {version.versionKind === "restored" ? <span className="badge bg-[var(--color-surface-muted)] text-[var(--color-ink-soft)]">Restored</span> : null}
+                          </div>
+                          <p className="mt-1 truncate text-sm text-[var(--color-ink-soft)]">{version.changeSummary ?? version.filename}</p>
+                          <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{formatStoredDate(version.createdAt)} · {version.createdBy} · {formatStoredBytes(version.byteSize)}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <a
+                            href={`/api/documents/${storedDocument.id}/versions/${version.id}/file?download=1`}
+                            className="btn btn-ghost btn-icon h-8 w-8"
+                            aria-label={`Download version ${version.versionNumber}`}
+                            title="Download this version"
+                          >
+                            <Download className="h-4 w-4" aria-hidden />
+                          </a>
+                          {!current ? (
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-icon h-8 w-8"
+                              disabled={restoringVersionId !== null}
+                              aria-label={`Restore version ${version.versionNumber}`}
+                              title="Restore as a new version"
+                              onClick={() => void restoreVersion(version)}
+                            >
+                              {restoringVersionId === version.id ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <RotateCcw className="h-4 w-4" aria-hidden />}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          </aside>
+        </div>
+      ) : null}
 
       {!mobileInspectorOpen ? (
         <div className="fixed inset-x-3 bottom-3 z-30 lg:hidden">

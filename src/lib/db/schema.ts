@@ -14,6 +14,7 @@ import {
   uniqueIndex,
   primaryKey,
   check,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -1986,4 +1987,220 @@ export const classCoverSheetSnapshots = pgTable(
     createdAt: createdAt(),
   },
   (table) => [uniqueIndex("class_cover_sheet_snapshots_invoice_key").on(table.classInvoiceId)],
+);
+
+/* -------------------------------------------------------------------------- */
+/* Document library                                                           */
+/* -------------------------------------------------------------------------- */
+
+export const documents = pgTable(
+  "documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    description: text("description"),
+    category: text("category").default("general").notNull(),
+    /** 'uploading' | 'active' | 'archived' */
+    status: text("status").default("uploading").notNull(),
+    originalVersionId: uuid("original_version_id"),
+    currentVersionId: uuid("current_version_id"),
+    createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").notNull().references(() => users.id),
+    archivedByUserId: uuid("archived_by_user_id").references(() => users.id),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("documents_status_updated_idx").on(table.status, table.updatedAt, table.id),
+    index("documents_creator_idx").on(table.createdByUserId, table.updatedAt),
+    check("documents_title_check", sql`length(btrim(${table.title})) between 1 and 180`),
+    check("documents_category_check", sql`length(btrim(${table.category})) between 1 and 80`),
+    check("documents_status_check", sql`${table.status} in ('uploading', 'active', 'archived')`),
+    check(
+      "documents_archive_check",
+      sql`(${table.status} = 'archived' and ${table.archivedAt} is not null)
+        or (${table.status} <> 'archived' and ${table.archivedAt} is null and ${table.archivedByUserId} is null)`,
+    ),
+  ],
+);
+
+export const documentBlobs = pgTable(
+  "document_blobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    documentId: uuid("document_id").notNull().references(() => documents.id, { onDelete: "cascade" }),
+    /** 'original' | 'edited' */
+    purpose: text("purpose").notNull(),
+    storagePathname: text("storage_pathname").notNull(),
+    storageEtag: text("storage_etag").notNull(),
+    contentType: text("content_type").default("application/pdf").notNull(),
+    byteSize: bigint("byte_size", { mode: "number" }).notNull(),
+    filename: text("filename").notNull(),
+    checksumSha256: text("checksum_sha256"),
+    createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("document_blobs_pathname_key").on(table.storagePathname),
+    uniqueIndex("document_blobs_document_id_key").on(table.documentId, table.id),
+    index("document_blobs_document_idx").on(table.documentId, table.createdAt),
+    check("document_blobs_purpose_check", sql`${table.purpose} in ('original', 'edited')`),
+    check("document_blobs_pdf_check", sql`${table.contentType} = 'application/pdf'`),
+    check("document_blobs_size_check", sql`${table.byteSize} > 0`),
+    check("document_blobs_filename_check", sql`length(btrim(${table.filename})) between 1 and 255`),
+    check(
+      "document_blobs_checksum_check",
+      sql`${table.checksumSha256} is null or ${table.checksumSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
+export const documentVersions = pgTable(
+  "document_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    documentId: uuid("document_id").notNull().references(() => documents.id, { onDelete: "cascade" }),
+    versionNumber: integer("version_number").notNull(),
+    /** 'original' | 'saved' | 'restored' */
+    versionKind: text("version_kind").notNull(),
+    parentVersionId: uuid("parent_version_id").references((): AnyPgColumn => documentVersions.id),
+    restoredFromVersionId: uuid("restored_from_version_id").references(
+      (): AnyPgColumn => documentVersions.id,
+    ),
+    sourceBlobId: uuid("source_blob_id").notNull().references(() => documentBlobs.id),
+    outputBlobId: uuid("output_blob_id").notNull().references(() => documentBlobs.id),
+    /** 'source' | 'standard' | 'secure' */
+    exportMode: text("export_mode").default("standard").notNull(),
+    editorSchemaVersion: integer("editor_schema_version").default(1).notNull(),
+    editorState: jsonb("editor_state").$type<Record<string, unknown>>().default({}).notNull(),
+    pageCount: integer("page_count"),
+    changeSummary: text("change_summary"),
+    idempotencyKey: uuid("idempotency_key").notNull(),
+    createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("document_versions_document_number_key").on(table.documentId, table.versionNumber),
+    uniqueIndex("document_versions_document_id_key").on(table.documentId, table.id),
+    uniqueIndex("document_versions_idempotency_key").on(table.documentId, table.idempotencyKey),
+    index("document_versions_document_created_idx").on(table.documentId, table.createdAt, table.id),
+    foreignKey({
+      name: "document_versions_parent_document_fk",
+      columns: [table.documentId, table.parentVersionId],
+      foreignColumns: [table.documentId, table.id],
+    }),
+    foreignKey({
+      name: "document_versions_restore_document_fk",
+      columns: [table.documentId, table.restoredFromVersionId],
+      foreignColumns: [table.documentId, table.id],
+    }),
+    foreignKey({
+      name: "document_versions_source_blob_document_fk",
+      columns: [table.documentId, table.sourceBlobId],
+      foreignColumns: [documentBlobs.documentId, documentBlobs.id],
+    }),
+    foreignKey({
+      name: "document_versions_output_blob_document_fk",
+      columns: [table.documentId, table.outputBlobId],
+      foreignColumns: [documentBlobs.documentId, documentBlobs.id],
+    }),
+    check("document_versions_number_check", sql`${table.versionNumber} > 0`),
+    check("document_versions_kind_check", sql`${table.versionKind} in ('original', 'saved', 'restored')`),
+    check("document_versions_export_check", sql`${table.exportMode} in ('source', 'standard', 'secure')`),
+    check("document_versions_editor_schema_check", sql`${table.editorSchemaVersion} > 0`),
+    check("document_versions_page_count_check", sql`${table.pageCount} is null or ${table.pageCount} > 0`),
+    check(
+      "document_versions_original_check",
+      sql`(${table.versionKind} = 'original' and ${table.versionNumber} = 1
+        and ${table.parentVersionId} is null and ${table.restoredFromVersionId} is null
+        and ${table.sourceBlobId} = ${table.outputBlobId} and ${table.exportMode} = 'source')
+        or ${table.versionKind} <> 'original'`,
+    ),
+    check(
+      "document_versions_restore_check",
+      sql`(${table.versionKind} = 'restored' and ${table.restoredFromVersionId} is not null)
+        or (${table.versionKind} <> 'restored' and ${table.restoredFromVersionId} is null)`,
+    ),
+  ],
+);
+
+export const documentDrafts = pgTable(
+  "document_drafts",
+  {
+    documentId: uuid("document_id").notNull().references(() => documents.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    baseVersionId: uuid("base_version_id").notNull(),
+    revision: bigint("revision", { mode: "number" }).default(1).notNull(),
+    editorSchemaVersion: integer("editor_schema_version").default(1).notNull(),
+    editorState: jsonb("editor_state").$type<Record<string, unknown>>().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.documentId, table.userId] }),
+    index("document_drafts_user_updated_idx").on(table.userId, table.updatedAt),
+    foreignKey({
+      name: "document_drafts_version_fk",
+      columns: [table.documentId, table.baseVersionId],
+      foreignColumns: [documentVersions.documentId, documentVersions.id],
+    }),
+    check("document_drafts_revision_check", sql`${table.revision} > 0`),
+    check("document_drafts_editor_schema_check", sql`${table.editorSchemaVersion} > 0`),
+  ],
+);
+
+export const documentUploadIntents = pgTable(
+  "document_upload_intents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    documentId: uuid("document_id").notNull().references(() => documents.id, { onDelete: "cascade" }),
+    /** 'original' | 'version' */
+    purpose: text("purpose").notNull(),
+    /** 'pending' | 'uploaded' | 'finalized' | 'expired' */
+    status: text("status").default("pending").notNull(),
+    reservedPathname: text("reserved_pathname").notNull(),
+    filename: text("filename").notNull(),
+    expectedByteSize: bigint("expected_byte_size", { mode: "number" }).notNull(),
+    baseVersionId: uuid("base_version_id"),
+    storagePathname: text("storage_pathname"),
+    storageEtag: text("storage_etag"),
+    uploadedContentType: text("uploaded_content_type"),
+    uploadedByteSize: bigint("uploaded_byte_size", { mode: "number" }),
+    createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    uploadedAt: timestamp("uploaded_at", { withTimezone: true }),
+    finalizedAt: timestamp("finalized_at", { withTimezone: true }),
+    finalizedVersionId: uuid("finalized_version_id").references(() => documentVersions.id),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("document_upload_intents_pathname_key").on(table.reservedPathname),
+    index("document_upload_intents_document_idx").on(table.documentId, table.createdAt),
+    index("document_upload_intents_expiry_idx").on(table.status, table.expiresAt),
+    foreignKey({
+      name: "document_upload_intents_base_version_fk",
+      columns: [table.documentId, table.baseVersionId],
+      foreignColumns: [documentVersions.documentId, documentVersions.id],
+    }),
+    foreignKey({
+      name: "document_upload_intents_finalized_version_document_fk",
+      columns: [table.documentId, table.finalizedVersionId],
+      foreignColumns: [documentVersions.documentId, documentVersions.id],
+    }),
+    check("document_upload_intents_purpose_check", sql`${table.purpose} in ('original', 'version')`),
+    check(
+      "document_upload_intents_status_check",
+      sql`${table.status} in ('pending', 'uploaded', 'finalized', 'expired')`,
+    ),
+    check(
+      "document_upload_intents_filename_check",
+      sql`length(btrim(${table.filename})) between 1 and 255`,
+    ),
+    check("document_upload_intents_size_check", sql`${table.expectedByteSize} > 0`),
+    check(
+      "document_upload_intents_uploaded_size_check",
+      sql`${table.uploadedByteSize} is null or ${table.uploadedByteSize} > 0`,
+    ),
+  ],
 );

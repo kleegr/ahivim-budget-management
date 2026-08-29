@@ -242,11 +242,11 @@ const ADMIN_DESTINATIONS: readonly NavigationDestination[] = [
     gate: "agencies",
   },
   {
-    id: "pdf-editor",
-    label: "PDF editor",
-    href: "/documents/pdf-editor",
-    hint: "Visually replace text; edit forms, signatures and page artwork",
-    keywords: "documents pdf ocr scans cover sheets forms editor signature redact",
+    id: "documents",
+    label: "Documents",
+    href: "/documents",
+    hint: "Saved PDFs, direct editing and version history",
+    keywords: "documents library pdf ocr scans cover sheets forms editor signature versions",
     gate: "documents",
   },
   {

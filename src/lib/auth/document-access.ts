@@ -1,7 +1,9 @@
 import { redirect } from "next/navigation";
-import { homePathForRole, requireUser, type AuthenticatedUser } from "./session";
+import { apiUser, homePathForRole, requireUser, type AuthenticatedUser } from "./session";
 import { resolveAccessScope, type AccessScope } from "./access";
 import { withDb } from "@/lib/data/pool";
+import { getPool } from "@/lib/db";
+import type { PgLikePool } from "@/lib/import/commit";
 
 /**
  * Central decision point for the `can_edit_documents` capability. Pages and
@@ -9,6 +11,25 @@ import { withDb } from "@/lib/data/pool";
  */
 export function canEditDocuments(scope: Pick<AccessScope, "canEditDocuments">): boolean {
   return scope.canEditDocuments;
+}
+
+export interface DocumentEditorAccess {
+  user: AuthenticatedUser;
+  scope: AccessScope;
+  pool: PgLikePool;
+}
+
+/** Resolve document access at an API boundary. Document IDs are checked later. */
+export async function apiDocumentEditorUser(): Promise<DocumentEditorAccess | null> {
+  const user = await apiUser("viewer");
+  if (!user) return null;
+  try {
+    const pool = getPool() as unknown as PgLikePool;
+    const scope = await resolveAccessScope(pool, user);
+    return canEditDocuments(scope) ? { user, scope, pool } : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function requireDocumentEditorUser(): Promise<AuthenticatedUser> {

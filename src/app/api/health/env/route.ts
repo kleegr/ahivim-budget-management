@@ -23,6 +23,7 @@ export async function GET() {
     migrationTokenConfigured: Boolean(process.env.MIGRATION_TOKEN?.trim()),
     cronSecretConfigured: Boolean(process.env.CRON_SECRET?.trim()),
     bootstrapAdminConfigured: Boolean(process.env.BOOTSTRAP_ADMIN_EMAIL?.trim()),
+    documentStorageConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN?.trim()),
     nodeEnv: process.env.NODE_ENV ?? null,
   });
 }

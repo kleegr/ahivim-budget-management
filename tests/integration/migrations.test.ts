@@ -16,8 +16,8 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`CREATE SCHEMA public`);
 
     const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
-    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 34]);
-    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 34]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 35]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 35]);
   }, 60_000);
 
   it("creates the ledger and every expected table", async () => {
@@ -46,16 +46,18 @@ suite("migration runner (real PostgreSQL)", () => {
       "user_individual_relationships", "user_employee_relationships",
       "agency_individuals", "agency_employees",
       "employee_payroll_checks", "employee_direct_pay_targets",
+      "documents", "document_blobs", "document_versions", "document_drafts",
+      "document_upload_intents",
     ]) {
       expect(tables, `missing table ${table}`).toContain(table);
     }
-    expect(tables.length).toBe(63);
+    expect(tables.length).toBe(68);
   });
 
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(34);
+    expect(again.skipped).toBe(35);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -63,7 +65,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(34);
+    expect(rows).toHaveLength(35);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -98,6 +100,7 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[31].name).toBe("0031_settlement_manage_permission.sql");
     expect(rows[32].name).toBe("0032_enforce_sequential_calculations.sql");
     expect(rows[33].name).toBe("0033_home_agency_budget_responsibility.sql");
+    expect(rows[34].name).toBe("0034_document_library.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 

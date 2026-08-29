@@ -20,6 +20,12 @@ export interface PdfImageSource {
   mimeType: "image/png" | "image/jpeg";
 }
 
+export interface PdfTextBoxLayout {
+  lines: string[];
+  fontSize: number;
+  lineHeight: number;
+}
+
 const STANDARD_FONT_NAMES = {
   helvetica: {
     regular: StandardFonts.Helvetica,
@@ -50,7 +56,18 @@ function parseHexColor(value: string): ReturnType<typeof rgb> {
   );
 }
 
-export function wrapPdfText(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
+function pdfTextWidth(text: string, font: PDFFont, size: number, letterSpacing = 0): number {
+  return font.widthOfTextAtSize(text, size)
+    + Math.max(0, [...text].length - 1) * letterSpacing;
+}
+
+export function wrapPdfText(
+  text: string,
+  font: PDFFont,
+  size: number,
+  maxWidth: number,
+  letterSpacing = 0,
+): string[] {
   const paragraphs = text.replace(/\r\n/g, "\n").split("\n");
   const lines: string[] = [];
 
@@ -58,7 +75,7 @@ export function wrapPdfText(text: string, font: PDFFont, size: number, maxWidth:
     const pieces: string[] = [];
     let piece = "";
     for (const character of word) {
-      if (piece && font.widthOfTextAtSize(piece + character, size) > maxWidth) {
+      if (piece && pdfTextWidth(piece + character, font, size, letterSpacing) > maxWidth) {
         pieces.push(piece);
         piece = character;
       } else {
@@ -77,10 +94,10 @@ export function wrapPdfText(text: string, font: PDFFont, size: number, maxWidth:
 
     let line = "";
     for (const word of paragraph.trim().split(/\s+/)) {
-      const parts = font.widthOfTextAtSize(word, size) > maxWidth ? splitLongWord(word) : [word];
+      const parts = pdfTextWidth(word, font, size, letterSpacing) > maxWidth ? splitLongWord(word) : [word];
       for (const part of parts) {
         const candidate = line ? `${line} ${part}` : part;
-        if (line && font.widthOfTextAtSize(candidate, size) > maxWidth) {
+        if (line && pdfTextWidth(candidate, font, size, letterSpacing) > maxWidth) {
           lines.push(line);
           line = part;
         } else {
@@ -92,6 +109,60 @@ export function wrapPdfText(text: string, font: PDFFont, size: number, maxWidth:
   }
 
   return lines;
+}
+
+/** Returns the largest font size that keeps every wrapped line inside a box. */
+export function fitPdfTextToBox(
+  text: string,
+  font: PDFFont,
+  requestedFontSize: number,
+  maxWidth: number,
+  maxHeight: number,
+  lineHeightMultiplier = 1.2,
+  letterSpacing = 0,
+): PdfTextBoxLayout {
+  const requested = Math.max(0.01, requestedFontSize);
+  const width = Math.max(0.01, maxWidth);
+  const height = Math.max(0.01, maxHeight);
+  const multiplier = Math.max(0.1, lineHeightMultiplier);
+  const layoutAt = (fontSize: number): PdfTextBoxLayout & { fits: boolean } => {
+    const lines = wrapPdfText(text, font, fontSize, width, letterSpacing);
+    const lineHeight = fontSize * multiplier;
+    return {
+      lines,
+      fontSize,
+      lineHeight,
+      fits: lines.length * lineHeight <= height + 0.0001
+        && lines.every((line) => pdfTextWidth(line, font, fontSize, letterSpacing) <= width + 0.0001),
+    };
+  };
+
+  const requestedLayout = layoutAt(requested);
+  if (requestedLayout.fits) return requestedLayout;
+
+  let upper = requested;
+  let lower = requested / 2;
+  let lowerLayout = layoutAt(lower);
+  for (let attempt = 0; !lowerLayout.fits && attempt < 48; attempt += 1) {
+    upper = lower;
+    lower /= 2;
+    lowerLayout = layoutAt(lower);
+  }
+  if (!lowerLayout.fits) {
+    throw new Error("The replacement text is too large to fit in its text box.");
+  }
+
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const candidateSize = (lower + upper) / 2;
+    const candidate = layoutAt(candidateSize);
+    if (candidate.fits) {
+      lower = candidateSize;
+      lowerLayout = candidate;
+    } else {
+      upper = candidateSize;
+    }
+  }
+  return lowerLayout;
 }
 
 function alignedX(
@@ -123,20 +194,25 @@ function drawText(page: PDFPage, overlay: Extract<PdfOverlay, { kind: "text" }>,
   const boxWidth = overlay.width * pageWidth;
   const boxHeight = overlay.height * pageHeight;
   const boxTop = pageHeight - overlay.y * pageHeight;
-  const lineHeight = overlay.fontSize * overlay.lineHeight;
-  const maxLines = Math.max(1, Math.floor(boxHeight / lineHeight));
-  const lines = wrapPdfText(overlay.text, font, overlay.fontSize, boxWidth).slice(0, maxLines);
+  const layout = fitPdfTextToBox(
+    overlay.text,
+    font,
+    overlay.fontSize,
+    boxWidth,
+    boxHeight,
+    overlay.lineHeight,
+    overlay.letterSpacing,
+  );
 
-  lines.forEach((line, index) => {
-    const lineWidth = font.widthOfTextAtSize(line, overlay.fontSize)
-      + Math.max(0, line.length - 1) * overlay.letterSpacing;
+  layout.lines.forEach((line, index) => {
+    const lineWidth = pdfTextWidth(line, font, layout.fontSize, overlay.letterSpacing);
     const startX = alignedX(overlay.alignment, boxX, boxWidth, lineWidth);
-    const startY = boxTop - overlay.fontSize - index * lineHeight;
+    const startY = boxTop - layout.fontSize - index * layout.lineHeight;
     if (overlay.letterSpacing === 0) {
       page.drawText(line, {
         x: startX,
         y: startY,
-        size: overlay.fontSize,
+        size: layout.fontSize,
         font,
         color: parseHexColor(overlay.color),
         opacity: overlay.opacity,
@@ -151,13 +227,13 @@ function drawText(page: PDFPage, overlay: Extract<PdfOverlay, { kind: "text" }>,
       page.drawText(character, {
         x: startX + offset * Math.cos(angle),
         y: startY + offset * Math.sin(angle),
-        size: overlay.fontSize,
+        size: layout.fontSize,
         font,
         color: parseHexColor(overlay.color),
         opacity: overlay.opacity,
         rotate: degrees(overlay.rotation),
       });
-      offset += font.widthOfTextAtSize(character, overlay.fontSize) + overlay.letterSpacing;
+      offset += font.widthOfTextAtSize(character, layout.fontSize) + overlay.letterSpacing;
     }
   });
 }
