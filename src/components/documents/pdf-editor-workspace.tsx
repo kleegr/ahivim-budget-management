@@ -2361,7 +2361,8 @@ export default function PdfEditorWorkspace({
                       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-ink-faint)]" aria-hidden />
                       <input
                         type="search"
-                        className="input w-full pl-9"
+                        className="input w-full"
+                        style={{ paddingLeft: "2.25rem" }}
                         value={sourceQuery}
                         onChange={(event) => setSourceQuery(event.target.value)}
                         placeholder="Search this page"

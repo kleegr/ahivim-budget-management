@@ -243,7 +243,7 @@ export default function DocumentLibrary() {
         <label className="relative min-w-56 flex-1 sm:max-w-sm">
           <span className="sr-only">Search documents</span>
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-ink-faint)]" aria-hidden />
-          <input className="input w-full pl-9" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search documents" />
+          <input className="input w-full" style={{ paddingLeft: "2.25rem" }} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search documents" />
         </label>
       </section>
 
