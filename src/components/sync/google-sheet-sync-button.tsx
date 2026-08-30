@@ -26,11 +26,7 @@ export default function GoogleSheetSyncButton() {
         return;
       }
       setState("done");
-      setResultText(
-        body.writeback?.status === "success"
-          ? "Google Sheet is up to date."
-          : "Latest sheet information loaded.",
-      );
+      setResultText("Google Sheet updated.");
       router.refresh();
     } catch {
       setState("failed");

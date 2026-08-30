@@ -26,10 +26,20 @@ interface Props {
   writebackConfigured: boolean;
 }
 
+const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
 function fmt(dt: string | null): string {
   if (!dt) return "—";
   const d = new Date(dt);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? "—" : DATE_TIME_FORMATTER.format(d);
 }
 
 const STATUS_TONE: Record<string, string> = {
@@ -449,7 +459,7 @@ function money(obj: Record<string, unknown> | null, key: string): string {
   const v = obj?.[key];
   if (v === undefined || v === null || v === "") return "—";
   const n = Number(v);
-  return Number.isFinite(n) ? `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : String(v);
+  return Number.isFinite(n) ? `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : String(v);
 }
 
 function hours(obj: Record<string, unknown> | null): string {
