@@ -2,6 +2,7 @@ import type { DirectPayTargetInterval } from "@/lib/business/direct-pay-targets"
 import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { recordChange } from "@/lib/manage/audit";
 import { fail, ok, type Result } from "@/lib/manage/errors";
+import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
 import { dec, toMoney } from "@/lib/money";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -30,6 +31,7 @@ async function inTransaction<T>(pool: PgLikePool, run: (client: PgLikeClient) =>
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await acquireSettlementSourceLock(client);
     const result = await run(client);
     await client.query("COMMIT");
     return result;
@@ -181,6 +183,8 @@ export interface SavePayrollCheckInput {
   sourceRef?: string | null;
   verificationStatus?: "unverified" | "verified" | "void";
   notes?: string | null;
+  /** Exact unlinked ledger rows selected by a settlement issue. */
+  sourceTransactionIds?: string[];
 }
 
 export async function savePayrollCheck(
@@ -218,6 +222,14 @@ export async function savePayrollCheck(
   if (!(["unverified", "verified", "void"] as const).includes(verificationStatus)) {
     return fail("validation", "Choose a valid verification status.");
   }
+  const requestedSourceIds = input.sourceTransactionIds ?? [];
+  if (requestedSourceIds.length > 200 || requestedSourceIds.some((id) => !UUID.test(id))) {
+    return fail("validation", "Choose valid source transactions.");
+  }
+  const sourceTransactionIds = [...new Set(requestedSourceIds)];
+  if (sourceTransactionIds.length > 0 && input.id) {
+    return fail("validation", "Source transactions can only be attached when a payroll check is created.");
+  }
 
   return inTransaction(pool, async (client) => {
     const previous = input.id
@@ -226,6 +238,35 @@ export async function savePayrollCheck(
     if (input.id && !previous?.rows[0]) return fail("not_found", "That payroll check no longer exists.");
     if (previous?.rows[0] && previous.rows[0].employee_id !== input.employeeId) {
       return fail("validation", "A payroll check cannot be moved to another employee.");
+    }
+    if (sourceTransactionIds.length > 0) {
+      const sourceRows = await client.query<{
+        id: string;
+        employee_id: string | null;
+        payroll_check_id: string | null;
+        payment_recipient: string;
+      }>(
+        `SELECT t.id, t.employee_id, t.payroll_check_id,
+                effective_payment_recipient(t.payment_recipient, p.payment_recipient) AS payment_recipient
+           FROM payroll_transactions t
+           LEFT JOIN programs p ON p.id = t.program_id
+          WHERE t.id = ANY($1::uuid[])
+          ORDER BY t.id
+          FOR UPDATE OF t`,
+        [sourceTransactionIds],
+      );
+      if (sourceRows.rows.length !== sourceTransactionIds.length) {
+        return fail("not_found", "One or more source transactions are no longer available.");
+      }
+      if (sourceRows.rows.some((row) => row.employee_id !== input.employeeId)) {
+        return fail("forbidden", "One or more source transactions are not available for this employee.");
+      }
+      if (sourceRows.rows.some((row) => row.payment_recipient !== "employee")) {
+        return fail("validation", "Only transactions paid directly to the employee can be linked to a payroll check.");
+      }
+      if (sourceRows.rows.some((row) => row.payroll_check_id !== null)) {
+        return fail("conflict", "One or more source transactions are already linked to a payroll check. Refresh and try again.");
+      }
     }
     const saved = input.id
       ? await client.query<{ id: string }>(
@@ -270,8 +311,18 @@ export async function savePayrollCheck(
       }
       // Keep an existing check's links when only its number/date is corrected,
       // and attach any unlinked rows that match the strongest supplied identity.
-      await client.query(
-           `UPDATE payroll_transactions t
+      if (sourceTransactionIds.length > 0) {
+        await client.query(
+          `UPDATE payroll_transactions
+              SET payroll_check_id = $1, updated_at = now()
+            WHERE id = ANY($2::uuid[])
+              AND employee_id = $3
+              AND payroll_check_id IS NULL`,
+          [id, sourceTransactionIds, input.employeeId],
+        );
+      } else {
+        await client.query(
+             `UPDATE payroll_transactions t
                SET payroll_check_id = $1, updated_at = now()
              WHERE t.employee_id = $2
                AND effective_payment_recipient(
@@ -280,18 +331,22 @@ export async function savePayrollCheck(
                ) = 'employee'
                AND (t.payroll_check_id IS NULL OR t.payroll_check_id = $1)
               AND (
-                ($5::date IS NOT NULL AND t.period_begin = $5::date
-                    AND ($6::date IS NULL OR t.period_end = $6::date))
-                OR ($5::date IS NULL AND $6::date IS NOT NULL AND t.period_end = $6::date)
-                OR ($5::date IS NULL AND $6::date IS NULL
-                    AND $3::text IS NOT NULL
+                ($3::text IS NOT NULL
                     AND NULLIF(btrim(t.check_number), '') = $3
-                    AND ($4::date IS NULL OR t.check_date = $4::date))
+                    AND ($4::date IS NULL OR t.check_date = $4::date)
+                    AND ($5::date IS NULL OR t.period_begin = $5::date)
+                    AND ($6::date IS NULL OR t.period_end = $6::date))
+                OR ($3::text IS NULL AND $5::date IS NOT NULL
+                    AND t.period_begin = $5::date
+                    AND ($6::date IS NULL OR t.period_end = $6::date))
+                OR ($3::text IS NULL AND $5::date IS NULL AND $6::date IS NOT NULL
+                    AND t.period_end = $6::date)
                 OR ($5::date IS NULL AND $6::date IS NULL AND $3::text IS NULL
                     AND $4::date IS NOT NULL AND t.check_date = $4::date)
               )`,
-        [id, input.employeeId, checkNumber, checkDate, periodBegin, periodEnd],
-      );
+          [id, input.employeeId, checkNumber, checkDate, periodBegin, periodEnd],
+        );
+      }
     }
     const linked = await client.query<{ count: string }>(
       `SELECT count(*)::text AS count
@@ -306,7 +361,7 @@ export async function savePayrollCheck(
       entityType: "employee_payroll_check",
       entityId: id,
       previous: previous?.rows[0] ?? undefined,
-      next: { employeeId: input.employeeId, checkNumber, checkDate, periodBegin, periodEnd, actualGross: gross, actualNet: net, taxWithheld: tax, verificationStatus, linkedTransactions },
+      next: { employeeId: input.employeeId, checkNumber, checkDate, periodBegin, periodEnd, actualGross: gross, actualNet: net, taxWithheld: tax, verificationStatus, linkedTransactions, sourceTransactionIds },
     });
     return ok({ id, linkedTransactions });
   });

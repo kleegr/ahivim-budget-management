@@ -36,15 +36,15 @@ export function ColumnChooser<Row, T>({
       </button>
       {open ? (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden />
+          <div className="fixed inset-0 z-40" onPointerDown={() => setOpen(false)} aria-hidden />
           <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-2 shadow-lg" role="dialog" aria-label="Choose table columns">
             <p className="mb-1 px-1 text-[0.7rem] font-medium uppercase text-[var(--color-text-soft)]">Show, hide &amp; reorder</p>
             <div className="scroll-thin max-h-72 space-y-0.5 overflow-auto">
               {grid.orderedColumns.map((column, index) => {
                 const locked = lockedKeys.has(column.key);
                 return (
-                  <div key={column.key} className="group flex min-h-9 items-center gap-1 rounded px-1 py-0.5 text-sm hover:bg-[var(--color-surface-strong)]">
-                    <label className="flex min-w-0 flex-1 items-center gap-2">
+                  <div key={column.key} className="group flex min-h-11 items-center gap-1 rounded px-1 py-0.5 text-sm hover:bg-[var(--color-surface-strong)]">
+                    <label className="flex min-h-11 min-w-0 flex-1 items-center gap-2">
                       <input
                         type="checkbox"
                         checked={locked || !grid.hidden.has(column.key)}
@@ -77,7 +77,7 @@ export function ColumnChooser<Row, T>({
                 );
               })}
             </div>
-            <button type="button" className="mt-1 w-full text-xs text-[var(--color-ink-faint)] underline underline-offset-2" onClick={grid.resetHidden}>
+            <button type="button" className="touch-target mt-1 w-full px-2 text-xs text-[var(--color-ink-faint)] underline underline-offset-2" onClick={grid.resetHidden}>
               Reset visible columns
             </button>
           </div>
@@ -100,6 +100,8 @@ export function Toolbar<Row, T>({
   exportFilename,
   showColumnChooser = true,
   extraActions,
+  hasExternalFilters = false,
+  onResetFilters,
 }: {
   grid: UseGridResult<Row, T>;
   searchPlaceholder?: string;
@@ -108,6 +110,8 @@ export function Toolbar<Row, T>({
   exportFilename: string;
   showColumnChooser?: boolean;
   extraActions?: ReactNode;
+  hasExternalFilters?: boolean;
+  onResetFilters?: () => void;
 }) {
   const [viewsOpen, setViewsOpen] = useState(false);
   const [viewName, setViewName] = useState("");
@@ -132,8 +136,11 @@ export function Toolbar<Row, T>({
       <button
         type="button"
         className="btn btn-sm btn-secondary"
-        onClick={grid.clearFilters}
-        disabled={!grid.anyFilter}
+        onClick={() => {
+          grid.clearFilters();
+          onResetFilters?.();
+        }}
+        disabled={!grid.anyFilter && !hasExternalFilters}
       >
         Reset filters
       </button>
@@ -146,7 +153,7 @@ export function Toolbar<Row, T>({
         </button>
         {viewsOpen ? (
           <>
-            <div className="fixed inset-0 z-40" onClick={() => setViewsOpen(false)} aria-hidden />
+            <div className="fixed inset-0 z-40" onPointerDown={() => setViewsOpen(false)} aria-hidden />
             <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-2 shadow-lg">
               {grid.views.length === 0 ? (
                 <p className="px-1 py-1 text-xs text-[var(--color-ink-faint)]">No saved views yet.</p>
@@ -156,7 +163,7 @@ export function Toolbar<Row, T>({
                     <li key={v.id} className="flex items-center gap-1">
                       <button
                         type="button"
-                        className="flex-1 truncate rounded px-2 py-1 text-left text-sm hover:bg-[var(--color-surface-strong)]"
+                        className="touch-target flex-1 truncate rounded px-2 py-1 text-left text-sm hover:bg-[var(--color-surface-strong)]"
                         onClick={() => {
                           grid.applyView(v.config as GridViewConfig);
                           setViewsOpen(false);
@@ -167,7 +174,7 @@ export function Toolbar<Row, T>({
                       {grid.canManage ? (
                         <button
                           type="button"
-                          className="rounded px-1.5 py-1 text-xs text-[var(--color-ink-faint)] hover:text-[var(--color-danger)]"
+                          className="touch-target rounded px-1.5 py-1 text-xs text-[var(--color-ink-faint)] hover:text-[var(--color-danger)]"
                           onClick={() => grid.deleteView(v)}
                           aria-label={`Delete view ${v.name}`}
                         >

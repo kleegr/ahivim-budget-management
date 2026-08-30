@@ -30,6 +30,9 @@ export default async function SettlementsPage({
         planningOnly: isPlanningOnlyAccess(scope),
         data: null,
         canManage: false,
+        canManagePayrollChecks: false,
+        canSeeEmployeeDeals: false,
+        canSeeTransactions: false,
       };
     }
     return {
@@ -37,6 +40,9 @@ export default async function SettlementsPage({
       planningOnly: false,
       data: await getSettlementDashboard(pool, scope),
       canManage: scope.canManageSettlements,
+      canManagePayrollChecks: scope.canManageSettlements && scope.canSeeCheckNet && scope.canSeeTaxes,
+      canSeeEmployeeDeals: scope.canSeeEmployeeDeals,
+      canSeeTransactions: scope.canSeeTransactions,
     };
   });
 
@@ -44,6 +50,8 @@ export default async function SettlementsPage({
 
   const requestedEmployeeId = first(params.employeeId);
   const requestedIndividualId = first(params.individualId);
+  const requestedQueue = first(params.queue);
+  const requestedFocus = first(params.focus);
   const requestedPersonId = requestedEmployeeId ?? requestedIndividualId;
   const requestedPersonType = requestedEmployeeId ? "employee" : requestedIndividualId ? "individual" : null;
   const initialPersonName = result.ok && result.data.data && requestedPersonId
@@ -72,12 +80,21 @@ export default async function SettlementsPage({
         </ErrorPanel>
       ) : (
         <SettlementDashboard
-          key={requestedPersonId && requestedPersonType ? `${requestedPersonType}:${requestedPersonId}` : "all"}
+          key={[
+            requestedPersonId && requestedPersonType ? `${requestedPersonType}:${requestedPersonId}` : "all",
+            requestedQueue ?? "default-queue",
+            requestedFocus ?? "no-focus",
+          ].join(":")}
           data={result.data.data}
           canManage={result.data.canManage}
+          canManagePayrollChecks={result.data.canManagePayrollChecks}
+          canSeeEmployeeDeals={result.data.canSeeEmployeeDeals}
+          canSeeTransactions={result.data.canSeeTransactions}
           initialPersonName={initialPersonName}
           initialPersonId={requestedPersonId}
           initialPersonType={requestedPersonType}
+          initialQueueParam={requestedQueue}
+          initialFocusParam={requestedFocus}
         />
       )}
     </>

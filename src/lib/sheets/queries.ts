@@ -14,6 +14,7 @@ export interface SyncRunRow {
   flagged: number;
   failed: number;
   importBatchId: string | null;
+  sourceFileId: string | null;
   errorMessage: string | null;
   startedAt: string;
   finishedAt: string | null;
@@ -40,6 +41,8 @@ export interface SyncConflictRow {
   previous: Record<string, unknown> | null;
   incoming: Record<string, unknown> | null;
   transactionId: string | null;
+  importRowId: string | null;
+  sourceFileId: string | null;
   individualName: string | null;
   employeeName: string | null;
   programName: string | null;
@@ -49,7 +52,7 @@ export interface SyncConflictRow {
 function mapRun(r: {
   id: string; trigger: string; status: string; source_rows: number; rows_added: number;
   rows_updated: number; rows_skipped: number; rows_flagged: number; rows_failed: number;
-  import_batch_id: string | null; error_message: string | null; started_at: string;
+  import_batch_id: string | null; source_file_id: string | null; error_message: string | null; started_at: string;
   finished_at: string | null; triggered_by: string | null; reconciliation: { note?: string } | null;
 }): SyncRunRow {
   return {
@@ -63,6 +66,7 @@ function mapRun(r: {
     flagged: r.rows_flagged,
     failed: r.rows_failed,
     importBatchId: r.import_batch_id,
+    sourceFileId: r.source_file_id,
     errorMessage: r.error_message,
     startedAt: r.started_at,
     finishedAt: r.finished_at,
@@ -75,10 +79,12 @@ export async function listSyncRuns(pool: PgLikePool, limit = 50): Promise<SyncRu
   const capped = Math.min(Math.max(limit, 1), 200);
   const { rows } = await pool.query(
     `SELECT r.id, r.trigger, r.status, r.source_rows, r.rows_added, r.rows_updated,
-            r.rows_skipped, r.rows_flagged, r.rows_failed, r.import_batch_id, r.error_message,
+            r.rows_skipped, r.rows_flagged, r.rows_failed, r.import_batch_id,
+            b.imported_file_id AS source_file_id, r.error_message,
             r.started_at::text AS started_at, r.finished_at::text AS finished_at,
             u.display_name AS triggered_by, r.reconciliation
        FROM sheet_sync_runs r
+       LEFT JOIN import_batches b ON b.id = r.import_batch_id
        LEFT JOIN users u ON u.id = r.triggered_by_user_id
       ORDER BY r.started_at DESC
       LIMIT $1`,
@@ -94,10 +100,12 @@ export async function getSyncStatus(pool: PgLikePool): Promise<SyncStatus> {
   );
   const { rows: lastRows } = await pool.query(
     `SELECT r.id, r.trigger, r.status, r.source_rows, r.rows_added, r.rows_updated,
-            r.rows_skipped, r.rows_flagged, r.rows_failed, r.import_batch_id, r.error_message,
+            r.rows_skipped, r.rows_flagged, r.rows_failed, r.import_batch_id,
+            b.imported_file_id AS source_file_id, r.error_message,
             r.started_at::text AS started_at, r.finished_at::text AS finished_at,
             u.display_name AS triggered_by, r.reconciliation
        FROM sheet_sync_runs r
+       LEFT JOIN import_batches b ON b.id = r.import_batch_id
        LEFT JOIN users u ON u.id = r.triggered_by_user_id
       ORDER BY r.started_at DESC LIMIT 1`,
   );
@@ -131,14 +139,24 @@ export async function listOpenConflicts(
   const { rows } = await pool.query<{
     id: string; type: string; status: string; audited: boolean; natural_key: string;
     detail: string | null; previous: Record<string, unknown> | null; incoming: Record<string, unknown> | null;
-    payroll_transaction_id: string | null; individual_name: string | null; employee_name: string | null;
+    payroll_transaction_id: string | null; import_row_id: string | null; source_file_id: string | null;
+    individual_name: string | null; employee_name: string | null;
     program_name: string | null; created_at: string;
   }>(
     `SELECT c.id, c.type, c.status, c.audited, c.natural_key, c.detail, c.previous, c.incoming,
-            c.payroll_transaction_id, i.display_name AS individual_name, e.display_name AS employee_name,
+            c.payroll_transaction_id, held_row.id AS import_row_id,
+            held_file.id AS source_file_id,
+            i.display_name AS individual_name, e.display_name AS employee_name,
             p.name AS program_name, c.created_at::text AS created_at
        FROM sheet_sync_conflicts c
        LEFT JOIN payroll_transactions t ON t.id = c.payroll_transaction_id
+       LEFT JOIN sheet_sync_runs run ON run.id = c.run_id
+       LEFT JOIN import_batches held_batch ON held_batch.id = run.import_batch_id
+       LEFT JOIN imported_files held_file ON held_file.id = held_batch.imported_file_id
+       LEFT JOIN sheet_sync_rows sync_row ON sync_row.payroll_transaction_id = c.payroll_transaction_id
+       LEFT JOIN import_rows held_row ON held_row.import_batch_id = held_batch.id
+                                     AND held_row.source_row_number = sync_row.source_row_number
+                                     AND held_row.status IN ('needs_review', 'invalid', 'duplicate')
        LEFT JOIN individuals i ON i.id = t.individual_id
        LEFT JOIN employees e ON e.id = t.employee_id
        LEFT JOIN programs p ON p.id = t.program_id
@@ -157,6 +175,8 @@ export async function listOpenConflicts(
     previous: r.previous,
     incoming: r.incoming,
     transactionId: r.payroll_transaction_id,
+    importRowId: r.import_row_id,
+    sourceFileId: r.source_file_id,
     individualName: r.individual_name,
     employeeName: r.employee_name,
     programName: r.program_name,

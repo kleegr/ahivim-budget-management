@@ -1,6 +1,11 @@
 import { dec, toMoney, toHours } from "@/lib/money";
 import type { ParsedAhivimRow } from "@/lib/excel/parse-workbook";
-import type { StagingResult, StagedRow, RateConfig } from "./stage";
+import {
+  rateConfigForStagedRow,
+  type StagingResult,
+  type StagedRow,
+  type RateConfig,
+} from "./stage";
 import { evaluateRateException } from "@/lib/business/rate-exceptions";
 import { normalizePersonName } from "@/lib/business/name-matching";
 import { backfillPaymentAttribution } from "@/lib/manage/payment-attribution";
@@ -34,7 +39,9 @@ import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
  * but still counts toward money totals, which is exactly the misleading
  * half-record the previous implementation created. Review rows are surfaced in
  * the exceptions area, and are committed as transactions only after a human
- * resolves the mapping and re-imports. See docs/import-architecture.md.
+ * resolves every match and explicitly applies the corrected row. That guarded
+ * operation preserves the source, refuses group/duplicate ambiguity, and
+ * creates the ledger transaction and service allocation atomically.
  */
 
 /* -------------------------------------------------------------------------- */
@@ -439,7 +446,13 @@ async function writeImport(client: PgLikeClient, input: CommitInput): Promise<Co
     const parsed = parsedByRow.get(staged.sourceRowNumber);
     if (!parsed?.parsed) return [];
     const p = parsed.parsed;
-    const rate = staged.programCode ? input.ratesByProgram[staged.programCode] : undefined;
+    // Production staging resolves the full effective-dated catalog for this
+    // row's canonical service date. The fallback keeps older fixtures and
+    // callers that construct StagedRow objects directly source-compatible.
+    const rate = rateConfigForStagedRow(
+      staged,
+      staged.programCode ? input.ratesByProgram[staged.programCode] : undefined,
+    );
     return [
       {
         sourceRowNumber: staged.sourceRowNumber,
@@ -755,7 +768,7 @@ async function writeImport(client: PgLikeClient, input: CommitInput): Promise<Co
     // Recompute the variance from the same inputs staging used, so the stored
     // exception carries the actual imported and expected rates rather than a
     // re-derived guess.
-    const config = input.ratesByProgram[staged.programCode];
+    const config = rateConfigForStagedRow(staged, input.ratesByProgram[staged.programCode]);
     const payrollTransactionId = transactionIds.get(staged.sourceRowNumber) ?? null;
     if (!config || !payrollTransactionId) return [];
     const evaluated = evaluateRateException({

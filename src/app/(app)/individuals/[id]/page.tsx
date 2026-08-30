@@ -94,10 +94,12 @@ export default async function IndividualDetailPage({
   if (!isUuid(id)) notFound();
 
   const result = await withDb(async (pool) => {
-    const individual = await getIndividual(pool, id);
+    const [individual, scope] = await Promise.all([
+      getIndividual(pool, id),
+      resolveAccessScope(pool, user),
+    ]);
     if (!individual) return null;
     // A scoped user may only open an individual they have access to.
-    const scope = await resolveAccessScope(pool, user);
     if (!canViewIndividual(scope, id)) return null;
     const directAccess = hasDirectIndividualAccess(scope, id);
     const canSeeBudgets = scope.canSeeBudgets && scope.canSeeHours && directAccess;
@@ -308,7 +310,7 @@ export default async function IndividualDetailPage({
     return (
       <>
         <PageHeader eyebrow="Individual" title="Individual" />
-        <ErrorPanel title="Could not load this individual">{result.error}</ErrorPanel>
+        <ErrorPanel title="Individual profile is unavailable">{result.error}</ErrorPanel>
       </>
     );
   }
@@ -417,11 +419,18 @@ export default async function IndividualDetailPage({
               </section>
             ) : canSeeBudgets ? (
               <section className="card px-5 py-5">
-                <p className="eyebrow">Budget</p>
-                <p className="mt-1 text-lg font-semibold">No budget is configured</p>
-                {canSeeTransactions && budget.money.txCount > 0 ? (
-                  <p className="mt-1 text-sm text-[var(--color-ink-soft)]">{budget.money.txCount.toLocaleString()} billed transactions are already on file.</p>
-                ) : null}
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="eyebrow">Budget</p>
+                    <p className="mt-1 text-lg font-semibold">No budget is configured</p>
+                    {canSeeTransactions && budget.money.txCount > 0 ? (
+                      <p className="mt-1 text-sm text-[var(--color-ink-soft)]">{budget.money.txCount.toLocaleString()} billed transactions are already on file.</p>
+                    ) : null}
+                  </div>
+                  <ButtonLink href={`/individuals/${id}?view=budget`} variant={canEdit ? "primary" : "secondary"}>
+                    {canEdit ? "Set up budget" : "Open budget"}
+                  </ButtonLink>
+                </div>
               </section>
             ) : (
               <section className="card px-5 py-5">

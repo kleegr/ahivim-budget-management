@@ -29,7 +29,7 @@ export default async function SyncPage() {
       />
 
       {!result.ok ? (
-        <ErrorPanel title="Could not load the sync status">{result.error}</ErrorPanel>
+        <ErrorPanel title="Sync status is unavailable">{result.error}</ErrorPanel>
       ) : (
         <SyncConsole
           canManage={user.role !== "viewer"}

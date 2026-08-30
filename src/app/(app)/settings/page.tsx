@@ -29,18 +29,25 @@ export default async function SettingsPage() {
     const canSeeBilledAmounts = scope.canSeeBilledAmounts;
     const canSeeEmployeeAmounts = scope.canSeeEmployeeAmounts;
     const canViewProgramRates = canSeeBilledAmounts || canSeeEmployeeAmounts;
-    const programs = canViewProgramRates ? await listPrograms(pool) : [];
+    const [users, managedIndividuals, managedEmployees, programs, programRules, audit] = await Promise.all([
+      isAdmin ? listUsersWithAccess(pool) : Promise.resolve([]),
+      isAdmin ? listIndividualsManaged(pool, {}) : Promise.resolve([]),
+      isAdmin ? listEmployeesManaged(pool, {}) : Promise.resolve([]),
+      canViewProgramRates ? listPrograms(pool) : Promise.resolve([]),
+      isAdmin ? listProgramRules(pool) : Promise.resolve([]),
+      isAdmin ? listAudit(pool, 40) : Promise.resolve([]),
+    ]);
     return {
-      users: isAdmin ? await listUsersWithAccess(pool) : [],
-      individuals: isAdmin ? (await listIndividualsManaged(pool, {})).map((i) => ({ id: i.id, name: i.displayName })) : [],
-      employees: isAdmin ? (await listEmployeesManaged(pool, {})).map((e) => ({ id: e.id, name: e.displayName })) : [],
+      users,
+      individuals: managedIndividuals.map((i) => ({ id: i.id, name: i.displayName })),
+      employees: managedEmployees.map((e) => ({ id: e.id, name: e.displayName })),
       programs: programs.map((program) => ({
         ...program,
         agencyRate: canSeeBilledAmounts ? program.agencyRate : null,
         internalRate: canSeeEmployeeAmounts ? program.internalRate : null,
       })),
-      programRules: isAdmin ? await listProgramRules(pool) : [],
-      audit: isAdmin ? await listAudit(pool, 40) : [],
+      programRules,
+      audit,
       canSeeBilledAmounts,
       canSeeEmployeeAmounts,
       canViewProgramRates,

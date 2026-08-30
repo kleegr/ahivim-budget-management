@@ -291,7 +291,7 @@ export function Dialog({
   return (
     <div
       className="overlay-in fixed inset-0 z-50 flex items-end justify-center overflow-y-auto bg-black/45 p-0 sm:items-start sm:p-8"
-      onMouseDown={(e) => {
+      onPointerDown={(e) => {
         if (e.target === e.currentTarget) onCloseRef.current();
       }}
     >

@@ -15,6 +15,7 @@ function memberRow(individual: string, n: number, over: Partial<GroupCandidateRo
     employeeKey: "emp-100",
     programKey: "day-hab",
     checkNumber: "5512",
+    checkDate: "2025-07-18",
     periodBegin: "2025-07-01",
     periodEnd: "2025-07-15",
     hours: "13",
@@ -100,6 +101,17 @@ describe("check number alone must not identify a group", () => {
   it("separates rows that share a check number but not a service period", () => {
     const rows = [memberRow("ind-a", 1), memberRow("ind-b", 2, { periodEnd: "2025-07-31" })];
     expect(new Set(rows.map(buildGroupSignature)).size).toBe(2);
+  });
+
+  it("separates a reused check number on different paydays when service periods are absent", () => {
+    const withoutPeriod = { periodBegin: null, periodEnd: null };
+    const rows = [
+      memberRow("ind-a", 1, { ...withoutPeriod, checkDate: "2025-07-18" }),
+      memberRow("ind-b", 2, { ...withoutPeriod, checkDate: "2025-08-01" }),
+    ];
+    expect(new Set(rows.map(buildGroupSignature)).size).toBe(2);
+    expect(detectGroups(rows)).toHaveLength(2);
+    expect(detectGroups(rows).every((result) => result.status === "single")).toBe(true);
   });
 
   it("is stable for identical business values", () => {

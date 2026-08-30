@@ -105,7 +105,9 @@ suite("direct-pay operations (real PostgreSQL)", () => {
          ($1, $2, 'CHECK-10', '2026-08-15', '2026-08-01', '2026-08-14',
           10, 250, 'excellent_staffing', 'direct-pay-check-explicit-agency'),
          ($1, $3, 'CHECK-10', '2026-08-15', '2026-08-01', '2026-08-14',
-          10, 250, 'employee', 'direct-pay-check-explicit-employee')`,
+          10, 250, 'employee', 'direct-pay-check-explicit-employee'),
+         ($1, $2, 'CHECK-OTHER', '2026-08-15', '2026-08-01', '2026-08-14',
+          10, 250, 'employee', 'direct-pay-check-same-period-other-number')`,
       [employee.id, program.rows[0]!.id, agencyProgram.rows[0]!.id],
     );
 
@@ -142,6 +144,11 @@ suite("direct-pay operations (real PostgreSQL)", () => {
         WHERE transaction_fingerprint = 'direct-pay-check-explicit-agency'`,
     );
     expect(explicitAgency.rows[0]?.payroll_check_id).toBeNull();
+    const otherNumber = await pool.query<{ payroll_check_id: string | null }>(
+      `SELECT payroll_check_id FROM payroll_transactions
+        WHERE transaction_fingerprint = 'direct-pay-check-same-period-other-number'`,
+    );
+    expect(otherNumber.rows[0]?.payroll_check_id).toBeNull();
 
     const movedAway = unwrap(await savePayrollCheck(pool, {
       id: check.id,

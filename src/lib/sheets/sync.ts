@@ -574,7 +574,8 @@ export async function runSheetSync(
             first_seen_run_id, last_seen_run_id, last_seen_at)
          VALUES ($1,$2,$3,$4,$5::jsonb,'conflict',$6,$6, now())
          ON CONFLICT (payroll_transaction_id) DO UPDATE
-           SET state = 'conflict', last_seen_run_id = $6, last_seen_at = now(), updated_at = now()`,
+           SET source_row_number = EXCLUDED.source_row_number,
+               state = 'conflict', last_seen_run_id = $6, last_seen_at = now(), updated_at = now()`,
         [target.naturalKey, target.fingerprint, staged.sourceRowNumber, target.id, JSON.stringify(target.identity), runId],
       );
       changedCount++;

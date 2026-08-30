@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Fragment, useDeferredValue, useMemo, useState } from "react";
+import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { ArrowDownLeft, ArrowUpRight, BadgeCheck, CreditCard, PiggyBank } from "lucide-react";
 import { FilterBar, HeaderFilter } from "@/components/data-grid/filter-bar";
 import SortMenu from "@/components/data-grid/sort-menu";
@@ -10,6 +10,14 @@ import { Toolbar } from "@/components/data-grid/toolbar";
 import { isNumericKind, type ColumnDef, type FilterState } from "@/components/data-grid/types";
 import { useGrid, type UseGridResult } from "@/components/data-grid/use-grid";
 import { Modal } from "@/components/manage/client";
+import {
+  settlementCheckIssueAction,
+  settlementFocusFromParam,
+  settlementMissingDealsState,
+  settlementQueueFilters,
+  settlementQueueFromParam,
+  type SettlementQueueFilter,
+} from "@/components/settlements/deep-links";
 import { EmptyState, PaceBar } from "@/components/ui";
 import type {
   DirectCheckIssue,
@@ -20,7 +28,7 @@ import type {
 import { dec, formatMoney, type Decimal } from "@/lib/money";
 
 type View = "items" | "history";
-type QueueFilter = "all" | "open" | "payable" | "receivable" | "reserve" | "credit" | "completed";
+type QueueFilter = SettlementQueueFilter;
 type Notice = { tone: "success" | "error"; message: string };
 
 interface RefreshResult {
@@ -52,10 +60,6 @@ const STATE_STYLES: Record<SettlementRow["state"], string> = {
   settled: "bg-[var(--color-success-soft)] text-[var(--color-success)]",
   credit: "bg-[var(--color-primary-tint)] text-[var(--color-primary)]",
   void: "bg-[var(--color-surface-strong)] text-[var(--color-ink-faint)]",
-};
-
-const SETTLEMENT_INITIAL_FILTERS: FilterState = {
-  state: { selected: ["open", "partial", "credit"] },
 };
 
 const SETTLEMENT_INITIAL_HIDDEN = ["personType", "personId", "transactions", "entries"];
@@ -443,6 +447,31 @@ function SettlementCell({ row, column }: { row: SettlementRow; column: ColumnDef
   }
 }
 
+function useDeepLinkTarget<Element extends HTMLElement>(active: boolean) {
+  const ref = useRef<Element>(null);
+
+  useEffect(() => {
+    if (!active || !ref.current) return;
+    const target = ref.current;
+    const frame = window.requestAnimationFrame(() => {
+      target.focus({ preventScroll: true });
+      target.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "center",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [active]);
+
+  return ref;
+}
+
+function deepLinkTargetClass(active: boolean): string {
+  return active
+    ? "scroll-mt-24 outline outline-2 outline-offset-2 outline-[var(--color-primary)]"
+    : "scroll-mt-24";
+}
+
 function SummaryBand({
   data,
   active,
@@ -473,7 +502,7 @@ function SummaryBand({
   ];
 
   return (
-    <section aria-label="Payment work queues" className="grid border-y border-[var(--color-rule)] grid-cols-2 md:grid-cols-5">
+    <section id="settlement-queues" aria-label="Payment work queues" className="grid scroll-mt-24 border-y border-[var(--color-rule)] grid-cols-2 md:grid-cols-5">
       {metrics.map((metric) => (
         <button
           key={metric.label}
@@ -491,10 +520,58 @@ function SummaryBand({
   );
 }
 
-function MissingDeals({ data }: { data: SettlementDashboardData }) {
-  if (data.missingDeals.length === 0) return null;
+function MissingDeals({
+  data,
+  canSeeEmployeeDeals,
+  focused,
+}: {
+  data: SettlementDashboardData;
+  canSeeEmployeeDeals: boolean;
+  focused: boolean;
+}) {
+  const targetRef = useDeepLinkTarget<HTMLElement>(focused);
+  const state = settlementMissingDealsState({
+    focused,
+    canSeeEmployeeDeals,
+    missingDealCount: data.missingDeals.length,
+  });
+  if (state === "hidden") return null;
+  if (state === "permission-limited") {
+    return (
+      <section
+        id="settlement-missing-deals"
+        ref={targetRef}
+        tabIndex={-1}
+        className={`${deepLinkTargetClass(true)} border-l-4 border-[var(--color-info)] bg-[var(--color-info-soft)] px-4 py-3`}
+        aria-label="Employee deal access limited"
+      >
+        <h2 className="text-sm font-semibold text-[var(--color-info)]">Employee deal status is limited</h2>
+        <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">This account cannot verify whether employee deal rules are complete. Ask an administrator with employee-deal access to review them.</p>
+      </section>
+    );
+  }
+  if (state === "clear") {
+    return (
+      <section
+        id="settlement-missing-deals"
+        ref={targetRef}
+        tabIndex={-1}
+        className={`${deepLinkTargetClass(true)} border-l-4 border-[var(--color-success)] bg-[var(--color-success-soft)] px-4 py-3`}
+        aria-label="Employees missing a deal"
+      >
+        <h2 className="text-sm font-semibold text-[var(--color-success)]">All employee deals are ready</h2>
+        <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">There are no missing deal rules to fix.</p>
+      </section>
+    );
+  }
   return (
-    <section className="border-l-4 border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-4 py-3" aria-label="Employees missing a deal">
+    <section
+      id="settlement-missing-deals"
+      ref={targetRef}
+      tabIndex={focused ? -1 : undefined}
+      className={`${deepLinkTargetClass(focused)} border-l-4 border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-4 py-3`}
+      aria-label="Employees missing a deal"
+    >
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h2 className="text-sm font-semibold text-[var(--color-warn)]">
           {data.missingDeals.length} employee{data.missingDeals.length === 1 ? " needs" : "s need"} a deal
@@ -503,11 +580,20 @@ function MissingDeals({ data }: { data: SettlementDashboardData }) {
       </div>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
         {data.missingDeals.map((employee) => (
-          <Link key={employee.employeeId} href={`/employees/${employee.employeeId}`} className="font-medium text-[var(--color-primary)] hover:underline">
-            {employee.employeeName} <span className="font-normal text-[var(--color-ink-faint)]">({employee.transactionCount})</span>
-          </Link>
+          canSeeEmployeeDeals ? (
+            <Link key={employee.employeeId} href={`/employees/${employee.employeeId}?view=deal`} className="font-medium text-[var(--color-primary)] hover:underline">
+              Set deal for {employee.employeeName} <span className="font-normal text-[var(--color-ink-faint)]">({employee.transactionCount})</span>
+            </Link>
+          ) : (
+            <span key={employee.employeeId} className="font-medium text-[var(--color-ink)]">
+              {employee.employeeName} <span className="font-normal text-[var(--color-ink-faint)]">({employee.transactionCount})</span>
+            </span>
+          )
         ))}
       </div>
+      {!canSeeEmployeeDeals ? (
+        <p className="mt-2 text-xs text-[var(--color-ink-soft)]">An administrator with employee-deal access must set these rules.</p>
+      ) : null}
     </section>
   );
 }
@@ -530,39 +616,70 @@ function checkIssueReference(issue: DirectCheckIssue): string {
 const CHECK_ISSUE_COPY: Record<DirectCheckIssue["issue"], { label: string; guidance: string }> = {
   missing_check_identity: {
     label: "Missing check identity",
-    guidance: "Add a check number, check date, or pay period so this payment can be identified once.",
+    guidance: "Record the verified check date or pay period so this payment has one canonical identity.",
   },
   missing_net: {
-    label: "Missing net",
-    guidance: "Enter the whole-check net pay.",
+    label: "Verified check needed",
+    guidance: "Record the verified whole-check net; imported row values alone are not used for settlement calculations.",
   },
   conflicting_net: {
     label: "Conflicting net",
-    guidance: "Use one whole-check net value across these transactions.",
+    guidance: "Record the verified whole-check net once; it becomes canonical for linked rows.",
   },
   conflicting_check_date: {
     label: "Conflicting dates",
-    guidance: "Use one check date for this check number.",
+    guidance: "Record the verified check identity to resolve conflicting transaction dates.",
   },
   missing_base: {
     label: "Missing base",
-    guidance: "Enter the employee base amount before calculating an agency-routed payout.",
+    guidance: "Inspect the source rows and correct the employee base or rate before calculating the payout.",
   },
   unknown_recipient: {
     label: "Recipient needed",
-    guidance: "Choose whether the employee or the agency received this payment.",
+    guidance: "Inspect the source rows and choose whether the employee or agency received the payment.",
   },
 };
 
-function CheckIssues({ data }: { data: SettlementDashboardData }) {
-  if (data.checkIssues.length === 0) return null;
+function CheckIssues({
+  data,
+  canManagePayrollChecks,
+  canSeeTransactions,
+  focused,
+}: {
+  data: SettlementDashboardData;
+  canManagePayrollChecks: boolean;
+  canSeeTransactions: boolean;
+  focused: boolean;
+}) {
+  const targetRef = useDeepLinkTarget<HTMLElement>(focused);
+  if (data.checkIssues.length === 0) {
+    if (!focused) return null;
+    return (
+      <section
+        id="settlement-check-issues"
+        ref={targetRef}
+        tabIndex={-1}
+        className={`${deepLinkTargetClass(true)} border-l-4 border-[var(--color-success)] bg-[var(--color-success-soft)] px-4 py-3`}
+        aria-labelledby="direct-check-issues-title"
+      >
+        <h2 id="direct-check-issues-title" className="text-sm font-semibold text-[var(--color-success)]">All payroll sources are ready</h2>
+        <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">There are no check-data problems to fix.</p>
+      </section>
+    );
+  }
 
   const counts = new Map<DirectCheckIssue["issue"], number>();
   for (const issue of data.checkIssues) counts.set(issue.issue, (counts.get(issue.issue) ?? 0) + 1);
 
   return (
-    <section aria-labelledby="direct-check-issues-title">
-      <details className="group border-l-4 border-[var(--color-warn)] bg-[var(--color-warn-soft)]">
+    <section
+      id="settlement-check-issues"
+      ref={targetRef}
+      tabIndex={focused ? -1 : undefined}
+      className={deepLinkTargetClass(focused)}
+      aria-labelledby="direct-check-issues-title"
+    >
+      <details open={focused || undefined} className="group border-l-4 border-[var(--color-warn)] bg-[var(--color-warn-soft)]">
         <summary className="cursor-pointer px-4 py-3 marker:text-[var(--color-warn)]">
           <span className="ml-1 inline-flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <span id="direct-check-issues-title" className="text-sm font-semibold text-[var(--color-warn)]">
@@ -576,15 +693,19 @@ function CheckIssues({ data }: { data: SettlementDashboardData }) {
 
         <div className="border-t border-[var(--color-rule)] px-4 pb-3 pt-2">
           <p id="direct-check-issues-help" className="text-xs leading-5 text-[var(--color-ink-soft)]">
-            Direct give-backs use one whole-check net; agency-routed payouts use the recorded base amount. Correct these source fields, then refresh payments.
+            Direct give-backs use a verified whole-check record; other issues stay tied to their source rows. Resolve the item, then refresh payments.
           </p>
           <ul aria-describedby="direct-check-issues-help" className="mt-2 divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)]">
             {data.checkIssues.map((issue) => {
               const copy = CHECK_ISSUE_COPY[issue.issue];
+              const action = settlementCheckIssueAction(issue, {
+                canRecordPayrollCheck: canManagePayrollChecks,
+                canSeeTransactions,
+              });
               return (
                 <li key={`${issue.sourceId}:${issue.issue}`} className="grid gap-1 py-2 text-sm sm:grid-cols-[minmax(12rem,1fr)_minmax(16rem,1.5fr)] sm:gap-4">
                   <div className="min-w-0">
-                    <Link href={`/employees/${issue.employeeId}`} className="font-medium text-[var(--color-primary)] hover:underline">
+                    <Link href={`/employees/${issue.employeeId}?view=checks`} className="font-medium text-[var(--color-primary)] hover:underline">
                       {issue.employeeName}
                     </Link>
                     <p className="truncate text-xs text-[var(--color-ink-faint)]" title={checkIssueReference(issue)}>
@@ -592,18 +713,29 @@ function CheckIssues({ data }: { data: SettlementDashboardData }) {
                       {issue.transactionCount > 1 ? ` | ${issue.transactionCount} transactions` : ""}
                     </p>
                   </div>
-                  <div className="flex min-w-0 items-start gap-2">
+                  <div className="flex min-w-0 flex-wrap items-start gap-2">
                     <span className="shrink-0 rounded px-1.5 py-0.5 text-xs font-semibold text-[var(--color-warn)] ring-1 ring-inset ring-[var(--color-warn)]">
                       {copy.label}
                     </span>
-                    <span className="text-xs leading-5 text-[var(--color-ink-soft)]">
+                    <span className="min-w-48 flex-1 text-xs leading-5 text-[var(--color-ink-soft)]">
                       {copy.guidance}
                     </span>
+                    {action ? (
+                      <Link
+                        href={action.href}
+                        className="shrink-0 text-xs font-semibold leading-5 text-[var(--color-primary)] hover:underline"
+                      >
+                        {action.label}
+                      </Link>
+                    ) : null}
                   </div>
                 </li>
               );
             })}
           </ul>
+          {!canManagePayrollChecks && !canSeeTransactions ? (
+            <p className="mt-2 text-xs text-[var(--color-ink-soft)]">An administrator with payroll-check or billed-activity access must resolve these items.</p>
+          ) : null}
         </div>
       </details>
     </section>
@@ -1205,27 +1337,43 @@ function ReverseModal({ event, onClose, onDone }: { event: SettlementEventRow; o
 export default function SettlementDashboard({
   data,
   canManage,
+  canManagePayrollChecks,
+  canSeeEmployeeDeals,
+  canSeeTransactions,
   initialPersonName,
   initialPersonId,
   initialPersonType,
+  initialQueueParam,
+  initialFocusParam,
 }: {
   data: SettlementDashboardData;
   canManage: boolean;
+  canManagePayrollChecks: boolean;
+  canSeeEmployeeDeals: boolean;
+  canSeeTransactions: boolean;
   initialPersonName?: string | null;
   initialPersonId?: string | null;
   initialPersonType?: SettlementRow["personType"] | null;
+  initialQueueParam?: string | null;
+  initialFocusParam?: string | null;
 }) {
   const router = useRouter();
+  const requestedQueue = settlementQueueFromParam(initialQueueParam);
+  const requestedFocus = settlementFocusFromParam(initialFocusParam);
+  const defaultQueue: QueueFilter = requestedQueue ?? (initialPersonId && initialPersonType ? "all" : "open");
+  const refreshTargetRef = useDeepLinkTarget<HTMLDivElement>(requestedFocus === "refresh");
   const initialFilters = useMemo<FilterState>(
     () => {
-      if (!initialPersonId || !initialPersonType) return SETTLEMENT_INITIAL_FILTERS;
       return {
+        ...settlementQueueFilters(defaultQueue),
         ...(initialPersonName ? { person: { selected: [initialPersonName] } } : {}),
-        personId: { selected: [initialPersonId] },
-        personType: { selected: [initialPersonType] },
+        ...(initialPersonId && initialPersonType ? {
+          personId: { selected: [initialPersonId] },
+          personType: { selected: [initialPersonType] },
+        } : {}),
       };
     },
-    [initialPersonId, initialPersonName, initialPersonType],
+    [defaultQueue, initialPersonId, initialPersonName, initialPersonType],
   );
   const grid = useGrid<SettlementRow>({
     rows: data.rows,
@@ -1238,7 +1386,7 @@ export default function SettlementDashboard({
     serializeHidden: true,
   });
   const [view, setView] = useState<View>("items");
-  const [queue, setQueue] = useState<QueueFilter>("open");
+  const [queue, setQueue] = useState<QueueFilter>(defaultQueue);
   const [historySearch, setHistorySearch] = useState("");
   const deferredHistorySearch = useDeferredValue(historySearch);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -1315,22 +1463,24 @@ export default function SettlementDashboard({
       grid.clearFilters();
       return;
     }
-    grid.setFilter("direction", null);
-    if (next === "open") grid.setFilter("state", { selected: ["open", "partial", "credit"] });
-    if (next === "payable") {
-      grid.setFilter("direction", { selected: ["payable"] });
-      grid.setFilter("state", { selected: ["open", "partial"] });
-    }
-    if (next === "receivable") {
-      grid.setFilter("direction", { selected: ["receivable"] });
-      grid.setFilter("state", { selected: ["open", "partial"] });
-    }
-    if (next === "reserve") {
-      grid.setFilter("direction", { selected: ["reserve"] });
-      grid.setFilter("state", { selected: ["open", "partial"] });
-    }
-    if (next === "credit") grid.setFilter("state", { selected: ["credit"] });
-    if (next === "completed") grid.setFilter("state", { selected: ["settled"] });
+    const filters = settlementQueueFilters(next);
+    grid.setFilter("direction", filters.direction ?? null);
+    grid.setFilter("state", filters.state ?? null);
+  };
+
+  const moveTabFocus = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const current = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    if (current < 0 || tabs.length === 0) return;
+    event.preventDefault();
+    const next = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? tabs.length - 1
+        : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[next]?.focus();
+    tabs[next]?.click();
   };
 
   const selectionAction = useMemo(() => {
@@ -1390,8 +1540,21 @@ export default function SettlementDashboard({
   return (
     <div className="space-y-4">
       <SummaryBand data={data} active={view === "items" ? queue : null} onSelect={applyQueue} />
-      {canManage ? <MissingDeals data={data} /> : null}
-      {canManage ? <CheckIssues data={data} /> : null}
+      {canManage ? (
+        <MissingDeals
+          data={data}
+          canSeeEmployeeDeals={canSeeEmployeeDeals}
+          focused={requestedFocus === "missing-deals"}
+        />
+      ) : null}
+      {canManage ? (
+        <CheckIssues
+          data={data}
+          canManagePayrollChecks={canManagePayrollChecks}
+          canSeeTransactions={canSeeTransactions}
+          focused={requestedFocus === "check-issues"}
+        />
+      ) : null}
 
       {data.freshness.dirty ? (
         <div role="alert" className="rounded border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-3 py-2 text-sm text-[var(--color-danger)]">
@@ -1408,20 +1571,33 @@ export default function SettlementDashboard({
       ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-rule-strong)]">
-        <div role="tablist" aria-label="Payment views" className="flex gap-1">
-          <button id="settlement-items-tab" type="button" role="tab" aria-selected={view === "items" && queue !== "completed"} aria-controls="settlement-items-panel" onClick={() => applyQueue(queue === "completed" ? "open" : queue)} className={`border-b-2 px-3 py-2 text-sm font-medium ${view === "items" && queue !== "completed" ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}>
+        <div role="tablist" aria-label="Payment views" className="flex gap-1" onKeyDown={moveTabFocus}>
+          <button id="settlement-items-tab" type="button" role="tab" tabIndex={view === "items" && queue !== "completed" ? 0 : -1} aria-selected={view === "items" && queue !== "completed"} aria-controls="settlement-items-panel" onClick={() => applyQueue(queue === "completed" ? "open" : queue)} className={`border-b-2 px-3 py-2 text-sm font-medium ${view === "items" && queue !== "completed" ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}>
             Items <span className="tnum text-xs text-[var(--color-ink-faint)]">{grid.filtered.length}</span>
           </button>
-          <button id="settlement-history-tab" type="button" role="tab" aria-selected={view === "history"} aria-controls="settlement-history-panel" onClick={() => setView("history")} className={`border-b-2 px-3 py-2 text-sm font-medium ${view === "history" ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}>
+          <button id="settlement-history-tab" type="button" role="tab" tabIndex={view === "history" ? 0 : -1} aria-selected={view === "history"} aria-controls="settlement-history-panel" onClick={() => setView("history")} className={`border-b-2 px-3 py-2 text-sm font-medium ${view === "history" ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}>
             History <span className="tnum text-xs text-[var(--color-ink-faint)]">{filteredEvents.length}</span>
           </button>
-          <button id="settlement-completed-tab" type="button" role="tab" aria-selected={view === "items" && queue === "completed"} aria-controls="settlement-items-panel" onClick={() => applyQueue("completed")} className={`border-b-2 px-3 py-2 text-sm font-medium ${view === "items" && queue === "completed" ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}>
+          <button id="settlement-completed-tab" type="button" role="tab" tabIndex={view === "items" && queue === "completed" ? 0 : -1} aria-selected={view === "items" && queue === "completed"} aria-controls="settlement-items-panel" onClick={() => applyQueue("completed")} className={`border-b-2 px-3 py-2 text-sm font-medium ${view === "items" && queue === "completed" ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-transparent text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"}`}>
             Completed <span className="tnum text-xs text-[var(--color-ink-faint)]">{data.summary.settledCount}</span>
           </button>
         </div>
-        {canManage ? <button type="button" disabled={refreshing} onClick={refresh} className="btn btn-sm btn-secondary mb-1">
-          {refreshing ? "Refreshing..." : "Refresh items"}
-        </button> : null}
+        {canManage || requestedFocus === "refresh" ? (
+          <div
+            id="settlement-refresh"
+            ref={refreshTargetRef}
+            tabIndex={requestedFocus === "refresh" ? -1 : undefined}
+            className={`${deepLinkTargetClass(requestedFocus === "refresh")} mb-1`}
+          >
+            {canManage ? (
+              <button type="button" disabled={refreshing} onClick={refresh} className="btn btn-sm btn-secondary">
+                {refreshing ? "Refreshing..." : "Refresh items"}
+              </button>
+            ) : (
+              <p className="max-w-sm text-xs text-[var(--color-ink-soft)]">An administrator with Money operations access must refresh these balances.</p>
+            )}
+          </div>
+        ) : null}
       </div>
 
       <section id={view === "items" ? "settlement-items-panel" : "settlement-history-panel"} role="tabpanel" aria-labelledby={view === "items" ? queue === "completed" ? "settlement-completed-tab" : "settlement-items-tab" : "settlement-history-tab"} className="space-y-3">
@@ -1433,6 +1609,11 @@ export default function SettlementDashboard({
               exportEndpoint="/api/grid/export"
               exportTitle="Payment obligations"
               exportFilename="settlements"
+              hasExternalFilters={queue !== "all"}
+              onResetFilters={() => {
+                setQueue("all");
+                setSelected(new Set());
+              }}
               extraActions={canManage ? (
                 <>
                   {selectedRows.length > 0 ? <span className="tnum text-xs font-medium text-[var(--color-primary)]">{selectedRows.length} selected</span> : null}

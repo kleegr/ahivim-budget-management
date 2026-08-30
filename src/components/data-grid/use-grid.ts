@@ -211,7 +211,8 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
     [rows, columns, filters, search, searchKeys],
   );
   const sorted = useMemo(() => sortRows(filtered, columns, sort), [filtered, columns, sort]);
-  const totals = useMemo(() => (o.computeTotals ? o.computeTotals(filtered) : null), [o, filtered]);
+  const computeTotals = o.computeTotals;
+  const totals = useMemo(() => (computeTotals ? computeTotals(filtered) : null), [computeTotals, filtered]);
 
   const chips = useMemo(() => filterChipsFor(columns, filters), [columns, filters]);
   const activeFilterColumns = useMemo(

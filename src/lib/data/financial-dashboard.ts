@@ -205,8 +205,10 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
   // attributes cleanly to each individual.
   const whExpr =
     `CASE WHEN effective_payment_recipient(t.payment_recipient, p.payment_recipient) = 'employee'
-            AND ct.cg > 0 AND ct.cn IS NOT NULL AND ct.cg > ct.cn
-          THEN (ct.cg - ct.cn) * COALESCE(t.imported_amount, 0) / ct.cg
+            AND ct.allocation_gross > 0 AND ct.check_net IS NOT NULL
+            AND ct.check_gross > ct.check_net
+          THEN (ct.check_gross - ct.check_net)
+               * COALESCE(t.imported_amount, 0) / ct.allocation_gross
           ELSE 0 END`;
 
   const actualByInd = new Map<
@@ -226,17 +228,49 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
       `WITH win AS (
          SELECT * FROM unnest($1::uuid[], $2::date[], $3::date[]) AS w(individual_id, start_date, end_date)
        ),
-       check_tot AS (
-         SELECT check_row.check_number,
-                sum(COALESCE(check_row.imported_amount, 0)) AS cg,
-                max(check_row.total_net_pay)                AS cn
+       check_facts AS (
+         SELECT check_row.id,
+                CASE
+                  WHEN verified_check.id IS NOT NULL
+                    THEN concat('verified:', verified_check.id::text)
+                  ELSE concat(
+                    'source:', check_row.employee_id::text, ':',
+                    COALESCE(NULLIF(btrim(check_row.check_number), ''), 'no-number'), ':',
+                    COALESCE(check_row.check_date::text, 'no-date'), ':',
+                    COALESCE(check_row.period_begin::text, 'no-period-begin'), ':',
+                    COALESCE(check_row.period_end::text, 'no-period-end')
+                  )
+                END AS check_key,
+                COALESCE(check_row.imported_amount, 0) AS row_gross,
+                verified_check.actual_gross AS verified_gross,
+                CASE WHEN verified_check.id IS NOT NULL
+                  THEN verified_check.actual_net
+                  ELSE check_row.total_net_pay
+                END AS check_net
            FROM payroll_transactions check_row
            LEFT JOIN programs check_program ON check_program.id = check_row.program_id
-          WHERE check_row.check_number IS NOT NULL
-            AND effective_payment_recipient(
+           LEFT JOIN employee_payroll_checks verified_check
+             ON verified_check.id = check_row.payroll_check_id
+            AND verified_check.employee_id = check_row.employee_id
+            AND verified_check.verification_status = 'verified'
+          WHERE effective_payment_recipient(
                   check_row.payment_recipient, check_program.payment_recipient
                 ) = 'employee'
-          GROUP BY check_row.check_number
+            AND (
+              verified_check.id IS NOT NULL
+              OR NULLIF(btrim(check_row.check_number), '') IS NOT NULL
+              OR check_row.check_date IS NOT NULL
+              OR check_row.period_begin IS NOT NULL
+              OR check_row.period_end IS NOT NULL
+            )
+       ),
+       check_tot AS (
+         SELECT check_key,
+                sum(row_gross) AS allocation_gross,
+                COALESCE(max(verified_gross), sum(row_gross)) AS check_gross,
+                CASE WHEN count(DISTINCT check_net) = 1 THEN max(check_net) END AS check_net
+           FROM check_facts
+          GROUP BY check_key
        )
        SELECT t.individual_id,
               COALESCE(sum(t.imported_amount), 0)::text                          AS gross_all,
@@ -254,7 +288,8 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
          FROM payroll_transactions t
          LEFT JOIN programs p ON p.id = t.program_id
          LEFT JOIN win w ON w.individual_id = t.individual_id
-         LEFT JOIN check_tot ct ON ct.check_number = t.check_number
+         LEFT JOIN check_facts cf ON cf.id = t.id
+         LEFT JOIN check_tot ct ON ct.check_key = cf.check_key
         WHERE t.individual_id = ANY($4::uuid[])
         GROUP BY t.individual_id`,
       [winIds, winStarts, winEnds, ids],

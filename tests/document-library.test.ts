@@ -55,7 +55,11 @@ describe("document persistence boundary", () => {
   });
 
   it("accepts only the actor-bound intent and exact reserved pathname", async () => {
-    const query = vi.fn(async (_sql: string, _params?: readonly unknown[]) => ({ rows: [intentRow()] }));
+    const query = vi.fn(async (sql: string, params?: readonly unknown[]) => {
+      void sql;
+      void params;
+      return { rows: [intentRow()] };
+    });
     const pool = { query } as unknown as PgLikePool;
     const payload = JSON.stringify({ intentId: INTENT });
 
@@ -86,7 +90,8 @@ describe("document persistence boundary", () => {
   });
 
   it("completes a matching callback once and records provider metadata", async () => {
-    const query = vi.fn(async (sql: string, _params?: readonly unknown[]) => {
+    const query = vi.fn(async (sql: string, params?: readonly unknown[]) => {
+      void params;
       if (sql.includes("UPDATE document_upload_intents")) return { rows: [], rowCount: 1 };
       const completed = query.mock.calls.some(([statement]) => String(statement).includes("UPDATE document_upload_intents"));
       return { rows: [intentRow(completed ? "uploaded" : "pending")], rowCount: 1 };
@@ -128,7 +133,8 @@ describe("document persistence boundary", () => {
 
   it("reconciles the reserved blob when the provider callback is delayed", async () => {
     let status: "pending" | "uploaded" = "pending";
-    const query = vi.fn(async (sql: string, _params?: readonly unknown[]) => {
+    const query = vi.fn(async (sql: string, params?: readonly unknown[]) => {
+      void params;
       if (sql.includes("UPDATE document_upload_intents")) {
         status = "uploaded";
         return { rows: [], rowCount: 1 };

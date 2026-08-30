@@ -94,11 +94,13 @@ export default async function EmployeeDetailPage({
   if (!isUuid(id)) notFound();
 
   const result = await withDb(async (pool) => {
-    const employee = await getEmployee(pool, id);
+    const [employee, scope] = await Promise.all([
+      getEmployee(pool, id),
+      resolveAccessScope(pool, user),
+    ]);
     if (!employee) return null;
     // A scoped user may only open an employee they have access to; and everything
     // shown about that employee is limited to the individuals they may see.
-    const scope = await resolveAccessScope(pool, user);
     if (!canViewEmployee(scope, id)) return null;
     const planningOnly = isPlanningOnlyAccess(scope);
     const directAccess = hasDirectEmployeeAccess(scope, id);

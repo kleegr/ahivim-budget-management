@@ -86,6 +86,7 @@ export interface MissingEmployeeDeal {
 
 export interface DirectCheckIssue {
   sourceId: string;
+  transactionIds: string[];
   employeeId: string;
   employeeName: string;
   checkNumber: string | null;
@@ -481,6 +482,7 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
     ),
     pool.query<{
       source_id: string;
+      transaction_ids: string[];
       employee_id: string;
       employee_name: string;
       check_number: string | null;
@@ -490,48 +492,70 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
       transaction_count: string;
       issue: DirectCheckIssue["issue"];
     }>(
-      `WITH direct_sources AS (
-         SELECT t.*,
+      `WITH direct_facts AS (
+         SELECT t.id, t.employee_id,
                 COALESCE(e.display_name, e.normalized_name) AS employee_name,
-                CASE
-                  WHEN t.check_number IS NOT NULL AND btrim(t.check_number) <> ''
-                    THEN concat(
-                      t.employee_id::text, ':check:', btrim(t.check_number), ':',
-                      CASE
-                        WHEN t.check_date IS NOT NULL THEN concat('date:', t.check_date::text)
-                        WHEN t.period_begin IS NOT NULL OR t.period_end IS NOT NULL
-                          THEN concat('period:', COALESCE(t.period_begin::text, ''), ':', COALESCE(t.period_end::text, ''))
-                        ELSE 'undated'
-                      END
-                    )
-                  ELSE concat(
-                    t.employee_id::text, ':',
-                    CASE
-                      WHEN t.period_begin IS NOT NULL OR t.period_end IS NOT NULL
-                        THEN concat('period:', COALESCE(t.period_begin::text, ''), ':', COALESCE(t.period_end::text, ''))
-                      ELSE concat('date:', t.check_date::text)
-                    END
-                  )
-                END AS source_id
+                pc.id AS verified_payroll_check_id,
+                CASE WHEN pc.id IS NOT NULL
+                  THEN NULLIF(btrim(pc.check_number), '')
+                  ELSE NULLIF(btrim(t.check_number), '')
+                END AS check_number,
+                CASE WHEN pc.id IS NOT NULL THEN pc.check_date ELSE t.check_date END AS check_date,
+                CASE WHEN pc.id IS NOT NULL THEN pc.period_begin ELSE t.period_begin END AS period_begin,
+                CASE WHEN pc.id IS NOT NULL THEN pc.period_end ELSE t.period_end END AS period_end,
+                CASE WHEN pc.id IS NOT NULL THEN pc.actual_net ELSE t.total_net_pay END AS total_net_pay
            FROM payroll_transactions t
            JOIN employees e ON e.id = t.employee_id
            LEFT JOIN programs p ON p.id = t.program_id
+           LEFT JOIN employee_payroll_checks pc
+             ON pc.id = t.payroll_check_id
+            AND pc.employee_id = t.employee_id
+            AND pc.verification_status = 'verified'
           WHERE t.employee_id IS NOT NULL
             AND effective_payment_recipient(
               t.payment_recipient,
               p.payment_recipient
             ) = 'employee'
             AND (
-              (t.check_number IS NOT NULL AND btrim(t.check_number) <> '')
+              pc.id IS NOT NULL
+              OR (t.check_number IS NOT NULL AND btrim(t.check_number) <> '')
               OR t.check_date IS NOT NULL OR t.period_begin IS NOT NULL OR t.period_end IS NOT NULL
             )
+       ), direct_sources AS (
+         SELECT direct_facts.*,
+                CASE
+                  WHEN verified_payroll_check_id IS NOT NULL
+                    THEN concat(employee_id::text, ':payroll-check:', verified_payroll_check_id::text)
+                  WHEN check_number IS NOT NULL
+                    THEN concat(
+                      employee_id::text, ':check:', check_number, ':',
+                      CASE
+                        WHEN check_date IS NOT NULL THEN concat('date:', check_date::text)
+                        WHEN period_begin IS NOT NULL OR period_end IS NOT NULL
+                          THEN concat('period:', COALESCE(period_begin::text, ''), ':', COALESCE(period_end::text, ''))
+                        ELSE 'undated'
+                      END
+                    )
+                  ELSE concat(
+                    employee_id::text, ':',
+                    CASE
+                      WHEN period_begin IS NOT NULL OR period_end IS NOT NULL
+                        THEN concat('period:', COALESCE(period_begin::text, ''), ':', COALESCE(period_end::text, ''))
+                      ELSE concat('date:', check_date::text)
+                    END
+                  )
+                END AS source_id
+           FROM direct_facts
        ), direct_checks AS (
-         SELECT source_id, employee_id, employee_name,
+         SELECT source_id, array_agg(id::text ORDER BY id) AS transaction_ids,
+                employee_id, employee_name,
                 NULLIF(btrim(check_number), '') AS check_number,
                 to_char(min(check_date), 'YYYY-MM-DD') AS check_date,
                 to_char(min(period_begin), 'YYYY-MM-DD') AS period_begin,
                 to_char(max(period_end), 'YYYY-MM-DD') AS period_end,
                 count(*)::text AS transaction_count,
+                count(*) AS row_count,
+                count(verified_payroll_check_id) AS verified_check_count,
                 count(total_net_pay) AS net_count,
                 count(DISTINCT total_net_pay) AS net_value_count,
                 count(DISTINCT check_date) AS check_date_count
@@ -539,33 +563,37 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
           GROUP BY source_id, employee_id, employee_name, NULLIF(btrim(check_number), '')
        ), ambiguous_numbered_checks AS (
          SELECT concat(employee_id::text, ':ambiguous-check:', NULLIF(btrim(check_number), '')) AS source_id,
+                array_agg(id::text ORDER BY id) AS transaction_ids,
                 employee_id, employee_name, NULLIF(btrim(check_number), '') AS check_number,
                 to_char(min(check_date), 'YYYY-MM-DD') AS check_date,
                 to_char(min(period_begin), 'YYYY-MM-DD') AS period_begin,
                 to_char(max(period_end), 'YYYY-MM-DD') AS period_end,
                 count(*)::text AS transaction_count
            FROM direct_sources
-          WHERE check_number IS NOT NULL AND btrim(check_number) <> ''
+          WHERE verified_payroll_check_id IS NULL
+            AND check_number IS NOT NULL AND btrim(check_number) <> ''
           GROUP BY employee_id, employee_name, NULLIF(btrim(check_number), '')
          HAVING count(DISTINCT check_date) > 1
             AND count(*) FILTER (WHERE check_date IS NULL) > 0
        )
-       SELECT source_id, employee_id, employee_name, check_number, check_date,
+       SELECT source_id, transaction_ids, employee_id, employee_name, check_number, check_date,
               period_begin, period_end, transaction_count,
               CASE
-                WHEN net_count = 0 THEN 'missing_net'
                 WHEN net_value_count > 1 THEN 'conflicting_net'
+                WHEN check_date_count > 1 THEN 'conflicting_check_date'
+                WHEN verified_check_count < row_count OR net_count = 0 THEN 'missing_net'
                 ELSE 'conflicting_check_date'
               END AS issue
          FROM direct_checks
-        WHERE net_count = 0 OR net_value_count > 1 OR check_date_count > 1
+        WHERE verified_check_count < row_count
+           OR net_count = 0 OR net_value_count > 1 OR check_date_count > 1
        UNION ALL
-       SELECT source_id, employee_id, employee_name, check_number, check_date,
+       SELECT source_id, transaction_ids, employee_id, employee_name, check_number, check_date,
               period_begin, period_end, transaction_count,
               'conflicting_check_date'::text AS issue
          FROM ambiguous_numbered_checks
        UNION ALL
-       SELECT t.id::text AS source_id, t.employee_id,
+       SELECT t.id::text AS source_id, ARRAY[t.id::text] AS transaction_ids, t.employee_id,
               COALESCE(e.display_name, e.normalized_name) AS employee_name,
               NULL::text AS check_number,
               to_char(t.check_date, 'YYYY-MM-DD') AS check_date,
@@ -576,15 +604,20 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
          FROM payroll_transactions t
          JOIN employees e ON e.id = t.employee_id
          LEFT JOIN programs p ON p.id = t.program_id
+         LEFT JOIN employee_payroll_checks pc
+           ON pc.id = t.payroll_check_id
+          AND pc.employee_id = t.employee_id
+          AND pc.verification_status = 'verified'
         WHERE t.employee_id IS NOT NULL
           AND effective_payment_recipient(
             t.payment_recipient,
             p.payment_recipient
           ) = 'employee'
+          AND pc.id IS NULL
           AND (t.check_number IS NULL OR btrim(t.check_number) = '')
           AND t.check_date IS NULL AND t.period_begin IS NULL AND t.period_end IS NULL
        UNION ALL
-       SELECT t.id::text AS source_id, t.employee_id,
+       SELECT t.id::text AS source_id, ARRAY[t.id::text] AS transaction_ids, t.employee_id,
               COALESCE(e.display_name, e.normalized_name) AS employee_name,
               t.check_number,
               to_char(t.check_date, 'YYYY-MM-DD') AS check_date,
@@ -603,7 +636,7 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
           AND COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
                        t.internal_rate_applied * t.imported_hours) IS NULL
        UNION ALL
-       SELECT t.id::text AS source_id, t.employee_id,
+       SELECT t.id::text AS source_id, ARRAY[t.id::text] AS transaction_ids, t.employee_id,
               COALESCE(e.display_name, e.normalized_name) AS employee_name,
               t.check_number,
               to_char(t.check_date, 'YYYY-MM-DD') AS check_date,
@@ -708,6 +741,7 @@ export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessSco
     .filter((row) => !scope || canViewSettlementPerson(scope, "employee", row.employee_id))
     .map((row) => ({
       sourceId: row.source_id,
+      transactionIds: row.transaction_ids,
       employeeId: row.employee_id,
       employeeName: row.employee_name,
       checkNumber: row.check_number,

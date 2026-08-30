@@ -45,13 +45,16 @@ export default async function ReconciliationPage({
 
   const filter = { from, to, programId: programId || undefined };
 
-  const result = await withDb(async (pool) => ({
-    summary: await reconciliationSummary(pool, filter),
-    scheduled: await listScheduledForReconcile(pool, filter, onlyUnmatched),
-    billed: await listBilledNotScheduled(pool, filter),
-    detail: await reconciliationDetail(pool, filter),
-    programs: await listPrograms(pool),
-  }));
+  const result = await withDb(async (pool) => {
+    const [summary, scheduled, billed, detail, programs] = await Promise.all([
+      reconciliationSummary(pool, filter),
+      listScheduledForReconcile(pool, filter, onlyUnmatched),
+      listBilledNotScheduled(pool, filter),
+      reconciliationDetail(pool, filter),
+      listPrograms(pool),
+    ]);
+    return { summary, scheduled, billed, detail, programs };
+  });
 
   return (
     <>

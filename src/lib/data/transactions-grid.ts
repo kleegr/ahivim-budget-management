@@ -54,20 +54,32 @@ export interface GridTransaction {
   paidNote: string | null; // optional free note kept with the paid flag
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export async function listTransactionsForGrid(
   pool: PgLikePool,
   scope?: AccessScope,
-  opts?: { employeeId?: string },
+  opts?: { employeeId?: string; transactionId?: string; transactionIds?: string[] },
 ): Promise<GridTransaction[]> {
+  const requestedIds = [...new Set([
+    ...(opts?.transactionId ? [opts.transactionId] : []),
+    ...(opts?.transactionIds ?? []),
+  ])];
+  if (requestedIds.length > 200 || requestedIds.some((id) => !UUID_PATTERN.test(id))) return [];
   // Ledger access follows direct grants, not the wider connected-navigation sets.
   const params: unknown[] = [];
   const scopeClause = scope
     ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
     : "";
   let employeeClause = "";
-  if (opts?.employeeId && /^[0-9a-f-]{36}$/i.test(opts.employeeId)) {
+  if (opts?.employeeId && UUID_PATTERN.test(opts.employeeId)) {
     params.push(opts.employeeId);
     employeeClause = ` AND t.employee_id = $${params.length}`;
+  }
+  let transactionClause = "";
+  if (requestedIds.length > 0) {
+    params.push(requestedIds);
+    transactionClause = ` AND t.id = ANY($${params.length}::uuid[])`;
   }
   const { rows } = await pool.query<{
     id: string;
@@ -137,7 +149,7 @@ export async function listTransactionsForGrid(
     LEFT JOIN individuals i ON i.id = t.individual_id
     LEFT JOIN employees   e ON e.id = t.employee_id
     LEFT JOIN programs    p ON p.id = t.program_id
-    WHERE TRUE${scopeClause}${employeeClause}
+    WHERE TRUE${scopeClause}${employeeClause}${transactionClause}
     ORDER BY t.check_date DESC NULLS LAST, t.check_number, t.source_row_number NULLS LAST
   `, params);
 

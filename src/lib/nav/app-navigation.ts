@@ -351,6 +351,10 @@ export function pathMatches(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
+export function shouldTrackNavigation(pathname: string, href: string): boolean {
+  return href !== pathname;
+}
+
 export function workspaceIsActive(pathname: string, workspace: NavigationWorkspace): boolean {
   return workspace.activePrefixes.some((prefix) => pathMatches(pathname, prefix));
 }

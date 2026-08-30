@@ -22,8 +22,11 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
   const { individualId } = await searchParams;
 
   const result = await withDb(async (pool) => {
-    const strategies = await listStrategies(pool, { withAnalytics: true });
-    const individuals = (await listIndividualsManaged(pool, { status: "active" })).map((i) => ({
+    const [strategies, managedIndividuals] = await Promise.all([
+      listStrategies(pool, { withAnalytics: true }),
+      listIndividualsManaged(pool, { status: "active" }),
+    ]);
+    const individuals = managedIndividuals.map((i) => ({
       id: i.id,
       name: i.displayName,
     }));

@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { cache } from "react";
 import { signSession, readSession, type SessionPayload } from "./crypto";
 
 /**
@@ -84,7 +85,7 @@ export interface AuthenticatedUser {
  * cookie claims. Returns null rather than throwing so callers choose their own
  * failure mode (redirect for pages, status code for APIs).
  */
-export async function currentUser(): Promise<AuthenticatedUser | null> {
+async function loadCurrentUser(): Promise<AuthenticatedUser | null> {
   const session = await currentSession();
   if (!session) return null;
 
@@ -106,6 +107,13 @@ export async function currentUser(): Promise<AuthenticatedUser | null> {
     role: record.role,
   };
 }
+
+/**
+ * Layouts and pages both authorize themselves. React's request-scoped cache
+ * keeps that defense in depth without repeating the same database lookup on a
+ * single render; a new navigation still performs a fresh authoritative read.
+ */
+export const currentUser = cache(loadCurrentUser);
 
 /** The landing screen each role is allowed to see. */
 export function homePathForRole(role: string | undefined): string {

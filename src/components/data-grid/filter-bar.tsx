@@ -272,7 +272,7 @@ export function HeaderFilter<Row, T>({ grid, col }: { grid: UseGridResult<Row, T
       setPos({ top: b.bottom + 4, left });
     };
     place();
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: PointerEvent) => {
       const t = e.target as Node;
       if (popRef.current?.contains(t) || btnRef.current?.contains(t)) return;
       setOpen(false);
@@ -280,11 +280,11 @@ export function HeaderFilter<Row, T>({ grid, col }: { grid: UseGridResult<Row, T
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
-    document.addEventListener("mousedown", onDown);
+    document.addEventListener("pointerdown", onDown);
     document.addEventListener("keydown", onKey);
     window.addEventListener("resize", place);
     return () => {
-      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("pointerdown", onDown);
       document.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", place);
     };
@@ -305,7 +305,7 @@ export function HeaderFilter<Row, T>({ grid, col }: { grid: UseGridResult<Row, T
         title={`Filter ${col.label}`}
         aria-label={`Filter ${col.label}`}
         aria-expanded={open}
-        className={`grid h-5 w-5 place-items-center rounded transition-colors ${
+        className={`touch-target grid place-items-center rounded transition-colors ${
           active
             ? "bg-[var(--color-primary)] text-white"
             : "text-[var(--color-ink-faint)] opacity-60 hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)] hover:opacity-100"
@@ -319,7 +319,6 @@ export function HeaderFilter<Row, T>({ grid, col }: { grid: UseGridResult<Row, T
               ref={popRef}
               className="pop-in fixed z-[70] origin-top rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-2 shadow-lg"
               style={{ top: pos.top, left: pos.left }}
-              onClick={(e) => e.stopPropagation()}
             >
               <ColumnFilterControl
                 col={col}
@@ -354,7 +353,7 @@ export function FilterBar<Row, T>({ grid }: { grid: UseGridResult<Row, T> }) {
           key={chip.key}
           type="button"
           onClick={() => grid.setFilter(chip.key, null)}
-          className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-primary-tint)] px-2.5 py-1 text-xs font-medium text-[var(--color-primary)] transition-colors hover:bg-[var(--color-primary-soft)]"
+          className="touch-target inline-flex items-center gap-1.5 rounded-full bg-[var(--color-primary-tint)] px-2.5 py-1 text-xs font-medium text-[var(--color-primary)] transition-colors hover:bg-[var(--color-primary-soft)]"
           title="Remove filter"
         >
           {chip.label}
@@ -364,7 +363,7 @@ export function FilterBar<Row, T>({ grid }: { grid: UseGridResult<Row, T> }) {
       <button
         type="button"
         onClick={grid.clearFilters}
-        className="ml-1 text-xs text-[var(--color-ink-faint)] underline underline-offset-2 hover:text-[var(--color-ink)]"
+        className="touch-target ml-1 px-2 text-xs text-[var(--color-ink-faint)] underline underline-offset-2 hover:text-[var(--color-ink)]"
       >
         Clear all
       </button>

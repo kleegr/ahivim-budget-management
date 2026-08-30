@@ -244,10 +244,19 @@ export interface ImportListRow {
   totalRows: number;
   validRows: number;
   importedRows: number;
+  /** Held source rows that the correction queue will actually show. */
+  actionableRows: number;
   warningRows: number;
   errorRows: number;
   duplicateRows: number;
   committedAt: string | null;
+  sourceAgencyGross: string | null;
+  importedAgencyGross: string | null;
+  sourceInternalAmount: string | null;
+  importedInternalAmount: string | null;
+  reconciliationNotes: string | null;
+  reconciliationChecked: boolean;
+  reconciliationNeedsReview: boolean;
 }
 
 const IMPORT_LIST_SQL = `
@@ -262,10 +271,27 @@ const IMPORT_LIST_SQL = `
          COALESCE(b.total_rows, 0)     AS total_rows,
          COALESCE(b.valid_rows, 0)     AS valid_rows,
          COALESCE(b.imported_rows, 0)  AS imported_rows,
+         COALESCE((
+           SELECT count(*)
+             FROM import_rows held
+            WHERE held.import_batch_id = b.id
+              AND held.status IN ('needs_review', 'invalid')
+         ), 0) AS actionable_rows,
          COALESCE(b.warning_rows, 0)   AS warning_rows,
          COALESCE(b.error_rows, 0)     AS error_rows,
          COALESCE(b.duplicate_rows, 0) AS duplicate_rows,
-         b.committed_at::text          AS committed_at
+         b.committed_at::text          AS committed_at,
+         b.source_agency_gross::text   AS source_agency_gross,
+         b.imported_agency_gross::text AS imported_agency_gross,
+         b.source_internal_amount::text AS source_internal_amount,
+         b.imported_internal_amount::text AS imported_internal_amount,
+         b.reconciliation_notes         AS reconciliation_notes,
+         COALESCE(
+           (b.source_agency_gross IS NOT NULL AND b.imported_agency_gross IS NOT NULL)
+           OR (b.source_internal_amount IS NOT NULL AND b.imported_internal_amount IS NOT NULL),
+           false
+         ) AS reconciliation_checked,
+         COALESCE(b.reconciliation_notes LIKE '%DO NOT agree%', false) AS reconciliation_needs_review
   FROM imported_files f
   LEFT JOIN import_batches b ON b.imported_file_id = f.id
   LEFT JOIN users u         ON u.id = f.uploaded_by_user_id
@@ -283,10 +309,18 @@ interface ImportListDbRow {
   total_rows: number;
   valid_rows: number;
   imported_rows: number;
+  actionable_rows: number;
   warning_rows: number;
   error_rows: number;
   duplicate_rows: number;
   committed_at: string | null;
+  source_agency_gross: string | null;
+  imported_agency_gross: string | null;
+  source_internal_amount: string | null;
+  imported_internal_amount: string | null;
+  reconciliation_notes: string | null;
+  reconciliation_checked: boolean;
+  reconciliation_needs_review: boolean;
 }
 
 function toImportRow(r: ImportListDbRow): ImportListRow {
@@ -302,16 +336,31 @@ function toImportRow(r: ImportListDbRow): ImportListRow {
     totalRows: Number(r.total_rows),
     validRows: Number(r.valid_rows),
     importedRows: Number(r.imported_rows),
+    actionableRows: Number(r.actionable_rows ?? 0),
     warningRows: Number(r.warning_rows),
     errorRows: Number(r.error_rows),
     duplicateRows: Number(r.duplicate_rows),
     committedAt: r.committed_at,
+    sourceAgencyGross: r.source_agency_gross ?? null,
+    importedAgencyGross: r.imported_agency_gross ?? null,
+    sourceInternalAmount: r.source_internal_amount ?? null,
+    importedInternalAmount: r.imported_internal_amount ?? null,
+    reconciliationNotes: r.reconciliation_notes ?? null,
+    reconciliationChecked: r.reconciliation_checked,
+    reconciliationNeedsReview: r.reconciliation_needs_review,
   };
 }
 
-export async function listImports(pool: PgLikePool, limit = 50): Promise<ImportListRow[]> {
+export async function listImports(
+  pool: PgLikePool,
+  limit = 50,
+  options: { reconciliationNeedsReview?: boolean } = {},
+): Promise<ImportListRow[]> {
+  const reconciliationFilter = options.reconciliationNeedsReview === true
+    ? "WHERE b.reconciliation_notes IS NOT NULL AND b.reconciliation_notes LIKE '%DO NOT agree%'"
+    : "";
   const { rows } = await pool.query<ImportListDbRow>(
-    `${IMPORT_LIST_SQL} ORDER BY f.uploaded_at DESC LIMIT $1`,
+    `${IMPORT_LIST_SQL} ${reconciliationFilter} ORDER BY f.uploaded_at DESC LIMIT $1`,
     [limit],
   );
   return rows.map(toImportRow);
@@ -330,7 +379,7 @@ export interface ImportRowRecord {
   sheetName: string;
   validationErrors: unknown;
   fingerprint: string | null;
-  raw: Record<string, string>;
+  raw: Record<string, unknown>;
   individual: string | null;
   employee: string | null;
   program: string | null;
@@ -359,7 +408,7 @@ export async function listImportRows(
     sheet_name: string;
     validation_errors: unknown;
     transaction_fingerprint: string | null;
-    raw_values: Record<string, string>;
+    raw_values: Record<string, unknown>;
     individual: string | null;
     employee: string | null;
     program: string | null;
@@ -410,12 +459,15 @@ export const ROW_STATUS_LABELS: Record<string, string> = {
 
 export interface ImportWarningRecord {
   id: string;
+  importRowId: string | null;
+  individualId: string | null;
   category: string;
   severity: string;
   message: string;
   details: unknown;
   sourceRowNumber: number | null;
   resolvedAt: string | null;
+  rowStatus: string | null;
 }
 
 export async function listImportWarnings(
@@ -426,15 +478,18 @@ export async function listImportWarnings(
   if (!isUuid(batchId)) return [];
   const { rows } = await pool.query<{
     id: string;
+    import_row_id: string | null;
+    individual_id: string | null;
     category: string;
     severity: string;
     message: string;
     details: unknown;
     source_row_number: number | null;
     resolved_at: string | null;
+    row_status: string | null;
   }>(
-    `SELECT w.id, w.category, w.severity, w.message, w.details,
-            r.source_row_number, w.resolved_at::text AS resolved_at
+    `SELECT w.id, w.import_row_id, w.individual_id, w.category, w.severity, w.message, w.details,
+            r.source_row_number, r.status AS row_status, w.resolved_at::text AS resolved_at
      FROM import_warnings w
      LEFT JOIN import_rows r ON r.id = w.import_row_id
      WHERE w.import_batch_id = $1
@@ -445,13 +500,218 @@ export async function listImportWarnings(
   );
   return rows.map((r) => ({
     id: r.id,
+    importRowId: r.import_row_id,
+    individualId: r.individual_id,
     category: r.category,
     severity: r.severity,
     message: r.message,
     details: r.details,
     sourceRowNumber: r.source_row_number,
     resolvedAt: r.resolved_at,
+    rowStatus: r.row_status,
   }));
+}
+
+export const ACTIONABLE_IMPORT_WARNING_CATEGORIES = [
+  "unknown_program",
+  "unmatched_individual",
+  "unmatched_employee",
+  "ambiguous_name",
+] as const;
+
+export type ActionableImportWarningCategory = typeof ACTIONABLE_IMPORT_WARNING_CATEGORIES[number];
+
+export interface ActionableImportWarning extends ImportWarningRecord {
+  batchId: string;
+  fileId: string;
+  filename: string;
+  rowStatus: string;
+  individualName: string | null;
+}
+
+/**
+ * Import warnings that still have a row a person can correct. Historical
+ * warnings attached to rows already accepted, skipped, or imported stay in the
+ * audit trail but do not remain in the active review inbox.
+ */
+export async function listActionableImportWarnings(
+  pool: PgLikePool,
+  options: {
+    categories?: ActionableImportWarningCategory[];
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<{ rows: ActionableImportWarning[]; total: number }> {
+  const categories = options.categories?.length ? options.categories : null;
+  const limit = clampLimit(options.limit, 200);
+  const offset = Math.max(0, options.offset ?? 0);
+  const where = `WHERE w.resolved_at IS NULL
+                   AND r.id IS NOT NULL
+                   AND r.status IN ('needs_review','invalid')
+                   AND ($1::text[] IS NULL OR w.category = ANY($1::text[]))`;
+  const [countRes, rowsRes] = await Promise.all([
+    pool.query<{ c: string }>(
+      `SELECT count(*)::text AS c
+         FROM import_warnings w
+         JOIN import_rows r ON r.id = w.import_row_id
+         ${where}`,
+      [categories],
+    ),
+    pool.query<{
+      id: string;
+      import_row_id: string;
+      individual_id: string | null;
+      import_batch_id: string;
+      category: string;
+      severity: string;
+      message: string;
+      details: unknown;
+      source_row_number: number;
+      row_status: string;
+      resolved_at: string | null;
+      file_id: string;
+      filename: string;
+      individual_name: string | null;
+    }>(
+      `SELECT w.id, w.import_row_id, w.individual_id, w.import_batch_id,
+              w.category, w.severity, w.message, w.details,
+              r.source_row_number, r.status AS row_status,
+              w.resolved_at::text AS resolved_at,
+              f.id AS file_id, f.original_filename AS filename,
+              i.display_name AS individual_name
+         FROM import_warnings w
+         JOIN import_rows r ON r.id = w.import_row_id
+         JOIN import_batches b ON b.id = w.import_batch_id
+         JOIN imported_files f ON f.id = b.imported_file_id
+         LEFT JOIN individuals i ON i.id = w.individual_id
+         ${where}
+        ORDER BY CASE w.severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+                 f.uploaded_at DESC, r.source_row_number
+        LIMIT $2 OFFSET $3`,
+      [categories, limit, offset],
+    ),
+  ]);
+  return {
+    total: Number(countRes.rows[0]?.c ?? 0),
+    rows: rowsRes.rows.map((row) => ({
+      id: row.id,
+      importRowId: row.import_row_id,
+      individualId: row.individual_id,
+      batchId: row.import_batch_id,
+      category: row.category,
+      severity: row.severity,
+      message: row.message,
+      details: row.details,
+      sourceRowNumber: row.source_row_number,
+      resolvedAt: row.resolved_at,
+      fileId: row.file_id,
+      filename: row.filename,
+      rowStatus: row.row_status,
+      individualName: row.individual_name,
+    })),
+  };
+}
+
+export interface CommittedDuplicateWarning {
+  id: string;
+  importRowId: string;
+  transactionId: string | null;
+  batchId: string;
+  fileId: string;
+  filename: string;
+  sourceRowNumber: number;
+  individualId: string | null;
+  individualName: string | null;
+  employeeName: string | null;
+  checkNumber: string | null;
+  periodBegin: string | null;
+  periodEnd: string | null;
+  message: string;
+}
+
+/**
+ * Duplicate-shaped rows that were deliberately committed and counted. These
+ * belong in ledger inspection, not in the held-row correction workflow.
+ */
+export async function listCommittedDuplicateWarnings(
+  pool: PgLikePool,
+  options: { limit?: number; offset?: number } = {},
+): Promise<{ rows: CommittedDuplicateWarning[]; total: number }> {
+  const limit = clampLimit(options.limit, 200);
+  const offset = Math.max(0, options.offset ?? 0);
+  const where = `WHERE w.category = 'possible_duplicate'
+                   AND w.resolved_at IS NULL
+                   AND r.status = 'imported'`;
+  const [countRes, rowsRes] = await Promise.all([
+    pool.query<{ c: string }>(
+      `SELECT count(*)::text AS c
+         FROM import_warnings w
+         JOIN import_rows r ON r.id = w.import_row_id
+         ${where}`,
+    ),
+    pool.query<{
+      id: string;
+      import_row_id: string;
+      transaction_id: string | null;
+      import_batch_id: string;
+      file_id: string;
+      filename: string;
+      source_row_number: number;
+      individual_id: string | null;
+      individual_name: string | null;
+      employee_name: string | null;
+      check_number: string | null;
+      period_begin: string | null;
+      period_end: string | null;
+      message: string;
+    }>(
+      `SELECT w.id, w.import_row_id, w.import_batch_id, w.individual_id, w.message,
+              r.source_row_number,
+              f.id AS file_id, f.original_filename AS filename,
+              t.id AS transaction_id, t.check_number,
+              to_char(t.period_begin, 'YYYY-MM-DD') AS period_begin,
+              to_char(t.period_end, 'YYYY-MM-DD') AS period_end,
+              i.display_name AS individual_name,
+              e.display_name AS employee_name
+         FROM import_warnings w
+         JOIN import_rows r ON r.id = w.import_row_id
+         JOIN import_batches b ON b.id = w.import_batch_id
+         JOIN imported_files f ON f.id = b.imported_file_id
+         LEFT JOIN LATERAL (
+           SELECT candidate.id, candidate.individual_id, candidate.employee_id,
+                  candidate.check_number, candidate.period_begin, candidate.period_end
+             FROM payroll_transactions candidate
+            WHERE candidate.import_row_id = r.id
+            ORDER BY candidate.created_at DESC, candidate.id DESC
+            LIMIT 1
+         ) t ON true
+         LEFT JOIN individuals i ON i.id = COALESCE(t.individual_id, w.individual_id)
+         LEFT JOIN employees e ON e.id = t.employee_id
+         ${where}
+        ORDER BY f.uploaded_at DESC, r.source_row_number, w.id
+        LIMIT $1 OFFSET $2`,
+      [limit, offset],
+    ),
+  ]);
+  return {
+    total: Number(countRes.rows[0]?.c ?? 0),
+    rows: rowsRes.rows.map((row) => ({
+      id: row.id,
+      importRowId: row.import_row_id,
+      transactionId: row.transaction_id,
+      batchId: row.import_batch_id,
+      fileId: row.file_id,
+      filename: row.filename,
+      sourceRowNumber: row.source_row_number,
+      individualId: row.individual_id,
+      individualName: row.individual_name,
+      employeeName: row.employee_name,
+      checkNumber: row.check_number,
+      periodBegin: row.period_begin,
+      periodEnd: row.period_end,
+      message: row.message,
+    })),
+  };
 }
 
 export async function getReconciliation(
@@ -699,6 +959,11 @@ export async function listTransactions(
 
 export interface RateExceptionRow {
   id: string;
+  transactionId: string | null;
+  importRowId: string | null;
+  sourceFileId: string | null;
+  individualId: string | null;
+  programId: string | null;
   individual: string | null;
   program: string | null;
   importedRate: string;
@@ -730,6 +995,11 @@ export async function listRateExceptions(
     ]),
     pool.query<{
       id: string;
+      payroll_transaction_id: string | null;
+      import_row_id: string | null;
+      source_file_id: string | null;
+      individual_id: string | null;
+      program_id: string | null;
       individual: string | null;
       program: string | null;
       imported_rate: string;
@@ -742,7 +1012,9 @@ export async function listRateExceptions(
       check_number: string | null;
       source_row_number: number | null;
     }>(
-      `SELECT x.id, i.display_name AS individual, p.name AS program,
+      `SELECT x.id, x.payroll_transaction_id, t.import_row_id, t.source_file_id,
+              x.individual_id, x.program_id,
+              i.display_name AS individual, p.name AS program,
               x.imported_rate::text, x.expected_rate::text,
               x.variance_amount::text, x.variance_percent::text,
               x.direction, x.resolution, x.note,
@@ -762,6 +1034,11 @@ export async function listRateExceptions(
     total: Number(countRes.rows[0]?.c ?? 0),
     rows: rowsRes.rows.map((r) => ({
       id: r.id,
+      transactionId: r.payroll_transaction_id,
+      importRowId: r.import_row_id,
+      sourceFileId: r.source_file_id,
+      individualId: r.individual_id,
+      programId: r.program_id,
       individual: r.individual,
       program: r.program,
       importedRate: r.imported_rate,

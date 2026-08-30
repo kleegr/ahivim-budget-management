@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PgLikePool } from "@/lib/import/commit";
 import { getSettlementDashboard } from "@/lib/data/settlements";
+import { getFinancialDashboard } from "@/lib/data/financial-dashboard";
 import { createEmployee } from "@/lib/manage/employees";
 import { mergeEmployees } from "@/lib/manage/employee-merge";
 import { createIndividual } from "@/lib/manage/individuals";
 import { saveEmployeeDeal } from "@/lib/manage/employee-deals";
 import { savePayrollCheck } from "@/lib/manage/direct-pay-operations";
+import { createStrategy, updateStrategy } from "@/lib/manage/calculation-strategies";
 import {
   applySettlementCredit,
   recordObligationPayment,
@@ -189,6 +191,109 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     expect((await getSettlementDashboard(pool)).rows).toHaveLength(2);
   });
 
+  it("links an exact missing-identity row without capturing a reused check number", async () => {
+    const employee = unwrap(await createEmployee(pool, { displayName: "Exact Source Employee" }, ACTOR));
+    const individual = unwrap(await createIndividual(pool, { displayName: "Exact Source Individual" }, ACTOR));
+    const inserted = await pool.query<{ id: string; transaction_fingerprint: string }>(
+      `INSERT INTO payroll_transactions
+         (employee_id, individual_id, check_number, check_date, payment_recipient,
+          imported_amount, total_net_pay, transaction_fingerprint)
+       VALUES
+         ($1,$2,NULL,NULL,'employee','100',NULL,'exact-missing-identity'),
+         ($1,$2,'REUSED-1','2026-09-15','employee','200',NULL,'exact-reused-number')
+       RETURNING id, transaction_fingerprint`,
+      [employee.id, individual.id],
+    );
+    const sourceId = inserted.rows.find((row) => row.transaction_fingerprint === "exact-missing-identity")!.id;
+
+    const saved = unwrap(await savePayrollCheck(pool, {
+      employeeId: employee.id,
+      checkNumber: "REUSED-1",
+      checkDate: "2026-08-15",
+      actualNet: "80",
+      sourceTransactionIds: [sourceId],
+    }, ACTOR));
+
+    expect(saved.linkedTransactions).toBe(1);
+    const linked = await pool.query<{ transaction_fingerprint: string; payroll_check_id: string | null }>(
+      `SELECT transaction_fingerprint, payroll_check_id
+         FROM payroll_transactions
+        WHERE transaction_fingerprint IN ('exact-missing-identity','exact-reused-number')
+        ORDER BY transaction_fingerprint`,
+    );
+    expect(linked.rows).toEqual([
+      { transaction_fingerprint: "exact-missing-identity", payroll_check_id: saved.id },
+      { transaction_fingerprint: "exact-reused-number", payroll_check_id: null },
+    ]);
+  });
+
+  it("rejects missing and cross-employee exact source ids before creating a check", async () => {
+    const employee = unwrap(await createEmployee(pool, { displayName: "Requested Employee" }, ACTOR));
+    const other = unwrap(await createEmployee(pool, { displayName: "Other Employee" }, ACTOR));
+    const source = await pool.query<{ id: string }>(
+      `INSERT INTO payroll_transactions
+         (employee_id, check_date, payment_recipient, imported_amount, transaction_fingerprint)
+       VALUES ($1,'2026-08-15','employee','100','cross-employee-source')
+       RETURNING id`,
+      [other.id],
+    );
+
+    const missing = await savePayrollCheck(pool, {
+      employeeId: employee.id,
+      checkDate: "2026-08-15",
+      actualNet: "80",
+      sourceTransactionIds: ["00000000-0000-4000-8000-000000009999"],
+    }, ACTOR);
+    expect(missing).toMatchObject({ ok: false, code: "not_found" });
+
+    const crossEmployee = await savePayrollCheck(pool, {
+      employeeId: employee.id,
+      checkDate: "2026-08-15",
+      actualNet: "80",
+      sourceTransactionIds: [source.rows[0]!.id],
+    }, ACTOR);
+    expect(crossEmployee).toMatchObject({ ok: false, code: "forbidden" });
+
+    const checkCount = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM employee_payroll_checks`);
+    expect(checkCount.rows[0]?.count).toBe("0");
+  });
+
+  it("does not combine taxes for reused check numbers across employees or pay periods", async () => {
+    const firstEmployee = unwrap(await createEmployee(pool, { displayName: "First Tax Employee" }, ACTOR));
+    const secondEmployee = unwrap(await createEmployee(pool, { displayName: "Second Tax Employee" }, ACTOR));
+    const firstIndividual = unwrap(await createIndividual(pool, { displayName: "First Tax Individual" }, ACTOR));
+    const secondIndividual = unwrap(await createIndividual(pool, { displayName: "Second Tax Individual" }, ACTOR));
+    const program = await pool.query<{ id: string }>(
+      `INSERT INTO programs (code, name) VALUES ('TAX_TEST', 'Tax Test') RETURNING id`,
+    );
+    await pool.query(
+      `INSERT INTO program_rate_schedules (program_id, effective_from, internal_rate)
+       VALUES ($1, '2020-01-01', '1')`,
+      [program.rows[0]!.id],
+    );
+    for (const individualId of [firstIndividual.id, secondIndividual.id]) {
+      const strategy = unwrap(await createStrategy(pool, { individualId }, ACTOR));
+      unwrap(await updateStrategy(pool, {
+        id: strategy.id,
+        renewalDate: "2027-01-01",
+        hours: { [program.rows[0]!.id]: "1000" },
+      }, ACTOR));
+    }
+    await pool.query(
+      `INSERT INTO payroll_transactions
+         (employee_id, individual_id, check_number, check_date, period_begin, period_end,
+          payment_recipient, imported_amount, total_net_pay, transaction_fingerprint)
+       VALUES
+         ($1,$2,'REUSED-TAX','2026-08-15','2026-08-01','2026-08-14','employee','100','80','reused-tax-1'),
+         ($3,$4,'REUSED-TAX','2026-09-15','2026-09-01','2026-09-14','employee','200','150','reused-tax-2')`,
+      [firstEmployee.id, firstIndividual.id, secondEmployee.id, secondIndividual.id],
+    );
+
+    const financial = await getFinancialDashboard(pool);
+    expect(financial.rows.find((row) => row.individualId === firstIndividual.id)?.taxesAll).toBe("20.00");
+    expect(financial.rows.find((row) => row.individualId === secondIndividual.id)?.taxesAll).toBe("50.00");
+  });
+
   it("keeps an unverified payroll check pending until verification", async () => {
     const employee = unwrap(await createEmployee(pool, { displayName: "Pending Check Employee" }, ACTOR));
     unwrap(await saveEmployeeDeal(pool, {
@@ -324,7 +429,7 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
 
     const dashboard = await getSettlementDashboard(pool);
 
-    expect(dashboard.checkIssues).toContainEqual({
+    expect(dashboard.checkIssues).toContainEqual(expect.objectContaining({
       sourceId: `${employee.id}:ambiguous-check:AMB-1`,
       employeeId: employee.id,
       employeeName: "Leah Rosen",
@@ -334,7 +439,74 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       periodEnd: null,
       transactionCount: 3,
       issue: "conflicting_check_date",
-    });
+    }));
+  });
+
+  it("uses a linked verified check as canonical without hiding unresolved conflicts", async () => {
+    const employee = unwrap(await createEmployee(pool, { displayName: "Canonical Check Employee" }, ACTOR));
+    await pool.query(
+      `INSERT INTO payroll_transactions
+         (employee_id, check_number, check_date, period_begin, period_end,
+          payment_recipient, imported_amount, total_net_pay, transaction_fingerprint)
+       VALUES
+         ($1,'VERIFY-1','2026-04-03','2026-04-01','2026-04-15','employee','300','850','verified-source-1'),
+         ($1,'VERIFY-1','2026-04-03','2026-04-01','2026-04-15','employee','300','850','verified-source-2'),
+         ($1,'VERIFY-1','2026-04-03','2026-04-01','2026-04-15','employee','300','850','verified-source-3')`,
+      [employee.id],
+    );
+
+    expect((await getSettlementDashboard(pool)).checkIssues.some((issue) =>
+      issue.employeeId === employee.id && issue.issue === "missing_net"
+    )).toBe(true);
+
+    await pool.query(
+      `UPDATE payroll_transactions SET total_net_pay = '800'
+        WHERE transaction_fingerprint = 'verified-source-2'`,
+    );
+    expect((await getSettlementDashboard(pool)).checkIssues.some((issue) =>
+      issue.employeeId === employee.id && issue.issue === "conflicting_net"
+    )).toBe(true);
+
+    const check = unwrap(await savePayrollCheck(pool, {
+      employeeId: employee.id,
+      checkNumber: "VERIFY-1",
+      checkDate: "2026-04-03",
+      periodBegin: "2026-04-01",
+      periodEnd: "2026-04-15",
+      actualNet: "850",
+      verificationStatus: "verified",
+    }, ACTOR));
+    expect(check.linkedTransactions).toBe(3);
+
+    await pool.query(
+      `UPDATE payroll_transactions
+          SET check_date = CASE transaction_fingerprint
+            WHEN 'verified-source-1' THEN '2026-04-01'::date
+            WHEN 'verified-source-2' THEN '2026-04-02'::date
+            ELSE NULL
+          END
+        WHERE payroll_check_id = $1`,
+      [check.id],
+    );
+    expect((await getSettlementDashboard(pool)).checkIssues.filter((issue) =>
+      issue.employeeId === employee.id
+    )).toEqual([]);
+
+    await pool.query(
+      `INSERT INTO payroll_transactions
+         (employee_id, check_number, check_date, payment_recipient,
+          imported_amount, total_net_pay, transaction_fingerprint)
+       VALUES
+         ($1,'UNRESOLVED-1','2026-05-01','employee','300','700','unresolved-source-1'),
+         ($1,'UNRESOLVED-1','2026-05-02','employee','300','600','unresolved-source-2'),
+         ($1,'UNRESOLVED-1',NULL,'employee','300','700','unresolved-source-3')`,
+      [employee.id],
+    );
+    expect((await getSettlementDashboard(pool)).checkIssues).toContainEqual(expect.objectContaining({
+      employeeId: employee.id,
+      checkNumber: "UNRESOLVED-1",
+      issue: "conflicting_check_date",
+    }));
   });
 
   it("snapshots a deal change and creates a delta instead of rewriting actioned history", async () => {

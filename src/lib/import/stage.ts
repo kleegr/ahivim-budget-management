@@ -1,6 +1,6 @@
 import { dec, toMoney, closeEnough, type MoneyInput } from "@/lib/money";
 import type { ParsedAhivimRow } from "@/lib/excel/parse-workbook";
-import { resolveProgram, type ProgramCode } from "@/lib/business/program-normalization";
+import { resolveProgram } from "@/lib/business/program-normalization";
 import { matchPerson, type CanonicalRecord, type AliasRecord } from "@/lib/business/name-matching";
 import {
   calculateInternalAmount,
@@ -17,6 +17,9 @@ import {
   transactionNaturalKey,
   type TransactionIdentity,
 } from "@/lib/business/fingerprint";
+import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
+import { canonicalServiceDate } from "@/lib/business/service-date";
+import { agencyDate } from "@/lib/business/agency-time";
 
 /**
  * STAGING
@@ -35,8 +38,32 @@ export interface RateConfig {
   internalRate: string;
 }
 
+export interface EffectiveRateConfig extends RateConfig {
+  effectiveFrom: string;
+  effectiveTo: string | null;
+}
+
+export function rateConfigAtDate(
+  schedule: readonly EffectiveRateConfig[],
+  asOf: string,
+): RateConfig | undefined {
+  const resolved = resolveEffectiveRate(schedule, asOf);
+  if (!resolved) return undefined;
+  return {
+    agencyRate: resolved.agencyRate === null ? null : toMoney(resolved.agencyRate),
+    internalRate: toMoney(resolved.internalRate),
+  };
+}
+
 export interface StagingContext {
+  /** Current rates retained for lightweight callers and older test fixtures. */
   ratesByProgram: Record<string, RateConfig>;
+  /** Full production catalog, resolved separately for each row's service date. */
+  rateSchedulesByProgram?: Readonly<Record<string, readonly EffectiveRateConfig[]>>;
+  /** Rate-only fallback for source rows with no service-date facts. */
+  rateFallbackDate?: string;
+  /** Approved database aliases. Seed aliases remain the fallback for pure callers. */
+  programAliases?: Readonly<Record<string, string>>;
   individuals: readonly CanonicalRecord[];
   individualAliases: readonly AliasRecord[];
   employees: readonly CanonicalRecord[];
@@ -69,7 +96,7 @@ export interface StagedWarning {
 export interface StagedRow {
   sourceRowNumber: number;
   status: StagedRowStatus;
-  programCode: ProgramCode | null;
+  programCode: string | null;
   individualId: string | null;
   employeeId: string | null;
   fingerprint: string | null;
@@ -79,8 +106,29 @@ export interface StagedRow {
   importedAmount: string;
   spreadsheetInternalAmount: string | null;
   calculatedInternalAmount: string | null;
+  /** The effective-dated program rate used to calculate this source row. */
+  internalRateApplied?: string | null;
+  agencyRateApplied?: string | null;
+  rateResolvedForDate?: string | null;
   internalAmountMismatch: boolean;
   errors: { field: string; message: string }[];
+}
+
+/**
+ * Read the rate pinned by staging. An explicit null means the effective catalog
+ * had no rate on that row's date and must not fall through to today's rate.
+ * Undefined is reserved for older direct fixtures that predate the pinned fields.
+ */
+export function rateConfigForStagedRow(
+  row: Pick<StagedRow, "internalRateApplied" | "agencyRateApplied">,
+  legacyFallback?: RateConfig,
+): RateConfig | undefined {
+  if (row.internalRateApplied === undefined) return legacyFallback;
+  if (row.internalRateApplied === null) return undefined;
+  return {
+    internalRate: row.internalRateApplied,
+    agencyRate: row.agencyRateApplied ?? null,
+  };
 }
 
 export interface StagingResult {
@@ -164,6 +212,9 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
         importedAmount: "0.0000",
         spreadsheetInternalAmount: null,
         calculatedInternalAmount: null,
+        internalRateApplied: null,
+        agencyRateApplied: null,
+        rateResolvedForDate: null,
         internalAmountMismatch: false,
         errors: row.errors,
       });
@@ -173,7 +224,7 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
     const p = row.parsed;
 
     // --- program -----------------------------------------------------------
-    const program = resolveProgram(p.programDescription);
+    const program = resolveProgram(p.programDescription, ctx.programAliases);
     if (!program.matched) {
       unknownProgramLabels.add(p.programDescription);
       rowWarnings.push({
@@ -248,7 +299,12 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
     }
 
     // --- rates and internal amount ----------------------------------------
-    const rateConfig = program.code ? ctx.ratesByProgram[program.code] : undefined;
+    const rateDate = canonicalServiceDate(p) ?? ctx.rateFallbackDate ?? agencyDate();
+    const rateConfig = program.code
+      ? ctx.rateSchedulesByProgram !== undefined
+        ? rateConfigAtDate(ctx.rateSchedulesByProgram[program.code] ?? [], rateDate)
+        : ctx.ratesByProgram[program.code]
+      : undefined;
 
     const internal = calculateInternalAmount({
       payTo: p.payTo,
@@ -381,6 +437,7 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
         employeeKey: employee?.matchedId ?? employee?.normalizedName ?? "",
         programKey: program.code ?? program.normalizedLabel,
         checkNumber: p.checkNumber || null,
+        checkDate: p.checkDate || null,
         periodBegin: p.periodBegin || null,
         periodEnd: p.periodEnd || null,
         hours: p.hours,
@@ -440,6 +497,9 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
       importedAmount: toMoney(p.amount),
       spreadsheetInternalAmount: comparison.spreadsheetValue,
       calculatedInternalAmount: internal.internalAmount,
+      internalRateApplied: rateConfig?.internalRate ?? null,
+      agencyRateApplied: rateConfig?.agencyRate ?? null,
+      rateResolvedForDate: rateDate,
       internalAmountMismatch: !comparison.matches && Boolean(comparison.spreadsheetValue),
       errors: [],
     });

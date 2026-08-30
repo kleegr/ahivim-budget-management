@@ -7,6 +7,8 @@
  * against); `from`/`to` window on the check date (the grid's period control).
  */
 export interface TxLinkParams {
+  transactionId?: string | null;
+  transactionIds?: readonly string[] | null;
   individualId?: string | null;
   employeeId?: string | null;
   program?: string | null;
@@ -25,6 +27,8 @@ export interface TxLinkParams {
 
 export function txLink(p: TxLinkParams): string {
   const q = new URLSearchParams();
+  if (p.transactionId) q.set("transactionId", p.transactionId);
+  for (const id of p.transactionIds ?? []) q.append("transactionId", id);
   if (p.individualId) q.set("individualId", p.individualId);
   if (p.employeeId) q.set("employeeId", p.employeeId);
   if (p.program) q.set("program", p.program);

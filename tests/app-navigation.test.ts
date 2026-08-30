@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { getCommandDestinations, getVisibleAdminDestinations, getVisibleWorkspaces } from "@/lib/nav/app-navigation";
+import {
+  getCommandDestinations,
+  getVisibleAdminDestinations,
+  getVisibleWorkspaces,
+  shouldTrackNavigation,
+} from "@/lib/nav/app-navigation";
 
 describe("role-specific workspaces", () => {
+  it("tracks real route changes without flashing progress for the active page", () => {
+    expect(shouldTrackNavigation("/dashboard", "/individuals")).toBe(true);
+    expect(shouldTrackNavigation("/dashboard", "/dashboard")).toBe(false);
+  });
+
   it("gives a finance-only viewer Money operations without budget navigation", () => {
     const access = {
       role: "viewer",

@@ -146,6 +146,10 @@ body {
   background: var(--color-surface-strong);
   color: var(--color-primary);
 }
+.touch-target {
+  min-width: 2.25rem;
+  min-height: 2.25rem;
+}
 .segmented-control {
   display: inline-flex;
   gap: 0.25rem;
@@ -214,6 +218,10 @@ body {
   font-size: 0.875rem;
   color: var(--color-ink);
   transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+:where(button, a[href], [role="button"]) {
+  touch-action: manipulation;
 }
 .input-leading-icon {
   padding-left: 2.25rem;
@@ -367,6 +375,23 @@ body {
   }
 }
 
+@keyframes route-progress {
+  0% {
+    transform: translateX(-110%);
+  }
+  55% {
+    transform: translateX(65%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+.route-progress-bar {
+  width: 42%;
+  animation: route-progress 1.1s ease-in-out infinite;
+}
+
 /* A popover/menu appearing at a trigger (filter funnels, drawers' pickers). */
 .pop-in {
   animation: pop-in 140ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -410,6 +435,10 @@ body {
   .soft-pulse {
     animation: none;
   }
+  .route-progress-bar {
+    width: 72%;
+    animation: none;
+  }
   .animate-pulse {
     animation: none;
   }
@@ -433,6 +462,10 @@ body {
   .icon-button {
     width: 2.75rem;
     min-width: 2.75rem;
+  }
+  .touch-target {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
   }
 }
 

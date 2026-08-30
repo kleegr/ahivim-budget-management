@@ -8,6 +8,7 @@ import {
   Card, Table, Th, Td, Tr, Badge, EmptyState, ErrorPanel, PageHeader, StatTile, Money, ButtonLink, Pagination,
 } from "@/components/ui";
 import CommitPanel from "@/components/commit-panel";
+import { importCorrectionsHref, importIssueCopy } from "@/lib/nav/review-actions";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Import review — Ahivim Budget Management" };
@@ -22,8 +23,7 @@ export default async function ImportDetailPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const user = await requireUser("manager");
-  const { id } = await params;
-  const sp = await searchParams;
+  const [{ id }, sp] = await Promise.all([params, searchParams]);
   const first = (k: string) => {
     const v = sp[k];
     return Array.isArray(v) ? v[0] : v;
@@ -32,16 +32,20 @@ export default async function ImportDetailPage({
   const offset = Math.max(0, Number(first("offset") ?? 0) || 0);
 
   const result = await withDb(async (pool) => {
-    const file = await loadFile(pool, id);
+    const [file, summary] = await Promise.all([
+      loadFile(pool, id),
+      getImport(pool, id),
+    ]);
     if (!file) return null;
-    const summary = await getImport(pool, id);
-    const staging = file.payload ? await restage(pool, file.payload) : null;
-    const committedRows = file.committedBatchId
-      ? await listImportRows(pool, file.committedBatchId, { status: statusFilter, limit: PAGE_SIZE, offset })
-      : { rows: [], total: 0 };
-    const warnings = file.committedBatchId
-      ? await listImportWarnings(pool, file.committedBatchId, 100)
-      : [];
+    const [staging, committedRows, warnings] = await Promise.all([
+      file.payload ? restage(pool, file.payload) : Promise.resolve(null),
+      file.committedBatchId
+        ? listImportRows(pool, file.committedBatchId, { status: statusFilter, limit: PAGE_SIZE, offset })
+        : Promise.resolve({ rows: [], total: 0 }),
+      file.committedBatchId
+        ? listImportWarnings(pool, file.committedBatchId, 100)
+        : Promise.resolve([]),
+    ]);
     return { file, summary, staging, committedRows, warnings };
   });
 
@@ -49,7 +53,7 @@ export default async function ImportDetailPage({
     return (
       <>
         <PageHeader eyebrow="Import" title="Import review" />
-        <ErrorPanel title="Could not load this import">{result.error}</ErrorPanel>
+        <ErrorPanel title="Import review is unavailable">{result.error}</ErrorPanel>
       </>
     );
   }
@@ -58,6 +62,21 @@ export default async function ImportDetailPage({
   const { file, summary, staging, committedRows, warnings } = result.data;
   const committed = Boolean(file.committedBatchId);
   const counts = staging?.counts;
+  const correctionsHref = importCorrectionsHref(file.id);
+  const actionableRows = committed
+    ? summary?.actionableRows ?? 0
+    : counts
+      ? counts.needsReview + counts.invalid
+      : 0;
+  const displayedReconciliation = committed && summary
+    ? {
+        workbookAgencyGross: summary.sourceAgencyGross,
+        importedAgencyGross: summary.importedAgencyGross,
+        workbookInternalAmount: summary.sourceInternalAmount,
+        importedInternalAmount: summary.importedInternalAmount,
+        note: summary.reconciliationNotes ?? "No reconciliation note was recorded for this import.",
+      }
+    : staging?.reconciliation ?? null;
 
   return (
     <>
@@ -68,13 +87,28 @@ export default async function ImportDetailPage({
         action={<ButtonLink href="/imports">All imports</ButtonLink>}
       />
 
+      {committed && !staging ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <StatTile label="Source rows" value={(summary?.totalRows ?? 0).toLocaleString()} hint="Every row is preserved" />
+          <StatTile label="Imported" value={(summary?.importedRows ?? 0).toLocaleString()} tone="good" hint="Ledger transactions" />
+          <StatTile
+            label="Rows needing action"
+            value={actionableRows.toLocaleString()}
+            tone={actionableRows ? "warn" : "good"}
+            hint="Matches the correction queue"
+            href={actionableRows ? correctionsHref : undefined}
+          />
+          <StatTile label="Recorded warnings" value={(summary?.warningRows ?? 0).toLocaleString()} hint="Includes resolved history" />
+        </div>
+      ) : null}
+
       {staging ? (
         <>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <StatTile label="Source rows" value={staging.totalSourceRows.toLocaleString()} hint="Every row is preserved" />
             <StatTile label="Valid" value={counts!.valid.toLocaleString()} tone="good" hint="Eligible to become transactions" />
-            <StatTile label="Needs review" value={counts!.needsReview.toLocaleString()} tone={counts!.needsReview ? "warn" : "good"} hint="Held out of the ledger" />
-            <StatTile label="Invalid / duplicate" value={`${counts!.invalid.toLocaleString()} / ${counts!.duplicates.toLocaleString()}`} tone={counts!.invalid || counts!.duplicates ? "warn" : "good"} hint="Kept, not imported" />
+            <StatTile label={committed ? "Rows needing action" : "Needs review"} value={actionableRows.toLocaleString()} tone={actionableRows ? "warn" : "good"} hint="Held out of the ledger" href={committed && actionableRows ? correctionsHref : undefined} />
+            <StatTile label="Invalid / already recorded" value={`${counts!.invalid.toLocaleString()} / ${counts!.confirmedDuplicates.toLocaleString()}`} tone={counts!.invalid ? "warn" : "good"} hint="Problems versus safely skipped repeats" href={committed && actionableRows ? correctionsHref : undefined} />
           </div>
 
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -85,23 +119,39 @@ export default async function ImportDetailPage({
           </div>
 
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <Card title="Source reconciliation" description="Control totals compared with staged activity">
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 px-5 py-4 text-sm">
-                <dt className="text-[var(--color-ink-faint)]">Funder billed (source)</dt>
-                <dd className="text-right"><Money value={staging.reconciliation.workbookAgencyGross} /></dd>
-                <dt className="text-[var(--color-ink-faint)]">Funder billed (staged)</dt>
-                <dd className="text-right"><Money value={staging.reconciliation.importedAgencyGross} /></dd>
-                <dt className="text-[var(--color-ink-faint)]">Employee base (source)</dt>
-                <dd className="text-right"><Money value={staging.reconciliation.workbookInternalAmount} /></dd>
-                <dt className="text-[var(--color-ink-faint)]">Employee base (staged)</dt>
-                <dd className="text-right"><Money value={staging.reconciliation.importedInternalAmount} /></dd>
-              </dl>
-              <p className="border-t border-[var(--color-rule)] px-5 py-3 text-sm text-[var(--color-ink-soft)]">
-                {staging.reconciliation.note}
-              </p>
-            </Card>
+            {displayedReconciliation ? (
+              <Card
+                className="scroll-mt-24"
+                title="Source reconciliation"
+                description={committed ? "Recorded control totals compared with the current imported ledger" : "Control totals compared with staged activity"}
+                action={committed && actionableRows > 0
+                  ? <ButtonLink href={correctionsHref}>Correct held rows</ButtonLink>
+                  : undefined}
+              >
+                <span id="reconciliation" className="block scroll-mt-24" aria-hidden />
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-2 px-5 py-4 text-sm">
+                  <dt className="text-[var(--color-ink-faint)]">Funder billed (source)</dt>
+                  <dd className="text-right"><Money value={displayedReconciliation.workbookAgencyGross} /></dd>
+                  <dt className="text-[var(--color-ink-faint)]">Funder billed ({committed ? "ledger" : "staged"})</dt>
+                  <dd className="text-right"><Money value={displayedReconciliation.importedAgencyGross} /></dd>
+                  <dt className="text-[var(--color-ink-faint)]">Employee base (source)</dt>
+                  <dd className="text-right"><Money value={displayedReconciliation.workbookInternalAmount} /></dd>
+                  <dt className="text-[var(--color-ink-faint)]">Employee base ({committed ? "ledger" : "staged"})</dt>
+                  <dd className="text-right"><Money value={displayedReconciliation.importedInternalAmount} /></dd>
+                </dl>
+                <p className="border-t border-[var(--color-rule)] px-5 py-3 text-sm text-[var(--color-ink-soft)]">
+                  {displayedReconciliation.note}
+                </p>
+              </Card>
+            ) : null}
 
-            <Card title="Unresolved references" description="Everything staging could not match">
+            <Card
+              title="Unresolved references"
+              description="Everything staging could not match"
+              action={committed && actionableRows > 0
+                ? <ButtonLink href={correctionsHref}>Correct rows</ButtonLink>
+                : undefined}
+            >
               <div className="space-y-3 px-5 py-4 text-sm">
                 <UnresolvedList label="Unknown programs" values={staging.unknownProgramLabels} />
                 <UnresolvedList label="Unmatched individuals" values={staging.unmatchedIndividualNames} />
@@ -115,21 +165,26 @@ export default async function ImportDetailPage({
               <CommitPanel
                 fileId={file.id}
                 validRows={counts!.valid}
-                heldRows={counts!.needsReview + counts!.invalid + counts!.duplicates}
+                heldRows={counts!.needsReview + counts!.invalid}
               />
             </div>
           ) : null}
 
           {staging.warnings.length > 0 ? (
             <div className="mt-4">
-              <Card title="Staging warnings" description={`${staging.warnings.length} recorded; the first 100 are shown`}>
-                <Table head={<><Th>Row</Th><Th>Severity</Th><Th>Category</Th><Th>Message</Th></>}>
+              <Card
+                title="Staging warnings"
+                description={committed
+                  ? `${staging.warnings.length} recorded at import time. Resolved warnings remain visible as history.`
+                  : `${staging.warnings.length} recorded. Commit the file to create a correction queue; held rows enter the ledger only after an explicit reviewed apply.`}
+              >
+                <Table head={<><Th>Row</Th><Th>Severity</Th><Th>Category</Th><Th>What to do</Th></>}>
                   {staging.warnings.slice(0, 100).map((w, index) => (
                     <Tr key={`${w.category}-${w.sourceRowNumber}-${index}`}>
                       <Td className="tnum">{w.sourceRowNumber ?? "—"}</Td>
                       <Td><Badge value={w.severity === "error" ? "invalid" : w.severity === "warning" ? "needs_review" : "pending"} label={w.severity} /></Td>
                       <Td>{w.category.replace(/_/g, " ")}</Td>
-                      <Td>{w.message}</Td>
+                      <Td>{importIssueCopy(w.category, w.message)}</Td>
                     </Tr>
                   ))}
                 </Table>
@@ -159,15 +214,20 @@ export default async function ImportDetailPage({
               <EmptyState title="No rows match this filter" />
             ) : (
               <>
-                <Table head={<><Th numeric>Source row</Th><Th>Status</Th><Th>Individual</Th><Th>Employee</Th><Th>Program</Th><Th>Fingerprint</Th></>}>
+                <Table head={<><Th numeric>Source row</Th><Th>Status</Th><Th>Individual</Th><Th>Employee</Th><Th>Program</Th><Th>Fingerprint</Th><Th><span className="sr-only">Open</span></Th></>}>
                   {committedRows.rows.map((row) => (
                     <Tr key={row.id}>
                       <Td numeric className="tnum">{row.sourceRowNumber}</Td>
                       <Td><Badge value={row.status} /></Td>
-                      <Td>{row.individual ?? <span className="text-[var(--color-ink-faint)]">{row.raw?.individual ?? "—"}</span>}</Td>
-                      <Td>{row.employee ?? <span className="text-[var(--color-ink-faint)]">{row.raw?.employee ?? "—"}</span>}</Td>
-                      <Td>{row.program ?? <span className="text-[var(--color-ink-faint)]">{row.raw?.program ?? "—"}</span>}</Td>
+                      <Td>{row.individual ?? <span className="text-[var(--color-ink-faint)]">{storedSourceCell(row.raw, "individual")}</span>}</Td>
+                      <Td>{row.employee ?? <span className="text-[var(--color-ink-faint)]">{storedSourceCell(row.raw, "employee")}</span>}</Td>
+                      <Td>{row.program ?? <span className="text-[var(--color-ink-faint)]">{storedSourceCell(row.raw, "programDescription")}</span>}</Td>
                       <Td><code className="text-xs">{row.fingerprint ? `${row.fingerprint.slice(0, 16)}…` : "—"}</code></Td>
+                      <Td>
+                        <Link className="text-xs font-semibold text-[var(--color-primary)] underline-offset-2 hover:underline" href={importCorrectionsHref(file.id, row.id)}>
+                          {row.status === "imported" ? "Open source" : "Fix row"}
+                        </Link>
+                      </Td>
                     </Tr>
                   ))}
                 </Table>
@@ -183,14 +243,25 @@ export default async function ImportDetailPage({
           </Card>
 
           {warnings.length > 0 ? (
-            <Card title="Recorded warnings" description="Stored with the batch so they survive the review session">
-              <Table head={<><Th>Row</Th><Th>Severity</Th><Th>Category</Th><Th>Message</Th></>}>
+            <Card title="Recorded warnings" description="Historical warnings stay with the batch; only unresolved held rows offer a fix action">
+              <Table head={<><Th>Row</Th><Th>Severity</Th><Th>Category</Th><Th>What to do</Th><Th><span className="sr-only">Open</span></Th></>}>
                 {warnings.map((w) => (
                   <Tr key={w.id}>
                     <Td className="tnum">{w.sourceRowNumber ?? "—"}</Td>
                     <Td><Badge value={w.severity === "error" ? "invalid" : "needs_review"} label={w.severity} /></Td>
                     <Td>{w.category.replace(/_/g, " ")}</Td>
-                    <Td>{w.message}</Td>
+                    <Td>{w.resolvedAt ? "Resolved; retained as source history." : importIssueCopy(w.category, w.message)}</Td>
+                    <Td>
+                      {w.importRowId && !w.resolvedAt && ["needs_review", "invalid"].includes(w.rowStatus ?? "") ? (
+                        <Link className="text-xs font-semibold text-[var(--color-primary)] underline-offset-2 hover:underline" href={importCorrectionsHref(file.id, w.importRowId)}>
+                          Fix row
+                        </Link>
+                      ) : w.importRowId ? (
+                        <Link className="text-xs font-semibold text-[var(--color-primary)] underline-offset-2 hover:underline" href={importCorrectionsHref(file.id, w.importRowId)}>
+                          Source history
+                        </Link>
+                      ) : <span className="text-xs text-[var(--color-ink-faint)]">Import-level note</span>}
+                    </Td>
                   </Tr>
                 ))}
               </Table>
@@ -227,4 +298,13 @@ function UnresolvedList({ label, values }: { label: string; values: string[] }) 
       )}
     </div>
   );
+}
+
+function storedSourceCell(raw: Record<string, unknown>, field: string): string {
+  const nested = raw?.raw;
+  const cells = nested && typeof nested === "object" && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : raw;
+  const value = cells[field];
+  return value == null || String(value).trim() === "" ? "—" : String(value);
 }

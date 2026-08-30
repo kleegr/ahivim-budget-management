@@ -14,37 +14,42 @@ export default function DashboardLoading() {
         <Skeleton className="h-8 w-32 rounded-md" />
       </div>
 
-      {/* Workspace buttons */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <Skeleton key={i} className="h-[4.5rem] w-full rounded-lg" />
-        ))}
-      </div>
-
-      {/* Headline totals */}
-      <Skeleton className="mb-2 mt-6 h-3 w-24" />
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="card px-4 py-3.5">
-            <Skeleton className="h-3 w-24" />
-            <Skeleton className="mt-2 h-6 w-28" />
-            <Skeleton className="mt-2 h-3 w-20" />
-          </div>
-        ))}
-      </div>
-
-      {/* Two panels */}
-      <div className="mt-6 grid gap-4 lg:grid-cols-2">
-        {Array.from({ length: 2 }).map((_, i) => (
-          <div key={i} className="rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-5">
-            <Skeleton className="h-5 w-40" />
-            <div className="mt-3 space-y-2">
-              {Array.from({ length: 4 }).map((_, j) => (
-                <Skeleton key={j} className="h-6 w-full" />
-              ))}
+      {/* Responsibility workspaces */}
+      <div className="border-y border-[var(--color-rule-strong)] py-5">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <Skeleton className="h-5 w-36" />
+          <Skeleton className="h-3 w-48" />
+        </div>
+        <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="px-4 py-3">
+              <div className="flex items-center gap-3">
+                <Skeleton className="h-9 w-9 rounded-md" />
+                <div className="flex-1">
+                  <Skeleton className="h-3 w-16" />
+                  <Skeleton className="mt-2 h-4 w-28" />
+                </div>
+              </div>
+              <Skeleton className="mt-4 h-3 w-full" />
+              <Skeleton className="mt-2 h-3 w-3/4" />
+              <Skeleton className="mt-4 h-4 w-24" />
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
+      </div>
+
+      {/* Money position */}
+      <div className="py-8">
+        <Skeleton className="mb-4 h-5 w-32" />
+        <div className="grid border-y border-[var(--color-rule-strong)] sm:grid-cols-3 sm:divide-x sm:divide-[var(--color-rule)]">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="px-5 py-4">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="mt-3 h-7 w-28" />
+              <Skeleton className="mt-3 h-3 w-full" />
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

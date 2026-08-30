@@ -57,6 +57,14 @@ describe("program normalization", () => {
     expect(result.code).toBeNull();
   });
 
+  it("uses an approved database alias supplied by staging", () => {
+    const result = resolveProgram("Custom Day Supports", {
+      "custom day supports": "DAY_HAB",
+    });
+    expect(result.matched).toBe(true);
+    expect(result.code).toBe("DAY_HAB");
+  });
+
   it("treats a blank label as unmatched rather than defaulting", () => {
     expect(resolveProgram("").matched).toBe(false);
     expect(resolveProgram(null).matched).toBe(false);

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Search, X } from "lucide-react";
@@ -17,6 +18,7 @@ export default function CommandBar({
   canEditDocuments = false,
   canUsePortal = false,
   canManageAgencies = false,
+  onNavigate,
 }: {
   role?: string;
   accessResolved?: boolean;
@@ -29,12 +31,14 @@ export default function CommandBar({
   canEditDocuments?: boolean;
   canUsePortal?: boolean;
   canManageAgencies?: boolean;
+  onNavigate?: (href: string) => void;
 } = {}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const access = useMemo<NavigationAccess>(
     () => ({ role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies }),
@@ -64,10 +68,11 @@ export default function CommandBar({
 
   const go = useCallback(
     (href: string) => {
+      onNavigate?.(href);
       close();
       router.push(href);
     },
-    [close, router],
+    [close, onNavigate, router],
   );
 
   useEffect(() => {
@@ -92,10 +97,38 @@ export default function CommandBar({
     inputRef.current?.focus();
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    const keepFocusInside = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )).filter((element) => element.getClientRects().length > 0);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", keepFocusInside);
     return () => {
+      document.removeEventListener("keydown", keepFocusInside);
       document.body.style.overflow = previousOverflow;
     };
-  }, [open]);
+  }, [close, open]);
 
   useEffect(() => {
     if (active >= results.length) setActive(0);
@@ -105,15 +138,17 @@ export default function CommandBar({
 
   return (
     <div
+      ref={dialogRef}
       className="overlay-in fixed inset-0 z-[60] flex items-start justify-center bg-black/30 p-4 pt-[12vh] backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-label="Search Ahivim"
-      onClick={close}
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) close();
+      }}
     >
       <div
         className="pop-in w-full max-w-lg origin-top overflow-hidden rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] shadow-2xl"
-        onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center border-b border-[var(--color-rule)] px-3">
           <Search className="h-4 w-4 shrink-0 text-[var(--color-ink-faint)]" aria-hidden />
@@ -135,16 +170,13 @@ export default function CommandBar({
                 event.preventDefault();
                 const item = results[active];
                 if (item) go(item.href);
-              } else if (event.key === "Escape") {
-                event.preventDefault();
-                close();
               }
             }}
             placeholder="Search workspaces and reports"
             className="min-w-0 flex-1 bg-transparent px-3 py-3 text-sm outline-none"
             aria-label="Search workspaces and reports"
           />
-          <button type="button" onClick={close} className="btn btn-sm btn-ghost grid h-8 w-8 place-items-center p-0" aria-label="Close search" title="Close search">
+          <button type="button" onClick={close} className="btn btn-sm btn-icon btn-ghost" aria-label="Close search" title="Close search">
             <X className="h-4 w-4" aria-hidden />
           </button>
         </div>
@@ -152,10 +184,13 @@ export default function CommandBar({
         <ul className="max-h-[55vh] overflow-auto py-1">
           {results.map((item, index) => (
             <li key={item.id}>
-              <button
-                type="button"
+              <Link
+                href={item.href}
                 onMouseEnter={() => setActive(index)}
-                onClick={() => go(item.href)}
+                onNavigate={() => {
+                  onNavigate?.(item.href);
+                  close();
+                }}
                 className={`flex min-h-11 w-full items-center justify-between gap-4 px-4 py-2 text-left text-sm ${
                   index === active
                     ? "bg-[var(--color-primary-tint)] text-[var(--color-primary)]"
@@ -164,7 +199,7 @@ export default function CommandBar({
               >
                 <span className="font-medium">{item.label}</span>
                 <span className="truncate text-xs text-[var(--color-ink-faint)]">{item.hint}</span>
-              </button>
+              </Link>
             </li>
           ))}
           {results.length === 0 ? (

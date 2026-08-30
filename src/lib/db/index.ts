@@ -6,9 +6,9 @@ import * as schema from "./schema";
 /**
  * Neon connection.
  *
- * The WebSocket pool driver is used rather than the HTTP driver because the
- * import commit must run inside a real database transaction — a partially
- * committed import is worse than a failed one.
+ * The pool keeps WebSocket sessions available because import and financial
+ * writes must run inside real database transactions. Ordinary Pool.query()
+ * reads use Neon's HTTP transport in production for lower navigation latency.
  *
  * The connection string is read from the environment and is never logged,
  * echoed in an error message, or returned to a client.
@@ -17,6 +17,14 @@ import * as schema from "./schema";
 if (!globalThis.WebSocket) {
   neonConfig.webSocketConstructor = ws;
 }
+
+// Almost every screen performs independent Pool.query() reads. Send those
+// one-shot queries over Neon's lower-latency HTTP transport instead of paying
+// for a WebSocket handshake on every server-rendered navigation. Code paths
+// that call pool.connect() still retain the session/transaction semantics used
+// by imports and financial writes. The local WebSocket proxy has no HTTP SQL
+// endpoint, so development and database-backed tests keep the original path.
+neonConfig.poolQueryViaFetch = !process.env.NEON_WS_PROXY;
 
 /**
  * Local development and end-to-end testing against a plain PostgreSQL.

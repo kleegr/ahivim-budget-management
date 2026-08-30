@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
 import { exceptionCounts } from "@/lib/data/queries";
 import { ButtonLink, Card, EmptyState, ErrorPanel, PageHeader, StatusBadge, Table, Td, Th, Tr } from "@/components/ui";
+import { reviewQueueHref } from "@/lib/nav/review-actions";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Review — Ahivim Budget Management" };
@@ -52,7 +53,7 @@ export default async function ReviewPage() {
           title="Review inbox"
           description="Decisions waiting for a person."
         />
-        <ErrorPanel title="Couldn't load the review inbox">{result.error}</ErrorPanel>
+        <ErrorPanel title="Review inbox is unavailable">{result.error}</ErrorPanel>
       </>
     );
   }
@@ -63,17 +64,25 @@ export default async function ReviewPage() {
   const decisions: Section[] = [
     {
       key: "names",
-      question: "Unresolved names",
-      detail: "Approve an imported spelling or connect it to the correct person.",
-      href: "/aliases",
-      count: c.unmatchedNames + c.pendingAliases,
+      question: "Imported names need a match",
+      detail: "Choose the correct individual or employee on each source row.",
+      href: reviewQueueHref("unmatched_names"),
+      count: c.unmatchedNames,
+      tone: "warn",
+    },
+    {
+      key: "aliases",
+      question: "Name spellings need approval",
+      detail: "Approve a spelling before the system reuses it on future imports.",
+      href: reviewQueueHref("pending_aliases"),
+      count: c.pendingAliases,
       tone: "warn",
     },
     {
       key: "duplicates",
       question: "Possible duplicate people",
       detail: "Confirm whether two records belong to the same person.",
-      href: "/matches",
+      href: reviewQueueHref("duplicate_people"),
       count: c.duplicateIndividuals,
       tone: "warn",
     },
@@ -81,7 +90,7 @@ export default async function ReviewPage() {
       key: "programs",
       question: "Unknown programs",
       detail: "Map source values to a program before they enter billed activity.",
-      href: "/exceptions",
+      href: reviewQueueHref("unknown_programs"),
       count: c.unknownPrograms,
       tone: "warn",
     },
@@ -89,7 +98,7 @@ export default async function ReviewPage() {
       key: "reconcile",
       question: "Source totals do not reconcile",
       detail: "Review a difference between imported control totals and committed activity.",
-      href: "/reconciliation",
+      href: reviewQueueHref("reconciliation"),
       count: c.reconciliationDifferences,
       tone: "info",
     },
@@ -102,7 +111,7 @@ export default async function ReviewPage() {
       key: "rates",
       question: "Unexpected rates",
       detail: "Billed activity used a rate outside the configured schedule.",
-      href: "/exceptions",
+      href: reviewQueueHref("rates"),
       count: c.rateExceptions,
       tone: "info",
     },
@@ -110,7 +119,7 @@ export default async function ReviewPage() {
       key: "groups",
       question: "Group sessions to confirm",
       detail: "Confirm whether related rows represent one shared service session.",
-      href: "/reconciliation/groups",
+      href: reviewQueueHref("groups"),
       count: c.groupReviewIssues,
       tone: "info",
     },
@@ -118,7 +127,7 @@ export default async function ReviewPage() {
       key: "duprows",
       question: "Possible duplicate rows",
       detail: "Two committed rows share the same source details.",
-      href: "/exceptions",
+      href: reviewQueueHref("duplicate_rows"),
       count: c.duplicateCandidates,
       tone: "info",
     },
@@ -126,7 +135,7 @@ export default async function ReviewPage() {
       key: "over",
       question: "Over authorization",
       detail: "Billed hours have passed the current authorization.",
-      href: "/reports/utilization-outliers",
+      href: reviewQueueHref("over_authorization"),
       count: c.overAuthorization,
       tone: "danger",
     },

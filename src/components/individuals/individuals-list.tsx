@@ -23,7 +23,13 @@ import { ColumnChooser } from "@/components/data-grid/toolbar";
 import { useGrid } from "@/components/data-grid/use-grid";
 import type { ColumnDef, SortState } from "@/components/data-grid/types";
 import { BUDGET_STATUS_PRESENT, type BudgetLineStatus } from "@/lib/business/budget-status";
+import { isActiveBillingWithoutBudget, isActiveOverAuthorization } from "@/lib/business/budget-board-status";
 import { dec, formatHours, formatMoney } from "@/lib/money";
+import {
+  individualBudgetHref,
+  individualPortfolioHref,
+  type IndividualAttentionView,
+} from "@/lib/nav/review-actions";
 
 export type IndividualBudget = {
   status: UtilizationStatus;
@@ -55,7 +61,7 @@ export type IndividualRow = {
   insightsVisible: boolean;
 };
 
-type DecisionFilter = "all" | "attention" | "over" | "behind" | "renewing" | "billing_without_budget" | "no_activity";
+type DecisionFilter = IndividualAttentionView;
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const LOCKED_COLUMNS: ReadonlySet<string> = new Set(["name"]);
@@ -70,14 +76,19 @@ function formatDate(value: string): string {
 }
 
 function isOver(row: IndividualRow): boolean {
-  return row.insightsVisible && (
-    row.budget?.status === "over_authorization"
-    || row.budget?.plainStatus === "over"
-  );
+  return row.insightsVisible && isActiveOverAuthorization(row);
 }
 
 function isBehind(row: IndividualRow): boolean {
   return row.insightsVisible && row.budget?.status === "behind_pace";
+}
+
+function isAtLimit(row: IndividualRow): boolean {
+  return row.insightsVisible && (
+    isOver(row)
+    || row.budget?.status === "near_exhaustion"
+    || row.budget?.status === "fully_used"
+  );
 }
 
 function isRenewing(row: IndividualRow): boolean {
@@ -86,7 +97,7 @@ function isRenewing(row: IndividualRow): boolean {
 }
 
 function hasBillingWithoutBudget(row: IndividualRow): boolean {
-  return row.insightsVisible && row.hasBilling && row.budget === null;
+  return row.insightsVisible && isActiveBillingWithoutBudget(row);
 }
 
 function hasNoActivity(row: IndividualRow): boolean {
@@ -108,6 +119,7 @@ function needsAttention(row: IndividualRow): boolean {
 function matchesFilter(row: IndividualRow, filter: DecisionFilter): boolean {
   if (filter === "attention") return needsAttention(row);
   if (filter === "over") return row.status === "active" && isOver(row);
+  if (filter === "at_limit") return row.status === "active" && isAtLimit(row);
   if (filter === "behind") return row.status === "active" && isBehind(row);
   if (filter === "renewing") return row.status === "active" && isRenewing(row);
   if (filter === "billing_without_budget") return row.status === "active" && hasBillingWithoutBudget(row);
@@ -234,17 +246,21 @@ function HealthCell({ row }: { row: IndividualRow }) {
   if (!row.insightsVisible) return <span className="text-[var(--color-ink-faint)]">-</span>;
   if (row.budget) {
     return (
-      <>
+      <Link
+        href={individualBudgetHref(row.id)}
+        className="block rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]"
+        title={`Open ${row.name}'s budget`}
+      >
         <StatusPill status={row.budget.plainStatus} />
         <PaceBar budget={row.budget} />
-      </>
+      </Link>
     );
   }
   if (row.hasBilling) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-warn)]">
+      <Link href={individualBudgetHref(row.id)} className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-warn)] underline-offset-2 hover:underline">
         <ReceiptText size={14} aria-hidden /> Billing without budget
-      </span>
+      </Link>
     );
   }
   return (
@@ -281,9 +297,15 @@ function SortHead({ column, sort, onSort }: {
   );
 }
 
-export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
+export default function IndividualsList({
+  rows,
+  initialFilter = "all",
+}: {
+  rows: IndividualRow[];
+  initialFilter?: DecisionFilter;
+}) {
   const [showInactive, setShowInactive] = useState(false);
-  const [filter, setFilter] = useState<DecisionFilter>("all");
+  const [filter, setFilter] = useState<DecisionFilter>(initialFilter);
 
   const activeRows = useMemo(
     () => rows.filter((row) => row.status === "active" && !row.archived),
@@ -294,6 +316,7 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
     all: activeRows.length,
     attention: activeRows.filter(needsAttention).length,
     over: activeRows.filter(isOver).length,
+    at_limit: activeRows.filter(isAtLimit).length,
     behind: activeRows.filter(isBehind).length,
     renewing: activeRows.filter(isRenewing).length,
     billing_without_budget: activeRows.filter(hasBillingWithoutBudget).length,
@@ -311,6 +334,7 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
     if (hasPortfolioVisibility) {
       options.push(
         { key: "attention", label: "Needs attention", icon: AlertTriangle },
+        { key: "at_limit", label: "At or over limit", icon: Gauge },
         { key: "over", label: "Over authorization", icon: Gauge },
         { key: "behind", label: "Behind pace", icon: ArrowDown },
         { key: "renewing", label: "Renewing soon", icon: CalendarClock },
@@ -346,7 +370,7 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
     {
       key: "renews", label: "Renewal", kind: "date", width: 140,
       accessor: (row) => row.budget?.renews ?? "9999-12-31",
-      render: (row) => row.budget ? <Renewal budget={row.budget} /> : <span className="text-[var(--color-ink-faint)]">-</span>,
+      render: (row) => row.budget ? <Link href={individualBudgetHref(row.id)} className="block underline-offset-2 hover:underline"><Renewal budget={row.budget} /></Link> : <span className="text-[var(--color-ink-faint)]">-</span>,
     },
     {
       key: "health", label: "Budget health", kind: "int", width: 170,
@@ -418,9 +442,13 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
 
   const inactiveCount = rows.filter((row) => row.status !== "active" || row.archived).length;
   const hasActiveFilters = grid.search.trim().length > 0 || filter !== "all";
+  const chooseFilter = (next: DecisionFilter) => {
+    setFilter(next);
+    if (typeof window !== "undefined") window.history.replaceState(null, "", individualPortfolioHref(next));
+  };
   const resetFilters = () => {
     grid.setSearch("");
-    setFilter("all");
+    chooseFilter("all");
   };
 
   return (
@@ -483,7 +511,7 @@ export default function IndividualsList({ rows }: { rows: IndividualRow[] }) {
               <button
                 key={key}
                 type="button"
-                onClick={() => setFilter(key)}
+                onClick={() => chooseFilter(key)}
                 aria-pressed={selected}
                 className={`inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors sm:min-h-9 ${
                   selected

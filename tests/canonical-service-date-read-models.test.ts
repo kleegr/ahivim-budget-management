@@ -246,6 +246,13 @@ describe("canonical service-date read models", () => {
     );
     expect(actuals).toContain("LEFT JOIN programs p ON p.id = t.program_id");
     expect(actuals).toContain("effective_payment_recipient(");
+    expect(actuals).toContain("LEFT JOIN employee_payroll_checks verified_check");
+    expect(actuals).toContain("verified_check.employee_id = check_row.employee_id");
+    expect(actuals).toContain("'source:', check_row.employee_id::text");
+    expect(actuals).toContain("COALESCE(check_row.check_date::text, 'no-date')");
+    expect(actuals).toContain("COALESCE(check_row.period_begin::text, 'no-period-begin')");
+    expect(actuals).toContain("LEFT JOIN check_tot ct ON ct.check_key = cf.check_key");
+    expect(actuals).not.toContain("GROUP BY check_row.check_number");
     expect(actuals).not.toContain("t.period_begin >= w.start_date");
   });
 });

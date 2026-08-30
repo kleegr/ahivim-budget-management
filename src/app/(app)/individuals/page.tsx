@@ -6,6 +6,7 @@ import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
 import IndividualsList from "@/components/individuals/individuals-list";
 import { agencyDate } from "@/lib/business/agency-time";
+import { normalizeIndividualAttentionView } from "@/lib/nav/review-actions";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Individuals — Ahivim Budget Management" };
@@ -24,9 +25,16 @@ function individualFields() {
   );
 }
 
-export default async function IndividualsPage() {
+export default async function IndividualsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const user = await requireUser("viewer");
   const canEdit = user.role !== "viewer";
+  const sp = await searchParams;
+  const requestedView = Array.isArray(sp.view) ? sp.view[0] : sp.view;
+  const initialView = normalizeIndividualAttentionView(requestedView);
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
@@ -60,7 +68,7 @@ export default async function IndividualsPage() {
       />
 
       {!result.ok ? (
-        <ErrorPanel title="Could not load individuals">{result.error}</ErrorPanel>
+        <ErrorPanel title="Budget list is unavailable">{result.error}</ErrorPanel>
       ) : result.data.length === 0 ? (
         <Card>
           <EmptyState title="No individuals yet">
@@ -68,7 +76,7 @@ export default async function IndividualsPage() {
           </EmptyState>
         </Card>
       ) : (
-        <IndividualsList rows={result.data} />
+        <IndividualsList key={initialView} rows={result.data} initialFilter={initialView} />
       )}
     </>
   );

@@ -324,7 +324,9 @@ async function loadEmployeeTransactions(
        JOIN employees e ON e.id = t.employee_id
        LEFT JOIN programs p ON p.id = t.program_id
        LEFT JOIN employee_payroll_checks pc
-         ON pc.id = t.payroll_check_id AND pc.verification_status = 'verified'
+         ON pc.id = t.payroll_check_id
+        AND pc.employee_id = t.employee_id
+        AND pc.verification_status = 'verified'
        LEFT JOIN LATERAL (
          SELECT ed.id, ed.revision, ed.direct_rule, ed.direct_percent, ed.agency_cut_percent
            FROM employee_deals ed

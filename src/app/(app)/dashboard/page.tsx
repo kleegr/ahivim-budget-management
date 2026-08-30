@@ -4,6 +4,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   ArrowRight,
   CalendarClock,
+  ChevronDown,
   CircleDollarSign,
   Database,
   HandCoins,
@@ -12,6 +13,7 @@ import {
   RefreshCw,
   ShieldCheck,
   TriangleAlert,
+  UsersRound,
 } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
@@ -19,15 +21,29 @@ import { getFinancialDashboard } from "@/lib/data/financial-dashboard";
 import { getSettlementDashboard } from "@/lib/data/settlements";
 import { getReconciliation, listImports } from "@/lib/data/app-queries";
 import { exceptionCounts, listIndividualBudgetBoard } from "@/lib/data/queries";
+import { countActiveBillingWithoutBudget } from "@/lib/business/budget-board-status";
 import { dec, formatMoney } from "@/lib/money";
 import { ErrorPanel, PageHeader, ButtonLink } from "@/components/ui";
-import FirstRunWelcome from "@/components/first-run-welcome";
 import { agencyDate } from "@/lib/business/agency-time";
+import {
+  dashboardWorkstreamSummaries,
+  type DashboardWorkstreamSummary,
+} from "@/lib/dashboard/workstreams";
+import { individualPortfolioHref, reviewQueueHref } from "@/lib/nav/review-actions";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Overview - Ahivim Budget Management" };
 
 type Tone = "danger" | "warn" | "info" | "good";
+
+interface DashboardAction {
+  href: string;
+  icon: LucideIcon;
+  count: number;
+  title: string;
+  detail: string;
+  tone: Tone;
+}
 
 const TONE_STYLES: Record<Tone, { icon: string; value: string; bar: string }> = {
   danger: {
@@ -120,6 +136,82 @@ function ActionRow({
         <ArrowRight size={16} className="text-[var(--color-ink-faint)] group-hover:text-[var(--color-primary)]" aria-hidden />
       </span>
     </Link>
+  );
+}
+
+function WorkstreamPanel({
+  summary,
+  icon: Icon,
+  description,
+  destinations,
+  actions,
+}: {
+  summary: DashboardWorkstreamSummary;
+  icon: LucideIcon;
+  description: string;
+  destinations: { href: string; label: string }[];
+  actions: DashboardAction[];
+}) {
+  const style = TONE_STYLES[summary.tone];
+  const status = summary.openCount > 0
+    ? `${summary.openCount.toLocaleString()} open`
+    : summary.monitoringCount > 0
+      ? `${summary.monitoringCount.toLocaleString()} monitored`
+      : "Clear";
+
+  return (
+    <article className="min-w-0 px-4 py-5 sm:px-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-md ${style.icon}`}>
+            <Icon size={18} strokeWidth={1.8} aria-hidden />
+          </span>
+          <div className="min-w-0">
+            <p className="eyebrow">{summary.role}</p>
+            <h3 className="mt-0.5 text-sm font-semibold text-[var(--color-ink)]">{summary.label}</h3>
+          </div>
+        </div>
+        <span className={`tnum shrink-0 text-sm font-semibold ${style.value}`}>{status}</span>
+      </div>
+
+      <p className="mt-3 min-h-10 text-xs leading-5 text-[var(--color-ink-soft)]">{description}</p>
+      {summary.monitoringCount > 0 && summary.openCount > 0 ? (
+        <p className="mt-1 text-xs font-medium text-[var(--color-info)]">
+          {summary.monitoringCount.toLocaleString()} additional signals are being monitored.
+        </p>
+      ) : null}
+
+      <nav aria-label={`${summary.label} destinations`} className="mt-4 flex flex-wrap gap-x-4 gap-y-2">
+        {destinations.map((destination, index) => (
+          <Link
+            key={destination.href}
+            href={destination.href}
+            className={index === 0
+              ? "inline-flex items-center gap-1 text-sm font-semibold text-[var(--color-primary)] hover:underline"
+              : "text-xs font-semibold text-[var(--color-ink-soft)] hover:text-[var(--color-primary)] hover:underline"}
+          >
+            {destination.label}
+            {index === 0 ? <ArrowRight size={14} aria-hidden /> : null}
+          </Link>
+        ))}
+      </nav>
+
+      {actions.length > 0 ? (
+        <details className="group mt-4 border-t border-[var(--color-rule)] pt-3">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-semibold text-[var(--color-ink-soft)] hover:text-[var(--color-primary)] [&::-webkit-details-marker]:hidden">
+            Priority breakdown
+            <ChevronDown size={15} className="transition-transform group-open:rotate-180" aria-hidden />
+          </summary>
+          <div className="mt-2">
+            {actions.map((action) => <ActionRow key={action.title} {...action} />)}
+          </div>
+        </details>
+      ) : (
+        <p className="mt-4 flex items-center gap-1.5 border-t border-[var(--color-rule)] pt-3 text-xs font-medium text-[var(--color-success)]">
+          <ShieldCheck size={14} aria-hidden /> Nothing waiting for this workspace
+        </p>
+      )}
+    </article>
   );
 }
 
@@ -229,7 +321,7 @@ export default async function DashboardPage({
       getFinancialDashboard(pool),
       getSettlementDashboard(pool),
       listIndividualBudgetBoard(pool, now),
-      exceptionCounts(pool),
+      exceptionCounts(pool, { includeOverAuthorization: false }),
       listImports(pool, 1),
       getReconciliation(pool, 1),
     ]);
@@ -246,7 +338,8 @@ export default async function DashboardPage({
   }
 
   const { financial, settlements, budgets, review, imports, reconciliation } = result.data;
-  const activeBudgets = budgets.filter((row) => row.status === "active" && !row.archived && row.budget);
+  const activeIndividuals = budgets.filter((row) => row.status === "active" && !row.archived);
+  const activeBudgets = activeIndividuals.filter((row) => row.budget);
   const budgetCount = activeBudgets.length;
   const budgetStatusCount = (statuses: string[]) =>
     activeBudgets.filter((row) => row.budget && statuses.includes(row.budget.status)).length;
@@ -258,17 +351,8 @@ export default async function DashboardPage({
     const days = row.budget?.daysToRenewal;
     return days != null && days >= 0 && days <= 60;
   }).length;
-  const billingWithoutBudget = financial.candidates.filter((row) => row.txCount > 0).length;
+  const billingWithoutBudget = countActiveBillingWithoutBudget(budgets);
   const transactionCount = financial.rows.reduce((sum, row) => sum + row.txCountPeriod, 0);
-  const reviewTotal =
-    review.unknownPrograms +
-    review.unmatchedNames +
-    review.duplicateIndividuals +
-    review.pendingAliases +
-    review.rateExceptions +
-    review.duplicateCandidates +
-    review.groupReviewIssues +
-    review.reconciliationDifferences;
 
   const currentMasser = settlements.rows.filter(
     (row) =>
@@ -286,38 +370,86 @@ export default async function DashboardPage({
     dec(0),
   );
 
-  const actions = [
-    ...(settlements.freshness.dirty
-      ? [{ href: "/settlements", icon: RefreshCw, count: 1, title: "Refresh payment balances", detail: settlements.freshness.lastRefreshError ?? "Budgets or transactions changed after the last payment refresh.", tone: "danger" as const }]
-      : []),
-    ...(settlements.summary.partialCount > 0
-      ? [{ href: "/settlements", icon: HandCoins, count: settlements.summary.partialCount, title: "Continue partial payments", detail: "A payment or collection was started but still has a balance.", tone: "warn" as const }]
-      : []),
-    ...(settlements.summary.creditCount > 0
-      ? [{ href: "/settlements", icon: CircleDollarSign, count: settlements.summary.creditCount, title: "Apply available credits", detail: `${formatMoney(settlements.summary.credits)} is available to offset future obligations.`, tone: "info" as const }]
-      : []),
-    ...(settlements.missingDeals.length > 0
-      ? [{ href: "/settlements", icon: TriangleAlert, count: settlements.missingDeals.length, title: "Set employee deal rules", detail: "A direct-check give-back cannot be calculated until its deal rule is set.", tone: "danger" as const }]
-      : []),
-    ...(settlements.checkIssues.length > 0
-      ? [{ href: "/settlements", icon: ReceiptText, count: settlements.checkIssues.length, title: "Resolve check data", detail: "Check identity, recipient, Direct-check net, or Employee base is incomplete or conflicting.", tone: "danger" as const }]
-      : []),
+  const planningActions: DashboardAction[] = [
     ...(atLimitBudgets > 0
-      ? [{ href: "/individuals", icon: TriangleAlert, count: atLimitBudgets, title: "Review budgets at their limit", detail: "These current budget periods are at least 90% used, fully used, or over hours.", tone: "danger" as const }]
+      ? [{ href: individualPortfolioHref("at_limit"), icon: TriangleAlert, count: atLimitBudgets, title: "Review budgets at their limit", detail: "These current budget periods are at least 90% used, fully used, or over hours.", tone: "danger" as const }]
       : []),
     ...(behindBudgets > 0
-      ? [{ href: "/individuals", icon: CalendarClock, count: behindBudgets, title: "Review budgets behind pace", detail: "Used hours trail elapsed time by more than the current pace tolerance.", tone: "warn" as const }]
+      ? [{ href: individualPortfolioHref("behind"), icon: CalendarClock, count: behindBudgets, title: "Review budgets behind pace", detail: "Used hours trail elapsed time by more than the current pace tolerance.", tone: "warn" as const }]
       : []),
     ...(renewalSoon > 0
-      ? [{ href: "/reports/expiring-authorizations", icon: CalendarClock, count: renewalSoon, title: "Prepare upcoming renewals", detail: "Current budget periods end within the next 60 days.", tone: "warn" as const }]
+      ? [{ href: individualPortfolioHref("renewing"), icon: CalendarClock, count: renewalSoon, title: "Prepare upcoming renewals", detail: "Current budget periods end within the next 60 days.", tone: "warn" as const }]
       : []),
     ...(billingWithoutBudget > 0
-      ? [{ href: "/calculations", icon: Landmark, count: billingWithoutBudget, title: "Set up budgets for billed individuals", detail: "Transactions exist, but no active budget setup is on file.", tone: "danger" as const }]
-      : []),
-    ...(reviewTotal > 0
-      ? [{ href: "/review", icon: Database, count: reviewTotal, title: "Clear the data review queue", detail: "Names, programs, rates, groups, duplicates, or reconciliations need a decision.", tone: "info" as const }]
+      ? [{ href: individualPortfolioHref("billing_without_budget"), icon: Landmark, count: billingWithoutBudget, title: "Set up budgets for billed individuals", detail: "Transactions exist, but no active budget setup is on file.", tone: "danger" as const }]
       : []),
   ];
+
+  const moneyActions: DashboardAction[] = [
+    ...(settlements.freshness.dirty
+      ? [{ href: "/settlements?focus=refresh", icon: RefreshCw, count: 1, title: "Refresh payment balances", detail: settlements.freshness.lastRefreshError ?? "Budgets or transactions changed after the last payment refresh.", tone: "danger" as const }]
+      : []),
+    ...(settlements.summary.openCount > 0
+      ? [{ href: "/settlements?queue=open", icon: HandCoins, count: settlements.summary.openCount, title: "Complete open payment work", detail: "Payments, collections, or set-asides are ready to record.", tone: "warn" as const }]
+      : []),
+    ...(settlements.summary.partialCount > 0
+      ? [{ href: "/settlements?queue=open", icon: HandCoins, count: settlements.summary.partialCount, title: "Continue partial payments", detail: "A payment or collection was started but still has a balance.", tone: "warn" as const }]
+      : []),
+    ...(settlements.summary.creditCount > 0
+      ? [{ href: "/settlements?queue=credit", icon: CircleDollarSign, count: settlements.summary.creditCount, title: "Apply available credits", detail: `${formatMoney(settlements.summary.credits)} is available to offset future obligations.`, tone: "info" as const }]
+      : []),
+  ];
+
+  const staffingActions: DashboardAction[] = [
+    ...(settlements.missingDeals.length > 0
+      ? [{ href: "/settlements?focus=missing-deals", icon: TriangleAlert, count: settlements.missingDeals.length, title: "Set employee deal rules", detail: "A direct-check give-back cannot be calculated until its deal rule is set.", tone: "danger" as const }]
+      : []),
+    ...(settlements.checkIssues.length > 0
+      ? [{ href: "/settlements?focus=check-issues", icon: ReceiptText, count: settlements.checkIssues.length, title: "Resolve check data", detail: "Check identity, recipient, Direct-check net, or Employee base is incomplete or conflicting.", tone: "danger" as const }]
+      : []),
+  ];
+
+  const reviewActions: DashboardAction[] = [
+    ...(review.unmatchedNames > 0
+      ? [{ href: reviewQueueHref("unmatched_names"), icon: Database, count: review.unmatchedNames, title: "Match imported names", detail: "Connect each source row to the correct individual or employee.", tone: "warn" as const }]
+      : []),
+    ...(review.pendingAliases > 0
+      ? [{ href: reviewQueueHref("pending_aliases"), icon: Database, count: review.pendingAliases, title: "Approve name spellings", detail: "Approve a spelling before the system reuses it on future imports.", tone: "warn" as const }]
+      : []),
+    ...(review.duplicateIndividuals > 0
+      ? [{ href: reviewQueueHref("duplicate_people"), icon: UsersRound, count: review.duplicateIndividuals, title: "Confirm possible duplicate people", detail: "Decide whether two records belong to the same person.", tone: "warn" as const }]
+      : []),
+    ...(review.unknownPrograms > 0
+      ? [{ href: reviewQueueHref("unknown_programs"), icon: Database, count: review.unknownPrograms, title: "Map unknown programs", detail: "Connect source values to a configured program.", tone: "warn" as const }]
+      : []),
+    ...(review.reconciliationDifferences > 0
+      ? [{ href: reviewQueueHref("reconciliation"), icon: TriangleAlert, count: review.reconciliationDifferences, title: "Resolve source differences", detail: "Imported control totals do not agree with committed activity.", tone: "warn" as const }]
+      : []),
+  ];
+
+  const workstreamSummaries = dashboardWorkstreamSummaries({
+    planning: {
+      atLimit: atLimitBudgets,
+      behindPace: behindBudgets,
+      renewalSoon,
+      billingWithoutBudget,
+    },
+    money: {
+      ledgerNeedsRefresh: settlements.freshness.dirty,
+      openItems: settlements.summary.openCount,
+      partialPayments: settlements.summary.partialCount,
+      availableCredits: settlements.summary.creditCount,
+    },
+    staffing: {
+      missingDeals: settlements.missingDeals.length,
+      checkIssues: settlements.checkIssues.length,
+    },
+    review,
+  });
+  const planningSummary = workstreamSummaries.find((summary) => summary.key === "planning")!;
+  const moneySummary = workstreamSummaries.find((summary) => summary.key === "money")!;
+  const staffingSummary = workstreamSummaries.find((summary) => summary.key === "staffing")!;
+  const reviewSummary = workstreamSummaries.find((summary) => summary.key === "review")!;
 
   const latestImport = imports[0] ?? null;
   const latestReconciliation = reconciliation[0] ?? null;
@@ -338,7 +470,7 @@ export default async function DashboardPage({
       <PageHeader
         eyebrow="Operations"
         title="Overview"
-        description="The current operating position from active budgets, period-matched transactions, and the payment ledger."
+        description="Owner view of the team's open work, active budgets, period-matched transactions, and payment ledger."
         meta={
           <>
             <span>As of {readableDate(asOf)}</span>
@@ -357,25 +489,51 @@ export default async function DashboardPage({
         </div>
       ) : null}
 
-      <FirstRunWelcome />
-
-      <section aria-labelledby="action-queue-heading" className="border-y border-[var(--color-rule-strong)] py-5">
-        <SectionHeading id="action-queue-heading" title="Action queue" context="Only items that need a decision or follow-up appear here" />
-        {actions.length === 0 ? (
-          <div className="flex items-center gap-3 py-3">
-            <span className="grid h-10 w-10 place-items-center rounded-md bg-[var(--color-success-soft)] text-[var(--color-success)]">
-              <ShieldCheck size={20} aria-hidden />
-            </span>
-            <div>
-              <p className="text-sm font-semibold text-[var(--color-success)]">No open actions</p>
-              <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">Budget, payment, and data checks are clear as of today.</p>
-            </div>
-          </div>
-        ) : (
-          <div className="grid gap-x-8 lg:grid-cols-2">
-            {actions.map((action) => <ActionRow key={action.title} {...action} />)}
-          </div>
-        )}
+      <section aria-labelledby="team-workspaces-heading" className="border-y border-[var(--color-rule-strong)] py-5">
+        <SectionHeading id="team-workspaces-heading" title="Team workspaces" context="Open work grouped by responsibility" />
+        <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2 xl:grid-cols-4">
+          <WorkstreamPanel
+            summary={planningSummary}
+            icon={CalendarClock}
+            description="Authorized hours, future coverage, pace, and renewals."
+            destinations={[
+              { href: planningSummary.href, label: "Open planner" },
+              { href: "/individuals", label: "Budget portfolio" },
+              { href: "/reports/expiring-authorizations", label: "Renewals" },
+            ]}
+            actions={planningActions}
+          />
+          <WorkstreamPanel
+            summary={moneySummary}
+            icon={HandCoins}
+            description="Employee payments, give-backs, credits, and annual set-asides."
+            destinations={[
+              { href: moneySummary.href, label: "Open collections" },
+              { href: "/settlements", label: "Balances" },
+              { href: "/classes", label: "Class billing" },
+            ]}
+            actions={moneyActions}
+          />
+          <WorkstreamPanel
+            summary={staffingSummary}
+            icon={UsersRound}
+            description="Employee assignments, direct-pay deals, and check identity."
+            destinations={[
+              { href: staffingSummary.href, label: "Open employees" },
+            ]}
+            actions={staffingActions}
+          />
+          <WorkstreamPanel
+            summary={reviewSummary}
+            icon={Database}
+            description="Names, programs, source reconciliation, and monitored exceptions."
+            destinations={[
+              { href: reviewSummary.href, label: "Open review inbox" },
+              { href: "/reconciliation", label: "Reconciliation" },
+            ]}
+            actions={reviewActions}
+          />
+        </div>
       </section>
 
       <section aria-labelledby="money-position-heading" className="py-8">
@@ -386,7 +544,7 @@ export default async function DashboardPage({
           <MoneyMetric icon={Landmark} label="Agency spread" value={formatMoney(financial.totals.period.agencyMade)} detail="Funder billed less Employee base. This is not an employee give-back." />
         </div>
         <p className="mt-2 text-xs text-[var(--color-ink-faint)]">
-          Funder billed = Employee base + Agency spread. People with billing but no active budget are excluded here and listed in the action queue.
+          Funder billed = Employee base + Agency spread. People with billing but no active budget are excluded here and listed in Budget planning.
         </p>
 
         <div className="mt-6 grid divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] sm:grid-cols-4 sm:divide-x sm:divide-y-0">
@@ -484,11 +642,19 @@ export default async function DashboardPage({
             href="/reconciliation"
           />
           <DataHealthRow
-            icon={reviewTotal > 0 ? TriangleAlert : ShieldCheck}
+            icon={reviewSummary.openCount > 0 ? TriangleAlert : ShieldCheck}
             label="Review queue"
-            value={reviewTotal > 0 ? `${reviewTotal.toLocaleString()} open` : "Clear"}
-            detail={reviewTotal > 0 ? "Identity, configuration, group, or source differences need review." : "No unresolved data decisions."}
-            tone={reviewTotal > 0 ? "warn" : "good"}
+            value={reviewSummary.openCount > 0
+              ? `${reviewSummary.openCount.toLocaleString()} decisions`
+              : reviewSummary.monitoringCount > 0
+                ? `${reviewSummary.monitoringCount.toLocaleString()} monitored`
+                : "Clear"}
+            detail={reviewSummary.monitoringCount > 0
+              ? `${reviewSummary.monitoringCount.toLocaleString()} additional signals are being monitored.`
+              : reviewSummary.openCount > 0
+                ? "Identity, configuration, or source differences need a decision."
+                : "No unresolved data decisions."}
+            tone={reviewSummary.tone}
             href="/review"
           />
         </div>

@@ -5,9 +5,16 @@ import {
   transactionNaturalKey,
   type TransactionIdentity,
 } from "@/lib/business/fingerprint";
-import { stageRows, type StagingContext, type StagingResult } from "./stage";
+import {
+  rateConfigAtDate,
+  stageRows,
+  type EffectiveRateConfig,
+  type RateConfig,
+  type StagingContext,
+  type StagingResult,
+} from "./stage";
 import type { PgLikePool } from "./commit";
-import { currentRatesByProgram } from "@/lib/data/queries";
+import { agencyDate } from "@/lib/business/agency-time";
 
 /**
  * Shared plumbing between the upload route, the review page, and the commit
@@ -127,7 +134,48 @@ export async function loadStagingContext(
   pool: PgLikePool,
   workbookTotals?: { agencyGross?: string; internalAmount?: string },
 ): Promise<StagingContext> {
-  const ratesByProgram = await currentRatesByProgram(pool);
+  const rateFallbackDate = agencyDate();
+  const rateSchedules = await pool.query<{
+    code: string;
+    agency_rate: string | null;
+    internal_rate: string;
+    effective_from: string;
+    effective_to: string | null;
+  }>(
+    `SELECT p.code,
+            s.agency_rate::text AS agency_rate,
+            s.internal_rate::text AS internal_rate,
+            s.effective_from::text AS effective_from,
+            s.effective_to::text AS effective_to
+       FROM programs p
+       JOIN program_rate_schedules s ON s.program_id = p.id`,
+  );
+  const rateSchedulesByProgram: Record<string, EffectiveRateConfig[]> = {};
+  for (const row of rateSchedules.rows) {
+    const entries = rateSchedulesByProgram[row.code] ?? [];
+    entries.push({
+      agencyRate: row.agency_rate,
+      internalRate: row.internal_rate,
+      effectiveFrom: row.effective_from,
+      effectiveTo: row.effective_to,
+    });
+    rateSchedulesByProgram[row.code] = entries;
+  }
+  const ratesByProgram: Record<string, RateConfig> = {};
+  for (const [code, schedule] of Object.entries(rateSchedulesByProgram)) {
+    const current = rateConfigAtDate(schedule, rateFallbackDate);
+    if (current) ratesByProgram[code] = current;
+  }
+
+  const programAliases = await pool.query<{
+    normalized_alias: string;
+    code: string;
+  }>(
+    `SELECT a.normalized_alias, p.code
+       FROM program_aliases a
+       JOIN programs p ON p.id = a.program_id
+      WHERE a.status = 'approved' AND p.is_active = true`,
+  );
 
   const individuals = await pool.query<{
     id: string;
@@ -201,6 +249,11 @@ export async function loadStagingContext(
 
   return {
     ratesByProgram,
+    rateSchedulesByProgram,
+    rateFallbackDate,
+    programAliases: Object.fromEntries(
+      programAliases.rows.map((row) => [row.normalized_alias, row.code]),
+    ),
     individuals: individuals.rows.map((r) => ({
       id: r.id,
       normalizedName: r.normalized_name,

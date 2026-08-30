@@ -3,7 +3,7 @@ import { isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
 import { redirect } from "next/navigation";
 import { withDb } from "@/lib/data/pool";
 import { listTransactionsForGrid, type GridTransaction } from "@/lib/data/transactions-grid";
-import { PageHeader, ErrorPanel, EmptyState, Card } from "@/components/ui";
+import { PageHeader, ErrorPanel, EmptyState, Card, ButtonLink } from "@/components/ui";
 import BilledActivityWorkspace from "@/components/transactions/billed-activity-workspace";
 import type { FilterState } from "@/components/data-grid/types";
 import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
@@ -14,6 +14,8 @@ export const metadata = { title: "Billed Activity - Ahivim Budget Management" };
 type SP = Record<string, string | string[] | undefined>;
 const one = (v: string | string[] | undefined): string | undefined =>
   Array.isArray(v) ? v[0] : v;
+const many = (v: string | string[] | undefined): string[] =>
+  [...new Set((Array.isArray(v) ? v : v ? [v] : []).filter(Boolean))];
 
 /**
  * Turn URL search params into grid filters, so every "open the rows behind this
@@ -100,6 +102,8 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   const user = await requireUser("viewer");
   const canManage = user.role !== "viewer";
   const sp = await searchParams;
+  const requestedTransactionIds = many(sp.transactionId);
+  const requestedTransactionId = requestedTransactionIds.length === 1 ? requestedTransactionIds[0] : undefined;
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
@@ -116,7 +120,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     return {
       denied: false as const,
       planningOnly: false,
-      rows: await listTransactionsForGrid(pool, scope),
+      rows: await listTransactionsForGrid(pool, scope, { transactionIds: requestedTransactionIds }),
       visibility,
       canSeeBudgets: scope.canSeeBudgets,
     };
@@ -136,8 +140,21 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     );
   }
 
-  const rows = result.ok ? result.data.rows : [];
+  const allRows = result.ok ? result.data.rows : [];
+  const selectedTransaction = requestedTransactionId
+    ? allRows.find((row) => row.id === requestedTransactionId) ?? null
+    : null;
+  const exactSelectionAvailable = requestedTransactionIds.length === 0
+    || allRows.length === requestedTransactionIds.length;
+  const rows = requestedTransactionIds.length > 0
+    ? (exactSelectionAvailable ? allRows : [])
+    : allRows;
   const seeded = result.ok ? buildInitialFilters(rows, sp) : { filters: {}, label: null };
+  const contextLabel = selectedTransaction
+    ? `Selected transaction${selectedTransaction.checkNumber ? ` · check ${selectedTransaction.checkNumber}` : ""}`
+    : requestedTransactionIds.length > 1
+      ? `${requestedTransactionIds.length.toLocaleString()} selected transactions`
+      : seeded.label;
 
   return (
     <>
@@ -148,7 +165,11 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
       />
 
       {!result.ok ? (
-        <ErrorPanel title="Could not load transactions">{result.error}</ErrorPanel>
+        <ErrorPanel title="Billed activity is unavailable">{result.error}</ErrorPanel>
+      ) : requestedTransactionIds.length > 0 && !exactSelectionAvailable ? (
+        <ErrorPanel title={requestedTransactionIds.length === 1 ? "This transaction is not available" : "These transactions are not available"}>
+          One or more rows may have been removed, or your account may not include access to them. <ButtonLink href="/transactions">Open all billed activity</ButtonLink>
+        </ErrorPanel>
       ) : rows.length === 0 ? (
         <Card>
           <EmptyState title="No transactions yet">
@@ -162,7 +183,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
           visibility={result.data.visibility}
           canSeeBudgets={result.data.canSeeBudgets}
           initialFilters={seeded.filters}
-          contextLabel={seeded.label}
+          contextLabel={contextLabel}
         />
       )}
     </>

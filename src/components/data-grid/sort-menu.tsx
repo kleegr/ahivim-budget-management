@@ -35,17 +35,17 @@ export default function SortMenu({
       setPos({ top: b.bottom + 4, left });
     };
     place();
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: PointerEvent) => {
       const t = e.target as Node;
       if (menuRef.current?.contains(t) || btnRef.current?.contains(t)) return;
       setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDown);
+    document.addEventListener("pointerdown", onDown);
     document.addEventListener("keydown", onKey);
     window.addEventListener("resize", place);
     return () => {
-      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("pointerdown", onDown);
       document.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", place);
     };
@@ -59,7 +59,7 @@ export default function SortMenu({
     <button
       type="button"
       onClick={() => choose(d)}
-      className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--color-surface-strong)] ${dir === d ? "font-semibold text-[var(--color-primary)]" : "text-[var(--color-ink)]"}`}
+      className={`touch-target flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--color-surface-strong)] ${dir === d ? "font-semibold text-[var(--color-primary)]" : "text-[var(--color-ink)]"}`}
     >
       {children}
       {dir === d ? <span aria-hidden>✓</span> : null}
@@ -75,7 +75,7 @@ export default function SortMenu({
         title={`Sort ${label}`}
         aria-label={`Sort ${label}`}
         aria-expanded={open}
-        className={`grid h-5 w-5 place-items-center rounded transition-colors ${
+        className={`touch-target grid place-items-center rounded transition-colors ${
           dir ? "text-[var(--color-primary)]" : "text-[var(--color-ink-faint)] opacity-60 hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)] hover:opacity-100"
         }`}
       >
@@ -87,7 +87,6 @@ export default function SortMenu({
               ref={menuRef}
               className="pop-in fixed z-[70] origin-top rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] p-1 shadow-lg"
               style={{ top: pos.top, left: pos.left, width: WIDTH }}
-              onClick={(e) => e.stopPropagation()}
             >
               <Item d="asc">{asc}</Item>
               <Item d="desc">{desc}</Item>

@@ -41,7 +41,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   let canEditDocuments = false;
   let canUsePortal = false;
   let canManageAgencies = false;
-  const access = await withDb(async (pool) => {
+  const accessPromise = withDb(async (pool) => {
     const [scope, portal] = await Promise.all([
       resolveAccessScope(pool, user),
       resolvePortalAccess(pool, user),
@@ -67,6 +67,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       canManageAgencies: hasPortalCapability(portal, "agencies.manage"),
     };
   });
+  const countsPromise = isManager
+    ? withDb((pool) => exceptionCounts(pool, { includeOverAuthorization: false }))
+    : null;
+  const [access, counts] = await Promise.all([accessPromise, countsPromise]);
   if (access.ok) {
     accessResolved = true;
     canSeeTransactions = access.data.canSeeTransactions;
@@ -82,17 +86,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   // Badge availability must not affect authorization. If this query fails, the
   // user keeps their successfully resolved navigation with an empty badge.
-  if (isManager) {
-    const counts = await withDb((pool) => exceptionCounts(pool));
-    if (counts.ok) {
-      const c = counts.data;
-      reviewCount =
-        c.unmatchedNames +
-        c.duplicateIndividuals +
-        c.pendingAliases +
-        c.unknownPrograms +
-        c.reconciliationDifferences;
-    }
+  if (counts?.ok) {
+    const c = counts.data;
+    reviewCount =
+      c.unmatchedNames +
+      c.duplicateIndividuals +
+      c.pendingAliases +
+      c.unknownPrograms +
+      c.reconciliationDifferences;
   }
 
   return (

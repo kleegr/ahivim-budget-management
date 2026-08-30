@@ -262,6 +262,7 @@ describe("settlement refresh certification", () => {
     const employeeSource = statements.find((sql) => sql.includes("LEFT JOIN employee_payroll_checks pc"));
     expect(employeeSource).toContain("pc.actual_net::text AS total_net_pay");
     expect(employeeSource).toContain("AND pc.id IS NOT NULL");
+    expect(employeeSource).toContain("pc.employee_id = t.employee_id");
     expect(employeeSource).not.toContain("COALESCE(pc.actual_net, t.total_net_pay)");
     expect(statements.some((sql) => sql.includes("WHEN source_version = refreshed_version"))).toBe(true);
     expect(statements.some((sql) => sql.includes("SET refreshed_version = source_version"))).toBe(false);

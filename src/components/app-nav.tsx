@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -24,6 +24,7 @@ import {
   destinationIsActive,
   getVisibleAdminDestinations,
   getVisibleWorkspaces,
+  shouldTrackNavigation,
   workspaceIsActive,
   type NavigationAccess,
   type VisibleNavigationWorkspace,
@@ -55,9 +56,9 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
 
-function Wordmark({ onNavigate }: { onNavigate?: () => void }) {
+function Wordmark({ onNavigate }: { onNavigate?: (href: string) => void }) {
   return (
-    <Link href="/home" onClick={onNavigate} className="flex min-w-0 items-center gap-2.5 rounded-md outline-offset-4 focus-visible:outline-2 focus-visible:outline-[var(--color-primary)]">
+    <Link href="/home" onNavigate={() => onNavigate?.("/home")} className="flex min-h-11 min-w-0 items-center gap-2.5 rounded-md outline-offset-4 focus-visible:outline-2 focus-visible:outline-[var(--color-primary)]">
       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-primary)] text-sm font-bold text-white">A</span>
       <span className="min-w-0 leading-tight">
         <span className="block truncate text-sm font-semibold text-[var(--color-ink)]">Ahivim</span>
@@ -76,7 +77,7 @@ function WorkspaceNavigation({
   pathname: string;
   access: NavigationAccess;
   reviewCount: number;
-  onNavigate?: () => void;
+  onNavigate?: (href: string) => void;
 }) {
   const workspaces = useMemo(() => getVisibleWorkspaces(access), [access]);
 
@@ -94,10 +95,10 @@ function WorkspaceNavigation({
             <li key={workspace.id}>
               <Link
                 href={workspace.href}
-                onClick={onNavigate}
+                onNavigate={() => onNavigate?.(workspace.href)}
                 aria-current={landingActive ? "page" : undefined}
                 title={workspace.hint}
-                className={`flex min-h-10 items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
+                className={`flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
                   active
                     ? "bg-[var(--color-primary-tint)] font-semibold text-[var(--color-primary)]"
                     : "font-medium text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
@@ -120,10 +121,10 @@ function WorkspaceNavigation({
                       <li key={destination.id}>
                         <Link
                           href={destination.href}
-                          onClick={onNavigate}
+                          onNavigate={() => onNavigate?.(destination.href)}
                           aria-current={childActive ? "page" : undefined}
                           title={destination.hint}
-                          className={`block rounded-md px-2 py-1.5 text-xs transition-colors ${
+                          className={`flex min-h-11 items-center rounded-md px-2 py-1.5 text-xs transition-colors ${
                             childActive
                               ? "font-semibold text-[var(--color-primary)]"
                               : "text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
@@ -152,7 +153,7 @@ function AdministrationNavigation({
 }: {
   pathname: string;
   access: NavigationAccess;
-  onNavigate?: () => void;
+  onNavigate?: (href: string) => void;
   controlId: string;
 }) {
   const items = useMemo(() => getVisibleAdminDestinations(access), [access]);
@@ -171,7 +172,7 @@ function AdministrationNavigation({
         aria-expanded={open}
         aria-controls={controlId}
         onClick={() => setOpen((value) => !value)}
-        className={`flex min-h-10 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+        className={`flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
           active
             ? "bg-[var(--color-primary-tint)] font-semibold text-[var(--color-primary)]"
             : "font-medium text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
@@ -189,10 +190,10 @@ function AdministrationNavigation({
             <li key={item.id}>
               <Link
                 href={item.href}
-                onClick={onNavigate}
+                onNavigate={() => onNavigate?.(item.href)}
                 aria-current={itemActive ? "page" : undefined}
                 title={item.hint}
-                className={`block rounded-md px-2 py-1.5 text-xs transition-colors ${
+                className={`flex min-h-11 items-center rounded-md px-2 py-1.5 text-xs transition-colors ${
                   itemActive
                     ? "font-semibold text-[var(--color-primary)]"
                     : "text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
@@ -237,7 +238,7 @@ function SidebarBody({
   pathname: string;
   access: NavigationAccess;
   reviewCount: number;
-  onNavigate?: () => void;
+  onNavigate?: (href: string) => void;
   adminControlId: string;
 }) {
   return (
@@ -279,7 +280,10 @@ export default function AppNav({
   canManageAgencies?: boolean;
 }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const locationKey = `${pathname}?${searchParams.toString()}`;
   const [open, setOpen] = useState(false);
+  const [pendingHref, setPendingHref] = useState<string | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
@@ -290,6 +294,10 @@ export default function AppNav({
   );
 
   const closeDrawer = useCallback(() => setOpen(false), []);
+  const beginNavigation = useCallback((href: string) => {
+    closeDrawer();
+    if (shouldTrackNavigation(pathname, href)) setPendingHref(href);
+  }, [closeDrawer, pathname]);
   const openDrawer = useCallback(() => {
     previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : menuButtonRef.current;
     setOpen(true);
@@ -297,7 +305,36 @@ export default function AppNav({
 
   useEffect(() => {
     setOpen(false);
-  }, [pathname]);
+    setPendingHref(null);
+  }, [locationKey]);
+
+  useEffect(() => {
+    const trackInternalLink = (event: MouseEvent) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const element = event.target instanceof Element ? event.target : null;
+      const link = element?.closest<HTMLAnchorElement>("a[href]");
+      if (!link || link.target === "_blank" || link.hasAttribute("download")) return;
+
+      const destination = new URL(link.href, window.location.href);
+      if (destination.origin !== window.location.origin) return;
+      const sameDocument = destination.pathname === window.location.pathname
+        && destination.search === window.location.search;
+      if (sameDocument) return;
+
+      setPendingHref(`${destination.pathname}${destination.search}`);
+    };
+
+    // Capture the intent before Next.js handles the link so content links and
+    // table actions receive the same immediate feedback as sidebar links.
+    document.addEventListener("click", trackInternalLink, true);
+    return () => document.removeEventListener("click", trackInternalLink, true);
+  }, []);
+
+  useEffect(() => {
+    if (!pendingHref) return;
+    const timeout = window.setTimeout(() => setPendingHref(null), 15_000);
+    return () => window.clearTimeout(timeout);
+  }, [pendingHref]);
 
   useEffect(() => {
     const media = window.matchMedia("(min-width: 768px)");
@@ -363,10 +400,16 @@ export default function AppNav({
         Skip to content
       </a>
 
-      <CommandBar role={user.role} accessResolved={accessResolved} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} canSeeBudgets={canSeeBudgets} canPlan={canPlan} canSeeClassFinancials={canSeeClassFinancials} canSeeEmployees={canSeeEmployees} canEditDocuments={canEditDocuments} canUsePortal={canUsePortal} canManageAgencies={canManageAgencies} />
+      <CommandBar role={user.role} accessResolved={accessResolved} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} canSeeBudgets={canSeeBudgets} canPlan={canPlan} canSeeClassFinancials={canSeeClassFinancials} canSeeEmployees={canSeeEmployees} canEditDocuments={canEditDocuments} canUsePortal={canUsePortal} canManageAgencies={canManageAgencies} onNavigate={beginNavigation} />
+
+      {pendingHref ? (
+        <div className="pointer-events-none fixed inset-x-0 top-0 z-[80] h-1 overflow-hidden bg-[var(--color-primary-soft)]" role="progressbar" aria-label="Loading page">
+          <span className="route-progress-bar block h-full bg-[var(--color-primary)]" />
+        </div>
+      ) : null}
 
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 md:hidden">
-        <Wordmark />
+        <Wordmark onNavigate={beginNavigation} />
         <button
           ref={menuButtonRef}
           type="button"
@@ -375,13 +418,13 @@ export default function AppNav({
           aria-label="Open navigation"
           title="Open navigation"
           onClick={openDrawer}
-          className="btn btn-sm btn-secondary grid h-9 w-9 place-items-center p-0"
+          className="btn btn-sm btn-icon btn-secondary"
         >
           <Menu className="h-5 w-5" aria-hidden />
         </button>
       </header>
 
-      {open ? <div className="fixed inset-0 z-30 bg-black/30 md:hidden" onClick={closeDrawer} aria-hidden /> : null}
+      {open ? <div className="fixed inset-0 z-30 bg-black/30 md:hidden" onPointerDown={closeDrawer} aria-hidden /> : null}
 
       <aside
         ref={drawerRef}
@@ -397,11 +440,11 @@ export default function AppNav({
         }`}
       >
         <div className="flex items-center justify-between gap-3 px-5 py-4">
-          <Wordmark onNavigate={closeDrawer} />
+          <Wordmark onNavigate={beginNavigation} />
           <button
             ref={closeButtonRef}
             type="button"
-            className="btn btn-sm btn-ghost grid h-9 w-9 place-items-center p-0"
+            className="btn btn-sm btn-icon btn-ghost"
             onClick={closeDrawer}
             aria-label="Close navigation"
             title="Close navigation"
@@ -414,18 +457,18 @@ export default function AppNav({
           pathname={pathname}
           access={access}
           reviewCount={reviewCount}
-          onNavigate={closeDrawer}
+          onNavigate={beginNavigation}
           adminControlId="mobile-administration-links"
         />
       </aside>
 
       <aside className="hidden h-screen w-64 shrink-0 flex-col border-r border-[var(--color-rule)] bg-[var(--color-surface)] md:sticky md:top-0 md:flex">
         <div className="flex flex-col gap-3 px-5 py-4">
-          <Wordmark />
+          <Wordmark onNavigate={beginNavigation} />
           <button
             type="button"
             onClick={() => window.dispatchEvent(new Event("open-command-bar"))}
-            className="flex min-h-9 items-center gap-2 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface-muted)] px-2.5 py-1.5 text-xs text-[var(--color-ink-soft)] transition-colors hover:border-[var(--color-primary)] hover:text-[var(--color-ink)]"
+            className="flex min-h-11 items-center gap-2 rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface-muted)] px-2.5 py-1.5 text-xs text-[var(--color-ink-soft)] transition-colors hover:border-[var(--color-primary)] hover:text-[var(--color-ink)]"
           >
             <Search className="h-4 w-4" aria-hidden />
             <span>Search</span>
@@ -436,6 +479,7 @@ export default function AppNav({
           pathname={pathname}
           access={access}
           reviewCount={reviewCount}
+          onNavigate={beginNavigation}
           adminControlId="desktop-administration-links"
         />
       </aside>

@@ -12,8 +12,9 @@ import type {
 } from "@/lib/data/direct-pay-operations";
 import { formatHours, formatMoney } from "@/lib/money";
 import { Card, EmptyState, Notice } from "@/components/ui";
+import type { CollectionsView, PayrollCheckDraft } from "@/lib/nav/collections-links";
 
-type View = "summary" | "targets" | "checks";
+type View = CollectionsView;
 
 async function requestJson(url: string, init: RequestInit): Promise<{ settlementWarning?: string | null }> {
   const response = await fetch(url, { ...init, headers: { "content-type": "application/json", ...(init.headers ?? {}) } });
@@ -124,11 +125,13 @@ function TargetForm({
 function PayrollCheckForm({
   data,
   initial,
+  draft,
   onDone,
   onCancel,
 }: {
   data: CollectionsWorkspaceData;
   initial: PayrollCheckRow | null;
+  draft: PayrollCheckDraft | null;
   onDone: (message: string) => void;
   onCancel: () => void;
 }) {
@@ -156,6 +159,7 @@ function PayrollCheckForm({
           sourceRef: form.get("sourceRef"),
           verificationStatus: form.get("verificationStatus"),
           notes: form.get("notes"),
+          sourceTransactionIds: draft?.sourceTransactionIds ?? [],
         }),
       });
       onDone(payload.settlementWarning || (initial ? "Payroll check updated." : "Payroll check added."));
@@ -171,16 +175,16 @@ function PayrollCheckForm({
       {error ? <Notice tone="error">{error}</Notice> : null}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <label className={labelClass}>Employee
-          <select name="employeeId" required defaultValue={initial?.employeeId ?? ""} disabled={Boolean(initial)} className={inputClass}>
+          <select name="employeeId" required defaultValue={initial?.employeeId ?? draft?.employeeId ?? ""} disabled={Boolean(initial)} className={inputClass}>
             <option value="">Select employee</option>
             {data.employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}
           </select>
         </label>
         <label className={labelClass}>Check number
-          <input name="checkNumber" defaultValue={initial?.checkNumber ?? ""} className={inputClass} />
+          <input name="checkNumber" defaultValue={initial?.checkNumber ?? draft?.checkNumber ?? ""} className={inputClass} />
         </label>
         <label className={labelClass}>Check date
-          <input name="checkDate" type="date" defaultValue={initial?.checkDate ?? ""} className={inputClass} />
+          <input name="checkDate" type="date" defaultValue={initial?.checkDate ?? draft?.checkDate ?? ""} className={inputClass} />
         </label>
         <label className={labelClass}>Status
           <select name="verificationStatus" defaultValue={initial?.verificationStatus ?? "verified"} className={inputClass}>
@@ -188,10 +192,10 @@ function PayrollCheckForm({
           </select>
         </label>
         <label className={labelClass}>Period begin
-          <input name="periodBegin" type="date" defaultValue={initial?.periodBegin ?? ""} className={inputClass} />
+          <input name="periodBegin" type="date" defaultValue={initial?.periodBegin ?? draft?.periodBegin ?? ""} className={inputClass} />
         </label>
         <label className={labelClass}>Period end
-          <input name="periodEnd" type="date" defaultValue={initial?.periodEnd ?? ""} className={inputClass} />
+          <input name="periodEnd" type="date" defaultValue={initial?.periodEnd ?? draft?.periodEnd ?? ""} className={inputClass} />
         </label>
         <label className={labelClass}>Actual gross
           <input name="actualGross" inputMode="decimal" defaultValue={initial?.actualGross ?? ""} className={inputClass} />
@@ -217,13 +221,24 @@ function PayrollCheckForm({
   );
 }
 
-export default function CollectionsWorkspace({ data, canManage }: { data: CollectionsWorkspaceData; canManage: boolean }) {
+export default function CollectionsWorkspace({
+  data,
+  canManage,
+  initialView = "summary",
+  initialCheckDraft = null,
+}: {
+  data: CollectionsWorkspaceData;
+  canManage: boolean;
+  initialView?: View;
+  initialCheckDraft?: PayrollCheckDraft | null;
+}) {
   const router = useRouter();
-  const [view, setView] = useState<View>("summary");
+  const [view, setView] = useState<View>(initialView);
   const [editingTarget, setEditingTarget] = useState<DirectPayTargetFinancialRow | null>(null);
   const [editingCheck, setEditingCheck] = useState<PayrollCheckRow | null>(null);
   const [creatingTarget, setCreatingTarget] = useState(false);
-  const [creatingCheck, setCreatingCheck] = useState(false);
+  const [creatingCheck, setCreatingCheck] = useState(Boolean(initialCheckDraft));
+  const [checkDraft, setCheckDraft] = useState<PayrollCheckDraft | null>(initialCheckDraft);
   const [notice, setNotice] = useState<string | null>(null);
   const canManageTargets = canManage && data.visibility.canSeeTargetMoney;
   const canManageChecks = canManage && data.visibility.canSeeCheckNet && data.visibility.canSeeTaxes;
@@ -253,6 +268,7 @@ export default function CollectionsWorkspace({ data, canManage }: { data: Collec
     setView(nextView);
     setCreatingTarget(false);
     setCreatingCheck(false);
+    setCheckDraft(null);
     setEditingTarget(null);
     setEditingCheck(null);
   }
@@ -323,9 +339,9 @@ export default function CollectionsWorkspace({ data, canManage }: { data: Collec
         </div>
       ) : (
         <div id="collections-panel-checks" role="tabpanel" aria-labelledby="collections-tab-checks">
-        <Card title="Actual payroll checks" action={canManageChecks ? <button type="button" className="btn btn-secondary" onClick={() => { setEditingCheck(null); setCreatingCheck(true); }}><Plus size={15} aria-hidden /> Add check</button> : null}>
-          {canManageChecks && (creatingCheck || editingCheck) ? <PayrollCheckForm key={editingCheck?.id ?? "new-check"} data={data} initial={editingCheck} onCancel={() => { setCreatingCheck(false); setEditingCheck(null); }} onDone={(message) => { setNotice(message); setCreatingCheck(false); setEditingCheck(null); }} /> : null}
-          {data.payrollChecks.length === 0 ? <EmptyState compact title="No payroll checks recorded" /> : <div className="overflow-x-auto"><table className="w-full min-w-[680px] text-sm"><thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]"><tr><th className="px-4 py-2.5 text-left">Employee / check</th><th className="px-3 py-2.5">Date</th>{data.visibility.canSeeTaxes ? <th className="px-3 py-2.5 text-right">Gross</th> : null}{data.visibility.canSeeCheckNet ? <th className="px-3 py-2.5 text-right">Net</th> : null}{data.visibility.canSeeTaxes ? <th className="px-3 py-2.5 text-right">Tax</th> : null}<th className="px-3 py-2.5 text-right">Linked rows</th><th className="px-3 py-2.5">Status</th><th className="w-12" /></tr></thead><tbody className="divide-y divide-[var(--color-rule)]">{data.payrollChecks.map((row) => <tr key={row.id}><td className="px-4 py-3"><p className="font-medium">{row.employeeName}</p><p className="text-xs text-[var(--color-ink-faint)]">{row.checkNumber || "No check number"}</p></td><td className="px-3 py-3">{row.checkDate ?? row.periodEnd ?? row.periodBegin ?? "-"}</td>{data.visibility.canSeeTaxes ? <td className="tnum px-3 py-3 text-right">{row.actualGross ? formatMoney(row.actualGross) : "-"}</td> : null}{data.visibility.canSeeCheckNet ? <td className="tnum px-3 py-3 text-right font-semibold">{row.actualNet ? formatMoney(row.actualNet) : "-"}</td> : null}{data.visibility.canSeeTaxes ? <td className="tnum px-3 py-3 text-right">{row.taxWithheld ? formatMoney(row.taxWithheld) : "-"}</td> : null}<td className="tnum px-3 py-3 text-right">{row.linkedTransactions}</td><td className="px-3 py-3"><span className={`inline-flex items-center gap-1 text-xs font-semibold ${row.verificationStatus === "verified" ? "text-[var(--color-success)]" : "text-[var(--color-warn)]"}`}>{row.verificationStatus === "verified" ? <CheckCircle2 size={13} aria-hidden /> : null}{row.verificationStatus}</span></td><td className="pr-3 text-right">{canManageChecks ? <button type="button" title="Edit payroll check" onClick={() => setEditingCheck(row)} className="icon-button"><Pencil size={15} aria-hidden /></button> : null}</td></tr>)}</tbody></table></div>}
+        <Card title="Actual payroll checks" action={canManageChecks ? <button type="button" className="btn btn-secondary" onClick={() => { setEditingCheck(null); setCheckDraft(null); setCreatingCheck(true); }}><Plus size={15} aria-hidden /> Add check</button> : null}>
+          {canManageChecks && (creatingCheck || editingCheck) ? <PayrollCheckForm key={editingCheck?.id ?? `new-check:${checkDraft?.employeeId ?? "blank"}:${checkDraft?.sourceTransactionIds.join(",") ?? "manual"}`} data={data} initial={editingCheck} draft={editingCheck ? null : checkDraft} onCancel={() => { setCreatingCheck(false); setEditingCheck(null); setCheckDraft(null); }} onDone={(message) => { setNotice(message); setCreatingCheck(false); setEditingCheck(null); setCheckDraft(null); }} /> : null}
+          {data.payrollChecks.length === 0 ? <EmptyState compact title="No payroll checks recorded" /> : <div className="overflow-x-auto"><table className="w-full min-w-[680px] text-sm"><thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]"><tr><th className="px-4 py-2.5 text-left">Employee / check</th><th className="px-3 py-2.5">Date</th>{data.visibility.canSeeTaxes ? <th className="px-3 py-2.5 text-right">Gross</th> : null}{data.visibility.canSeeCheckNet ? <th className="px-3 py-2.5 text-right">Net</th> : null}{data.visibility.canSeeTaxes ? <th className="px-3 py-2.5 text-right">Tax</th> : null}<th className="px-3 py-2.5 text-right">Linked rows</th><th className="px-3 py-2.5">Status</th><th className="w-12" /></tr></thead><tbody className="divide-y divide-[var(--color-rule)]">{data.payrollChecks.map((row) => <tr key={row.id}><td className="px-4 py-3"><p className="font-medium">{row.employeeName}</p><p className="text-xs text-[var(--color-ink-faint)]">{row.checkNumber || "No check number"}</p></td><td className="px-3 py-3">{row.checkDate ?? row.periodEnd ?? row.periodBegin ?? "-"}</td>{data.visibility.canSeeTaxes ? <td className="tnum px-3 py-3 text-right">{row.actualGross ? formatMoney(row.actualGross) : "-"}</td> : null}{data.visibility.canSeeCheckNet ? <td className="tnum px-3 py-3 text-right font-semibold">{row.actualNet ? formatMoney(row.actualNet) : "-"}</td> : null}{data.visibility.canSeeTaxes ? <td className="tnum px-3 py-3 text-right">{row.taxWithheld ? formatMoney(row.taxWithheld) : "-"}</td> : null}<td className="tnum px-3 py-3 text-right">{row.linkedTransactions}</td><td className="px-3 py-3"><span className={`inline-flex items-center gap-1 text-xs font-semibold ${row.verificationStatus === "verified" ? "text-[var(--color-success)]" : "text-[var(--color-warn)]"}`}>{row.verificationStatus === "verified" ? <CheckCircle2 size={13} aria-hidden /> : null}{row.verificationStatus}</span></td><td className="pr-3 text-right">{canManageChecks ? <button type="button" title="Edit payroll check" onClick={() => { setCheckDraft(null); setCreatingCheck(false); setEditingCheck(row); }} className="icon-button"><Pencil size={15} aria-hidden /></button> : null}</td></tr>)}</tbody></table></div>}
         </Card>
         </div>
       )}

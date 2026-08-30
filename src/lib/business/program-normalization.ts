@@ -85,7 +85,8 @@ export function normalizeProgramLabel(label: string | null | undefined): string 
 
 export interface ProgramResolution {
   matched: boolean;
-  code: ProgramCode | null;
+  /** Database-backed catalogs may add programs beyond the six seed codes. */
+  code: string | null;
   normalizedLabel: string;
   sourceText: string;
   reason: string;
@@ -93,7 +94,7 @@ export interface ProgramResolution {
 
 export function resolveProgram(
   sourceText: string | null | undefined,
-  aliases: Record<string, ProgramCode> = SEED_PROGRAM_ALIASES,
+  aliases: Readonly<Record<string, string>> = SEED_PROGRAM_ALIASES,
 ): ProgramResolution {
   const normalizedLabel = normalizeProgramLabel(sourceText);
   const raw = (sourceText ?? "").trim();

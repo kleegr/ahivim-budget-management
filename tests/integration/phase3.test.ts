@@ -12,8 +12,13 @@ import {
 } from "@/lib/manage/reconciliation";
 import {
   listCorrectionQueue, correctRowFields, resetRowCorrection, resolveRowMatch,
-  setRowReviewStatus, bulkSetStatus, bulkResolveProgram,
+  setRowReviewStatus, bulkSetStatus, bulkResolveProgram, applyCorrectedImportRow,
 } from "@/lib/manage/import-corrections";
+import { acceptImportedRate } from "@/lib/manage/rate-exceptions";
+import { loadStagingContext } from "@/lib/import/pipeline";
+import { stageRows } from "@/lib/import/stage";
+import { listImports } from "@/lib/data/app-queries";
+import type { AhivimField } from "@/lib/excel/column-map";
 import { dec } from "@/lib/money";
 
 const suite = hasTestDatabase ? describe : describe.skip;
@@ -60,6 +65,73 @@ async function insertBatchWithRow(raw: Record<string, unknown>, status = "needs_
     [batch.rows[0].id, JSON.stringify(raw), status],
   );
   return { batchId: batch.rows[0].id, rowId: row.rows[0].id };
+}
+
+function validSource(overrides: Partial<Record<AhivimField, string>> = {}): Record<string, unknown> {
+  const raw: Record<AhivimField, string> = {
+    payTo: "Excellent Staffing",
+    checkDate: "2025-08-15",
+    checkNumber: "CHK-100",
+    code: "RG",
+    hours: "2",
+    rate: "19",
+    amount: "38",
+    totalNetPay: "30",
+    periodBegin: "2025-08-01",
+    periodEnd: "2025-08-15",
+    programDescription: "Respit Custom",
+    individual: "Aaron Levy",
+    employee: "Miriam Klein",
+    nonContractHeader: "",
+    calculatedInternalAmount: "34",
+    dedupNetPayFormula: "",
+    paid: "",
+    ...overrides,
+  };
+  return { raw, formulas: {} };
+}
+
+async function insertCommittedHeldRow(
+  rawValues: Record<string, unknown>,
+  ids: { individualId: string; employeeId: string; programId: string },
+  sourceRowNumber = 10,
+): Promise<{ batchId: string; rowId: string; fileId: string }> {
+  const file = await testPool().query<{ id: string }>(
+    `INSERT INTO imported_files (original_filename, byte_size, checksum_sha256)
+     VALUES ('held.xlsx', 1000, $1) RETURNING id`,
+    [`held-${sourceRowNumber}-${Math.random()}`],
+  );
+  const batch = await testPool().query<{ id: string }>(
+    `INSERT INTO import_batches
+       (imported_file_id, status, total_rows, skipped_rows,
+        source_agency_gross, imported_agency_gross,
+        source_internal_amount, imported_internal_amount, reconciliation_notes)
+     VALUES ($1,'committed',1,1,'38','0','34','0',
+             'Application totals DO NOT agree with the workbook control totals. Investigate before relying on this import.')
+     RETURNING id`,
+    [file.rows[0].id],
+  );
+  const row = await testPool().query<{ id: string }>(
+    `INSERT INTO import_rows
+       (import_batch_id, sheet_name, source_row_number, raw_values, status,
+        resolved_individual_id, resolved_employee_id, resolved_program_id)
+     VALUES ($1,'Ahivim',$2,$3::jsonb,'needs_review',$4,$5,$6) RETURNING id`,
+    [
+      batch.rows[0].id,
+      sourceRowNumber,
+      JSON.stringify(rawValues),
+      ids.individualId,
+      ids.employeeId,
+      ids.programId,
+    ],
+  );
+  await testPool().query(
+    `INSERT INTO import_warnings
+       (import_batch_id, import_row_id, category, severity, message)
+     VALUES ($1,$2,'unknown_program','warning','Map this program')`,
+    [batch.rows[0].id, row.rows[0].id],
+  );
+  return { batchId: batch.rows[0].id, rowId: row.rows[0].id, fileId: file.rows[0].id };
 }
 
 suite("phase 3 — reconciliation + import corrections (real PostgreSQL)", () => {
@@ -177,14 +249,382 @@ suite("phase 3 — reconciliation + import corrections (real PostgreSQL)", () =>
     expect(target.resolvedIndividualId).toBe(ind.id);
     expect(target.programName).not.toBeNull();
 
-    unwrap(await setRowReviewStatus(pool, rowId, "valid", ACTOR, "looks good"));
-    expect(await scalar<string>(`SELECT status FROM import_rows WHERE id=$1`, [rowId])).toBe("valid");
+    const falseImport = await setRowReviewStatus(pool, rowId, "valid", ACTOR, "looks good");
+    expect(falseImport.ok).toBe(false);
+    expect(await scalar<string>(`SELECT status FROM import_rows WHERE id=$1`, [rowId])).toBe("needs_review");
 
     const bulk = unwrap(await bulkResolveProgram(pool, batchId, [rowId, second], dayHab, ACTOR, "all respite... day hab"));
     expect(bulk.updated).toBe(2);
-    const bulkStatus = unwrap(await bulkSetStatus(pool, batchId, [rowId, second], "skipped", ACTOR, "not needed"));
-    expect(bulkStatus.updated).toBe(2);
-    expect(await scalar<string>(`SELECT status FROM import_rows WHERE id=$1`, [second])).toBe("skipped");
+    const falseBulkImport = await bulkSetStatus(pool, batchId, [rowId, second], "imported", ACTOR, "not needed");
+    expect(falseBulkImport.ok).toBe(false);
+    expect(await scalar<string>(`SELECT status FROM import_rows WHERE id=$1`, [second])).toBe("needs_review");
+  });
+
+  it("applies a corrected held row atomically, attributes payment, remembers its program alias, and is idempotent", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    const held = await insertCommittedHeldRow(
+      validSource({ programDescription: "Custom Community Day", individual: ind.displayName, employee: emp.displayName }),
+      { individualId: ind.id, employeeId: emp.id, programId: dayHab },
+    );
+    // Historical source facts remain applicable after service ends, provided
+    // the people were not archived and the program still exists for posting.
+    await testPool().query(`UPDATE individuals SET status='discharged' WHERE id=$1`, [ind.id]);
+    await testPool().query(`UPDATE employees SET status='inactive' WHERE id=$1`, [emp.id]);
+
+    const first = unwrap(await applyCorrectedImportRow(pool, held.rowId, ACTOR, {
+      rememberProgramAlias: true,
+      reason: "Confirmed source row",
+    }));
+    expect(first.alreadyApplied).toBe(false);
+    expect(first.transactionId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(first.serviceSessionId).toMatch(/^[0-9a-f-]{36}$/i);
+
+    const tx = await testPool().query<{
+      imported_amount: string;
+      calculated_internal_amount: string;
+      payment_recipient: string;
+      employee_payment_amount: string;
+      agency_additional_amount: string;
+      service_session_id: string;
+    }>(
+      `SELECT imported_amount::text, calculated_internal_amount::text, payment_recipient,
+              employee_payment_amount::text, agency_additional_amount::text, service_session_id
+         FROM payroll_transactions WHERE id = $1`,
+      [first.transactionId],
+    );
+    expect(dec(tx.rows[0].imported_amount).toNumber()).toBe(38);
+    expect(dec(tx.rows[0].calculated_internal_amount).toNumber()).toBe(34);
+    expect(tx.rows[0].payment_recipient).toBe("excellent_staffing");
+    expect(dec(tx.rows[0].employee_payment_amount).toNumber()).toBe(34);
+    expect(dec(tx.rows[0].agency_additional_amount).toNumber()).toBe(4);
+    expect(tx.rows[0].service_session_id).toBe(first.serviceSessionId);
+    expect(await scalar<string>(`SELECT status FROM import_rows WHERE id=$1`, [held.rowId])).toBe("imported");
+    expect(await scalar<string>(`SELECT correction_status FROM import_rows WHERE id=$1`, [held.rowId])).toBe("applied");
+    expect(Number(await scalar<string>(`SELECT count(*)::text FROM service_allocations WHERE payroll_transaction_id=$1`, [first.transactionId]))).toBe(1);
+    expect(Number(await scalar<string>(`SELECT count(*)::text FROM import_warnings WHERE import_row_id=$1 AND resolved_at IS NULL`, [held.rowId]))).toBe(0);
+    expect(Number(await scalar<string>(`SELECT imported_rows::text FROM import_batches WHERE id=$1`, [held.batchId]))).toBe(1);
+    expect(Number(await scalar<string>(`SELECT count(*)::text FROM program_aliases WHERE normalized_alias='custom community day' AND program_id=$1`, [dayHab]))).toBe(1);
+    expect(Number(await scalar<string>(`SELECT count(*)::text FROM audit_logs WHERE action='import_row.applied' AND entity_id=$1`, [held.rowId]))).toBe(1);
+    expect(await scalar<string>(`SELECT reconciliation_notes FROM import_batches WHERE id=$1`, [held.batchId])).toContain("agree with");
+    expect((await listImports(pool, 100, { reconciliationNeedsReview: true })).some((batch) => batch.batchId === held.batchId)).toBe(false);
+
+    const retry = unwrap(await applyCorrectedImportRow(pool, held.rowId, ACTOR));
+    expect(retry.alreadyApplied).toBe(true);
+    expect(retry.transactionId).toBe(first.transactionId);
+    expect(Number(await scalar<string>(`SELECT count(*)::text FROM payroll_transactions WHERE import_row_id=$1`, [held.rowId]))).toBe(1);
+
+    const editAfterApply = await correctRowFields(pool, held.rowId, { amount: "40" }, ACTOR);
+    expect(editAfterApply.ok).toBe(false);
+    const rematchAfterApply = await resolveRowMatch(pool, held.rowId, { individualId: ind.id }, ACTOR);
+    expect(rematchAfterApply.ok).toBe(false);
+    const rawProgram = await scalar<{ raw: Record<string, string> }>(`SELECT raw_values FROM import_rows WHERE id=$1`, [held.rowId]);
+    expect(rawProgram.raw.programDescription).toBe("Custom Community Day");
+  });
+
+  it("keeps the resolved source identity aligned with the ledger across apply/rematch races", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    const alternate = unwrap(await createIndividual(pool, { displayName: "Alternate Historical Match" }, ACTOR));
+    const held = await insertCommittedHeldRow(
+      validSource({ individual: ind.displayName, employee: emp.displayName, checkNumber: "CHK-RACE" }),
+      { individualId: ind.id, employeeId: emp.id, programId: dayHab },
+      15,
+    );
+
+    const [rematch, apply] = await Promise.all([
+      resolveRowMatch(pool, held.rowId, { individualId: alternate.id }, ACTOR, "Concurrent rematch"),
+      applyCorrectedImportRow(pool, held.rowId, ACTOR, { reason: "Concurrent apply" }),
+    ]);
+    expect(apply.ok).toBe(true);
+    expect(rematch.ok || (!rematch.ok && rematch.code === "immutable")).toBe(true);
+
+    const identity = await testPool().query<{ resolved_individual_id: string; ledger_individual_id: string }>(
+      `SELECT r.resolved_individual_id,
+              (SELECT t.individual_id FROM payroll_transactions t WHERE t.import_row_id=r.id) AS ledger_individual_id
+         FROM import_rows r WHERE r.id=$1`,
+      [held.rowId],
+    );
+    expect(identity.rows[0].resolved_individual_id).toBe(identity.rows[0].ledger_individual_id);
+  });
+
+  it("preserves concurrent sparse field corrections and their audit entries", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    const held = await insertCommittedHeldRow(
+      validSource({ individual: ind.displayName, employee: emp.displayName, checkNumber: "CHK-FIELDS" }),
+      { individualId: ind.id, employeeId: emp.id, programId: dayHab },
+      16,
+    );
+
+    const [hours, rate] = await Promise.all([
+      correctRowFields(pool, held.rowId, { hours: "3" }, ACTOR, "Correct hours"),
+      correctRowFields(pool, held.rowId, { rate: "20" }, ACTOR, "Correct rate"),
+    ]);
+    expect(hours.ok).toBe(true);
+    expect(rate.ok).toBe(true);
+    expect(await scalar<Record<string, string>>(
+      `SELECT corrected_values FROM import_rows WHERE id=$1`,
+      [held.rowId],
+    )).toMatchObject({ hours: "3", rate: "20" });
+    expect(Number(await scalar<string>(
+      `SELECT count(*)::text FROM audit_logs WHERE action='import_row_corrected' AND entity_id=$1`,
+      [held.rowId],
+    ))).toBe(2);
+  });
+
+  it("keeps reconciliation open after a partial correction and clears it after the final held row", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    const first = await insertCommittedHeldRow(
+      validSource({ individual: ind.displayName, employee: emp.displayName, checkNumber: "CHK-201" }),
+      { individualId: ind.id, employeeId: emp.id, programId: dayHab },
+      40,
+    );
+    await testPool().query(
+      `UPDATE import_batches
+          SET total_rows=2, skipped_rows=2,
+              source_agency_gross='76', source_internal_amount='68'
+        WHERE id=$1`,
+      [first.batchId],
+    );
+    const second = await testPool().query<{ id: string }>(
+      `INSERT INTO import_rows
+         (import_batch_id, sheet_name, source_row_number, raw_values, status,
+          resolved_individual_id, resolved_employee_id, resolved_program_id)
+       VALUES ($1,'Ahivim',41,$2::jsonb,'needs_review',$3,$4,$5)
+       RETURNING id`,
+      [
+        first.batchId,
+        JSON.stringify(validSource({
+          individual: ind.displayName,
+          employee: emp.displayName,
+          checkNumber: "CHK-202",
+        })),
+        ind.id,
+        emp.id,
+        dayHab,
+      ],
+    );
+
+    unwrap(await applyCorrectedImportRow(pool, first.rowId, ACTOR));
+    expect(await scalar<string>(`SELECT reconciliation_notes FROM import_batches WHERE id=$1`, [first.batchId])).toContain("DO NOT agree");
+    expect((await listImports(pool, 100, { reconciliationNeedsReview: true })).some((batch) => batch.batchId === first.batchId)).toBe(true);
+
+    unwrap(await applyCorrectedImportRow(pool, second.rows[0].id, ACTOR));
+    expect(await scalar<string>(`SELECT reconciliation_notes FROM import_batches WHERE id=$1`, [first.batchId])).toBe("Application totals agree with the workbook control totals.");
+    expect((await listImports(pool, 100, { reconciliationNeedsReview: true })).some((batch) => batch.batchId === first.batchId)).toBe(false);
+  });
+
+  it("reconciles a corrected row together with a confirmed prior-ledger repeat", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    const prior = await insertCommittedHeldRow(
+      validSource({ individual: ind.displayName, employee: emp.displayName, checkNumber: "CHK-PRIOR" }),
+      { individualId: ind.id, employeeId: emp.id, programId: dayHab },
+      42,
+    );
+    unwrap(await applyCorrectedImportRow(pool, prior.rowId, ACTOR));
+    const priorFingerprint = await scalar<string>(
+      `SELECT transaction_fingerprint FROM payroll_transactions WHERE import_row_id=$1`,
+      [prior.rowId],
+    );
+
+    const held = await insertCommittedHeldRow(
+      validSource({ individual: ind.displayName, employee: emp.displayName, checkNumber: "CHK-CURRENT" }),
+      { individualId: ind.id, employeeId: emp.id, programId: dayHab },
+      43,
+    );
+    await testPool().query(
+      `INSERT INTO import_rows
+         (import_batch_id, sheet_name, source_row_number, raw_values, status, transaction_fingerprint)
+       VALUES ($1,'Ahivim',44,$2::jsonb,'duplicate',$3)`,
+      [
+        held.batchId,
+        JSON.stringify(validSource({
+          individual: ind.displayName,
+          employee: emp.displayName,
+          checkNumber: "CHK-PRIOR",
+        })),
+        priorFingerprint,
+      ],
+    );
+    await testPool().query(
+      `UPDATE import_batches
+          SET total_rows=2, skipped_rows=2, duplicate_rows=1,
+              source_agency_gross='76', source_internal_amount='68'
+        WHERE id=$1`,
+      [held.batchId],
+    );
+
+    unwrap(await applyCorrectedImportRow(pool, held.rowId, ACTOR));
+
+    expect(await scalar<string>(
+      `SELECT reconciliation_notes FROM import_batches WHERE id=$1`,
+      [held.batchId],
+    )).toContain("fully accounted for");
+    expect((await listImports(pool, 100, { reconciliationNeedsReview: true }))
+      .some((batch) => batch.batchId === held.batchId)).toBe(false);
+  });
+
+  it("applies the effective rate on the canonical historical service date", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    await testPool().query(`DELETE FROM program_rate_schedules WHERE program_id=$1`, [dayHab]);
+    await testPool().query(
+      `INSERT INTO program_rate_schedules
+         (program_id, effective_from, effective_to, agency_rate, internal_rate)
+       VALUES ($1,'2024-01-01','2024-12-31','25','17'),
+              ($1,'2030-01-01',NULL,'35','22')`,
+      [dayHab],
+    );
+    const held = await insertCommittedHeldRow(
+      validSource({
+        individual: ind.displayName,
+        employee: emp.displayName,
+        periodBegin: "2024-06-01",
+        checkDate: "2030-06-15",
+        periodEnd: "2030-06-30",
+        rate: "25",
+        amount: "50",
+        calculatedInternalAmount: "34",
+        checkNumber: "CHK-HISTORICAL",
+      }),
+      { individualId: ind.id, employeeId: emp.id, programId: dayHab },
+      45,
+    );
+
+    const applied = unwrap(await applyCorrectedImportRow(pool, held.rowId, ACTOR));
+    const rate = await testPool().query<{
+      agency_rate_applied: string;
+      internal_rate_applied: string;
+      calculated_internal_amount: string;
+    }>(
+      `SELECT agency_rate_applied::text, internal_rate_applied::text,
+              calculated_internal_amount::text
+         FROM payroll_transactions WHERE id=$1`,
+      [applied.transactionId],
+    );
+    expect(dec(rate.rows[0].agency_rate_applied).toNumber()).toBe(25);
+    expect(dec(rate.rows[0].internal_rate_applied).toNumber()).toBe(17);
+    expect(dec(rate.rows[0].calculated_internal_amount).toNumber()).toBe(34);
+  });
+
+  it("does not let a bulk program correction mutate an imported ledger source", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    const respite = await programId("RESPITE");
+    const held = await insertCommittedHeldRow(
+      validSource({ individual: ind.displayName, employee: emp.displayName }),
+      { individualId: ind.id, employeeId: emp.id, programId: dayHab },
+      50,
+    );
+    await testPool().query(`UPDATE import_rows SET status='imported' WHERE id=$1`, [held.rowId]);
+    await testPool().query(
+      `INSERT INTO payroll_transactions
+         (import_batch_id, import_row_id, source_file_id, source_row_number,
+          individual_id, employee_id, program_id, imported_hours, imported_rate,
+          imported_amount, transaction_fingerprint)
+       VALUES ($1,$2,$3,50,$4,$5,$6,'2','19','38',$7)`,
+      [held.batchId, held.rowId, held.fileId, ind.id, emp.id, dayHab, `locked-${held.rowId}`],
+    );
+
+    const result = unwrap(await bulkResolveProgram(
+      pool,
+      held.batchId,
+      [held.rowId],
+      respite,
+      ACTOR,
+      "tampered request must not change imported history",
+    ));
+    expect(result.updated).toBe(0);
+    expect(await scalar<string>(`SELECT resolved_program_id FROM import_rows WHERE id=$1`, [held.rowId])).toBe(dayHab);
+    expect(await scalar<string>(`SELECT program_id FROM payroll_transactions WHERE import_row_id=$1`, [held.rowId])).toBe(dayHab);
+  });
+
+  it("keeps group-shaped and duplicate rows in attention instead of applying them alone", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    const other = unwrap(await createIndividual(pool, { displayName: "Group Partner" }, ACTOR));
+    const held = await insertCommittedHeldRow(
+      validSource({ programDescription: "Day Hab", individual: ind.displayName, employee: emp.displayName }),
+      { individualId: ind.id, employeeId: emp.id, programId: dayHab },
+      20,
+    );
+    await testPool().query(
+      `INSERT INTO import_rows
+         (import_batch_id, sheet_name, source_row_number, raw_values, status,
+          resolved_individual_id, resolved_employee_id, resolved_program_id)
+       VALUES ($1,'Ahivim',21,$2::jsonb,'needs_review',$3,$4,$5)`,
+      [
+        held.batchId,
+        JSON.stringify(validSource({
+          programDescription: "Rematched Custom Program Spelling",
+          individual: "Rematched Group Member Spelling",
+          employee: "Rematched Worker Spelling",
+        })),
+        other.id,
+        emp.id,
+        dayHab,
+      ],
+    );
+
+    const grouped = await applyCorrectedImportRow(pool, held.rowId, ACTOR);
+    expect(grouped.ok).toBe(false);
+    if (!grouped.ok) expect(grouped.message).toContain("group session");
+    expect(await scalar<string>(`SELECT status FROM import_rows WHERE id=$1`, [held.rowId])).toBe("needs_review");
+    expect(Number(await scalar<string>(`SELECT count(*)::text FROM payroll_transactions WHERE import_row_id=$1`, [held.rowId]))).toBe(0);
+
+    await testPool().query(`DELETE FROM import_rows WHERE import_batch_id=$1 AND source_row_number=21`, [held.batchId]);
+    await testPool().query(`UPDATE import_rows SET status='duplicate' WHERE id=$1`, [held.rowId]);
+    const duplicate = await applyCorrectedImportRow(pool, held.rowId, ACTOR);
+    expect(duplicate.ok).toBe(false);
+    if (!duplicate.ok) expect(duplicate.message).toContain("duplicate");
+    expect(await scalar<string>(`SELECT status FROM import_rows WHERE id=$1`, [held.rowId])).toBe("duplicate");
+  });
+
+  it("accepts an imported rate as an audited decision without editing its transaction", async () => {
+    const { dayHab, ind } = await fixture();
+    const txId = await insertTransaction({
+      individualId: ind.id,
+      programId: dayHab,
+      periodBegin: "2025-08-01",
+      periodEnd: "2025-08-31",
+      hours: "2",
+      amount: "46",
+    });
+    const exception = await testPool().query<{ id: string }>(
+      `INSERT INTO rate_exceptions
+         (payroll_transaction_id, individual_id, program_id, imported_rate,
+          expected_rate, variance_amount, variance_percent, direction, note)
+       VALUES ($1,$2,$3,'23','17','6','0.352941','higher','Legitimate source rate')
+       RETURNING id`,
+      [txId, ind.id, dayHab],
+    );
+
+    const accepted = unwrap(await acceptImportedRate(pool, exception.rows[0].id, ACTOR, "Confirmed group-priced source"));
+    expect(accepted.alreadyAccepted).toBe(false);
+    expect(await scalar<string>(`SELECT resolution FROM rate_exceptions WHERE id=$1`, [exception.rows[0].id])).toBe("accepted");
+    expect(dec(await scalar<string>(`SELECT imported_amount::text FROM payroll_transactions WHERE id=$1`, [txId])).toNumber()).toBe(46);
+    expect(Number(await scalar<string>(`SELECT count(*)::text FROM audit_logs WHERE action='rate_exception.accepted' AND entity_id=$1`, [exception.rows[0].id]))).toBe(1);
+    expect(unwrap(await acceptImportedRate(pool, exception.rows[0].id, ACTOR)).alreadyAccepted).toBe(true);
+  });
+
+  it("uses approved database program aliases during future staging", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    await testPool().query(
+      `INSERT INTO program_aliases (program_id, normalized_alias, source_text, status)
+       VALUES ($1,'custom day supports','Custom Day Supports','approved')`,
+      [dayHab],
+    );
+    const context = await loadStagingContext(pool);
+    const stored = validSource({
+      programDescription: "Custom Day Supports",
+      individual: ind.displayName,
+      employee: emp.displayName,
+    }) as { raw: Record<AhivimField, string> };
+    const staged = stageRows([{
+      sourceRowNumber: 30,
+      raw: stored.raw,
+      formulas: {},
+      parsed: stored.raw,
+      errors: [],
+    }], context);
+    expect(staged.rows[0].status).toBe("valid");
+    expect(staged.rows[0].programCode).toBe("DAY_HAB");
+    expect(staged.warnings.some((warning) => warning.category === "unknown_program")).toBe(false);
   });
 
   // helper that adds another row to an existing batch

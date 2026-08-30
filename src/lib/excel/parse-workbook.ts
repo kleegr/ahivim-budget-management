@@ -256,7 +256,7 @@ export async function parseWorkbook(bytes: Buffer): Promise<WorkbookParseResult>
 
       if (isBlankRow(raw)) continue;
 
-      const normalized = { ...raw, ...normalizeDates(raw) };
+      const normalized = { ...raw, ...normalizeAhivimDates(raw) };
       const result = ahivimRowSchema.safeParse(normalized);
 
       ahivimRows.push({
@@ -299,7 +299,10 @@ export async function parseWorkbook(bytes: Buffer): Promise<WorkbookParseResult>
 }
 
 /** Coerce common spreadsheet date spellings to ISO, leaving anything else alone. */
-function normalizeDates(raw: Record<AhivimField, string>): Partial<Record<AhivimField, string>> {
+/** Normalize the stored source cells again when a held row is applied later. */
+export function normalizeAhivimDates(
+  raw: Record<AhivimField, string>,
+): Partial<Record<AhivimField, string>> {
   const out: Partial<Record<AhivimField, string>> = {};
   for (const field of ["checkDate", "periodBegin", "periodEnd"] as const) {
     const v = raw[field];

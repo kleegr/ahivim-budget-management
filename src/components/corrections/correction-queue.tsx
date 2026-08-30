@@ -25,8 +25,13 @@ async function send(
   }
 }
 
-const STATUS_OPTIONS = ["needs_review", "valid", "invalid", "duplicate", "skipped", "imported"];
-const statusLabel = (s: string) => s.replace(/_/g, " ");
+const CORRECTABLE_FIELDS = [
+  "payTo", "checkDate", "checkNumber", "hours", "rate", "amount", "totalNetPay",
+  "periodBegin", "periodEnd", "programDescription", "individual", "employee",
+  "calculatedInternalAmount", "paid",
+] as const;
+
+const fieldLabel = (field: string) => field.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
 
 function stringify(v: unknown): string {
   if (v === null || v === undefined) return "";
@@ -56,6 +61,19 @@ export interface CorrectionQueueProps {
   total: number;
   programs: { id: string; code: string; name: string }[];
   individuals: { id: string; label: string }[];
+  employees: { id: string; label: string }[];
+}
+
+function validationText(value: unknown): string {
+  if (!Array.isArray(value)) return stringify(value);
+  const messages = value.flatMap((item) => {
+    if (typeof item === "string") return [item];
+    if (!item || typeof item !== "object") return [];
+    const issue = item as { field?: unknown; message?: unknown };
+    if (typeof issue.message !== "string") return [];
+    return [typeof issue.field === "string" && issue.field ? `${issue.field}: ${issue.message}` : issue.message];
+  });
+  return messages.join("; ") || "Review the source values on this row.";
 }
 
 export default function CorrectionQueue({
@@ -64,14 +82,15 @@ export default function CorrectionQueue({
   rows,
   programs,
   individuals,
+  employees,
 }: CorrectionQueueProps) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null); // row id, or "bulk"
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkStatus, setBulkStatus] = useState("needs_review");
   const [bulkProgram, setBulkProgram] = useState("");
+  const selectableRows = rows.filter((row) => row.applicationState !== "applied");
 
   function toggle(rowId: string) {
     setSelected((prev) => {
@@ -83,7 +102,11 @@ export default function CorrectionQueue({
   }
 
   function toggleAll() {
-    setSelected((prev) => (prev.size === rows.length ? new Set() : new Set(rows.map((r) => r.id))));
+    setSelected((prev) => (
+      prev.size === selectableRows.length
+        ? new Set()
+        : new Set(selectableRows.map((row) => row.id))
+    ));
   }
 
   async function run(rowKey: string, url: string, body: Record<string, unknown>, method = "PATCH") {
@@ -100,11 +123,7 @@ export default function CorrectionQueue({
     return true;
   }
 
-  async function setStatus(rowId: string, status: string) {
-    await run(rowId, `/api/import-rows/${rowId}`, { action: "status", status });
-  }
-
-  async function resolve(rowId: string, field: "individualId" | "programId", value: string | null) {
+  async function resolve(rowId: string, field: "individualId" | "employeeId" | "programId", value: string | null) {
     await run(rowId, `/api/import-rows/${rowId}`, { action: "resolve", [field]: value });
   }
 
@@ -117,17 +136,14 @@ export default function CorrectionQueue({
     await run(rowId, `/api/import-rows/${rowId}`, { action: "reset" });
   }
 
-  async function applyBulkStatus() {
-    if (selected.size === 0) return;
-    const ok = await run("bulk", `/api/import-batches/${batchId}/bulk`, {
-      action: "status",
-      rowIds: [...selected],
-      status: bulkStatus,
-    }, "POST");
-    if (ok) {
-      setNotice(`Set ${selected.size} row(s) to “${statusLabel(bulkStatus)}”.`);
-      setSelected(new Set());
-    }
+  async function applyRow(rowId: string, rememberProgramAlias: boolean) {
+    if (!window.confirm("Apply this corrected source row to the ledger? This creates one transaction and one service allocation.")) return;
+    const ok = await run(rowId, `/api/import-rows/${rowId}`, {
+      action: "apply",
+      rememberProgramAlias,
+      reason: "Reviewed and applied from the import correction queue",
+    });
+    if (ok) setNotice("The corrected row was applied to the ledger and removed from attention.");
   }
 
   async function applyBulkProgram() {
@@ -165,7 +181,7 @@ export default function CorrectionQueue({
           <label className="inline-flex items-center gap-1.5">
             <input
               type="checkbox"
-              checked={selected.size === rows.length && rows.length > 0}
+              checked={selected.size === selectableRows.length && selectableRows.length > 0}
               onChange={toggleAll}
               aria-label="Select all rows"
             />
@@ -173,25 +189,6 @@ export default function CorrectionQueue({
               {selected.size > 0 ? `${selected.size} selected` : "Select all"}
             </span>
           </label>
-          <span className="mx-1 h-4 w-px bg-[var(--color-rule)]" aria-hidden />
-          <select
-            value={bulkStatus}
-            onChange={(e) => setBulkStatus(e.target.value)}
-            aria-label="Bulk status"
-            className={inputCls}
-          >
-            {STATUS_OPTIONS.map((s) => (
-              <option key={s} value={s}>{statusLabel(s)}</option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={applyBulkStatus}
-            disabled={busy !== null || selected.size === 0}
-            className="rounded border border-[var(--color-rule-strong)] px-2 py-1 text-xs font-medium disabled:opacity-50"
-          >
-            Set status
-          </button>
           <span className="mx-1 h-4 w-px bg-[var(--color-rule)]" aria-hidden />
           <select
             value={bulkProgram}
@@ -222,13 +219,14 @@ export default function CorrectionQueue({
           canManage={canManage}
           programs={programs}
           individuals={individuals}
+          employees={employees}
           selected={selected.has(row.id)}
           disabled={busy !== null}
           onToggle={() => toggle(row.id)}
-          onStatus={(status) => setStatus(row.id, status)}
           onResolve={(field, value) => resolve(row.id, field, value)}
           onCorrect={(field, value) => correctField(row.id, field, value)}
           onReset={() => resetRow(row.id)}
+          onApply={(rememberProgramAlias) => applyRow(row.id, rememberProgramAlias)}
         />
       ))}
     </div>
@@ -240,30 +238,37 @@ function RowCard({
   canManage,
   programs,
   individuals,
+  employees,
   selected,
   disabled,
   onToggle,
-  onStatus,
   onResolve,
   onCorrect,
   onReset,
+  onApply,
 }: {
   row: CorrectionRow;
   canManage: boolean;
   programs: { id: string; code: string; name: string }[];
   individuals: { id: string; label: string }[];
+  employees: { id: string; label: string }[];
   selected: boolean;
   disabled: boolean;
   onToggle: () => void;
-  onStatus: (status: string) => void;
-  onResolve: (field: "individualId" | "programId", value: string | null) => void;
+  onResolve: (field: "individualId" | "employeeId" | "programId", value: string | null) => void;
   onCorrect: (field: string, value: string) => void;
   onReset: () => void;
+  onApply: (rememberProgramAlias: boolean) => void;
 }) {
   const [field, setField] = useState("");
   const [value, setValue] = useState("");
+  const [rememberProgramAlias, setRememberProgramAlias] = useState(true);
 
-  const rawEntries = Object.entries(row.raw ?? {});
+  const nestedRaw = row.raw?.raw;
+  const displayedRaw = nestedRaw && typeof nestedRaw === "object" && !Array.isArray(nestedRaw)
+    ? nestedRaw as Record<string, unknown>
+    : row.raw;
+  const rawEntries = Object.entries(displayedRaw ?? {});
   const correctedEntries = row.corrected ? Object.entries(row.corrected) : [];
 
   function submitCorrection(e: React.FormEvent<HTMLFormElement>) {
@@ -276,9 +281,10 @@ function RowCard({
   }
 
   return (
+    <div id={`row-${row.id}`} className="scroll-mt-24 target:rounded-lg target:ring-2 target:ring-[var(--color-primary)] target:ring-offset-2" tabIndex={-1}>
     <Card>
       <div className="flex flex-wrap items-start gap-3 border-b border-[var(--color-rule)] px-5 py-3">
-        {canManage ? (
+        {canManage && row.applicationState !== "applied" ? (
           <input
             type="checkbox"
             checked={selected}
@@ -299,24 +305,7 @@ function RowCard({
             ) : null}
           </div>
         </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2 text-sm">
-          {canManage ? (
-            <label className="inline-flex items-center gap-1">
-              <span className="text-xs text-[var(--color-ink-faint)]">Status</span>
-              <select
-                defaultValue={row.status}
-                onChange={(e) => onStatus(e.target.value)}
-                disabled={disabled}
-                aria-label={`Status for row ${row.sourceRowNumber}`}
-                className={inputCls}
-              >
-                {STATUS_OPTIONS.map((s) => (
-                  <option key={s} value={s}>{statusLabel(s)}</option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-        </div>
+        <div className="ml-auto text-xs text-[var(--color-ink-faint)]">Source history is preserved</div>
       </div>
 
       <div className="grid gap-4 px-5 py-4 lg:grid-cols-2">
@@ -346,7 +335,7 @@ function RowCard({
                   </div>
                 ))}
               </dl>
-              {canManage ? (
+              {canManage && row.applicationState !== "applied" ? (
                 <button
                   type="button"
                   onClick={onReset}
@@ -361,7 +350,7 @@ function RowCard({
 
           {hasContent(row.validationErrors) ? (
             <p className="mt-3 text-xs text-[var(--color-pace-over)]">
-              Validation: {stringify(row.validationErrors)}
+              Needs correction: {validationText(row.validationErrors)}
             </p>
           ) : null}
         </div>
@@ -379,7 +368,7 @@ function RowCard({
             </dl>
           </div>
 
-          {canManage ? (
+          {canManage && row.applicationState !== "applied" ? (
             <div className="space-y-2">
               <label className="flex items-center gap-2 text-sm">
                 <span className="w-20 text-xs text-[var(--color-ink-faint)]">Program</span>
@@ -411,15 +400,34 @@ function RowCard({
                   ))}
                 </select>
               </label>
+              <label className="flex items-center gap-2 text-sm">
+                <span className="w-20 text-xs text-[var(--color-ink-faint)]">Employee</span>
+                <select
+                  defaultValue={row.resolvedEmployeeId ?? ""}
+                  onChange={(e) => onResolve("employeeId", e.target.value || null)}
+                  disabled={disabled}
+                  aria-label={`Resolve employee for row ${row.sourceRowNumber}`}
+                  className={`${inputCls} flex-1`}
+                >
+                  <option value="">— none —</option>
+                  {employees.map((employee) => (
+                    <option key={employee.id} value={employee.id}>{employee.label}</option>
+                  ))}
+                </select>
+              </label>
 
               <form onSubmit={submitCorrection} className="flex flex-wrap items-center gap-2">
-                <input
+                <select
                   value={field}
                   onChange={(e) => setField(e.target.value)}
-                  placeholder="Field name"
                   aria-label={`Correction field for row ${row.sourceRowNumber}`}
                   className={`${inputCls} w-32`}
-                />
+                >
+                  <option value="">Choose field</option>
+                  {CORRECTABLE_FIELDS.map((sourceField) => (
+                    <option key={sourceField} value={sourceField}>{fieldLabel(sourceField)}</option>
+                  ))}
+                </select>
                 <input
                   value={value}
                   onChange={(e) => setValue(e.target.value)}
@@ -435,10 +443,47 @@ function RowCard({
                   Correct
                 </button>
               </form>
+
+              <div className={`rounded border px-3 py-2 text-sm ${
+                row.applicationState === "ready"
+                  ? "border-[var(--color-primary)] bg-[var(--color-primary-soft)]"
+                  : "border-[var(--color-rule)] bg-[var(--color-canvas)]"
+              }`}>
+                <p className="font-medium">
+                  {row.applicationState === "ready" ? "Ready to apply" : "Cannot apply yet"}
+                </p>
+                <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">{row.applicationMessage}</p>
+                {row.applicationState === "ready" ? (
+                  <>
+                    <label className="mt-2 flex items-start gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={rememberProgramAlias}
+                        onChange={(event) => setRememberProgramAlias(event.target.checked)}
+                      />
+                      <span>Remember this program spelling for future imports</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => onApply(rememberProgramAlias)}
+                      disabled={disabled}
+                      className="mt-2 rounded bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                    >
+                      {disabled ? "Applying…" : "Apply corrected row"}
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            </div>
+          ) : row.applicationState === "applied" ? (
+            <div className="rounded border border-[var(--color-primary)] bg-[var(--color-primary-soft)] px-3 py-2 text-sm">
+              <p className="font-medium">Applied to the ledger</p>
+              <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">{row.applicationMessage}</p>
             </div>
           ) : null}
         </div>
       </div>
     </Card>
+    </div>
   );
 }

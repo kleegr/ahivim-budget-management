@@ -4,6 +4,7 @@ import { apiUser } from "@/lib/auth/session";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import {
   correctRowFields,
+  applyCorrectedImportRow,
   resetRowCorrection,
   resolveRowMatch,
   setRowReviewStatus,
@@ -24,7 +25,7 @@ const asStringOrNull = (v: unknown): string | null =>
  *   correct  — store a { field: value } correction patch (body.patch)
  *   reset    — clear the field corrections
  *   resolve  — set/clear a canonical match (body.individualId/employeeId/programId)
- *   status   — change the review status (body.status)
+ *   apply    — atomically create the missing ledger row after validation
  */
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const origin = sameOriginOrFail(request);
@@ -61,6 +62,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if ("employeeId" in body) match.employeeId = asStringOrNull(body.employeeId);
       if ("programId" in body) match.programId = asStringOrNull(body.programId);
       return resultResponse(await resolveRowMatch(pool, id, match, user.id, reason), 200);
+    }
+
+    if (body.action === "apply") {
+      return resultResponse(
+        await applyCorrectedImportRow(pool, id, user.id, {
+          rememberProgramAlias: body.rememberProgramAlias === true,
+          reason,
+        }),
+        200,
+      );
     }
 
     if (body.action === "status") {

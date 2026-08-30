@@ -98,7 +98,7 @@ describe("settlement history SQL scope", () => {
 
     await getSettlementDashboard(pool);
 
-    const checkIssueCall = query.mock.calls.find(([sql]) => String(sql).includes("WITH direct_sources AS"));
+    const checkIssueCall = query.mock.calls.find(([sql]) => String(sql).includes("WITH direct_facts AS"));
     expect(checkIssueCall).toBeDefined();
     const sql = String(checkIssueCall?.[0]);
     expect(sql).toContain(
@@ -107,9 +107,20 @@ describe("settlement history SQL scope", () => {
     expect(sql).toContain(
       "GROUP BY employee_id, employee_name, NULLIF(btrim(check_number), '')",
     );
+    expect(sql).toContain("WHERE verified_payroll_check_id IS NULL");
     expect(sql.match(/effective_payment_recipient\(/g)).toHaveLength(4);
     expect(sql).toContain("p.payment_recipient");
     expect(sql).not.toContain("t.payment_recipient = 'employee'");
+    expect(sql).toContain("LEFT JOIN employee_payroll_checks pc");
+    expect(sql).toContain("pc.employee_id = t.employee_id");
+    expect(sql).toContain("pc.verification_status = 'verified'");
+    expect(sql).toContain("CASE WHEN pc.id IS NOT NULL THEN pc.actual_net ELSE t.total_net_pay END AS total_net_pay");
+    expect(sql).toContain("CASE WHEN pc.id IS NOT NULL THEN pc.check_date ELSE t.check_date END AS check_date");
+    expect(sql).toContain("count(verified_payroll_check_id) AS verified_check_count");
+    expect(sql).toContain("concat(employee_id::text, ':payroll-check:', verified_payroll_check_id::text)");
+    expect(sql).toContain("WHEN verified_check_count < row_count OR net_count = 0 THEN 'missing_net'");
+    expect(sql).toContain("WHERE verified_check_count < row_count");
+    expect(sql).toContain("AND pc.id IS NULL\n          AND (t.check_number IS NULL");
 
     const missingDealCall = query.mock.calls.find(([statement]) =>
       String(statement).includes("SELECT 1 FROM employee_deals d"),

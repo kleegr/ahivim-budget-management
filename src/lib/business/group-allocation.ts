@@ -34,6 +34,7 @@ export interface GroupCandidateRow {
   employeeKey: string;
   programKey: string;
   checkNumber: string | null;
+  checkDate: string | null;
   periodBegin: string | null;
   periodEnd: string | null;
   hours: MoneyInput;
@@ -55,6 +56,7 @@ export function buildGroupSignature(row: GroupCandidateRow): string {
     row.employeeKey,
     row.programKey,
     row.checkNumber ?? "",
+    row.checkDate ?? "",
     row.periodBegin ?? "",
     row.periodEnd ?? "",
     dec(row.hours).toFixed(4),

@@ -11,6 +11,7 @@ import {
 } from "@/lib/business/utilization";
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
+import { isActiveOverAuthorization } from "@/lib/business/budget-board-status";
 import { budgetRateDate, currentBudgetPeriod, programBudgetPeriod, isCalendarYearProgram, effectiveBilledHours } from "@/lib/business/calculation-strategy";
 import { individualScopeClause, transactionScopeClause, type AccessScope } from "@/lib/auth/access";
 import {
@@ -911,41 +912,47 @@ export interface ExceptionCounts {
   overAuthorization: number;
 }
 
-export async function exceptionCounts(pool: PgLikePool): Promise<ExceptionCounts> {
-  const { rows } = await pool.query<Record<string, string>>(
+export async function exceptionCounts(
+  pool: PgLikePool,
+  options: { asOf?: Date; includeOverAuthorization?: boolean } = {},
+): Promise<ExceptionCounts> {
+  const includeOverAuthorization = options.includeOverAuthorization !== false;
+  const [{ rows }, budgetRows] = await Promise.all([
+    pool.query<Record<string, string>>(
     `SELECT
-       (SELECT count(*) FROM import_warnings WHERE category = 'unknown_program')::text          AS unknown_programs,
-       (SELECT count(*) FROM import_warnings
-         WHERE category IN ('unmatched_individual','unmatched_employee','ambiguous_name')
-           AND severity IN ('warning','error'))::text                                          AS unmatched_names,
+       (SELECT count(*) FROM import_warnings w
+          JOIN import_rows r ON r.id = w.import_row_id
+         WHERE w.category = 'unknown_program' AND w.resolved_at IS NULL
+           AND r.status IN ('needs_review','invalid'))::text                                    AS unknown_programs,
+       (SELECT count(*) FROM import_warnings w
+          JOIN import_rows r ON r.id = w.import_row_id
+         WHERE w.category IN ('unmatched_individual','unmatched_employee','ambiguous_name')
+           AND w.severity IN ('warning','error') AND w.resolved_at IS NULL
+           AND r.status IN ('needs_review','invalid'))::text                                    AS unmatched_names,
        (SELECT count(*) FROM individual_match_reviews WHERE status = 'pending')::text          AS duplicate_individuals,
        ((SELECT count(*) FROM individual_aliases WHERE status = 'pending')
         + (SELECT count(*) FROM employee_aliases WHERE status = 'pending'))::text               AS pending_aliases,
        (SELECT count(*) FROM rate_exceptions x
          WHERE x.resolution = 'open'
            AND ${actionableRateExceptionSource("x")})::text                                  AS rate_exceptions,
-       (SELECT count(*) FROM import_warnings WHERE category = 'possible_duplicate')::text       AS duplicate_candidates,
+       (SELECT count(*) FROM import_warnings w
+          JOIN import_rows r ON r.id = w.import_row_id
+         WHERE w.category = 'possible_duplicate' AND w.resolved_at IS NULL
+           AND r.status = 'imported')::text                                                     AS duplicate_candidates,
        (SELECT count(*) FROM service_sessions
          WHERE group_detection_status = 'needs_review')::text                                   AS group_review_issues,
        (SELECT count(*) FROM import_batches
          WHERE reconciliation_notes IS NOT NULL
-           AND reconciliation_notes LIKE '%DO NOT agree%')::text                                AS reconciliation_differences,
-       (SELECT count(*) FROM (
-          SELECT b.id
-            FROM budget_authorizations b
-            JOIN budget_periods bp ON bp.id = b.budget_period_id
-            LEFT JOIN payroll_transactions t ON t.individual_id = b.individual_id
-                                            AND t.program_id = b.program_id
-                                            AND canonical_service_date(
-                                                  t.period_begin, t.check_date, t.period_end
-                                                ) BETWEEN bp.start_date AND bp.end_date
-            LEFT JOIN service_allocations a ON a.payroll_transaction_id = t.id
-           WHERE b.status = 'active' AND bp.status = 'active'
-           GROUP BY b.id, b.authorized_hours, bp.start_date, bp.end_date
-          HAVING coalesce(sum(a.allocation_hours), 0) > b.authorized_hours
-       ) AS over_auth)::text                                                                    AS over_authorization`,
-  );
+           AND reconciliation_notes LIKE '%DO NOT agree%')::text                                AS reconciliation_differences`,
+    ),
+    includeOverAuthorization
+      ? listIndividualBudgetBoard(pool, options.asOf ?? new Date())
+      : Promise.resolve([]),
+  ]);
   const r = rows[0] ?? {};
+  const overAuthorization = includeOverAuthorization
+    ? budgetRows.filter(isActiveOverAuthorization).length
+    : 0;
   return {
     unknownPrograms: Number(r.unknown_programs ?? 0),
     unmatchedNames: Number(r.unmatched_names ?? 0),
@@ -955,7 +962,7 @@ export async function exceptionCounts(pool: PgLikePool): Promise<ExceptionCounts
     duplicateCandidates: Number(r.duplicate_candidates ?? 0),
     groupReviewIssues: Number(r.group_review_issues ?? 0),
     reconciliationDifferences: Number(r.reconciliation_differences ?? 0),
-    overAuthorization: Number(r.over_authorization ?? 0),
+    overAuthorization,
   };
 }
 
