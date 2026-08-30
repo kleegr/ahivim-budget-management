@@ -23,6 +23,7 @@ interface Props {
   runs: SyncRunRow[];
   conflicts: SyncConflictRow[];
   sheetUrl: string;
+  writebackConfigured: boolean;
 }
 
 function fmt(dt: string | null): string {
@@ -38,7 +39,7 @@ const STATUS_TONE: Record<string, string> = {
   failed: "var(--color-danger)",
 };
 
-export default function SyncConsole({ canManage, isAdmin, status, config, runs, conflicts, sheetUrl }: Props) {
+export default function SyncConsole({ canManage, isAdmin, status, config, runs, conflicts, sheetUrl, writebackConfigured }: Props) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<{
@@ -158,8 +159,13 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
               <a className="underline underline-offset-2" href={sheetUrl} target="_blank" rel="noreferrer">
                 the Google Sheet
               </a>
-              . The daily automated sync imports new rows and flags any change or removal for review.
+              . This refresh sends app payment markers when write-back is configured, then loads the latest sheet information.
             </p>
+            {isAdmin ? (
+              <p className="mt-1 text-xs text-[var(--color-ink-faint)]">
+                Connection: {writebackConfigured ? "read and write payment markers" : "read only"}
+              </p>
+            ) : null}
           </div>
           {canManage ? (
             <button
@@ -168,7 +174,7 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
               disabled={busy !== null}
               className="rounded bg-[var(--color-primary)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
             >
-              {busy === "sync" ? "Syncing…" : "Sync now"}
+              {busy === "sync" ? "Updating..." : "Sync Google Sheet"}
             </button>
           ) : null}
         </div>

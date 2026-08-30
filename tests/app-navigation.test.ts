@@ -12,7 +12,7 @@ describe("role-specific workspaces", () => {
     expect(shouldTrackNavigation("/dashboard", "/dashboard")).toBe(false);
   });
 
-  it("gives a finance-only viewer Money operations without budget navigation", () => {
+  it("gives a finance-only viewer a plain Money destination without budget navigation", () => {
     const access = {
       role: "viewer",
       accessResolved: true,
@@ -24,8 +24,8 @@ describe("role-specific workspaces", () => {
     };
     const workspaces = getVisibleWorkspaces(access);
 
-    expect(workspaces.map((workspace) => workspace.label)).toContain("Money operations");
-    expect(workspaces.map((workspace) => workspace.label)).not.toContain("Budgets");
+    expect(workspaces.map((workspace) => workspace.label)).toContain("Money");
+    expect(workspaces.map((workspace) => workspace.label)).not.toContain("People & budgets");
     expect(workspaces.find((workspace) => workspace.id === "payroll")?.href).toBe("/collections");
     expect(getCommandDestinations(access).some((item) => item.href === "/individuals")).toBe(false);
   });
@@ -43,7 +43,7 @@ describe("role-specific workspaces", () => {
     expect(workspaces.find((workspace) => workspace.id === "budgets")?.href).toBe("/individuals");
   });
 
-  it("gives a budget planner Planning and budgets without transaction navigation", () => {
+  it("gives a budget planner Schedule and People & budgets without transaction navigation", () => {
     const access = {
       role: "viewer",
       accessResolved: true,
@@ -115,9 +115,10 @@ describe("role-specific workspaces", () => {
     expect(workspaces.map((workspace) => workspace.id)).toEqual([
       "overview",
       "budgets",
-      "payroll",
       "activity",
-      "review",
+      "payroll",
+      "employees",
+      "classes",
       "reports",
     ]);
     const hrefs = getCommandDestinations(resolved).map((item) => item.href);

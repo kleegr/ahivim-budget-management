@@ -30,14 +30,14 @@ export default async function EmployeesPage() {
     if (isPlanningOnlyAccess(scope)) return { planningOnly: true as const, rows: [] };
     return { planningOnly: false as const, rows: await listEmployeeDirectory(pool, scope) };
   });
-  if (result.ok && result.data.planningOnly) redirect("/schedule?view=schedules");
+  if (result.ok && result.data.planningOnly) redirect("/schedule");
 
   return (
     <>
       <PageHeader
-        eyebrow="Payroll"
+        eyebrow="People"
         title="Employees"
-        description="See who has payroll activity, which checks still need a deal, and where an open payment balance needs follow-up."
+        description="Find employees, see recent activity, and open a profile."
         action={
           canEdit ? (
             <CreateButton label="New employee" title="New employee" endpoint="/api/employees" fields={employeeFields()} />

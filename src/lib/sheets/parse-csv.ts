@@ -217,7 +217,10 @@ function readControlTotals(
  */
 export function parseSheetCsv(csvText: string): SheetCsvParseResult {
   const warnings: string[] = [];
-  const grid = parseCsv(csvText).filter((r) => r.some((c) => c.trim() !== ""));
+  const gridRows = parseCsv(csvText)
+    .map((cells, index) => ({ cells, sourceRowNumber: index + 1 }))
+    .filter((row) => row.cells.some((cellValue) => cellValue.trim() !== ""));
+  const grid = gridRows.map((row) => row.cells);
 
   const header = findHeaderRow(grid);
   let columnMap = { ...AHIVIM_POSITIONAL };
@@ -256,7 +259,7 @@ export function parseSheetCsv(csvText: string): SheetCsvParseResult {
     const result = ahivimRowSchema.safeParse(normalized);
 
     // Source row number is 1-indexed to mirror the workbook's row numbering.
-    const sourceRowNumber = n + 1;
+    const sourceRowNumber = gridRows[n]!.sourceRowNumber;
     ahivimRows.push({
       sourceRowNumber,
       raw,

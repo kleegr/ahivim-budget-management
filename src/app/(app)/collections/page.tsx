@@ -9,7 +9,7 @@ import { agencyMonth } from "@/lib/business/agency-time";
 import { collectionsInitialState } from "@/lib/nav/collections-links";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Collections - Ahivim Budget Management" };
+export const metadata = { title: "Money - Ahivim" };
 
 export default async function CollectionsPage({
   searchParams,
@@ -56,9 +56,9 @@ export default async function CollectionsPage({
     : initialState?.view ?? "summary";
   return (
     <>
-      <PageHeader eyebrow="Finance" title="Collections" description="Monthly employee give-backs, individual set-asides, gross targets, and payroll-check facts." />
+      <PageHeader eyebrow="Money" title="Payments & collections" description="See what should be paid, collected, or set aside each month." />
       {!result.ok ? <ErrorPanel title="Could not load collections">{result.error}</ErrorPanel>
-        : result.data.denied || !result.data.data ? <ErrorPanel title="No access to Collections">Your account does not include collection balances.</ErrorPanel>
+        : result.data.denied || !result.data.data ? <ErrorPanel title="Money is not included in this account">Ask an administrator to change this person&apos;s job access.</ErrorPanel>
         : <CollectionsWorkspace
             key={workspaceKey}
             data={result.data.data}

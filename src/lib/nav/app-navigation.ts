@@ -25,7 +25,7 @@ export interface NavigationDestination {
 }
 
 export interface NavigationWorkspace {
-  id: "overview" | "portal" | "budgets" | "payroll" | "activity" | "review" | "reports";
+  id: "overview" | "portal" | "budgets" | "activity" | "payroll" | "employees" | "classes" | "reports";
   label: string;
   hint: string;
   activePrefixes: readonly string[];
@@ -40,16 +40,16 @@ export interface VisibleNavigationWorkspace extends Omit<NavigationWorkspace, "d
 const WORKSPACES: readonly NavigationWorkspace[] = [
   {
     id: "overview",
-    label: "Overview",
-    hint: "Today's priorities and portfolio health",
+    label: "Home",
+    hint: "Start here",
     activePrefixes: ["/home", "/dashboard"],
     destinations: [
       {
         id: "overview-home",
-        label: "Overview",
+        label: "Home",
         href: "/home",
-        hint: "Today's priorities and portfolio health",
-        keywords: "home dashboard attention start",
+        hint: "Start here",
+        keywords: "home dashboard start",
         gate: "manager",
       },
     ],
@@ -72,159 +72,95 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
   },
   {
     id: "budgets",
-    label: "Budgets",
-    hint: "Authorizations, pace, annual plans and set-asides",
+    label: "People & budgets",
+    hint: "People, authorized hours, usage, and renewals",
     activePrefixes: ["/individuals", "/people", "/calculations", "/projections", "/masser"],
     destinations: [
       {
         id: "budget-portfolio",
-        label: "Portfolio",
+        label: "People & budgets",
         href: "/individuals",
-        hint: "Authorized hours, usage and renewals",
+        hint: "People, authorized hours, usage, and renewals",
         keywords: "individuals people clients authorizations utilization",
         gate: "budgets",
-      },
-      {
-        id: "annual-plans",
-        label: "Annual plans",
-        href: "/calculations",
-        hint: "Plan inputs, deductions and projected net",
-        keywords: "financial calculations cuts projections",
-        gate: "manager",
-      },
-      {
-        id: "masser-set-asides",
-        label: "Masser set-asides",
-        href: "/masser",
-        hint: "Annual targets and the portfolio board",
-        keywords: "masser annual reserve set aside board",
-        gate: "manager",
-      },
-    ],
-  },
-  {
-    id: "payroll",
-    label: "Money operations",
-    hint: "Amounts to pay, collect, set aside and reconcile",
-    activePrefixes: ["/collections", "/settlements", "/classes", "/employees"],
-    destinations: [
-      {
-        id: "collections",
-        label: "Collections",
-        href: "/collections",
-        hint: "Monthly give-backs, set-asides, targets and payroll checks",
-        keywords: "collector receivable monthly check gross net reserve target",
-        gate: "settlements",
-      },
-      {
-        id: "open-balances",
-        label: "Balances and collections",
-        href: "/settlements",
-        hint: "Payouts, collections, set-asides and credits",
-        keywords: "settlements ledger owed receivable payable payment history",
-        gate: "settlements",
-      },
-      {
-        id: "class-billing",
-        label: "Classes",
-        href: "/classes",
-        hint: "Class allowances, monthly invoices and reimbursement forms",
-        keywords: "classes revenue invoice allowance reimbursement idgs",
-        gate: "classes",
-      },
-      {
-        id: "employees",
-        label: "Employees",
-        href: "/employees",
-        hint: "Deals, checks, activity and people served",
-        keywords: "staff workers deal terms checks",
-        gate: "employees",
       },
     ],
   },
   {
     id: "activity",
-    label: "Service activity",
-    hint: "Billed work, planned sessions and matching",
-    activePrefixes: ["/transactions", "/schedule", "/reconciliation"],
+    label: "Schedule",
+    hint: "Plan who works with whom and when",
+    activePrefixes: ["/schedule"],
     destinations: [
       {
-        id: "billed-ledger",
-        label: "Billed ledger",
-        href: "/transactions",
-        hint: "Committed service and payroll rows",
-        keywords: "transactions actual billed source truth",
-        gate: "transactions",
-      },
-      {
         id: "schedule",
-        label: "Planning",
+        label: "Schedule",
         href: "/schedule",
-        hint: "Work queue, calendar, coverage and future plans",
-        keywords: "calendar planning sessions coverage pace assignments",
+        hint: "Plan who works with whom and when",
+        keywords: "calendar planning sessions coverage assignments",
         gate: "planning",
-      },
-      {
-        id: "schedule-matching",
-        label: "Schedule matching",
-        href: "/reconciliation",
-        hint: "Match planned sessions to billed activity",
-        keywords: "reconciliation planned actual group review",
-        gate: "manager",
       },
     ],
   },
   {
-    id: "review",
-    label: "Review",
-    hint: "Resolve decisions the system cannot make alone",
-    activePrefixes: ["/review", "/aliases", "/matches", "/exceptions"],
+    id: "payroll",
+    label: "Money",
+    hint: "Payments, collections, and set-asides",
+    activePrefixes: ["/collections", "/settlements"],
     destinations: [
       {
-        id: "review-inbox",
-        label: "Review inbox",
-        href: "/review",
-        hint: "All decisions waiting for a person",
-        keywords: "inbox attention unresolved",
-        gate: "manager",
+        id: "collections",
+        label: "Money",
+        href: "/collections",
+        hint: "Payments, collections, and set-asides",
+        keywords: "collector receivable monthly check gross net reserve target",
+        gate: "settlements",
       },
+    ],
+  },
+  {
+    id: "employees",
+    label: "Employees",
+    hint: "Employees, assignments, and pay arrangements",
+    activePrefixes: ["/employees"],
+    destinations: [
       {
-        id: "name-spellings",
-        label: "Name spellings",
-        href: "/aliases",
-        hint: "Approve imported names and aliases",
-        keywords: "identity names aliases spelling",
-        gate: "manager",
+        id: "employees",
+        label: "Employees",
+        href: "/employees",
+        hint: "Employees, assignments, and pay arrangements",
+        keywords: "staff workers assignments deals checks",
+        gate: "employees",
       },
+    ],
+  },
+  {
+    id: "classes",
+    label: "Classes",
+    hint: "Class budgets and invoices",
+    activePrefixes: ["/classes"],
+    destinations: [
       {
-        id: "duplicate-people",
-        label: "Duplicate people",
-        href: "/matches",
-        hint: "Review possible identity matches",
-        keywords: "merge duplicates people matches",
-        gate: "manager",
-      },
-      {
-        id: "data-exceptions",
-        label: "Data exceptions",
-        href: "/exceptions",
-        hint: "Unexpected rates and unresolved source values",
-        keywords: "warnings rates programs invalid rows",
-        gate: "manager",
+        id: "class-billing",
+        label: "Classes",
+        href: "/classes",
+        hint: "Class budgets and invoices",
+        keywords: "classes revenue invoice allowance reimbursement idgs",
+        gate: "classes",
       },
     ],
   },
   {
     id: "reports",
     label: "Reports",
-    hint: "Analysis, drill-downs and exports",
+    hint: "View and export reports",
     activePrefixes: ["/reports"],
     destinations: [
       {
         id: "report-library",
         label: "Report library",
         href: "/reports",
-        hint: "Analysis, drill-downs and exports",
+        hint: "View and export reports",
         keywords: "csv excel analysis export",
         gate: "manager",
       },
@@ -251,24 +187,75 @@ const ADMIN_DESTINATIONS: readonly NavigationDestination[] = [
   },
   {
     id: "settings",
-    label: "Settings and access",
+    label: "Users & settings",
     href: "/settings",
-    hint: "Account, permissions, programs and rates",
+    hint: "Users, account, programs, and rates",
     keywords: "password users access programs rates audit system",
   },
   {
     id: "sheet-sync",
-    label: "Data source",
+    label: "Google Sheet",
     href: "/sync",
-    hint: "Google Sheet freshness, runs and conflicts",
+    hint: "Bring in the latest Google Sheet information",
     keywords: "sheet sync source history conflicts",
+    gate: "manager",
+  },
+];
+
+const ADVANCED_COMMANDS: readonly NavigationDestination[] = [
+  {
+    id: "billing-history",
+    label: "Billing history",
+    href: "/transactions",
+    hint: "Imported service and payroll history",
+    keywords: "transactions billed ledger source",
+    gate: "transactions",
+  },
+  {
+    id: "annual-plans",
+    label: "Annual financial plans",
+    href: "/calculations",
+    hint: "Annual deductions, adjustments, and projected net",
+    keywords: "budget planning financial calculations cuts projections",
+    gate: "manager",
+  },
+  {
+    id: "masser-set-asides",
+    label: "Annual set-asides",
+    href: "/masser",
+    hint: "Annual set-aside targets",
+    keywords: "masser annual reserve set aside",
+    gate: "manager",
+  },
+  {
+    id: "open-balances",
+    label: "Payment ledger",
+    href: "/settlements",
+    hint: "Detailed payments, collections, set-asides, and credits",
+    keywords: "settlements ledger owed receivable payable payment history",
+    gate: "settlements",
+  },
+  {
+    id: "schedule-matching",
+    label: "Schedule matching",
+    href: "/reconciliation",
+    hint: "Compare scheduled work with billed activity",
+    keywords: "reconciliation planned actual group review",
+    gate: "manager",
+  },
+  {
+    id: "data-review",
+    label: "Data review",
+    href: "/review",
+    hint: "Optional source-data cleanup tools",
+    keywords: "aliases matches exceptions reconcile cleanup",
     gate: "manager",
   },
   {
     id: "backup-imports",
-    label: "Backup imports",
+    label: "Import a workbook",
     href: "/imports",
-    hint: "Manual workbook uploads and import history",
+    hint: "Manual workbook upload and history",
     keywords: "xlsx workbook upload staging commit",
     gate: "manager",
   },
@@ -386,7 +373,11 @@ export function getCommandDestinations(access: NavigationAccess): NavigationDest
     }
   }
 
-  for (const destination of [...getVisibleAdminDestinations(access), ...REPORT_COMMANDS.filter((item) => allowed(item.gate, access))]) {
+  for (const destination of [
+    ...getVisibleAdminDestinations(access),
+    ...ADVANCED_COMMANDS.filter((item) => allowed(item.gate, access)),
+    ...REPORT_COMMANDS.filter((item) => allowed(item.gate, access)),
+  ]) {
     if (seen.has(destination.href)) continue;
     items.push(destination);
     seen.add(destination.href);

@@ -4,17 +4,18 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity,
   BadgeDollarSign,
   BarChart3,
+  CalendarDays,
   ChevronDown,
-  Inbox,
+  GraduationCap,
   LayoutDashboard,
   LogOut,
   Menu,
   Search,
   Settings2,
   ShieldCheck,
+  Users,
   WalletCards,
   X,
   type LucideIcon,
@@ -42,8 +43,9 @@ const WORKSPACE_ICONS: Record<VisibleNavigationWorkspace["id"], LucideIcon> = {
   portal: ShieldCheck,
   budgets: WalletCards,
   payroll: BadgeDollarSign,
-  activity: Activity,
-  review: Inbox,
+  activity: CalendarDays,
+  employees: Users,
+  classes: GraduationCap,
   reports: BarChart3,
 };
 
@@ -62,7 +64,7 @@ function Wordmark({ onNavigate }: { onNavigate?: (href: string) => void }) {
       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-primary)] text-sm font-bold text-white">A</span>
       <span className="min-w-0 leading-tight">
         <span className="block truncate text-sm font-semibold text-[var(--color-ink)]">Ahivim</span>
-        <span className="block truncate text-[0.65rem] text-[var(--color-ink-faint)]">Budget Management</span>
+        <span className="block truncate text-[0.65rem] text-[var(--color-ink-faint)]">Operations</span>
       </span>
     </Link>
   );
@@ -71,12 +73,10 @@ function Wordmark({ onNavigate }: { onNavigate?: (href: string) => void }) {
 function WorkspaceNavigation({
   pathname,
   access,
-  reviewCount,
   onNavigate,
 }: {
   pathname: string;
   access: NavigationAccess;
-  reviewCount: number;
   onNavigate?: (href: string) => void;
 }) {
   const workspaces = useMemo(() => getVisibleWorkspaces(access), [access]);
@@ -106,11 +106,6 @@ function WorkspaceNavigation({
               >
                 <Icon className={`h-[1.1rem] w-[1.1rem] shrink-0 ${active ? "text-[var(--color-primary)]" : "text-[var(--color-ink-faint)]"}`} aria-hidden />
                 <span className="min-w-0 flex-1 truncate">{workspace.label}</span>
-                {workspace.id === "review" && reviewCount > 0 ? (
-                  <span className="tnum inline-flex min-w-6 justify-center rounded-full bg-[var(--color-warn-soft)] px-1.5 py-0.5 text-[0.65rem] font-semibold text-[var(--color-warn)]">
-                    {reviewCount > 99 ? "99+" : reviewCount}
-                  </span>
-                ) : null}
               </Link>
 
               {active && secondary.length > 0 ? (
@@ -179,7 +174,7 @@ function AdministrationNavigation({
         }`}
       >
         <Settings2 className={`h-[1.1rem] w-[1.1rem] shrink-0 ${active ? "text-[var(--color-primary)]" : "text-[var(--color-ink-faint)]"}`} aria-hidden />
-        <span className="min-w-0 flex-1 truncate">{isManager ? "Administration" : "Account"}</span>
+        <span className="min-w-0 flex-1 truncate">{isManager ? "Settings" : "Account"}</span>
         <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden />
       </button>
 
@@ -230,21 +225,19 @@ function SidebarBody({
   user,
   pathname,
   access,
-  reviewCount,
   onNavigate,
   adminControlId,
 }: {
   user: AuthenticatedUser;
   pathname: string;
   access: NavigationAccess;
-  reviewCount: number;
   onNavigate?: (href: string) => void;
   adminControlId: string;
 }) {
   return (
     <>
       <nav aria-label="Primary" className="flex-1 space-y-4 overflow-y-auto px-3 py-4">
-        <WorkspaceNavigation pathname={pathname} access={access} reviewCount={reviewCount} onNavigate={onNavigate} />
+        <WorkspaceNavigation pathname={pathname} access={access} onNavigate={onNavigate} />
         <AdministrationNavigation pathname={pathname} access={access} onNavigate={onNavigate} controlId={adminControlId} />
       </nav>
       <UserFooter user={user} />
@@ -254,7 +247,6 @@ function SidebarBody({
 
 export default function AppNav({
   user,
-  reviewCount = 0,
   accessResolved = false,
   canSeeTransactions = false,
   canSeeSettlements = false,
@@ -267,7 +259,6 @@ export default function AppNav({
   canManageAgencies = false,
 }: {
   user: AuthenticatedUser;
-  reviewCount?: number;
   accessResolved?: boolean;
   canSeeTransactions?: boolean;
   canSeeSettlements?: boolean;
@@ -410,18 +401,29 @@ export default function AppNav({
 
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 md:hidden">
         <Wordmark onNavigate={beginNavigation} />
-        <button
-          ref={menuButtonRef}
-          type="button"
-          aria-expanded={open}
-          aria-controls="mobile-app-sidebar"
-          aria-label="Open navigation"
-          title="Open navigation"
-          onClick={openDrawer}
-          className="btn btn-sm btn-icon btn-secondary"
-        >
-          <Menu className="h-5 w-5" aria-hidden />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            aria-label="Search"
+            title="Search"
+            onClick={() => window.dispatchEvent(new Event("open-command-bar"))}
+            className="btn btn-sm btn-icon btn-secondary"
+          >
+            <Search className="h-5 w-5" aria-hidden />
+          </button>
+          <button
+            ref={menuButtonRef}
+            type="button"
+            aria-expanded={open}
+            aria-controls="mobile-app-sidebar"
+            aria-label="Open navigation"
+            title="Open navigation"
+            onClick={openDrawer}
+            className="btn btn-sm btn-icon btn-secondary"
+          >
+            <Menu className="h-5 w-5" aria-hidden />
+          </button>
+        </div>
       </header>
 
       {open ? <div className="fixed inset-0 z-30 bg-black/30 md:hidden" onPointerDown={closeDrawer} aria-hidden /> : null}
@@ -456,7 +458,6 @@ export default function AppNav({
           user={user}
           pathname={pathname}
           access={access}
-          reviewCount={reviewCount}
           onNavigate={beginNavigation}
           adminControlId="mobile-administration-links"
         />
@@ -478,7 +479,6 @@ export default function AppNav({
           user={user}
           pathname={pathname}
           access={access}
-          reviewCount={reviewCount}
           onNavigate={beginNavigation}
           adminControlId="desktop-administration-links"
         />

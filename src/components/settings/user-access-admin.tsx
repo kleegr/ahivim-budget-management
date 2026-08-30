@@ -2,8 +2,13 @@
 
 import { useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarClock, Eye, EyeOff, GraduationCap, WalletCards } from "lucide-react";
-import { BUDGET_PLANNER_ACCESS } from "@/lib/auth/access-presets";
+import { CalendarClock, Check, Copy, Eye, EyeOff, GraduationCap, Plus, WalletCards, X } from "lucide-react";
+import {
+  BUDGET_PLANNER_ACCESS,
+  CLASS_BILLING_ACCESS,
+  COLLECTIONS_ACCESS,
+} from "@/lib/auth/access-presets";
+import type { UserAccessConfig } from "@/lib/auth/users";
 
 /**
  * Administrator user + access management.
@@ -146,6 +151,18 @@ const emptyAccess = (): AccessState => ({
   employeeIds: new Set(),
 });
 
+const cloneAccess = (value: AccessState): AccessState => ({
+  ...value,
+  individualIds: new Set(value.individualIds),
+  employeeIds: new Set(value.employeeIds),
+});
+
+const accessFromPreset = (preset: UserAccessConfig): AccessState => ({
+  ...preset,
+  individualIds: new Set(preset.individualIds),
+  employeeIds: new Set(preset.employeeIds),
+});
+
 const accessToBody = (a: AccessState) => ({
   accessScope: a.accessScope,
   seeAllIndividuals: a.seeAllIndividuals,
@@ -169,6 +186,118 @@ const accessToBody = (a: AccessState) => ({
   individualIds: [...a.individualIds],
   employeeIds: [...a.employeeIds],
 });
+
+type AccountProfileId =
+  | "budget_planner"
+  | "collections"
+  | "manager"
+  | "class_billing"
+  | "admin"
+  | "custom";
+
+interface AccountProfile {
+  id: AccountProfileId;
+  label: string;
+  description: string;
+  role: "viewer" | "manager" | "admin";
+  access?: UserAccessConfig;
+}
+
+const ACCOUNT_PROFILES: AccountProfile[] = [
+  {
+    id: "budget_planner",
+    label: "Budget planner",
+    description: "Calendar, assignments, and hour budgets. No dollar amounts or payroll transactions.",
+    role: "viewer",
+    access: BUDGET_PLANNER_ACCESS,
+  },
+  {
+    id: "collections",
+    label: "Collections",
+    description: "Employee financials, collections, and set-asides. No budget planning.",
+    role: "viewer",
+    access: COLLECTIONS_ACCESS,
+  },
+  {
+    id: "manager",
+    label: "Office manager",
+    description: "All everyday work, reports, budgets, and financials. Cannot manage user accounts.",
+    role: "manager",
+  },
+  {
+    id: "class_billing",
+    label: "Class billing",
+    description: "Class allowances, invoices, cover sheets, and documents.",
+    role: "viewer",
+    access: CLASS_BILLING_ACCESS,
+  },
+  {
+    id: "admin",
+    label: "Administrator",
+    description: "Everything, including user accounts and system settings.",
+    role: "admin",
+  },
+  {
+    id: "custom",
+    label: "Custom access",
+    description: "Starts with no access. Open Advanced permissions only for an unusual combination.",
+    role: "viewer",
+  },
+];
+
+const ACCESS_PROFILE_KEYS = [
+  "accessScope",
+  "seeAllIndividuals",
+  "seeAllEmployees",
+  "canSeeTransactions",
+  "canSeeMoney",
+  "canSeeHours",
+  "canSeeBilledAmounts",
+  "canSeeEmployeeAmounts",
+  "canSeeAgencySpread",
+  "canSeeCheckNet",
+  "canSeeTaxes",
+  "canSeeBudgets",
+  "canSeeEmployeeDeals",
+  "canSeeSettlements",
+  "canManageSettlements",
+  "canSeeClassFinancials",
+  "canManageClassInvoices",
+  "canEditDocuments",
+  "canPlan",
+] as const;
+
+type AccessWithPeople = Pick<AccessState, (typeof ACCESS_PROFILE_KEYS)[number]> & (
+  | Pick<AccessState, "individualIds" | "employeeIds">
+  | { individualCount: number; employeeCount: number }
+);
+
+function matchesPreset(value: AccessWithPeople, preset: UserAccessConfig) {
+  if (!ACCESS_PROFILE_KEYS.every((key) => value[key] === preset[key])) return false;
+  const individualCount = "individualIds" in value ? value.individualIds.size : value.individualCount;
+  const employeeCount = "employeeIds" in value ? value.employeeIds.size : value.employeeCount;
+  return individualCount === preset.individualIds.length && employeeCount === preset.employeeIds.length;
+}
+
+function profileForAccess(role: string, access: AccessWithPeople): AccountProfileId {
+  if (role === "admin") return "admin";
+  if (role === "manager") return "manager";
+  if (matchesPreset(access, BUDGET_PLANNER_ACCESS)) return "budget_planner";
+  if (matchesPreset(access, COLLECTIONS_ACCESS)) return "collections";
+  if (matchesPreset(access, CLASS_BILLING_ACCESS)) return "class_billing";
+  return "custom";
+}
+
+function accountProfile(id: AccountProfileId) {
+  return ACCOUNT_PROFILES.find((profile) => profile.id === id) ?? ACCOUNT_PROFILES[0];
+}
+
+function generateTemporaryPassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const bytes = new Uint8Array(18);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (value) => alphabet[value % alphabet.length]).join("");
+}
 
 type VisibilityKey =
   | "canSeeHours"
@@ -283,60 +412,11 @@ function AccessConfig({
       </p>
     );
   }
-  const scoped = value.accessScope === "scoped";
+  const limitedToPeople = !value.seeAllIndividuals || !value.seeAllEmployees;
   const set = (patch: Partial<AccessState>) => onChange({ ...value, ...patch });
-  const applyMoneyOperatorAccess = () => onChange({
-    ...value,
-    accessScope: "scoped",
-    seeAllIndividuals: true,
-    seeAllEmployees: true,
-    canSeeTransactions: true,
-    canSeeMoney: true,
-    canSeeHours: false,
-    canSeeBilledAmounts: false,
-    canSeeEmployeeAmounts: true,
-    canSeeAgencySpread: false,
-    canSeeCheckNet: true,
-    canSeeTaxes: true,
-    canSeeBudgets: false,
-    canSeeEmployeeDeals: true,
-    canSeeSettlements: true,
-    canManageSettlements: true,
-    canSeeClassFinancials: false,
-    canManageClassInvoices: false,
-    canEditDocuments: false,
-    canPlan: false,
-  });
-  const applyBudgetPlannerAccess = () => onChange({
-    ...value,
-    ...BUDGET_PLANNER_ACCESS,
-    individualIds: new Set(),
-    employeeIds: new Set(),
-  });
-  const applyClassBillingAccess = () => onChange({
-    ...value,
-    accessScope: "scoped",
-    seeAllIndividuals: true,
-    seeAllEmployees: false,
-    canSeeTransactions: false,
-    canSeeMoney: true,
-    canSeeHours: false,
-    canSeeBilledAmounts: false,
-    canSeeEmployeeAmounts: false,
-    canSeeAgencySpread: false,
-    canSeeCheckNet: false,
-    canSeeTaxes: false,
-    canSeeBudgets: false,
-    canSeeEmployeeDeals: false,
-    canSeeSettlements: false,
-    canManageSettlements: false,
-    canSeeClassFinancials: true,
-    canManageClassInvoices: true,
-    canEditDocuments: true,
-    canPlan: false,
-    individualIds: new Set(),
-    employeeIds: new Set(),
-  });
+  const applyMoneyOperatorAccess = () => onChange(accessFromPreset(COLLECTIONS_ACCESS));
+  const applyBudgetPlannerAccess = () => onChange(accessFromPreset(BUDGET_PLANNER_ACCESS));
+  const applyClassBillingAccess = () => onChange(accessFromPreset(CLASS_BILLING_ACCESS));
   const setVisibility = (key: VisibilityKey, checked: boolean) => {
     if (key === "canSeeHours" && !checked) {
       set({ canSeeHours: false, canSeeBudgets: false });
@@ -392,21 +472,21 @@ function AccessConfig({
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
-          onClick={() => set({ accessScope: "full" })}
-          className={`btn btn-sm ${!scoped ? "btn-primary" : "btn-secondary"}`}
+          onClick={() => set({ accessScope: "scoped", seeAllIndividuals: true, seeAllEmployees: true })}
+          className={`btn btn-sm ${!limitedToPeople ? "btn-primary" : "btn-secondary"}`}
         >
-          Sees everything
+          Everyone
         </button>
         <button
           type="button"
-          onClick={() => set({ accessScope: "scoped" })}
-          className={`btn btn-sm ${scoped ? "btn-primary" : "btn-secondary"}`}
+          onClick={() => set({ accessScope: "scoped", seeAllIndividuals: false, seeAllEmployees: false })}
+          className={`btn btn-sm ${limitedToPeople ? "btn-primary" : "btn-secondary"}`}
         >
-          Limit to certain people
+          Only certain people
         </button>
       </div>
 
-      {scoped ? (
+      {limitedToPeople ? (
         <div className="space-y-3 rounded-lg border border-[var(--color-primary-soft)] p-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
@@ -530,16 +610,21 @@ export default function UserAccessAdmin({
 
   // Add-user form.
   const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState({ email: "", displayName: "", password: "", role: "viewer" });
-  const [addAccess, setAddAccess] = useState<AccessState>(emptyAccess());
+  const [form, setForm] = useState({ email: "", displayName: "" });
+  const [addProfile, setAddProfile] = useState<AccountProfileId>("budget_planner");
+  const [addAccess, setAddAccess] = useState<AccessState>(() => accessFromPreset(BUDGET_PLANNER_ACCESS));
+  const [temporaryPassword, setTemporaryPassword] = useState("");
+  const [createdCredential, setCreatedCredential] = useState<{ email: string; password: string } | null>(null);
+  const [copiedCredential, setCopiedCredential] = useState(false);
 
   // Per-user edit panel.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editAccess, setEditAccess] = useState<AccessState | null>(null);
-  const [editRole, setEditRole] = useState<string>("viewer");
+  const [editProfile, setEditProfile] = useState<AccountProfileId>("custom");
   const [newPassword, setNewPassword] = useState("");
   const [loadingEdit, setLoadingEdit] = useState(false);
   const accessLoadRequest = useRef(0);
+  const customAccessSnapshot = useRef<AccessState | null>(null);
   // True when the current access couldn't be loaded — we then REFUSE to save,
   // rather than silently overwriting the user's real access with blank defaults.
   const [editLoadFailed, setEditLoadFailed] = useState(false);
@@ -579,11 +664,47 @@ export default function UserAccessAdmin({
     loadAccess(u.id, u.role);
   }
 
+  function toggleAdd() {
+    if (addOpen) {
+      setAddOpen(false);
+      return;
+    }
+    setError(null);
+    setNotice(null);
+    setCreatedCredential(null);
+    setCopiedCredential(false);
+    setForm({ email: "", displayName: "" });
+    setAddProfile("budget_planner");
+    setAddAccess(accessFromPreset(BUDGET_PLANNER_ACCESS));
+    setTemporaryPassword(generateTemporaryPassword());
+    setAddOpen(true);
+  }
+
+  function chooseAddProfile(id: AccountProfileId) {
+    setAddProfile(id);
+    const profile = accountProfile(id);
+    if (profile.access) setAddAccess(accessFromPreset(profile.access));
+    else if (id === "custom") setAddAccess(emptyAccess());
+  }
+
+  function chooseEditProfile(id: AccountProfileId) {
+    if (editProfile === "custom" && editAccess) {
+      customAccessSnapshot.current = cloneAccess(editAccess);
+    }
+    setEditProfile(id);
+    const profile = accountProfile(id);
+    if (profile.access) {
+      setEditAccess(accessFromPreset(profile.access));
+    } else if (id === "custom") {
+      setEditAccess(customAccessSnapshot.current ? cloneAccess(customAccessSnapshot.current) : emptyAccess());
+    }
+  }
+
   async function loadAccess(userId: string, role: string) {
     const requestId = ++accessLoadRequest.current;
-    setEditRole(role);
     setNewPassword("");
     setEditAccess(null);
+    customAccessSnapshot.current = null;
     setEditLoadFailed(false);
     setLoadingEdit(true);
     try {
@@ -616,10 +737,11 @@ export default function UserAccessAdmin({
       };
       if (requestId !== accessLoadRequest.current) return;
       if (data.ok && data.access) {
-        setEditAccess({
-          accessScope: data.access.accessScope,
-          seeAllIndividuals: data.access.seeAllIndividuals,
-          seeAllEmployees: data.access.seeAllEmployees,
+        const legacyFullViewer = role === "viewer" && data.access.accessScope === "full";
+        const loadedAccess: AccessState = {
+          accessScope: legacyFullViewer ? "scoped" : data.access.accessScope,
+          seeAllIndividuals: legacyFullViewer || data.access.seeAllIndividuals,
+          seeAllEmployees: legacyFullViewer || data.access.seeAllEmployees,
           canSeeTransactions: data.access.canSeeTransactions,
           canSeeMoney: data.access.canSeeMoney !== false,
           canSeeHours: data.access.canSeeHours !== false,
@@ -638,7 +760,11 @@ export default function UserAccessAdmin({
           canPlan: data.access.canPlan === true,
           individualIds: new Set(data.access.individualIds),
           employeeIds: new Set(data.access.employeeIds),
-        });
+        };
+        const loadedProfile = profileForAccess(role, loadedAccess);
+        setEditAccess(loadedAccess);
+        setEditProfile(loadedProfile);
+        if (loadedProfile === "custom") customAccessSnapshot.current = cloneAccess(loadedAccess);
       } else {
         // Loading failed — do NOT default to full access; block saving instead.
         setEditAccess(null);
@@ -658,7 +784,11 @@ export default function UserAccessAdmin({
       setError("Couldn't load this person's current access. Close and reopen before saving so nothing is reset by accident.");
       return;
     }
-    const body: Record<string, unknown> = { role: editRole, ...accessToBody(editAccess) };
+    const profile = accountProfile(editProfile);
+    const body: Record<string, unknown> = { role: profile.role };
+    if (profile.role === "viewer") {
+      Object.assign(body, accessToBody(profile.access ? accessFromPreset(profile.access) : editAccess));
+    }
     if (newPassword.trim().length > 0) body.password = newPassword.trim();
     const ok = await patch(id, body, "Access updated.");
     if (ok) {
@@ -673,17 +803,27 @@ export default function UserAccessAdmin({
     setNotice(null);
     setBusy(true);
     try {
+      const profile = accountProfile(addProfile);
+      const password = temporaryPassword || generateTemporaryPassword();
+      const body: Record<string, unknown> = {
+        ...form,
+        password,
+        role: profile.role,
+      };
+      if (profile.role === "viewer") {
+        Object.assign(body, accessToBody(profile.access ? accessFromPreset(profile.access) : addAccess));
+      }
       const res = await fetch("/api/admin/users", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...form, ...accessToBody(addAccess) }),
+        body: JSON.stringify(body),
       });
       const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok || !data.ok) setError(data.error ?? "The account could not be created.");
       else {
-        setNotice(`Account created for ${form.email}. Give them this password directly — it isn't emailed or shown again.`);
-        setForm({ email: "", displayName: "", password: "", role: "viewer" });
-        setAddAccess(emptyAccess());
+        setCreatedCredential({ email: form.email.trim(), password });
+        setCopiedCredential(false);
+        setForm({ email: "", displayName: "" });
         setAddOpen(false);
         router.refresh();
       }
@@ -694,40 +834,28 @@ export default function UserAccessAdmin({
     }
   }
 
-  const accessSummary = (u: UserRow) => {
-    if (u.role !== "viewer") return "Sees everything";
-    const parts: string[] = [];
-    if (u.accessScope === "full") {
-      parts.push("all people");
-    } else {
-      parts.push(u.seeAllIndividuals ? "all individuals" : `${u.individualCount} individual${u.individualCount === 1 ? "" : "s"}`);
-      parts.push(u.seeAllEmployees ? "all employees" : `${u.employeeCount} employee${u.employeeCount === 1 ? "" : "s"}`);
+  async function copyCreatedPassword() {
+    if (!createdCredential) return;
+    try {
+      await navigator.clipboard.writeText(createdCredential.password);
+      setCopiedCredential(true);
+    } catch {
+      setError("Could not copy automatically. Select the temporary password and copy it manually.");
     }
-    if (!u.canSeeTransactions) parts.push("no transactions");
-    if (!u.canSeeMoney) parts.push("hours only");
-    if (u.canPlan) parts.push("planning");
-    if (u.canSeeClassFinancials) parts.push(u.canManageClassInvoices ? "class billing" : "class revenue");
-    if (u.canEditDocuments) parts.push("PDF editor");
-    const visibleCategories = VISIBILITY_OPTIONS.filter(
-      (option) => u[option.key] && (!option.requiresMoney || u.canSeeMoney),
-    ).length;
-    if (visibleCategories < VISIBILITY_OPTIONS.length) {
-      parts.push(`${visibleCategories}/${VISIBILITY_OPTIONS.length} info areas`);
-    }
-    return parts.join(" · ");
-  };
+  }
 
   return (
     <section className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)]">
       <header className="flex items-center justify-between border-b border-[var(--color-rule)] px-5 py-3">
         <div>
-          <h2 className="display text-base font-medium">Users &amp; access</h2>
+          <h2 className="display text-base font-medium">Team access</h2>
           <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
-            There&rsquo;s no public sign-up. Give people a login and choose exactly what they can see.
+            Create a login by choosing what the person does.
           </p>
         </div>
-        <button type="button" onClick={() => setAddOpen((v) => !v)} className="btn btn-sm btn-primary">
-          {addOpen ? "Close" : "Add a user"}
+        <button type="button" onClick={toggleAdd} aria-expanded={addOpen} className="btn btn-sm btn-primary">
+          {addOpen ? <X aria-hidden className="h-4 w-4" /> : <Plus aria-hidden className="h-4 w-4" />}
+          {addOpen ? "Close" : "Add person"}
         </button>
       </header>
 
@@ -738,39 +866,62 @@ export default function UserAccessAdmin({
         <p role="status" className="mx-5 mt-3 rounded border border-[var(--color-primary)] bg-[var(--color-primary-soft)] px-3 py-2 text-sm text-[var(--color-primary)]">{notice}</p>
       ) : null}
 
+      {createdCredential ? (
+        <div role="status" className="mx-5 mt-3 border-l-4 border-[var(--color-primary)] bg-[var(--color-primary-soft)] px-4 py-3 text-sm">
+          <div className="flex items-center justify-between gap-3">
+            <p className="font-semibold text-[var(--color-ink)]">Login created for {createdCredential.email}</p>
+            <button
+              type="button"
+              onClick={() => setCreatedCredential(null)}
+              className="icon-button shrink-0"
+              aria-label="Dismiss temporary password"
+              title="Dismiss"
+            >
+              <X aria-hidden className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <code className="select-all rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-ink)]">
+              {createdCredential.password}
+            </code>
+            <button type="button" onClick={copyCreatedPassword} className="btn btn-sm btn-secondary">
+              {copiedCredential ? <Check aria-hidden className="h-4 w-4" /> : <Copy aria-hidden className="h-4 w-4" />}
+              {copiedCredential ? "Copied" : "Copy password"}
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-[var(--color-ink-soft)]">This temporary password is shown once. Send it to the person privately.</p>
+        </div>
+      ) : null}
+
       {addOpen ? (
         <form onSubmit={onCreate} className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] px-5 py-4">
-          <h3 className="text-sm font-semibold">New account</h3>
-          <div className="mt-3 grid gap-3 sm:grid-cols-4">
+          <h3 className="text-sm font-semibold">New login</h3>
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <label className="block text-sm">
+              <span className="text-xs font-medium">Name</span>
+              <input required autoComplete="name" type="text" value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} className="input mt-1 w-full text-sm" />
+            </label>
             <label className="block text-sm">
               <span className="text-xs font-medium">Email</span>
-              <input required type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="input mt-1 w-full text-sm" />
+              <input required autoComplete="email" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="input mt-1 w-full text-sm" />
             </label>
             <label className="block text-sm">
-              <span className="text-xs font-medium">Display name</span>
-              <input required type="text" value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} className="input mt-1 w-full text-sm" />
-            </label>
-            <PasswordField
-              label="Initial password"
-              value={form.password}
-              onChange={(password) => setForm({ ...form, password })}
-              placeholder="10+ characters"
-              required
-              minLength={10}
-            />
-            <label className="block text-sm">
-              <span className="text-xs font-medium">Role</span>
-              <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="input mt-1 w-full text-sm">
-                <option value="viewer">Restricted staff</option>
-                <option value="manager">Manager</option>
-                <option value="admin">Administrator</option>
+              <span className="text-xs font-medium">What will they do?</span>
+              <select value={addProfile} onChange={(e) => chooseAddProfile(e.target.value as AccountProfileId)} className="input mt-1 w-full text-sm">
+                {ACCOUNT_PROFILES.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
               </select>
             </label>
           </div>
-          <div className="mt-4">
-            <AccessConfig value={addAccess} onChange={setAddAccess} individuals={individuals} employees={employees} role={form.role} />
-          </div>
-          <button type="submit" disabled={busy} className="btn btn-primary mt-4">Create account</button>
+          <p className="mt-2 text-sm text-[var(--color-ink-soft)]">{accountProfile(addProfile).description}</p>
+          {addProfile === "custom" ? (
+            <details className="mt-4 rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2">
+              <summary className="cursor-pointer text-sm font-medium">Advanced permissions</summary>
+              <div className="mt-3">
+                <AccessConfig value={addAccess} onChange={setAddAccess} individuals={individuals} employees={employees} role="viewer" />
+              </div>
+            </details>
+          ) : null}
+          <button type="submit" disabled={busy} className="btn btn-primary mt-4">{busy ? "Creating…" : "Create login"}</button>
         </form>
       ) : null}
 
@@ -778,6 +929,7 @@ export default function UserAccessAdmin({
         {users.map((u) => {
           const self = u.id === currentUserId;
           const open = editingId === u.id;
+          const currentProfile = accountProfile(profileForAccess(u.role, u));
           return (
             <div key={u.id}>
               <div className="flex flex-wrap items-center gap-3 px-5 py-3">
@@ -786,7 +938,7 @@ export default function UserAccessAdmin({
                     {u.displayName}
                     {!u.isActive ? <span className="ml-2 rounded bg-[var(--color-surface-strong)] px-1.5 py-0.5 text-[0.7rem] text-[var(--color-ink-faint)]">disabled</span> : null}
                   </p>
-                  <p className="text-xs text-[var(--color-ink-faint)]">{u.email} · {u.role} · {accessSummary(u)}</p>
+                  <p className="text-xs text-[var(--color-ink-faint)]">{u.email} · {currentProfile.label}</p>
                 </div>
                 <p className="hidden text-xs text-[var(--color-ink-faint)] sm:block">
                   {u.lastLoginAt ? `Last in ${new Date(u.lastLoginAt).toLocaleDateString()}` : "Never signed in"}
@@ -799,7 +951,7 @@ export default function UserAccessAdmin({
                       {u.isActive ? "Disable" : "Enable"}
                     </button>
                     <button type="button" onClick={() => openEdit(u)} className="btn btn-sm btn-secondary">
-                      {open ? "Close" : "Edit access"}
+                      {open ? "Close" : "Manage"}
                     </button>
                   </div>
                 )}
@@ -816,23 +968,40 @@ export default function UserAccessAdmin({
                     </div>
                   ) : (
                     <div className="space-y-4">
-                      <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="max-w-lg">
                         <label className="block text-sm">
-                          <span className="text-xs font-medium">Role</span>
-                          <select value={editRole} onChange={(e) => setEditRole(e.target.value)} className="input mt-1 w-full text-sm">
-                            <option value="viewer">Restricted staff</option>
-                            <option value="manager">Manager</option>
-                            <option value="admin">Administrator</option>
+                          <span className="text-xs font-medium">What does this person do?</span>
+                          <select value={editProfile} onChange={(e) => chooseEditProfile(e.target.value as AccountProfileId)} className="input mt-1 w-full text-sm">
+                            {ACCOUNT_PROFILES.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
                           </select>
                         </label>
-                        <PasswordField
-                          label="Reset password (optional)"
-                          value={newPassword}
-                          onChange={setNewPassword}
-                          placeholder="Leave blank to keep current"
-                        />
+                        <p className="mt-2 text-sm text-[var(--color-ink-soft)]">{accountProfile(editProfile).description}</p>
                       </div>
-                      <AccessConfig value={editAccess} onChange={setEditAccess} individuals={individuals} employees={employees} role={editRole} />
+
+                      {editProfile === "custom" ? (
+                        <details className="rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2">
+                          <summary className="cursor-pointer text-sm font-medium">Advanced permissions</summary>
+                          <div className="mt-3">
+                            <AccessConfig value={editAccess} onChange={setEditAccess} individuals={individuals} employees={employees} role="viewer" />
+                          </div>
+                        </details>
+                      ) : null}
+
+                      <details className="max-w-lg rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2">
+                        <summary className="cursor-pointer text-sm font-medium">Reset password</summary>
+                        <div className="mt-3 flex items-end gap-2">
+                          <div className="min-w-0 flex-1">
+                            <PasswordField
+                              label="New temporary password"
+                              value={newPassword}
+                              onChange={setNewPassword}
+                              placeholder="At least 10 characters"
+                              minLength={10}
+                            />
+                          </div>
+                          <button type="button" onClick={() => setNewPassword(generateTemporaryPassword())} className="btn btn-sm btn-secondary">Generate</button>
+                        </div>
+                      </details>
                       <div className="flex gap-2">
                         <button type="button" disabled={busy} onClick={() => saveEdit(u.id)} className="btn btn-primary btn-sm">Save changes</button>
                         <button type="button" onClick={() => setEditingId(null)} className="btn btn-ghost btn-sm">Cancel</button>

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
-import { runSheetSync } from "@/lib/sheets/sync";
+import { runSheetRoundTrip, sheetRoundTripSucceeded } from "@/lib/sheets/round-trip";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,8 +22,19 @@ export async function POST(request: NextRequest) {
   if (!user) return jsonError("You need the manager role to run a sync.", 403);
 
   try {
-    const summary = await runSheetSync(getPool(), { trigger: "manual", userId: user.id });
-    return NextResponse.json({ ok: summary.status !== "failed", summary });
+    const result = await runSheetRoundTrip(getPool(), { userId: user.id });
+    const writeback = {
+      status: result.writeback.status,
+      eligible: result.writeback.eligible,
+      updated: result.writeback.updated,
+      skipped: result.writeback.skipped,
+      error: result.writeback.error,
+    };
+    return NextResponse.json({
+      ok: sheetRoundTripSucceeded(result),
+      summary: result.summary,
+      writeback,
+    });
   } catch (error) {
     return jsonError(redactError(error, "The sync could not be run."), 500);
   }

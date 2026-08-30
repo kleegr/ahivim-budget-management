@@ -1,8 +1,7 @@
-import { requireUser, roleAtLeast } from "@/lib/auth/session";
+import { requireUser } from "@/lib/auth/session";
 import { canAccessPlanning, isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
 import AppNav from "@/components/app-nav";
 import { withDb } from "@/lib/data/pool";
-import { exceptionCounts } from "@/lib/data/queries";
 import { agencyIdsWithPlanningAccess, hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
 
 export const dynamic = "force-dynamic";
@@ -12,25 +11,11 @@ export const dynamic = "force-dynamic";
  * redirects on a missing cookie; this is where the signature is verified and
  * the account is re-read from the database.
  *
- * We also compute the total "Review" backlog here so the nav can wear a live
- * count badge and the user is pulled to it only when there is work to do.
+ * The shared layout resolves capabilities once so every person sees only the
+ * few destinations that belong to their job.
  */
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser("viewer");
-  const isManager = roleAtLeast(user.role, "manager");
-
-  // The Review inbox rolls up every "needs a human" category into one number.
-  // Failing quietly is the right choice: a broken count must never break the
-  // whole layout — the user still has to be able to navigate.
-  // The badge counts DECISIONS a person must make — a name that is ambiguous, a
-  // possible duplicate person to merge, an alias to approve, an unmapped program,
-  // or an import that did not reconcile. Monitoring metrics that need no decision
-  // (rate exceptions, possible-duplicate rows that already imported, group-session
-  // grouping, over-budget individuals) are shown on their own screens, not counted
-  // here — so the badge means "there is something for you to resolve", not noise.
-  // We also read the user's access scope so the nav only exposes destinations
-  // after their capabilities have been resolved successfully.
-  let reviewCount = 0;
   let accessResolved = false;
   let canSeeTransactions = false;
   let canSeeSettlements = false;
@@ -41,7 +26,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   let canEditDocuments = false;
   let canUsePortal = false;
   let canManageAgencies = false;
-  const accessPromise = withDb(async (pool) => {
+  const access = await withDb(async (pool) => {
     const [scope, portal] = await Promise.all([
       resolveAccessScope(pool, user),
       resolvePortalAccess(pool, user),
@@ -67,10 +52,6 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       canManageAgencies: hasPortalCapability(portal, "agencies.manage"),
     };
   });
-  const countsPromise = isManager
-    ? withDb((pool) => exceptionCounts(pool, { includeOverAuthorization: false }))
-    : null;
-  const [access, counts] = await Promise.all([accessPromise, countsPromise]);
   if (access.ok) {
     accessResolved = true;
     canSeeTransactions = access.data.canSeeTransactions;
@@ -84,23 +65,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     canManageAgencies = access.data.canManageAgencies;
   }
 
-  // Badge availability must not affect authorization. If this query fails, the
-  // user keeps their successfully resolved navigation with an empty badge.
-  if (counts?.ok) {
-    const c = counts.data;
-    reviewCount =
-      c.unmatchedNames +
-      c.duplicateIndividuals +
-      c.pendingAliases +
-      c.unknownPrograms +
-      c.reconciliationDifferences;
-  }
-
   return (
     <div className="min-h-screen bg-[var(--color-paper)] md:flex">
       <AppNav
         user={user}
-        reviewCount={reviewCount}
         accessResolved={accessResolved}
         canSeeTransactions={canSeeTransactions}
         canSeeSettlements={canSeeSettlements}

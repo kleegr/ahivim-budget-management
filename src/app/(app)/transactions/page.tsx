@@ -9,7 +9,7 @@ import type { FilterState } from "@/components/data-grid/types";
 import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Billed Activity - Ahivim Budget Management" };
+export const metadata = { title: "Billing history - Ahivim" };
 
 type SP = Record<string, string | string[] | undefined>;
 const one = (v: string | string[] | undefined): string | undefined =>
@@ -132,7 +132,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   if (result.ok && result.data.denied) {
     return (
       <>
-        <PageHeader eyebrow="Service activity" title="Billed activity" />
+        <PageHeader eyebrow="Billing" title="Billing history" />
         <ErrorPanel title="No access to Transactions">
           Your account doesn&rsquo;t include permission to view transactions. Ask an administrator if you need it.
         </ErrorPanel>
@@ -159,9 +159,9 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   return (
     <>
       <PageHeader
-        eyebrow="Service activity"
-        title="Billed activity"
-        description="Review each employee check as a whole, including its routing, pay period, employee base, agency spread, and direct-check net."
+        eyebrow="Billing"
+        title="Billing history"
+        description="Find billing by person, employee, program, date, or check."
       />
 
       {!result.ok ? (

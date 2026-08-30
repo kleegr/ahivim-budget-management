@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { FileCheck2, ListTree, RotateCcw, Search, TableProperties } from "lucide-react";
+import { ArrowLeft, RotateCcw, Search, TableProperties } from "lucide-react";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 import type { TransactionFieldVisibility } from "@/lib/auth/money-redaction";
@@ -229,18 +229,21 @@ export default function BilledActivityWorkspace({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="segmented-control" role="tablist" aria-label="Billed activity view">
-          <button type="button" role="tab" aria-selected={view === "checks"} onClick={() => setView("checks")}>
-            <FileCheck2 aria-hidden className="h-4 w-4" /> Checks
-          </button>
-          <button type="button" role="tab" aria-selected={view === "rows"} onClick={() => setView("rows")}>
-            <TableProperties aria-hidden className="h-4 w-4" /> Transaction rows
-          </button>
+        <div>
+          <p className="text-sm font-semibold text-[var(--color-ink)]">{view === "checks" ? "Checks" : "Billing details"}</p>
+          <p className="text-xs text-[var(--color-ink-faint)]">
+            {view === "checks" ? "One line for each check" : `${rows.length.toLocaleString()} billing records`}
+          </p>
         </div>
-        <div className="flex items-center gap-2 text-xs text-[var(--color-ink-faint)]">
-          <ListTree aria-hidden className="h-4 w-4" />
-          {rows.length.toLocaleString()} committed rows
-        </div>
+        {view === "checks" ? (
+          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setView("rows")}>
+            <TableProperties aria-hidden className="h-4 w-4" /> View details
+          </button>
+        ) : (
+          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setView("checks")}>
+            <ArrowLeft aria-hidden className="h-4 w-4" /> Back to checks
+          </button>
+        )}
       </div>
 
       <div role="tabpanel">

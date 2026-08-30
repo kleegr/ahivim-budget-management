@@ -1521,9 +1521,9 @@ export default function SettlementDashboard({
         + result.skippedMissingBase
         + result.skippedUnknownRecipient;
       setNotice({
-        tone: blocked > 0 ? "error" : "success",
+        tone: "success",
         message: blocked > 0
-          ? `${blocked} payroll source${blocked === 1 ? " needs" : "s need"} correction before a payment can be calculated. Open the attention list above.`
+          ? `Balances updated. ${blocked} source row${blocked === 1 ? " was" : "s were"} left unchanged.`
           : changed > 0
           ? `Payment items refreshed: ${result.created} new, ${result.updated} updated, ${result.adjusted} adjusted, ${result.voided} voided.`
           : "Payment items are up to date.",
@@ -1540,7 +1540,7 @@ export default function SettlementDashboard({
   return (
     <div className="space-y-4">
       <SummaryBand data={data} active={view === "items" ? queue : null} onSelect={applyQueue} />
-      {canManage ? (
+      {canManage && requestedFocus === "missing-deals" ? (
         <MissingDeals
           data={data}
           canSeeEmployeeDeals={canSeeEmployeeDeals}

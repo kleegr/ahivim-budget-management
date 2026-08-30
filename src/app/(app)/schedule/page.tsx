@@ -1,22 +1,20 @@
-import { canViewPlannerDirectPayTargets, requirePlanningUser } from "@/lib/auth/planning-access";
+import { requirePlanningUser } from "@/lib/auth/planning-access";
 import { withDb } from "@/lib/data/pool";
 import {
   filterPlanningWorkspaceForAgency,
   getPlanningReferenceData,
   getPlanningWorkspace,
 } from "@/lib/data/planning-queries";
-import { listPlannerDirectPayTargets } from "@/lib/data/direct-pay-operations";
 import { PageHeader, ErrorPanel } from "@/components/ui";
 import PlanningWorkspace from "@/components/schedule/planning-workspace";
-import DirectPayTargetsPanel from "@/components/schedule/direct-pay-targets-panel";
 import type { View } from "@/components/schedule/shared";
 import { agencyDate } from "@/lib/business/agency-time";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Planning — Ahivim Budget Management" };
+export const metadata = { title: "Schedule - Ahivim" };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const PLANNING_VIEWS = new Set(["schedules", "calendar", "coverage", "queue", "future"]);
+const PLANNING_VIEWS = new Set(["calendar", "schedules", "future"]);
 const CALENDAR_VIEWS = new Set<View>(["month", "week", "day"]);
 
 export default async function SchedulePage({
@@ -30,7 +28,7 @@ export default async function SchedulePage({
   const sp = await searchParams;
   const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
   const requestedView = one(sp.view);
-  const initialView = requestedView && PLANNING_VIEWS.has(requestedView) ? requestedView : "schedules";
+  const initialView = requestedView && PLANNING_VIEWS.has(requestedView) ? requestedView : "calendar";
   const requestedDate = one(sp.date);
   const initialCalendarDate = requestedDate && ISO_DATE.test(requestedDate) ? requestedDate : today;
   const requestedCalendarView = one(sp.calendarView);
@@ -48,38 +46,32 @@ export default async function SchedulePage({
   };
 
   const result = await withDb(async (pool) => {
-    const [reference, planning, directPayTargets] = await Promise.all([
+    const [reference, planning] = await Promise.all([
       getPlanningReferenceData(pool, planningAccess.access),
       getPlanningWorkspace(pool, today, planningAccess.access, planningAccess.agencyIds),
-      canViewPlannerDirectPayTargets(planningAccess)
-        ? listPlannerDirectPayTargets(pool, today)
-        : Promise.resolve(null),
     ]);
     return {
       reference,
       planning: filterPlanningWorkspaceForAgency(planning, planningAccess.agencyRosters),
-      directPayTargets,
     };
   });
 
   return (
     <>
       <PageHeader
-        eyebrow="Operations"
-        title="Planning"
-        description="Plan employee and individual service hours, protect authorizations, and resolve schedule conflicts."
+        eyebrow="Schedule"
+        title="Calendar"
+        description="See scheduled work and add sessions."
       />
 
       {!result.ok ? (
         <ErrorPanel title="Could not load scheduling data">{result.error}</ErrorPanel>
       ) : (
         <>
-          {result.data.directPayTargets ? <DirectPayTargetsPanel rows={result.data.directPayTargets} /> : null}
           <PlanningWorkspace
             data={result.data.planning}
             canManage={canManage}
             canManageAssignments={planningAccess.canManageAssignments}
-            canOpenPersonRecords={planningAccess.agencyIds.length === 0}
             today={today}
             initialView={initialView}
             initialCalendarDate={initialCalendarDate}

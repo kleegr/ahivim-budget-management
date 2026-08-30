@@ -6,16 +6,16 @@ import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
 import IndividualsList from "@/components/individuals/individuals-list";
 import { agencyDate } from "@/lib/business/agency-time";
-import { normalizeIndividualAttentionView } from "@/lib/nav/review-actions";
+import { resolvePortfolioView } from "@/components/individuals/portfolio-view";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Individuals — Ahivim Budget Management" };
+export const metadata = { title: "People & budgets - Ahivim Budget Management" };
 
 /** The create/edit form shares one field set. */
 function individualFields() {
   return (
     <>
-      <Field label="Display name" name="displayName" required help="How this person is shown everywhere." />
+      <Field label="Name" name="displayName" required help="How this person is shown throughout Ahivim." />
       <Field label="Renewal date" name="renewalDate" type="date" help="The budget's yearly renewal. It auto-rolls forward each year while the account is active. You can add programs and hours on the profile next." />
       <Field label="Legal name" name="legalName" help="Defaults to the display name if left blank." />
       <Field label="Preferred name" name="preferredName" />
@@ -34,7 +34,8 @@ export default async function IndividualsPage({
   const canEdit = user.role !== "viewer";
   const sp = await searchParams;
   const requestedView = Array.isArray(sp.view) ? sp.view[0] : sp.view;
-  const initialView = normalizeIndividualAttentionView(requestedView);
+  const requestedBudget = Array.isArray(sp.budget) ? sp.budget[0] : sp.budget;
+  const initialView = resolvePortfolioView({ view: requestedView, budget: requestedBudget });
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
@@ -58,11 +59,11 @@ export default async function IndividualsPage({
     <>
       <PageHeader
         eyebrow="Budgets"
-        title="Individuals"
-        description="See who is over authorization, falling behind pace, nearing renewal, or missing the budget needed to explain billing."
+        title="People & budgets"
+        description="See each person's renewal date, remaining hours, and monthly plan."
         action={
           canEdit ? (
-            <CreateButton label="New individual" title="New individual" endpoint="/api/individuals" fields={individualFields()} />
+            <CreateButton label="Add person" title="Add a person" endpoint="/api/individuals" fields={individualFields()} />
           ) : undefined
         }
       />
@@ -71,8 +72,8 @@ export default async function IndividualsPage({
         <ErrorPanel title="Budget list is unavailable">{result.error}</ErrorPanel>
       ) : result.data.length === 0 ? (
         <Card>
-          <EmptyState title="No individuals yet">
-            <p>Individuals appear here once a workbook is committed{canEdit ? ", or add one with the New individual button." : "."}</p>
+          <EmptyState title="No people yet">
+            <p>People appear here after billing data is added{canEdit ? ", or you can add someone with the Add person button." : "."}</p>
           </EmptyState>
         </Card>
       ) : (

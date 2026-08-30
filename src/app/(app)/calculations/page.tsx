@@ -7,7 +7,7 @@ import { PageHeader, ErrorPanel } from "@/components/ui";
 import CalculationsGrid from "@/components/calculations/calculations-grid";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Budget planning - Ahivim Budget Management" };
+export const metadata = { title: "Annual financial plans - Ahivim" };
 
 /**
  * Financial (the Calculations workbook). This is the money side — internal
@@ -41,9 +41,9 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
   return (
     <>
       <PageHeader
-        eyebrow="Planning"
-        title="Budget planning"
-        description="Portfolio pace, projected exhaustion, renewal risk, and annual plan calculations."
+        eyebrow="Advanced"
+        title="Annual financial plans"
+        description="Set annual deductions, adjustments, and projected amounts for an individual."
       />
 
       {!result.ok ? (

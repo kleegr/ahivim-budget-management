@@ -10,6 +10,7 @@ import { parseSheetCsv } from "./parse-csv";
 import { isPaidCell } from "@/lib/excel/column-map";
 import { fetchSheetCsv, type CsvFetcher, SheetFetchError } from "./fetch";
 import { getSyncConfig, type SheetSyncConfig } from "./config";
+import { sheetSourceIdentity } from "./identity";
 
 /**
  * SHEET SYNC ENGINE
@@ -194,23 +195,6 @@ async function isTransactionAudited(pool: PgLikePool, txnId: string): Promise<bo
     [txnId],
   );
   return rows[0]?.audited === true;
-}
-
-function incomingIdentity(parsed: ParsedAhivimRow): Record<string, string | null> {
-  const p = parsed.parsed;
-  if (!p) return { raw: JSON.stringify(parsed.raw) };
-  return {
-    checkNumber: p.checkNumber || null,
-    checkDate: p.checkDate || null,
-    program: p.programDescription,
-    individual: p.individual,
-    employee: p.employee || null,
-    periodBegin: p.periodBegin || null,
-    periodEnd: p.periodEnd || null,
-    hours: p.hours,
-    rate: p.rate,
-    amount: p.amount,
-  };
 }
 
 async function lastSuccessfulSnapshot(pool: PgLikePool, excludeRunId: string): Promise<string | null> {
@@ -443,12 +427,22 @@ export async function runSheetSync(
         naturalKey: st.naturalKey,
         fingerprint: st.fingerprint,
         sourceRowNumber: st.sourceRowNumber,
-        identity: JSON.stringify(parsed ? incomingIdentity(parsed) : {}),
+        identity: JSON.stringify(parsed ? sheetSourceIdentity(parsed) : {}),
         wasUnchanged,
       });
     }
 
     const activeTxnIds = [...trackByTxn.keys()];
+    const { rows: pendingPaidRows } = activeTxnIds.length > 0
+      ? await pool.query<{ payroll_transaction_id: string }>(
+          `SELECT payroll_transaction_id
+             FROM sheet_sync_rows
+            WHERE payroll_transaction_id = ANY($1::uuid[])
+              AND identity->>'appPaidDirty' = 'true'`,
+          [activeTxnIds],
+        )
+      : { rows: [] };
+    const pendingPaidIds = new Set(pendingPaidRows.map((row) => row.payroll_transaction_id));
     let added = 0;
     for (const v of trackByTxn.values()) if (!v.wasUnchanged) added++;
 
@@ -468,7 +462,11 @@ export async function runSheetSync(
            SET natural_key = EXCLUDED.natural_key,
                fingerprint = EXCLUDED.fingerprint,
                source_row_number = EXCLUDED.source_row_number,
-               identity = EXCLUDED.identity,
+               identity = EXCLUDED.identity || CASE
+                 WHEN sheet_sync_rows.identity->>'appPaidDirty' = 'true'
+                   THEN '{"appPaidDirty":true}'::jsonb
+                 ELSE '{}'::jsonb
+               END,
                state = 'active',
                last_seen_run_id = EXCLUDED.last_seen_run_id,
                last_seen_at = now(),
@@ -495,6 +493,7 @@ export async function runSheetSync(
       const paidIds: string[] = [];
       const unpaidIds: string[] = [];
       for (const [txnId, v] of trackByTxn) {
+        if (pendingPaidIds.has(txnId)) continue;
         const parsed = parsedByRow.get(v.sourceRowNumber)?.parsed;
         if (isPaidCell(parsed?.paid)) paidIds.push(txnId);
         else unpaidIds.push(txnId);
@@ -558,7 +557,7 @@ export async function runSheetSync(
           audited,
           staged.naturalKey,
           JSON.stringify(target.identity),
-          JSON.stringify(incomingIdentity(parsed)),
+          JSON.stringify(sheetSourceIdentity(parsed)),
           audited
             ? "The sheet changed a transaction that has an audited manual correction. It was NOT overwritten."
             : "The sheet changed an existing transaction's hours, rate or amount. Review and apply.",

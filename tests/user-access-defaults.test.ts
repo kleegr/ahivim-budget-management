@@ -6,7 +6,7 @@ import type { PgLikePool } from "@/lib/import/commit";
 describe("new user access defaults", () => {
   it("keeps the budget planner profile hours-only and outside financial operations", () => {
     expect(BUDGET_PLANNER_ACCESS).toMatchObject({
-      accessScope: "full",
+      accessScope: "scoped",
       canPlan: true,
       canSeeHours: true,
       canSeeBudgets: true,
@@ -86,6 +86,11 @@ describe("new user access defaults", () => {
       individualIds: ["individual-1"],
       employeeIds: ["employee-1"],
     });
+  });
+
+  it("accepts the budget planner preset as an intentional viewer grant", () => {
+    expect(userAccessConfigFromInput({ ...BUDGET_PLANNER_ACCESS }, "viewer"))
+      .toEqual(BUDGET_PLANNER_ACCESS);
   });
 
   it("does not reinterpret stale full-scope staff flags as viewer grants", () => {

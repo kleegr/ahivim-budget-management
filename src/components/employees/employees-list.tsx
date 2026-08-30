@@ -4,15 +4,11 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Activity,
-  AlertTriangle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
-  BadgeCheck,
   CalendarDays,
   Clock3,
-  FileWarning,
-  ReceiptText,
   Search,
   Users,
   X,
@@ -39,8 +35,8 @@ export type EmployeeRow = {
   openSettlementItems: number | null;
 };
 
-type DirectoryFilter = "all" | "attention" | "deal" | "settlement" | "activity" | "no_activity";
-type SortKey = "name" | "activity" | "checks" | "hours" | "deal" | "settlement" | "status";
+type DirectoryFilter = "all" | "activity" | "no_activity";
+type SortKey = "name" | "activity" | "checks" | "hours" | "status";
 type SortState = { key: SortKey; dir: "asc" | "desc" };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -53,18 +49,8 @@ function formatDate(value: string | null): string {
   return month ? `${month} ${Number(match[3])}, ${match[1]}` : value;
 }
 
-function needsAttention(row: EmployeeRow): boolean {
-  return !row.archived && (
-    row.dealReadiness === "needs_deal"
-    || (row.openSettlementItems ?? 0) > 0
-  );
-}
-
 function matchesFilter(row: EmployeeRow, filter: DirectoryFilter): boolean {
   if (filter !== "all" && row.archived) return false;
-  if (filter === "attention") return needsAttention(row);
-  if (filter === "deal") return !row.archived && row.dealReadiness === "needs_deal";
-  if (filter === "settlement") return !row.archived && (row.openSettlementItems ?? 0) > 0;
   if (filter === "activity") return row.transactionCount > 0;
   if (filter === "no_activity") return row.transactionCount === 0;
   return true;
@@ -90,37 +76,6 @@ function SummaryMetric({ icon: Icon, label, value, tone = "default" }: {
         <dd className="tnum mt-0.5 text-lg font-semibold leading-none text-[var(--color-ink)]">{value}</dd>
       </dl>
     </div>
-  );
-}
-
-function DealStatus({ row }: { row: EmployeeRow }) {
-  if (row.dealReadiness === null) {
-    return <span className="text-[var(--color-ink-faint)]">-</span>;
-  }
-  if (row.dealReadiness === "needs_deal") {
-    const count = row.missingDealTransactions ?? 0;
-    return (
-      <div>
-        <span className="inline-flex items-center gap-1.5 font-medium text-[var(--color-danger)]">
-          <FileWarning size={14} aria-hidden /> Deal needed
-        </span>
-        <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
-          {count.toLocaleString()} uncovered {count === 1 ? "transaction" : "transactions"}
-        </p>
-      </div>
-    );
-  }
-  if (row.dealReadiness === "ready") {
-    return (
-      <span className="inline-flex items-center gap-1.5 font-medium text-[var(--color-success)]">
-        <BadgeCheck size={14} aria-hidden /> Deal ready
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1.5 text-[var(--color-ink-faint)]">
-      <Clock3 size={14} aria-hidden /> No deal activity
-    </span>
   );
 }
 
@@ -159,14 +114,9 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
 
   const activeRows = useMemo(() => rows.filter((row) => !row.archived), [rows]);
   const canSeeHours = rows.some((row) => row.billedHours !== null);
-  const canSeeDeals = rows.some((row) => row.dealReadiness !== null);
-  const canSeeSettlements = rows.some((row) => row.openSettlementItems !== null);
 
   const counts = useMemo(() => ({
     all: activeRows.length,
-    attention: activeRows.filter(needsAttention).length,
-    deal: activeRows.filter((row) => row.dealReadiness === "needs_deal").length,
-    settlement: activeRows.filter((row) => (row.openSettlementItems ?? 0) > 0).length,
     activity: activeRows.filter((row) => row.transactionCount > 0).length,
     no_activity: activeRows.filter((row) => row.transactionCount === 0).length,
   }), [activeRows]);
@@ -175,24 +125,18 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
     transactions: activeRows.reduce((sum, row) => sum + row.transactionCount, 0),
     checks: activeRows.reduce((sum, row) => sum + row.checkCount, 0),
     billedHours: activeRows.reduce((sum, row) => sum.plus(row.billedHours ?? 0), dec(0)).toString(),
-    openItems: activeRows.reduce((sum, row) => sum + (row.openSettlementItems ?? 0), 0),
   }), [activeRows]);
 
   const filterOptions = useMemo(() => {
     const options: Array<{ key: DirectoryFilter; label: string; icon: LucideIcon }> = [
-      { key: "all", label: "All active", icon: Users },
+      { key: "all", label: "All", icon: Users },
     ];
-    if (canSeeDeals || canSeeSettlements) {
-      options.push({ key: "attention", label: "Needs attention", icon: AlertTriangle });
-    }
-    if (canSeeDeals) options.push({ key: "deal", label: "Deal needed", icon: FileWarning });
-    if (canSeeSettlements) options.push({ key: "settlement", label: "Open balance", icon: ReceiptText });
     options.push(
       { key: "activity", label: "Has activity", icon: Activity },
       { key: "no_activity", label: "No activity", icon: Clock3 },
     );
     return options;
-  }, [canSeeDeals, canSeeSettlements]);
+  }, []);
 
   const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -207,11 +151,6 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
       ].some((value) => value?.toLowerCase().includes(needle)));
     }
 
-    const dealRank = (row: EmployeeRow) => (
-      row.dealReadiness === "needs_deal" ? 0
-        : row.dealReadiness === "ready" ? 1
-          : row.dealReadiness === "not_needed" ? 2 : 3
-    );
     const compare = (a: EmployeeRow, b: EmployeeRow): number => {
       let difference = 0;
       switch (sort.key) {
@@ -226,12 +165,6 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
           break;
         case "hours":
           difference = dec(a.billedHours ?? 0).comparedTo(dec(b.billedHours ?? 0));
-          break;
-        case "deal":
-          difference = dealRank(a) - dealRank(b);
-          break;
-        case "settlement":
-          difference = (a.openSettlementItems ?? -1) - (b.openSettlementItems ?? -1);
           break;
         case "status":
           difference = a.status.localeCompare(b.status);
@@ -252,39 +185,21 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
   const toggleSort = (key: SortKey) => {
     setSort((previous) => previous.key === key
       ? { key, dir: previous.dir === "asc" ? "desc" : "asc" }
-      : { key, dir: ["activity", "checks", "hours", "settlement"].includes(key) ? "desc" : "asc" });
+      : { key, dir: ["activity", "checks", "hours"].includes(key) ? "desc" : "asc" });
   };
 
   const tableColumnCount = 4
     + (canSeeHours ? 1 : 0)
-    + (canSeeDeals ? 1 : 0)
-    + (canSeeSettlements ? 1 : 0)
     + (canEdit ? 1 : 0);
 
   return (
     <div className="space-y-4">
       <section aria-label="Employee portfolio summary" className="border-y border-[var(--color-rule-strong)]">
-        <div className="grid grid-cols-2 gap-x-5 sm:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-x-5 sm:grid-cols-4">
           <SummaryMetric icon={Users} label="Active employees" value={activeRows.length.toLocaleString()} />
-          <SummaryMetric icon={Activity} label="Transactions" value={totals.transactions.toLocaleString()} />
-          <SummaryMetric icon={CalendarDays} label="Checks / periods" value={totals.checks.toLocaleString()} />
+          <SummaryMetric icon={Activity} label="Billing records" value={totals.transactions.toLocaleString()} />
+          <SummaryMetric icon={CalendarDays} label="Pay periods" value={totals.checks.toLocaleString()} />
           {canSeeHours ? <SummaryMetric icon={Clock3} label="Billed hours" value={formatHours(totals.billedHours)} /> : null}
-          {canSeeDeals ? (
-            <SummaryMetric
-              icon={FileWarning}
-              label="Deals needed"
-              value={counts.deal.toLocaleString()}
-              tone={counts.deal > 0 ? "attention" : "success"}
-            />
-          ) : null}
-          {canSeeSettlements ? (
-            <SummaryMetric
-              icon={ReceiptText}
-              label="Open balance items"
-              value={totals.openItems.toLocaleString()}
-              tone={totals.openItems > 0 ? "attention" : "success"}
-            />
-          ) : null}
         </div>
       </section>
 
@@ -323,7 +238,7 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
           </span>
         </div>
 
-        <div className="flex flex-wrap gap-2" role="group" aria-label="Filter employees by follow-up needed">
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Filter employees">
           {filterOptions.map(({ key, label, icon: Icon }) => {
             const selected = filter === key;
             return (
@@ -355,8 +270,6 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
               <SortHead column="activity" sort={sort} onSort={toggleSort}>Service activity</SortHead>
               <SortHead column="checks" sort={sort} onSort={toggleSort}>Checks / periods</SortHead>
               {canSeeHours ? <SortHead column="hours" align="right" sort={sort} onSort={toggleSort}>Billed hours</SortHead> : null}
-              {canSeeDeals ? <SortHead column="deal" sort={sort} onSort={toggleSort}>Deal readiness</SortHead> : null}
-              {canSeeSettlements ? <SortHead column="settlement" align="right" sort={sort} onSort={toggleSort}>Open items</SortHead> : null}
               <SortHead column="status" sort={sort} onSort={toggleSort}>Status</SortHead>
               {canEdit ? (
                 <th className="border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 text-left font-semibold">
@@ -403,22 +316,6 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
                 {canSeeHours ? (
                   <td className="tnum px-3 py-2.5 text-right font-medium">
                     {row.billedHours === null ? <span className="text-[var(--color-ink-faint)]">-</span> : `${formatHours(row.billedHours)} h`}
-                  </td>
-                ) : null}
-                {canSeeDeals ? <td className="px-3 py-2.5"><DealStatus row={row} /></td> : null}
-                {canSeeSettlements ? (
-                  <td className="tnum px-3 py-2.5 text-right">
-                    {row.openSettlementItems === null ? (
-                      <span className="text-[var(--color-ink-faint)]">-</span>
-                    ) : row.openSettlementItems > 0 ? (
-                      <span className="inline-flex items-center justify-end gap-1.5 font-semibold text-[var(--color-warn)]">
-                        <AlertTriangle size={14} aria-hidden /> {row.openSettlementItems.toLocaleString()}
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center justify-end gap-1.5 text-[var(--color-success)]">
-                        <BadgeCheck size={14} aria-hidden /> Clear
-                      </span>
-                    )}
                   </td>
                 ) : null}
                 <td className="px-3 py-2.5"><Badge value={row.status} /></td>

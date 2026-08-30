@@ -61,22 +61,21 @@ export default async function SettingsPage() {
     <>
       <PageHeader
         eyebrow={accountOnly ? "Account" : "Administration"}
-        title={accountOnly ? "Account settings" : "Settings and access"}
+        title={accountOnly ? "Account settings" : "Users & settings"}
         description={accountOnly
           ? "Review your account and update your password."
-          : "Accounts, visibility, program rates, audit history, and system maintenance."}
+          : "Create users and manage the basic system setup."}
       />
 
-      <div className="space-y-4">
+      <div className="flex flex-col gap-4">
         <nav aria-label="Settings sections" className="scroll-thin sticky top-[var(--shell-header-height,0px)] z-20 -mx-1 flex gap-1 overflow-x-auto border-b border-[var(--color-rule)] bg-[var(--color-paper)] px-1 py-2">
-          <Link href="#account" className="btn btn-sm btn-ghost shrink-0">Account</Link>
-          {isAdmin ? <Link href="#access" className="btn btn-sm btn-ghost shrink-0">User access</Link> : null}
+          {isAdmin ? <Link href="#access" className="btn btn-sm btn-ghost shrink-0">Users</Link> : null}
           {result.ok && result.data.canViewProgramRates ? <Link href="#programs" className="btn btn-sm btn-ghost shrink-0">Programs</Link> : null}
-          {isAdmin ? <Link href="#activity" className="btn btn-sm btn-ghost shrink-0">Activity</Link> : null}
-          {isAdmin ? <Link href="#system" className="btn btn-sm btn-ghost shrink-0">System</Link> : null}
+          <Link href="#account" className="btn btn-sm btn-ghost shrink-0">My account</Link>
+          {isAdmin ? <Link href="#advanced" className="btn btn-sm btn-ghost shrink-0">Advanced</Link> : null}
         </nav>
 
-        <section id="account" className="scroll-mt-24"><Card title="Your account">
+        <section id="account" className={`${isAdmin ? "order-3" : "order-1"} scroll-mt-24`}><Card title="Your account">
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 border-b border-[var(--color-rule)] px-5 py-4 text-sm sm:grid-cols-4">
             <dt className="text-[var(--color-ink-faint)]">Name</dt>
             <dd>{user.displayName}</dd>
@@ -103,7 +102,7 @@ export default async function SettingsPage() {
         ) : (
           <>
             {isAdmin ? (
-              <section id="access" className="scroll-mt-24"><UserAccessAdmin
+              <section id="access" className="order-1 scroll-mt-24"><UserAccessAdmin
                 currentUserId={user.id}
                 initialUsers={result.data.users.map((u) => ({
                   id: u.id,
@@ -139,7 +138,9 @@ export default async function SettingsPage() {
               /></section>
             ) : null}
 
-            {result.data.canViewProgramRates ? <section id="programs" className="scroll-mt-24 space-y-4"><Card
+            {result.data.canViewProgramRates ? <section id="programs" className="order-2 scroll-mt-24"><details className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-3">
+              <summary className="cursor-pointer text-sm font-semibold text-[var(--color-ink)]">Programs &amp; rates</summary>
+              <div className="mt-4 space-y-4"><Card
               title="Programs and rates"
               description={
                 isAdmin
@@ -229,31 +230,36 @@ export default async function SettingsPage() {
               )}
             </Card>
 
-            {isAdmin ? <ProgramRules programs={result.data.programRules} /> : null}</section> : null}
+            {isAdmin ? <ProgramRules programs={result.data.programRules} /> : null}</div></details></section> : null}
 
             {isAdmin ? (
-              <>
-                <section id="activity" className="scroll-mt-24"><Card title="Audit trail" description="The 40 most recent recorded actions">
-                  {result.data.audit.length === 0 ? (
-                    <EmptyState title="No audit entries yet" />
-                  ) : (
-                    <Table head={<><Th>When</Th><Th>Action</Th><Th>Entity</Th><Th>Actor</Th></>}>
-                      {result.data.audit.map((a) => (
-                        <Tr key={a.id}>
-                          <Td><span className="text-xs">{new Date(a.createdAt).toLocaleString()}</span></Td>
-                          <Td>{a.action.replace(/_/g, " ")}</Td>
-                          <Td><Plain value={a.entityType} /></Td>
-                          <Td><Plain value={a.actor} /></Td>
-                        </Tr>
-                      ))}
-                    </Table>
-                  )}
-                </Card></section>
-                <section id="system" className="scroll-mt-24"><Card title="System maintenance" description="Administrative data operations">
-                  <ApplyMigrations />
-                  <AttributePayments />
-                </Card></section>
-              </>
+              <section id="advanced" className="order-4 scroll-mt-24">
+                <details className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-3">
+                  <summary className="cursor-pointer text-sm font-semibold text-[var(--color-ink)]">Advanced system tools</summary>
+                  <div className="mt-4 space-y-4">
+                    <Card title="Audit trail" description="The 40 most recent recorded actions">
+                      {result.data.audit.length === 0 ? (
+                        <EmptyState title="No audit entries yet" />
+                      ) : (
+                        <Table head={<><Th>When</Th><Th>Action</Th><Th>Entity</Th><Th>Actor</Th></>}>
+                          {result.data.audit.map((a) => (
+                            <Tr key={a.id}>
+                              <Td><span className="text-xs">{new Date(a.createdAt).toLocaleString()}</span></Td>
+                              <Td>{a.action.replace(/_/g, " ")}</Td>
+                              <Td><Plain value={a.entityType} /></Td>
+                              <Td><Plain value={a.actor} /></Td>
+                            </Tr>
+                          ))}
+                        </Table>
+                      )}
+                    </Card>
+                    <Card title="System maintenance" description="Administrative data operations">
+                      <ApplyMigrations />
+                      <AttributePayments />
+                    </Card>
+                  </div>
+                </details>
+              </section>
             ) : null}
           </>
         )}

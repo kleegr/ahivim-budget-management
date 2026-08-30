@@ -27,17 +27,37 @@ export async function setTransactionsPaid(
     sets.push(`paid_note = $${params.length}`);
   }
   params.push(ids);
-  const { rowCount } = await pool.query(
-    `UPDATE payroll_transactions SET ${sets.join(", ")} WHERE id = ANY($${params.length}::uuid[])`,
-    params,
-  );
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rowCount } = await client.query(
+      `UPDATE payroll_transactions SET ${sets.join(", ")} WHERE id = ANY($${params.length}::uuid[])`,
+      params,
+    );
 
-  await recordChange(pool, {
-    actorId,
-    action: input.paid ? "transactions_marked_paid" : "transactions_marked_unpaid",
-    entityType: "payroll_transaction",
-    entityId: ids.length === 1 ? ids[0] : null,
-    extra: { count: rowCount ?? 0 },
-  });
-  return ok({ updated: rowCount ?? 0 });
+    // A tracked Google-Sheet row keeps the operator's change protected until
+    // write-back succeeds. The next pull must not silently replace this value.
+    await client.query(
+      `UPDATE sheet_sync_rows
+          SET identity = COALESCE(identity, '{}'::jsonb) || '{"appPaidDirty":true}'::jsonb,
+              updated_at = now()
+        WHERE payroll_transaction_id = ANY($1::uuid[])`,
+      [ids],
+    );
+
+    await recordChange(client, {
+      actorId,
+      action: input.paid ? "transactions_marked_paid" : "transactions_marked_unpaid",
+      entityType: "payroll_transaction",
+      entityId: ids.length === 1 ? ids[0] : null,
+      extra: { count: rowCount ?? 0 },
+    });
+    await client.query("COMMIT");
+    return ok({ updated: rowCount ?? 0 });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }

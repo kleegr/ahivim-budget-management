@@ -4,6 +4,7 @@ import { PageHeader, ErrorPanel } from "@/components/ui";
 import SyncConsole from "@/components/sync/sync-console";
 import { getSyncConfig, sheetEditUrl } from "@/lib/sheets/config";
 import { getSyncStatus, listSyncRuns, listOpenConflicts } from "@/lib/sheets/queries";
+import { googleSheetsCredentials } from "@/lib/sheets/writeback";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Sync — Ahivim Budget Management" };
@@ -39,6 +40,7 @@ export default async function SyncPage() {
           runs={result.data.runs}
           conflicts={result.data.conflicts}
           sheetUrl={sheetEditUrl(result.data.config)}
+          writebackConfigured={googleSheetsCredentials() !== null}
         />
       )}
     </>

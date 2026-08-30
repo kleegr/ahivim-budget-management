@@ -22,6 +22,11 @@ export async function GET() {
     authSecretConfigured: Boolean(process.env.AUTH_SECRET?.trim()),
     migrationTokenConfigured: Boolean(process.env.MIGRATION_TOKEN?.trim()),
     cronSecretConfigured: Boolean(process.env.CRON_SECRET?.trim()),
+    googleSheetWritebackConfigured: Boolean(
+      process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON?.trim()
+      || (process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL?.trim()
+        && process.env.GOOGLE_SHEETS_PRIVATE_KEY?.trim()),
+    ),
     bootstrapAdminConfigured: Boolean(process.env.BOOTSTRAP_ADMIN_EMAIL?.trim()),
     documentStorageConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN?.trim()),
     nodeEnv: process.env.NODE_ENV ?? null,

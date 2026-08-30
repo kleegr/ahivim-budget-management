@@ -10,10 +10,19 @@
 | `BOOTSTRAP_ADMIN_PASSWORD` | first deploy only | Password of the first administrator, minimum 10 characters. |
 | `MIGRATION_TOKEN` | optional | Allows `POST /api/admin/migrate` without a signed-in administrator. Needed only for a database that has no administrator yet, or for automated deploys. |
 | `CRON_SECRET` | recommended | Authenticates Vercel Cron calls to `/api/sync/cron`. Use a separate random secret; signed-in administrators may also trigger the endpoint. |
+| `GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL` | sheet write-back | Service-account email allowed to edit the configured sheet. |
+| `GOOGLE_SHEETS_PRIVATE_KEY` | sheet write-back | Private key for that service account. Escaped `\n` line breaks are accepted. |
+| `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` | sheet write-back alternative | Raw or base64-encoded service-account JSON. Use this instead of the two fields above. |
 | `MAX_UPLOAD_BYTES` | optional | Upload ceiling in bytes. Defaults to 20 MiB. |
 | `BLOB_READ_WRITE_TOKEN` | PDF library | Private Vercel Blob store token. Connect a Blob store to the Vercel project so original and edited PDFs remain private. |
 | `MAX_PDF_UPLOAD_BYTES` | optional | Direct PDF upload ceiling in bytes. Defaults to 100 MiB and is capped at 500 MiB. |
 | `NEON_WS_PROXY` | local dev only | `host:port` of a WebSocket-to-TCP bridge, so the Neon driver can reach a local PostgreSQL. Never set in production. |
+
+The `Sync Google Sheet` button always pulls the latest source information. If
+the write-back credentials are configured, it first sends only payment-marker
+changes from tracked transactions to the sheet's Paid column. It does not edit
+amounts, rates, formulas, names, dates, or any other source cells. Share the
+sheet with the service-account email as an editor to enable this direction.
 
 Generate a secret with:
 
