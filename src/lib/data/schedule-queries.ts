@@ -258,6 +258,8 @@ export interface ProgramForecast {
   remainingAfterScheduleHours: string | null;
   authorizationCount: number;
   authorizationAmbiguous: boolean;
+  sourceCandidateCount: number;
+  sourceAmbiguous: boolean;
   authorizations: Array<{
     authorizationId: string;
     periodId: string;
@@ -280,6 +282,7 @@ interface EffectiveAuthorizationRow {
   authorized_hours: string;
   internal_rate: string;
   is_explicit: boolean;
+  source_candidate_count: number;
 }
 
 interface AuthorizationUsage {
@@ -300,7 +303,7 @@ async function activeAuthorizations(
     `SELECT ea.authorization_id::text, ea.period_id::text, ea.period_label,
             ea.program_id::text, p.code AS program_code, p.name AS program_name,
             ea.start_date::text, ea.end_date::text, ea.authorized_hours::text,
-            ea.internal_rate::text,
+            ea.internal_rate::text, ea.source_candidate_count,
             EXISTS (
               SELECT 1 FROM budget_authorizations ba
                WHERE ba.id = ea.authorization_id
@@ -325,43 +328,28 @@ async function authorizationUsage(
   authorization: EffectiveAuthorizationRow,
   excludeSessionId?: string | null,
 ): Promise<AuthorizationUsage> {
-  const actual = authorization.is_explicit
-    ? await pool.query<{ h: string; amt: string }>(
-        `SELECT COALESCE(sum(al.allocation_hours),0)::text AS h,
-                COALESCE(sum(al.allocated_amount),0)::text AS amt
-          FROM service_allocations al
-          JOIN service_sessions ss ON ss.id = al.service_session_id
-          LEFT JOIN payroll_transactions source_t ON source_t.id = al.payroll_transaction_id
-         WHERE al.individual_id = $1 AND ss.program_id = $2
-            AND COALESCE(
-                  canonical_service_date(source_t.period_begin, source_t.check_date, source_t.period_end),
-                  canonical_service_date(ss.period_begin, NULL, ss.period_end)
-                )
-                BETWEEN $3::date AND $4::date`,
-        [individualId, authorization.program_id, authorization.start_date, authorization.end_date],
-      )
-    : await pool.query<{ h: string; amt: string }>(
-        `SELECT effective_billed_hours($1, $2, $3::date, $4::date, $5::numeric)::text AS h,
-                COALESCE((
-                  SELECT sum(COALESCE(
-                    t.calculated_internal_amount,
-                    t.spreadsheet_internal_amount,
-                    t.internal_rate_applied * t.imported_hours,
-                    0
-                  ))
-                   FROM payroll_transactions t
-                  WHERE t.individual_id = $1 AND t.program_id = $2
-                     AND canonical_service_date(t.period_begin, t.check_date, t.period_end)
-                         BETWEEN $3::date AND $4::date
-                ), 0)::text AS amt`,
-        [
-          individualId,
-          authorization.program_id,
-          authorization.start_date,
-          authorization.end_date,
-          authorization.internal_rate,
-        ],
-      );
+  const actual = await pool.query<{ h: string; amt: string }>(
+    `SELECT effective_billed_hours($1, $2, $3::date, $4::date, $5::numeric)::text AS h,
+            COALESCE((
+              SELECT sum(COALESCE(
+                t.calculated_internal_amount,
+                t.spreadsheet_internal_amount,
+                t.internal_rate_applied * t.imported_hours,
+                0
+              ))
+               FROM payroll_transactions t
+              WHERE t.individual_id = $1 AND t.program_id = $2
+                 AND canonical_service_date(t.period_begin, t.check_date, t.period_end)
+                     BETWEEN $3::date AND $4::date
+            ), 0)::text AS amt`,
+    [
+      individualId,
+      authorization.program_id,
+      authorization.start_date,
+      authorization.end_date,
+      authorization.internal_rate,
+    ],
+  );
   const scheduled = await pool.query<{ h: string; amt: string }>(
     `SELECT COALESCE(sum(sa.allocation_hours),0)::text AS h,
             COALESCE(sum(sa.allocated_amount),0)::text AS amt
@@ -410,6 +398,8 @@ export async function individualProgramForecast(
     remainingAfterScheduleHours: null,
     authorizationCount: 0,
     authorizationAmbiguous: false,
+    sourceCandidateCount: 0,
+    sourceAmbiguous: false,
     authorizations: [],
   };
   if (!isUuid(individualId) || !isUuid(programId)) return empty;
@@ -426,6 +416,10 @@ export async function individualProgramForecast(
     authorizedHours: toHours(authorization.authorized_hours),
   }));
   const first = authorizations[0]!;
+  const sourceCandidateCount = Math.max(
+    ...authorizations.map((authorization) => Number(authorization.source_candidate_count ?? 1)),
+  );
+  const sourceAmbiguous = sourceCandidateCount > 1;
   const safelyCombined = authorizations.every((authorization) =>
     authorization.start_date === first.start_date
       && authorization.end_date === first.end_date
@@ -436,6 +430,8 @@ export async function individualProgramForecast(
       ...empty,
       authorizationCount: authorizations.length,
       authorizationAmbiguous: true,
+      sourceCandidateCount,
+      sourceAmbiguous,
       authorizations: publicAuthorizations,
     };
   }
@@ -460,6 +456,8 @@ export async function individualProgramForecast(
     remainingAfterScheduleHours: toHours(remaining),
     authorizationCount: authorizations.length,
     authorizationAmbiguous: false,
+    sourceCandidateCount,
+    sourceAmbiguous,
     authorizations: publicAuthorizations,
   };
 }
@@ -485,6 +483,8 @@ export interface ScheduleUtilizationProgram {
   daysRemaining: number;
   requiredWeeklyHours: string | null;
   authorizationAmbiguous: boolean;
+  sourceCandidateCount: number;
+  sourceAmbiguous: boolean;
   authorizedHours: string | null;
   usedHours: string;
   scheduledHours: string;
@@ -590,6 +590,8 @@ export async function individualScheduleSummary(
       daysRemaining: elapsed.remainingDays,
       requiredWeeklyHours: requiredWeekly ? toHours(requiredWeekly) : null,
       authorizationAmbiguous: (programCounts.get(authorization.program_id) ?? 0) > 1,
+      sourceCandidateCount: Number(authorization.source_candidate_count ?? 1),
+      sourceAmbiguous: Number(authorization.source_candidate_count ?? 1) > 1,
       authorizedHours: toHours(auth),
       usedHours: toHours(used),
       scheduledHours: toHours(sched),
@@ -729,6 +731,13 @@ export async function listSessionWarningFlags(
                       WHERE ea.individual_id = target.individual_id
                         AND ea.program_id = s.program_id
                     ) > 1
+                    OR EXISTS (
+                      SELECT 1
+                      FROM effective_budget_authorizations_at(s.session_date) ea
+                      WHERE ea.individual_id = target.individual_id
+                        AND ea.program_id = s.program_id
+                        AND ea.source_candidate_count > 1
+                    )
                     OR NOT EXISTS (
                       SELECT 1
                       FROM effective_budget_authorizations_at(s.session_date) ea
@@ -741,33 +750,10 @@ export async function listSessionWarningFlags(
                       WHERE ea.individual_id = target.individual_id
                         AND ea.program_id = s.program_id
                         AND (
-                          CASE
-                            WHEN EXISTS (
-                              SELECT 1 FROM budget_authorizations explicit_auth
-                               WHERE explicit_auth.id = ea.authorization_id
-                            ) THEN COALESCE((
-                              SELECT sum(actual_a.allocation_hours)
-                              FROM service_allocations actual_a
-                              JOIN service_sessions actual_s ON actual_s.id = actual_a.service_session_id
-                              LEFT JOIN payroll_transactions actual_t
-                                ON actual_t.id = actual_a.payroll_transaction_id
-                              WHERE actual_a.individual_id = target.individual_id
-                                AND actual_s.program_id = s.program_id
-                                AND COALESCE(
-                                      canonical_service_date(
-                                        actual_t.period_begin, actual_t.check_date, actual_t.period_end
-                                      ),
-                                      canonical_service_date(
-                                        actual_s.period_begin, NULL, actual_s.period_end
-                                      )
-                                    )
-                                    BETWEEN ea.start_date AND ea.end_date
-                            ), 0)
-                            ELSE effective_billed_hours(
-                              target.individual_id, s.program_id,
-                              ea.start_date, ea.end_date, ea.internal_rate
-                            )
-                          END
+                          effective_billed_hours(
+                            target.individual_id, s.program_id,
+                            ea.start_date, ea.end_date, ea.internal_rate
+                          )
                           + COALESCE((
                             SELECT sum(planned_a.allocation_hours)
                             FROM scheduled_allocations planned_a

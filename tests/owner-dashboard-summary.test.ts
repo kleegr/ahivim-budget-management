@@ -87,6 +87,9 @@ function programBudget(overrides: Partial<ProgramBudgetRecord>): ProgramBudgetRe
     undatedUsageCount: 0,
     hasUndatedUsage: false,
     revision: 1,
+    isExplicit: true,
+    source: "explicit_authorization",
+    sourceCandidateCount: 1,
     ...overrides,
   };
 }

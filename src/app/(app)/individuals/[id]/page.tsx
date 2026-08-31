@@ -19,6 +19,7 @@ import {
   listProgramBudgetEvents,
   listProgramBudgetMonthlyHistory,
   listProgramBudgets,
+  listCurrentProgramBudgets,
 } from "@/lib/data/program-budgets";
 import { summarizeAuthorizationPortfolio } from "@/lib/data/authorization-portfolio";
 import {
@@ -35,6 +36,7 @@ import AddPlanButton from "@/components/individuals/add-plan-button";
 import ProgramBudgetWorkspace from "@/components/individuals/program-budget-workspace";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import { txLink } from "@/lib/nav/tx-link";
+import { agencyDate } from "@/lib/business/agency-time";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Individual — Ahivim Budget Management" };
@@ -42,8 +44,9 @@ export const metadata = { title: "Individual — Ahivim Budget Management" };
 /*
   The individual profile leads with the operational authorization truth:
   authorized, transaction-backed used, pending scheduled, and remaining hours
-  from program_budget_balances. Calculation strategies remain a separate
-  Financial Setup concern and never define the operational Budget tab.
+  from the same current-authorization selector used by Scheduling. Explicit
+  service authorizations win; an unconverted calculation strategy is shown as
+  a read-only compatibility budget until it is made editable here.
 */
 
 function StatusPill({ status }: { status: BudgetLineStatus }) {
@@ -137,7 +140,13 @@ export default async function IndividualDetailPage({
       canSeeSettlements ? getPersonSettlementBalance(pool, { individualId: id }) : Promise.resolve({ payable: "0", receivable: "0", reserve: "0", credit: "0", openItems: 0 }),
       canSeeClasses ? listClassBudgets(pool, scope, { individualId: id }) : Promise.resolve([]),
       canSeeClasses ? listClassInvoices(pool, scope, { individualId: id }) : Promise.resolve([]),
-      canSeeProgramBudgets ? listProgramBudgets(pool, { individualId: id }) : Promise.resolve([]),
+      canSeeProgramBudgets ? Promise.all([
+        listCurrentProgramBudgets(pool, { asOf: agencyDate(), individualId: id, scope }),
+        listProgramBudgets(pool, { individualId: id }),
+      ]).then(([current, explicit]) => {
+        const currentIds = new Set(current.map((row) => row.authorizationId));
+        return [...current, ...explicit.filter((row) => !currentIds.has(row.authorizationId))];
+      }) : Promise.resolve([]),
       canEdit || canManageHours ? listPrograms(pool) : Promise.resolve([]),
       canSeeProgramBudgets
         ? listAuthorizationsForIndividual(pool, id)
@@ -167,7 +176,7 @@ export default async function IndividualDetailPage({
     );
     const [programBudgetEvents, programBudgetMonthlyHistory] = await Promise.all([
       Promise.all(
-        visibleProgramBudgetRows.map((row, index) => programBudgetHistoryVisibility[index]
+        visibleProgramBudgetRows.map((row, index) => row.isExplicit && programBudgetHistoryVisibility[index]
           ? listProgramBudgetEvents(pool, row.budgetPeriodId, row.programId)
           : Promise.resolve([])),
       ),
@@ -212,8 +221,10 @@ export default async function IndividualDetailPage({
       undatedUsageCount: scope.canSeeTransactions ? row.undatedUsageCount : null,
       hasUndatedUsage: row.hasUndatedUsage,
       revision: row.revision,
-      canManageRenewal: canEdit || (canManageHours && plannerRenewalPeriods.has(row.budgetPeriodId)),
-      showEventHistory: programBudgetHistoryVisibility[index] ?? false,
+      isExplicit: row.isExplicit,
+      sourceCandidateCount: row.sourceCandidateCount,
+      canManageRenewal: row.isExplicit && (canEdit || (canManageHours && plannerRenewalPeriods.has(row.budgetPeriodId))),
+      showEventHistory: row.isExplicit && (programBudgetHistoryVisibility[index] ?? false),
       monthlyHistory: programBudgetMonthlyHistory[index] ?? [],
       events: (programBudgetEvents[index] ?? []).map((event) => ({
         id: event.id,

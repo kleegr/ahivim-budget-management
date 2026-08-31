@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { listProgramBudgetMonthlyHistory, listProgramBudgets } from "@/lib/data/program-budgets";
+import {
+  listCurrentProgramBudgets,
+  listProgramBudgetMonthlyHistory,
+  listProgramBudgets,
+} from "@/lib/data/program-budgets";
 import type { PgLikePool } from "@/lib/import/commit";
 import { createIndividual } from "@/lib/manage/individuals";
 import {
@@ -360,6 +364,129 @@ suite("canonical program budgets (real PostgreSQL)", () => {
     ]);
     expect(results.filter((result) => result.ok)).toHaveLength(1);
     expect(results.filter((result) => !result.ok && result.code === "conflict")).toHaveLength(1);
+  });
+
+  it("serializes concurrent Make editable submissions without leaving an orphan period", async () => {
+    const person = unwrap(await createIndividual(pool, { displayName: "Concurrent Editable Person" }, ACTOR));
+    const comHabId = await programId("COM_HAB");
+    const input = {
+      individualId: person.id,
+      programId: comHabId,
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+      periodType: "custom",
+      authorizedHours: "100",
+    };
+
+    const results = await Promise.all([
+      createProgramBudget(pool, { ...input, label: "Conversion A" }, ACTOR),
+      createProgramBudget(pool, { ...input, label: "Conversion B" }, ACTOR),
+    ]);
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    expect(results.filter((result) => !result.ok && result.code === "conflict")).toHaveLength(1);
+    expect((await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM budget_periods WHERE individual_id = $1`,
+      [person.id],
+    )).rows[0]?.count).toBe("1");
+    expect((await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM budget_authorizations
+        WHERE individual_id = $1 AND program_id = $2 AND status = 'active'`,
+      [person.id, comHabId],
+    )).rows[0]?.count).toBe("1");
+  });
+
+  it("prefers explicit current budgets, reduces fallback duplicates, and excludes inactive cohorts", async () => {
+    const explicitPerson = unwrap(await createIndividual(pool, { displayName: "Explicit Current Person" }, ACTOR));
+    const fallbackPerson = unwrap(await createIndividual(pool, { displayName: "Fallback Current Person" }, ACTOR));
+    const inactivePerson = unwrap(await createIndividual(pool, { displayName: "Inactive Current Person" }, ACTOR));
+    const calendarPerson = unwrap(await createIndividual(pool, { displayName: "Calendar Policy Person" }, ACTOR));
+    const comHabId = await programId("COM_HAB");
+    const calendarProgram = await pool.query<{ id: string }>(
+      `INSERT INTO programs (code, name, renewal_policy)
+       VALUES ('CALENDAR_POLICY_TEST', 'Calendar policy test', 'calendar')
+       RETURNING id`,
+    );
+    const calendarProgramId = calendarProgram.rows[0]!.id;
+
+    unwrap(await createProgramBudget(pool, {
+      individualId: explicitPerson.id,
+      programId: comHabId,
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+      periodType: "custom",
+      authorizedHours: "120",
+    }, ACTOR));
+
+    async function addStrategy(
+      individualId: string,
+      label: string,
+      sortOrder: number,
+      hours: string,
+      selectedProgramId = comHabId,
+    ): Promise<string> {
+      const strategy = await pool.query<{ id: string }>(
+        `INSERT INTO calculation_strategies
+           (individual_id, label, renewal_date, status, sort_order)
+         VALUES ($1, $2, '2027-01-01', 'active', $3)
+         RETURNING id`,
+        [individualId, label, sortOrder],
+      );
+      await pool.query(
+        `INSERT INTO calculation_strategy_lines (strategy_id, program_id, authorized_hours)
+         VALUES ($1, $2, $3)`,
+        [strategy.rows[0]!.id, selectedProgramId, hours],
+      );
+      return strategy.rows[0]!.id;
+    }
+
+    await addStrategy(explicitPerson.id, "Legacy plan", 0, "999");
+    await addStrategy(fallbackPerson.id, "Primary plan", 1, "80");
+    await addStrategy(fallbackPerson.id, "Duplicate plan", 2, "40");
+    await addStrategy(inactivePerson.id, "Inactive plan", 1, "60");
+    const calendarStrategyId = await addStrategy(
+      calendarPerson.id,
+      "Calendar plan",
+      1,
+      "30",
+      calendarProgramId,
+    );
+    await pool.query(`UPDATE individuals SET status = 'inactive' WHERE id = $1`, [inactivePerson.id]);
+
+    const current = await listCurrentProgramBudgets(pool, { asOf: "2026-08-31" });
+    expect(current.filter((row) => row.individualId === explicitPerson.id)).toEqual([
+      expect.objectContaining({
+        authorizedHours: "120.0000",
+        isExplicit: true,
+        sourceCandidateCount: 1,
+      }),
+    ]);
+    expect(current.filter((row) => row.individualId === fallbackPerson.id)).toEqual([
+      expect.objectContaining({
+        authorizedHours: "80.0000",
+        isExplicit: false,
+        source: "calculation_strategy",
+        sourceCandidateCount: 2,
+      }),
+    ]);
+    expect(current.some((row) => row.individualId === inactivePerson.id)).toBe(false);
+    expect(current.find((row) => row.programId === calendarProgramId)).toMatchObject({
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+      renewalDate: "2027-01-01",
+      authorizedHours: "30.0000",
+      isExplicit: false,
+    });
+
+    await pool.query(`UPDATE programs SET is_active = false WHERE id = $1`, [comHabId]);
+    try {
+      const withoutInactiveProgram = await listCurrentProgramBudgets(pool, { asOf: "2026-08-31" });
+      expect(withoutInactiveProgram.some((row) => row.programId === comHabId)).toBe(false);
+    } finally {
+      await pool.query(`UPDATE programs SET is_active = true WHERE id = $1`, [comHabId]);
+    }
+    await pool.query(`DELETE FROM calculation_strategies WHERE id = $1`, [calendarStrategyId]);
+    await pool.query(`DELETE FROM programs WHERE id = $1`, [calendarProgramId]);
   });
 
   it("keeps Classes as a sole-writer program", async () => {

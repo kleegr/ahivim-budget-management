@@ -10,9 +10,10 @@ import {
   WalletCards,
 } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listIndividualBudgetBoard } from "@/lib/data/queries";
-import { listProgramBudgets } from "@/lib/data/program-budgets";
+import { listCurrentProgramBudgets } from "@/lib/data/program-budgets";
 import { listTransactionsForGrid } from "@/lib/data/transactions-grid";
 import { listStrategies } from "@/lib/manage/calculation-strategies";
 import {
@@ -133,7 +134,7 @@ export default async function DashboardPage({
     const ownerResult = await withDb(async (pool) => {
       const [transactions, programBudgets, budgetBoard, strategyResult] = await Promise.all([
         listTransactionsForGrid(pool),
-        listProgramBudgets(pool, { status: "active", asOf: today }),
+        listCurrentProgramBudgets(pool, { asOf: today }),
         listIndividualBudgetBoard(pool, new Date(`${today}T12:00:00Z`)),
         listStrategies(pool),
       ]);
@@ -171,10 +172,15 @@ export default async function DashboardPage({
   }
 
   const result = await withDb(async (pool) => {
-    const [budgets, openMoneyResult] = await Promise.all([
-      listIndividualBudgetBoard(pool, new Date(`${today}T12:00:00Z`)),
-      pool.query<{ open_count: string }>(
-        `WITH applied AS (
+    const scope = await resolveAccessScope(pool, user);
+    const [people, programBudgets, openMoneyResult] = await Promise.all([
+      listIndividualBudgetBoard(pool, new Date(`${today}T12:00:00Z`), scope),
+      scope.canSeeBudgets && scope.canSeeHours
+        ? listCurrentProgramBudgets(pool, { asOf: today, scope })
+        : Promise.resolve([]),
+      scope.canSeeSettlements
+        ? pool.query<{ open_count: string }>(
+          `WITH applied AS (
            SELECT settlement_obligation_id, COALESCE(sum(amount), 0) AS amount
              FROM settlement_events
             GROUP BY settlement_obligation_id
@@ -185,10 +191,13 @@ export default async function DashboardPage({
                 )::text AS open_count
            FROM settlement_obligations o
            LEFT JOIN applied ON applied.settlement_obligation_id = o.id`,
-      ),
+        )
+        : Promise.resolve({ rows: [{ open_count: "0" }] }),
     ]);
     return {
-      budgets,
+      people,
+      programBudgets,
+      canSeeSettlements: scope.canSeeSettlements,
       openMoneyItems: Number(openMoneyResult.rows[0]?.open_count ?? 0),
     };
   });
@@ -204,10 +213,16 @@ export default async function DashboardPage({
     );
   }
 
-  const activePeople = result.data.budgets.filter((row) => row.status === "active" && !row.archived);
-  const activeBudgets = activePeople.filter((row) => row.budget);
-  const hoursRemaining = activeBudgets.reduce(
-    (total, row) => total.plus(Math.max(0, row.budget?.hoursLeft ?? 0)),
+  const activePeople = result.data.people.filter((row) => row.status === "active" && !row.archived);
+  const operationalBudgets = result.data.programBudgets.filter(
+    (row) => row.requiredAuthType === "hours" || row.requiredAuthType === "both",
+  );
+  const activeBudgetPeople = new Set(operationalBudgets.map((row) => row.individualId));
+  const hoursRemaining = operationalBudgets.reduce(
+    (total, row) => {
+      const remaining = dec(row.remainingHours);
+      return total.plus(remaining.greaterThan(0) ? remaining : 0);
+    },
     dec(0),
   );
 
@@ -238,11 +253,17 @@ export default async function DashboardPage({
           <h2 id="snapshot-heading" className="display text-lg font-semibold text-[var(--color-ink)]">At a glance</h2>
           <span className="text-xs text-[var(--color-ink-faint)]">Today</span>
         </div>
-        <div className="mt-3 grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] lg:grid-cols-4 lg:divide-y-0">
+        <div className={`mt-3 grid divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] lg:divide-y-0 ${
+          result.data.canSeeSettlements
+            ? "grid-cols-2 lg:grid-cols-4"
+            : "grid-cols-1 sm:grid-cols-3"
+        }`}>
           <HeadlineNumber label="Active people" value={activePeople.length.toLocaleString()} />
-          <HeadlineNumber label="Active budgets" value={activeBudgets.length.toLocaleString()} />
+          <HeadlineNumber label="Active budgets" value={activeBudgetPeople.size.toLocaleString()} />
           <HeadlineNumber label="Hours remaining" value={formatHours(hoursRemaining)} />
-          <HeadlineNumber label="Open money items" value={result.data.openMoneyItems.toLocaleString()} />
+          {result.data.canSeeSettlements ? (
+            <HeadlineNumber label="Open money items" value={result.data.openMoneyItems.toLocaleString()} />
+          ) : null}
         </div>
       </section>
 

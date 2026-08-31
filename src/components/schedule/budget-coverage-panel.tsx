@@ -39,7 +39,10 @@ export default function BudgetCoveragePanel({ rows }: { rows: PlanningCoverageRo
       && (!needle || `${row.individualName} ${row.programName} ${row.programCode}`.toLocaleLowerCase().includes(needle))
     ));
   }, [query, rows, status]);
-  const needsAttention = rows.filter((row) => row.status === "over_committed" || row.status === "plan_gap").length;
+  const needsAttention = rows.filter((row) => (
+    row.status === "over_committed" || row.status === "plan_gap" || row.sourceAmbiguous
+  )).length;
+  const duplicateSources = rows.filter((row) => row.sourceAmbiguous);
   const scheduled = rows.filter((row) => row.status === "covered").length;
   const onTrack = rows.filter((row) => row.status === "on_pace").length;
 
@@ -58,6 +61,15 @@ export default function BudgetCoveragePanel({ rows }: { rows: PlanningCoverageRo
         <Summary label="Covered by schedule" value={scheduled} />
         <Summary label="On track" value={onTrack} tone="good" />
       </div>
+
+      {duplicateSources.length > 0 ? (
+        <div className="mt-4 flex gap-2 border-y border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-3 py-2.5 text-sm text-[var(--color-warn)]" role="status">
+          <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>
+            {duplicateSources.length} budget{duplicateSources.length === 1 ? " uses" : "s use"} a primary plan because multiple active source plans list the same program. Their authorized hours were not added together.
+          </p>
+        </div>
+      ) : null}
 
       <div className="mt-5 flex flex-wrap items-end gap-3">
         <label className="min-w-64 flex-1 text-xs font-semibold text-[var(--color-ink-soft)]">
@@ -117,7 +129,14 @@ export default function BudgetCoveragePanel({ rows }: { rows: PlanningCoverageRo
                 return (
                   <tr key={row.authorizationId}>
                     <td className="px-3 py-3 font-medium text-[var(--color-ink)]">{row.individualName}</td>
-                    <td className="px-3 py-3 text-[var(--color-ink-soft)]">{row.programName}</td>
+                    <td className="px-3 py-3 text-[var(--color-ink-soft)]">
+                      <span className="block">{row.programName}</span>
+                      {row.sourceAmbiguous ? (
+                        <span className="mt-1 block text-xs font-semibold text-[var(--color-warn)]">
+                          {row.sourceCandidateCount} active plans; primary shown
+                        </span>
+                      ) : null}
+                    </td>
                     <td className="px-3 py-3 text-xs text-[var(--color-ink-soft)]">
                       <span className="block font-medium text-[var(--color-ink)]">{row.periodLabel}</span>
                       <span>{row.startDate} to {row.endDate}</span>

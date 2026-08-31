@@ -38,4 +38,12 @@ describe("individual profile budget truth", () => {
     expect(workspaceSource).toContain("Used comes from committed transactions");
     expect(workspaceSource).toContain("Group service totals are hours credited to this individual");
   });
+
+  it("keeps strategy compatibility rows read-only and offers an explicit conversion", () => {
+    expect(workspaceSource).toContain("&& budget.isExplicit");
+    expect(workspaceSource).toContain("Read-only budget from Financial setup");
+    expect(workspaceSource).toContain('label="Make editable"');
+    expect(workspaceSource).toContain('href={`/classes?individualId=${individualId}`}');
+    expect(workspaceSource).toContain("The primary plan is shown; the hours were not added together.");
+  });
 });

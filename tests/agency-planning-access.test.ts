@@ -304,5 +304,9 @@ describe("agency planning privacy", () => {
     expect(gapSql).toContain("JOIN agency_employees ae ON ae.agency_id = ai.agency_id");
     expect(gapSql).toContain("COALESCE(a.start_date, '-infinity'::date)");
     expect(gapSql).toContain("FROM scoped_assignments a");
+
+    const coverageSql = calls.find((sql) => sql.includes("WITH current_auth AS"));
+    expect(coverageSql).toContain("ea.source_candidate_count");
+    expect(coverageSql).toContain("ca.source_candidate_count");
   });
 });

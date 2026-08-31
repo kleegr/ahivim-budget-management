@@ -2,7 +2,7 @@ import { requireUser } from "@/lib/auth/session";
 import { hasDirectIndividualAccess, resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listIndividualBudgetBoard } from "@/lib/data/queries";
-import { listProgramBudgets } from "@/lib/data/program-budgets";
+import { listCurrentProgramBudgets } from "@/lib/data/program-budgets";
 import { summarizeAuthorizationPortfolio } from "@/lib/data/authorization-portfolio";
 import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
@@ -45,7 +45,7 @@ export default async function IndividualsPage({
     const [rows, authorizationRows] = await Promise.all([
       listIndividualBudgetBoard(pool, asOf, scope),
       scope.canSeeBudgets
-        ? listProgramBudgets(pool, { status: "active" })
+        ? listCurrentProgramBudgets(pool, { asOf: today, scope })
         : Promise.resolve([]),
     ]);
     const visibleIds = new Set(rows.map((row) => row.id));
@@ -55,7 +55,7 @@ export default async function IndividualsPage({
     );
     const canonicalBudgetPeople = new Set(
       authorizationRows
-        .filter((row) => row.requiredAuthType !== "dollars" || scope.canSeeBilledAmounts || scope.canSeeClassFinancials)
+        .filter((row) => row.requiredAuthType === "hours" || row.requiredAuthType === "both")
         .map((row) => row.individualId),
     );
     return rows.map((row) => (

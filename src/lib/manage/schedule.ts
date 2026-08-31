@@ -242,6 +242,13 @@ export async function detectConflicts(
         excludeSessionId ?? null,
         draft.sessionDate,
       );
+      if (forecast.sourceAmbiguous) {
+        w.push({
+          code: "ambiguous_authorization",
+          severity: "warning",
+          message: `${name} has ${forecast.sourceCandidateCount} active source plans for this program. The primary plan is shown and their hours are not added together; review the budget before scheduling.`,
+        });
+      }
       if (forecast.authorizationAmbiguous) {
         w.push({
           code: "ambiguous_authorization",
@@ -301,6 +308,8 @@ export interface SessionForecastRow {
   remainingAfterHours: string | null;
   authorizationCount: number;
   authorizationAmbiguous: boolean;
+  sourceCandidateCount: number;
+  sourceAmbiguous: boolean;
 }
 
 export interface SessionPreview {
@@ -360,6 +369,8 @@ export async function previewSession(
       remainingAfterHours,
       authorizationCount: f.authorizationCount,
       authorizationAmbiguous: f.authorizationAmbiguous,
+      sourceCandidateCount: f.sourceCandidateCount,
+      sourceAmbiguous: f.sourceAmbiguous,
     });
   }
 

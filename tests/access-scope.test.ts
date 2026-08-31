@@ -5,6 +5,7 @@ import {
   isPlanningOnlyAccess,
   hasDirectEmployeeAccess,
   hasDirectIndividualAccess,
+  directIndividualScopeClause,
   resolveAccessScope,
   transactionScopeClause,
   type AccessScope,
@@ -124,6 +125,28 @@ describe("transaction access scope", () => {
     expect(hasDirectIndividualAccess(scope, INDIVIDUAL_CONNECTED)).toBe(false);
     expect(hasDirectEmployeeAccess(scope, EMPLOYEE_GRANTED)).toBe(true);
     expect(hasDirectEmployeeAccess(scope, EMPLOYEE_COWORKER)).toBe(false);
+  });
+
+  it("uses direct person grants for budget SQL while full admins stay unfiltered", () => {
+    const scope = scoped({
+      individualIds: [INDIVIDUAL_A, INDIVIDUAL_CONNECTED],
+      grantedIndividualIds: [INDIVIDUAL_A],
+    });
+    const params: unknown[] = ["2026-08-31"];
+
+    expect(directIndividualScopeClause(scope, "budget.individual_id", params)).toBe(
+      " AND budget.individual_id = ANY($2::uuid[])",
+    );
+    expect(params).toEqual(["2026-08-31", [INDIVIDUAL_A]]);
+    expect(params).not.toContainEqual([INDIVIDUAL_CONNECTED]);
+
+    const adminParams: unknown[] = ["2026-08-31"];
+    expect(directIndividualScopeClause(
+      fullAccess("admin-1", "admin"),
+      "budget.individual_id",
+      adminParams,
+    )).toBe("");
+    expect(adminParams).toEqual(["2026-08-31"]);
   });
 
   it("keeps full access unfiltered and denies a scoped user with no grants", () => {

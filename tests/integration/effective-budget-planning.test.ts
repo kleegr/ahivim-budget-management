@@ -96,7 +96,7 @@ suite("canonical budgets in planning (real PostgreSQL)", () => {
     expect(projection.individuals[0]!.periods.map((period) => period.seriesOccurrenceCount)).toEqual([1, 1]);
   });
 
-  it("converts group billing money into individual hours with the budget rate", async () => {
+  it("uses canonical group, event, and unallocated payroll hours on every planning surface", async () => {
     const dayHab = await programId("DAY_HAB");
     const { individualId } = await strategyBudget({ [dayHab]: "100" });
 
@@ -108,12 +108,43 @@ suite("canonical budgets in planning (real PostgreSQL)", () => {
        ) VALUES ($1, $2, '2026-08-01', '2026-08-01', 999, 190, 170, 17, $3, true)`,
       [individualId, dayHab, `group-effective-hours:${individualId}`],
     );
+    const period = await pool.query<{ id: string }>(
+      `INSERT INTO budget_periods
+         (individual_id, label, start_date, end_date, period_type, status)
+       VALUES ($1, 'Event ledger period', '2026-01-01', '2026-12-31', 'calendar', 'active')
+       RETURNING id`,
+      [individualId],
+    );
+    await pool.query(
+      `INSERT INTO program_budget_events
+         (budget_period_id, individual_id, program_id, event_type, service_date,
+          hours, amount, source_type, source_id)
+       VALUES
+         ($1, $2, $3, 'adjust', '2026-08-02', 4, 0, 'planning_test', $4),
+         ($1, $2, $3, 'adjust', '2026-08-03', -1, 0, 'planning_test', $5)`,
+      [
+        period.rows[0]!.id,
+        individualId,
+        dayHab,
+        `planning-positive-adjustment:${individualId}`,
+        `planning-negative-adjustment:${individualId}`,
+      ],
+    );
 
     const planning = await getPlanningWorkspace(pool, "2026-08-25");
     const coverage = planning.coverage.find(
       (row) => row.individualId === individualId && row.programId === dayHab,
     );
-    expect(coverage).toMatchObject({ authorizedHours: "100.0000", actualHours: "10.0000" });
+    expect(coverage).toMatchObject({ authorizedHours: "100.0000", actualHours: "13.0000" });
+
+    const forecast = await individualProgramForecast(pool, individualId, dayHab, null, "2026-08-25");
+    expect(forecast).toMatchObject({ authorizedHours: "100.0000", actualHours: "13.0000" });
+
+    const summary = await individualScheduleSummary(pool, individualId, new Date("2026-08-25T12:00:00Z"));
+    expect(summary?.programs.find((row) => row.programId === dayHab)).toMatchObject({
+      authorizedHours: "100.0000",
+      usedHours: "13.0000",
+    });
   });
 
   it("keeps every active strategy and calendar-year group hours without a renewal date", async () => {
@@ -183,7 +214,7 @@ suite("canonical budgets in planning (real PostgreSQL)", () => {
     expect(day!.timeElapsedPercent).not.toBe(community!.timeElapsedPercent);
   });
 
-  it("preserves overlapping same-program strategies and marks totals ambiguous", async () => {
+  it("selects one primary same-program strategy and surfaces duplicate source ambiguity", async () => {
     const person = unwrap(await createIndividual(pool, { displayName: "Overlapping Plans Person" }, ACTOR));
     const comHab = await programId("COM_HAB");
     const first = unwrap(await createStrategy(pool, { individualId: person.id, label: "Plan A" }, ACTOR));
@@ -201,23 +232,65 @@ suite("canonical budgets in planning (real PostgreSQL)", () => {
 
     const summary = await individualScheduleSummary(pool, person.id, new Date("2026-08-25T12:00:00Z"));
     expect(summary).toMatchObject({
-      periodCount: 2,
-      totalsAmbiguous: true,
-      authorizedHours: null,
-      usedHours: null,
-      status: null,
+      periodCount: 1,
+      totalsAmbiguous: false,
+      authorizedHours: "40.0000",
+      usedHours: "0.0000",
     });
-    expect(summary!.programs).toHaveLength(2);
-    expect(new Set(summary!.programs.map((row) => row.authorizationId)).size).toBe(2);
-    expect(summary!.programs.every((row) => row.authorizationAmbiguous)).toBe(true);
-    expect(summary!.programs.map((row) => [row.startDate, row.endDate])).toEqual(expect.arrayContaining([
-      ["2025-10-01", "2026-09-30"],
-      ["2025-11-01", "2026-10-31"],
-    ]));
+    expect(summary!.programs).toHaveLength(1);
+    expect(summary!.programs[0]).toMatchObject({
+      startDate: "2025-10-01",
+      endDate: "2026-09-30",
+      authorizationAmbiguous: false,
+      sourceCandidateCount: 2,
+      sourceAmbiguous: true,
+    });
 
     const forecast = await individualProgramForecast(pool, person.id, comHab, null, "2026-08-25");
-    expect(forecast).toMatchObject({ authorizationCount: 2, authorizationAmbiguous: true });
-    expect(forecast.authorizations).toHaveLength(2);
+    expect(forecast).toMatchObject({
+      authorizedHours: "40.0000",
+      authorizationCount: 1,
+      authorizationAmbiguous: false,
+      sourceCandidateCount: 2,
+      sourceAmbiguous: true,
+    });
+    expect(forecast.authorizations).toHaveLength(1);
+
+    const coverage = (await getPlanningWorkspace(pool, "2026-08-25")).coverage.find(
+      (row) => row.individualId === person.id && row.programId === comHab,
+    );
+    expect(coverage).toMatchObject({
+      authorizedHours: "40.0000",
+      sourceCandidateCount: 2,
+      sourceAmbiguous: true,
+    });
+
+    const projection = await projectSeriesAuthorization(pool, {
+      programId: comHab,
+      individualIds: [person.id],
+      occurrenceDates: ["2026-09-01"],
+      durationHours: "2",
+    });
+    expect(projection.individuals[0]).toMatchObject({
+      projectionSafe: false,
+      periods: [{ sourceCandidateCount: 2, sourceAmbiguous: true }],
+    });
+
+    const warnings = await detectConflicts(pool, {
+      employeeId: null,
+      programId: comHab,
+      individualIds: [person.id],
+      sessionDate: "2026-09-01",
+      startTime: "09:00",
+      endTime: "11:00",
+      durationHours: "2",
+    });
+    expect(warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "ambiguous_authorization",
+        message: expect.stringContaining("hours are not added together"),
+      }),
+    ]));
   });
 
   it("does not apply a next-January group rate to the prior calendar year", async () => {

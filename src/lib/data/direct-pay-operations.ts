@@ -77,10 +77,12 @@ export interface EmployeeCollectionMonthRow {
 export interface IndividualSetAsideMonthRow {
   individualId: string;
   individualName: string;
-  plannedThisMonth: string;
+  approvedMonthlyPlan: string;
   setAsideThisMonth: string;
   remainingSetAside: string;
   activePlans: number;
+  trackedPlans: number;
+  missingRenewalPlans: number;
 }
 
 export interface CollectionsWorkspaceData {
@@ -100,7 +102,7 @@ export interface CollectionsWorkspaceData {
     dueFromChecks: string;
     collectedThisMonth: string;
     remainingReceivable: string;
-    plannedSetAside: string;
+    approvedMonthlySetAside: string;
     setAsideThisMonth: string;
   };
 }
@@ -108,9 +110,10 @@ export interface CollectionsWorkspaceData {
 export interface IndividualMasserStatementData {
   individualId: string;
   individualName: string;
-  periodStart: string | null;
-  periodEnd: string | null;
-  approvedReserve: string;
+  approvedMonthlyPlan: string;
+  activePlans: number;
+  trackedPlans: number;
+  missingRenewalPlans: number;
   recordedReserve: string;
   remainingReserve: string;
   availableCredit: string;
@@ -354,7 +357,7 @@ export async function getCollectionsWorkspace(
   const employeeParams: unknown[] = [month];
   const employeeScope = employeeFinancialClause(scope, "o.employee_id", employeeParams);
   const individualParams: unknown[] = [month];
-  const individualScope = individualFinancialClause(scope, "o.individual_id", individualParams);
+  const individualScope = individualFinancialClause(scope, "i.id", individualParams);
 
   const [employeeResult, individualResult, targets, payrollChecks, employeeOptions] = await Promise.all([
     pool.query<{
@@ -400,15 +403,27 @@ export async function getCollectionsWorkspace(
       employeeParams,
     ),
     pool.query<{
-      individual_id: string; individual_name: string; planned_this_month: string;
+      individual_id: string; individual_name: string; approved_monthly_plan: string;
       set_aside_this_month: string; remaining_set_aside: string; active_plans: string;
+      tracked_plans: string; missing_renewal_plans: string;
     }>(
        `WITH requested AS (
-          SELECT month_start,
-                 (month_start + interval '1 month' - interval '1 day')::date AS month_end
+          SELECT (month_start + interval '1 month' - interval '1 day')::date AS month_end
             FROM (
               SELECT make_date(split_part($1, '-', 1)::int, split_part($1, '-', 2)::int, 1) AS month_start
             ) value
+        ), strategy_plans AS (
+          SELECT strategy.individual_id,
+                 COALESCE(sum(abs(strategy.after_all))
+                   FILTER (WHERE strategy.after_all IS NOT NULL), 0) AS approved_monthly_plan,
+                 count(*) FILTER (WHERE strategy.after_all IS NOT NULL) AS active_plans,
+                 count(*) FILTER (
+                   WHERE strategy.after_all IS NOT NULL
+                     AND strategy.renewal_date IS NULL
+                 ) AS missing_renewal_plans
+            FROM calculation_strategies strategy
+           WHERE strategy.status = 'active'
+           GROUP BY strategy.individual_id
         ), plan_candidates AS (
           SELECT o.individual_id, o.calculation_strategy_id, o.period_begin, o.period_end,
                  max(o.created_at) AS latest_root_at
@@ -424,14 +439,13 @@ export async function getCollectionsWorkspace(
              AND o.period_end > requested.month_end
            GROUP BY o.individual_id, o.calculation_strategy_id, o.period_begin, o.period_end
         ), selected_plans AS (
-          SELECT DISTINCT ON (individual_id)
+          SELECT DISTINCT ON (individual_id, calculation_strategy_id)
                  individual_id, calculation_strategy_id, period_begin, period_end
             FROM plan_candidates
-           ORDER BY individual_id, period_begin DESC, period_end DESC,
-                    latest_root_at DESC, calculation_strategy_id DESC NULLS LAST
+           ORDER BY individual_id, calculation_strategy_id DESC NULLS LAST,
+                    period_begin DESC, period_end DESC, latest_root_at DESC
         ), roots AS (
           SELECT o.*,
-                 COALESCE(latest.calculation_metadata, o.calculation_metadata) AS current_metadata,
                  COALESCE(latest.calculation_metadata->>'recalculatedDirection', o.direction) AS current_direction,
                  COALESCE(NULLIF(latest.calculation_metadata->>'recalculatedOriginalAmount', '')::numeric, o.original_amount) AS current_target
             FROM settlement_obligations o
@@ -489,52 +503,29 @@ export async function getCollectionsWorkspace(
                   FILTER (WHERE current_direction = 'reserve'), 0) AS remaining
            FROM current_balances
           GROUP BY individual_id
-       ), planned AS (
-         SELECT r.id,
-                /* Short divisors represent late-year service: allocate backward from renewal. */
-                CASE
-                  WHEN r.current_direction = 'reserve'
-                    AND r.current_target > 0
-                    AND NULLIF(r.current_metadata->>'monthlyAmount', '')::numeric > 0
-                    AND r.period_begin <= requested.month_end
-                    AND r.period_end > requested.month_end
-                  THEN LEAST(
-                    NULLIF(r.current_metadata->>'monthlyAmount', '')::numeric,
-                    GREATEST(
-                      r.current_target
-                        - NULLIF(r.current_metadata->>'monthlyAmount', '')::numeric
-                          * GREATEST(
-                              (
-                                (date_part('year', r.period_end - interval '1 day')::int
-                                  - date_part('year', requested.month_start)::int) * 12
-                                + date_part('month', r.period_end - interval '1 day')::int
-                                  - date_part('month', requested.month_start)::int
-                              ),
-                              0
-                            )::numeric,
-                      0
-                    )
-                  )
-                  ELSE 0
-                END AS amount
-           FROM roots r
-           CROSS JOIN requested
+       ), ledger_plans AS (
+         SELECT individual_id,
+                count(DISTINCT COALESCE(calculation_strategy_id::text, id::text)) AS tracked_plans
+           FROM roots
+          GROUP BY individual_id
        )
-       SELECT r.individual_id, i.display_name AS individual_name,
-              COALESCE(sum(planned.amount), 0)::text AS planned_this_month,
-              COALESCE(max(ev.set_aside_month), 0)::text AS set_aside_this_month,
-              COALESCE(max(b.remaining), 0)::text AS remaining_set_aside,
-              count(DISTINCT r.calculation_strategy_id)::text AS active_plans
-         FROM roots r
-         JOIN individuals i ON i.id = r.individual_id
-         JOIN planned ON planned.id = r.id
-         LEFT JOIN event_totals ev ON ev.individual_id = r.individual_id
-         LEFT JOIN balances b ON b.individual_id = r.individual_id
+       SELECT i.id AS individual_id, i.display_name AS individual_name,
+              COALESCE(plan.approved_monthly_plan, 0)::text AS approved_monthly_plan,
+              COALESCE(ev.set_aside_month, 0)::text AS set_aside_this_month,
+              COALESCE(b.remaining, 0)::text AS remaining_set_aside,
+              COALESCE(plan.active_plans, 0)::text AS active_plans,
+              COALESCE(ledger.tracked_plans, 0)::text AS tracked_plans,
+              COALESCE(plan.missing_renewal_plans, 0)::text AS missing_renewal_plans
+         FROM individuals i
+         LEFT JOIN strategy_plans plan ON plan.individual_id = i.id
+         LEFT JOIN event_totals ev ON ev.individual_id = i.id
+         LEFT JOIN balances b ON b.individual_id = i.id
+         LEFT JOIN ledger_plans ledger ON ledger.individual_id = i.id
         WHERE TRUE${individualScope}
-        GROUP BY r.individual_id, i.display_name
-       HAVING COALESCE(sum(planned.amount), 0) <> 0
-           OR COALESCE(max(ev.set_aside_month), 0) <> 0
-           OR COALESCE(max(b.remaining), 0) <> 0
+          AND (COALESCE(plan.active_plans, 0) > 0
+            OR COALESCE(ledger.tracked_plans, 0) > 0
+            OR COALESCE(ev.set_aside_month, 0) <> 0
+            OR COALESCE(b.remaining, 0) <> 0)
         ORDER BY i.display_name`,
       individualParams,
     ),
@@ -564,10 +555,12 @@ export async function getCollectionsWorkspace(
   const individualSetAsides = individualResult.rows.map((row) => ({
     individualId: row.individual_id,
     individualName: row.individual_name,
-    plannedThisMonth: toMoney(row.planned_this_month),
+    approvedMonthlyPlan: toMoney(row.approved_monthly_plan),
     setAsideThisMonth: toMoney(row.set_aside_this_month),
     remainingSetAside: toMoney(row.remaining_set_aside),
     activePlans: Number(row.active_plans),
+    trackedPlans: Number(row.tracked_plans),
+    missingRenewalPlans: Number(row.missing_renewal_plans),
   }));
   const sum = <T,>(rows: T[], pick: (row: T) => string) => toMoney(rows.reduce((total, row) => total.plus(pick(row)), dec(0)));
   return {
@@ -587,7 +580,7 @@ export async function getCollectionsWorkspace(
       dueFromChecks: sum(employeeCollections, (row) => row.dueFromChecks),
       collectedThisMonth: sum(employeeCollections, (row) => row.collectedThisMonth),
       remainingReceivable: sum(employeeCollections, (row) => row.remainingReceivable),
-      plannedSetAside: sum(individualSetAsides, (row) => row.plannedThisMonth),
+      approvedMonthlySetAside: sum(individualSetAsides, (row) => row.approvedMonthlyPlan),
       setAsideThisMonth: sum(individualSetAsides, (row) => row.setAsideThisMonth),
     },
   };
@@ -614,16 +607,29 @@ export async function getIndividualMasserStatement(
 
   const [planResult, historyResult] = await Promise.all([
     pool.query<{
-      period_start: string | null; period_end: string | null;
-      approved_reserve: string; recorded_reserve: string; remaining_reserve: string; available_credit: string;
+      approved_monthly_plan: string; active_plans: string; tracked_plans: string;
+      missing_renewal_plans: string; recorded_reserve: string;
+      remaining_reserve: string; available_credit: string;
     }>(
       `WITH requested AS (
          SELECT (month_start + interval '1 month' - interval '1 day')::date AS month_end
            FROM (
              SELECT make_date(split_part($2, '-', 1)::int, split_part($2, '-', 2)::int, 1) AS month_start
            ) value
-       ), selected_plan AS (
-         SELECT o.calculation_strategy_id, o.period_begin, o.period_end
+       ), strategy_plan AS (
+         SELECT COALESCE(sum(abs(strategy.after_all))
+                  FILTER (WHERE strategy.after_all IS NOT NULL), 0) AS approved_monthly_plan,
+                count(*) FILTER (WHERE strategy.after_all IS NOT NULL) AS active_plans,
+                count(*) FILTER (
+                  WHERE strategy.after_all IS NOT NULL
+                    AND strategy.renewal_date IS NULL
+                ) AS missing_renewal_plans
+           FROM calculation_strategies strategy
+          WHERE strategy.individual_id = $1
+            AND strategy.status = 'active'
+       ), plan_candidates AS (
+         SELECT o.calculation_strategy_id, o.period_begin, o.period_end,
+                max(o.created_at) AS latest_root_at
            FROM settlement_obligations o
            CROSS JOIN requested
           WHERE o.individual_id = $1
@@ -635,16 +641,18 @@ export async function getIndividualMasserStatement(
             AND o.period_begin <= requested.month_end
             AND o.period_end > requested.month_end
           GROUP BY o.calculation_strategy_id, o.period_begin, o.period_end
-          ORDER BY o.period_begin DESC, o.period_end DESC, max(o.created_at) DESC,
-                   o.calculation_strategy_id DESC NULLS LAST
-          LIMIT 1
+       ), selected_plans AS (
+         SELECT DISTINCT ON (calculation_strategy_id)
+                calculation_strategy_id, period_begin, period_end
+           FROM plan_candidates
+          ORDER BY calculation_strategy_id DESC NULLS LAST,
+                   period_begin DESC, period_end DESC, latest_root_at DESC
        ), roots AS (
          SELECT o.*,
-                COALESCE(latest.calculation_metadata, o.calculation_metadata) AS current_metadata,
                 COALESCE(latest.calculation_metadata->>'recalculatedDirection', o.direction) AS current_direction,
                 COALESCE(NULLIF(latest.calculation_metadata->>'recalculatedOriginalAmount', '')::numeric, o.original_amount) AS current_target
            FROM settlement_obligations o
-           JOIN selected_plan selected
+           JOIN selected_plans selected
              ON selected.calculation_strategy_id IS NOT DISTINCT FROM o.calculation_strategy_id
             AND selected.period_begin = o.period_begin
             AND selected.period_end = o.period_end
@@ -676,10 +684,14 @@ export async function getIndividualMasserStatement(
            FROM roots root
            JOIN obligation_balances entry ON entry.root_key = root.id::text
           GROUP BY root.id, root.current_direction
+       ), ledger_plans AS (
+         SELECT count(DISTINCT COALESCE(calculation_strategy_id::text, id::text)) AS tracked_plans
+           FROM roots
        )
-       SELECT to_char(min(root.period_begin), 'YYYY-MM-DD') AS period_start,
-              to_char(max(root.period_end), 'YYYY-MM-DD') AS period_end,
-              COALESCE(sum(root.current_target) FILTER (WHERE root.current_direction = 'reserve'), 0)::text AS approved_reserve,
+       SELECT strategy_plan.approved_monthly_plan::text AS approved_monthly_plan,
+              strategy_plan.active_plans::text AS active_plans,
+              strategy_plan.missing_renewal_plans::text AS missing_renewal_plans,
+              COALESCE(ledger_plans.tracked_plans, 0)::text AS tracked_plans,
               COALESCE((
                  SELECT sum(CASE
                    WHEN obligation.direction = 'reserve' THEN event.amount
@@ -699,8 +711,9 @@ export async function getIndividualMasserStatement(
                 SELECT sum(GREATEST(-balance.signed_balance, 0))
                   FROM current_balances balance
                  WHERE balance.current_direction = 'reserve'
-              ), 0)::text AS available_credit
-         FROM roots root`,
+               ), 0)::text AS available_credit
+         FROM strategy_plan
+         CROSS JOIN ledger_plans`,
       [individualId, month],
     ),
     pool.query<{ month: string; set_aside: string; corrections: string; reversals: string }>(
@@ -709,8 +722,9 @@ export async function getIndividualMasserStatement(
            FROM (
              SELECT make_date(split_part($2, '-', 1)::int, split_part($2, '-', 2)::int, 1) AS month_start
            ) value
-       ), selected_plan AS (
-         SELECT obligation.calculation_strategy_id, obligation.period_begin, obligation.period_end
+       ), plan_candidates AS (
+         SELECT obligation.calculation_strategy_id, obligation.period_begin, obligation.period_end,
+                max(obligation.created_at) AS latest_root_at
            FROM settlement_obligations obligation
            CROSS JOIN requested
           WHERE obligation.individual_id = $1
@@ -719,16 +733,19 @@ export async function getIndividualMasserStatement(
             AND NOT (obligation.calculation_metadata ? 'adjustmentForObligationId')
             AND obligation.period_begin IS NOT NULL
             AND obligation.period_end IS NOT NULL
-            AND obligation.period_begin <= requested.month_end
-            AND obligation.period_end > requested.month_end
+             AND obligation.period_begin <= requested.month_end
+             AND obligation.period_end > requested.month_end
           GROUP BY obligation.calculation_strategy_id, obligation.period_begin, obligation.period_end
-          ORDER BY obligation.period_begin DESC, obligation.period_end DESC, max(obligation.created_at) DESC,
-                   obligation.calculation_strategy_id DESC NULLS LAST
-          LIMIT 1
+       ), selected_plans AS (
+         SELECT DISTINCT ON (calculation_strategy_id)
+                calculation_strategy_id, period_begin, period_end
+           FROM plan_candidates
+          ORDER BY calculation_strategy_id DESC NULLS LAST,
+                   period_begin DESC, period_end DESC, latest_root_at DESC
        ), roots AS (
          SELECT obligation.id
            FROM settlement_obligations obligation
-           JOIN selected_plan selected
+           JOIN selected_plans selected
              ON selected.calculation_strategy_id IS NOT DISTINCT FROM obligation.calculation_strategy_id
             AND selected.period_begin = obligation.period_begin
             AND selected.period_end = obligation.period_end
@@ -760,9 +777,10 @@ export async function getIndividualMasserStatement(
   return {
     individualId,
     individualName: person.rows[0].display_name,
-    periodStart: plan?.period_start ?? null,
-    periodEnd: plan?.period_end ?? null,
-    approvedReserve: toMoney(plan?.approved_reserve ?? 0),
+    approvedMonthlyPlan: toMoney(plan?.approved_monthly_plan ?? 0),
+    activePlans: Number(plan?.active_plans ?? 0),
+    trackedPlans: Number(plan?.tracked_plans ?? 0),
+    missingRenewalPlans: Number(plan?.missing_renewal_plans ?? 0),
     recordedReserve: toMoney(plan?.recorded_reserve ?? 0),
     remainingReserve: toMoney(plan?.remaining_reserve ?? 0),
     availableCredit: toMoney(plan?.available_credit ?? 0),

@@ -58,6 +58,8 @@ describe("schedule preflight warning confirmation", () => {
             seriesHours: "6.0000",
             remainingAfterHours: "-4.0000",
             calculationSafe: true,
+            sourceCandidateCount: 1,
+            sourceAmbiguous: false,
           }],
           uncoveredOccurrenceCount: 0,
           uncoveredHours: "0.0000",

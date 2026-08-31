@@ -5,6 +5,11 @@ import {
   listScheduledForReconcile,
   listBilledNotScheduled,
 } from "@/lib/manage/reconciliation";
+import { agencyDate } from "@/lib/business/agency-time";
+import {
+  listCurrentProgramBudgets,
+  type ProgramBudgetRecord,
+} from "@/lib/data/program-budgets";
 
 /**
  * Reporting read models.
@@ -76,9 +81,20 @@ function asPositiveInt(v: string | undefined, fallback: number, max = 3650): num
   return Math.min(n, max);
 }
 
-const PERIOD_TYPES = new Set(["calendar_year", "rolling_12_month", "custom"]);
+const PERIOD_TYPES = new Set(["calendar", "rolling", "custom"]);
 const asPeriodType = (v: string | undefined): string | undefined =>
   v && PERIOD_TYPES.has(v) ? v : undefined;
+
+function isOperationalAuthorization(row: ProgramBudgetRecord): boolean {
+  return row.requiredAuthType === "hours" || row.requiredAuthType === "both";
+}
+
+function daysBetween(from: string, to: string): number {
+  return Math.round(
+    (Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`))
+      / 86_400_000,
+  );
+}
 
 /* -------------------------------------------------------------------------- */
 /* 1. Budget utilization                                                      */
@@ -107,97 +123,50 @@ export interface BudgetUtilizationRow {
 }
 
 /**
- * Per individual + program: authorized hours and transaction-backed actual
- * usage from the same program_budget_balances read model as the budget
- * workspace, plus scheduled-but-pending hours, remaining, %used and
- * %committed.
- *
- * Scheduled usage is a LATERAL sub-select with COALESCE, so an authorization
- * with no schedule still returns one row of real zeros. Actual usage and
- * remaining hours are projected directly from the canonical balance view.
+ * Per individual + program from the same current-authorization selector used
+ * by Scheduling, People, and the owner overview. Strategy-backed compatibility
+ * rows are already reduced to one primary source before these totals are made.
  */
 export async function budgetUtilizationReport(
   pool: PgLikePool,
-  opts: { periodType?: string } = {},
+  opts: { periodType?: string; asOf?: string } = {},
 ): Promise<BudgetUtilizationRow[]> {
   const periodType = asPeriodType(opts.periodType) ?? null;
-  const { rows } = await pool.query<{
-    authorization_id: string;
-    individual_id: string;
-    individual_name: string;
-    program_id: string;
-    program_code: string;
-    program_name: string;
-    budget_period_id: string;
-    period_label: string;
-    period_type: string;
-    start_date: string;
-    end_date: string;
-    authorized_hours: string;
-    used_hours: string;
-    scheduled_hours: string;
-    remaining_hours: string;
-    remaining_after_scheduled_hours: string;
-    percent_used: string | null;
-    percent_committed: string | null;
-  }>(
-    `SELECT balance.authorization_id                         AS authorization_id,
-            balance.individual_id                            AS individual_id,
-            balance.individual_name                          AS individual_name,
-            balance.program_id                               AS program_id,
-            balance.program_code                             AS program_code,
-            balance.program_name                             AS program_name,
-            balance.budget_period_id                         AS budget_period_id,
-            balance.period_label                             AS period_label,
-            balance.period_type                              AS period_type,
-            balance.start_date::text                         AS start_date,
-            balance.end_date::text                           AS end_date,
-            balance.authorized_hours::text                   AS authorized_hours,
-            balance.consumed_hours::text                     AS used_hours,
-            sched.h::text                                    AS scheduled_hours,
-            balance.remaining_hours::text                    AS remaining_hours,
-            (balance.remaining_hours - sched.h)::text        AS remaining_after_scheduled_hours,
-            CASE WHEN balance.authorized_hours > 0
-                 THEN round(balance.consumed_hours / balance.authorized_hours * 100, 4)::text END AS percent_used,
-            CASE WHEN balance.authorized_hours > 0
-                 THEN round((balance.consumed_hours + sched.h) / balance.authorized_hours * 100, 4)::text END AS percent_committed
-     FROM program_budget_balances balance
-     CROSS JOIN LATERAL (
-       SELECT COALESCE(sum(sca.allocation_hours), 0) AS h
-       FROM scheduled_allocations sca
-       JOIN scheduled_sessions scs ON scs.id = sca.scheduled_session_id
-       WHERE sca.individual_id = balance.individual_id
-         AND scs.program_id = balance.program_id
-         AND scs.status = 'pending' AND scs.matched_transaction_id IS NULL
-         AND scs.session_date BETWEEN balance.start_date AND balance.end_date
-     ) sched
-     WHERE balance.period_status = 'active'
-       AND balance.required_auth_type IN ('hours', 'both')
-       AND ($1::text IS NULL OR balance.period_type = $1)
-     ORDER BY balance.individual_name, balance.program_code`,
-    [periodType],
-  );
-
-  return rows.map((r) => ({
-    authorizationId: r.authorization_id,
-    individualId: r.individual_id,
-    individualName: r.individual_name,
-    programId: r.program_id,
-    programCode: r.program_code,
-    programName: r.program_name,
-    budgetPeriodId: r.budget_period_id,
-    periodLabel: r.period_label,
-    periodType: r.period_type,
-    startDate: r.start_date,
-    endDate: r.end_date,
-    authorizedHours: toHours(r.authorized_hours),
-    usedHours: toHours(r.used_hours),
-    scheduledHours: toHours(r.scheduled_hours),
-    remainingHours: toHours(r.remaining_hours),
-    remainingAfterScheduledHours: toHours(r.remaining_after_scheduled_hours),
-    percentUsed: r.percent_used,
-    percentCommitted: r.percent_committed,
-  }));
+  const rows = await listCurrentProgramBudgets(pool, { asOf: opts.asOf ?? agencyDate() });
+  return rows
+    .filter((row) => (
+      (row.requiredAuthType === "hours" || row.requiredAuthType === "both")
+      && (periodType === null || row.periodType === periodType)
+    ))
+    .map((row) => {
+      const authorized = dec(row.authorizedHours);
+      const used = dec(row.consumedHours);
+      const committed = used.plus(row.scheduledHours);
+      return {
+        authorizationId: row.authorizationId,
+        individualId: row.individualId,
+        individualName: row.individualName,
+        programId: row.programId,
+        programCode: row.programCode,
+        programName: row.programName,
+        budgetPeriodId: row.budgetPeriodId,
+        periodLabel: row.periodLabel,
+        periodType: row.periodType,
+        startDate: row.startDate,
+        endDate: row.endDate,
+        authorizedHours: row.authorizedHours,
+        usedHours: row.consumedHours,
+        scheduledHours: row.scheduledHours,
+        remainingHours: row.remainingHours,
+        remainingAfterScheduledHours: row.remainingAfterScheduledHours,
+        percentUsed: authorized.gt(0)
+          ? used.dividedBy(authorized).times(100).toDecimalPlaces(4).toFixed(4)
+          : null,
+        percentCommitted: authorized.gt(0)
+          ? committed.dividedBy(authorized).times(100).toDecimalPlaces(4).toFixed(4)
+          : null,
+      };
+    });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -486,66 +455,42 @@ export interface ExpiringAuthorizationRow {
 }
 
 /**
- * Authorizations whose budget period end_date or renewal_date falls within the
- * next N days (default 60). daysRemaining counts to the nearest of the two
- * upcoming dates. Used hours come from the canonical balance read model.
+ * Current authorizations whose period end or renewal falls within the next N
+ * days (default 60). The shared selector includes one non-duplicated financial
+ * plan fallback when an explicit service authorization has not been created.
  */
 export async function expiringAuthorizationsReport(
   pool: PgLikePool,
-  opts: { withinDays?: number } = {},
+  opts: { withinDays?: number; asOf?: string } = {},
 ): Promise<ExpiringAuthorizationRow[]> {
   const withinDays = opts.withinDays && opts.withinDays > 0 ? Math.min(opts.withinDays, 3650) : 60;
-  const { rows } = await pool.query<{
-    authorization_id: string;
-    individual_id: string;
-    individual_name: string;
-    program_code: string;
-    program_name: string;
-    period_label: string;
-    end_date: string;
-    renewal_date: string | null;
-    days_remaining: number;
-    authorized_hours: string;
-    used_hours: string;
-  }>(
-    `SELECT balance.authorization_id                  AS authorization_id,
-            balance.individual_id                     AS individual_id,
-            balance.individual_name                   AS individual_name,
-            balance.program_code                      AS program_code,
-            balance.program_name                      AS program_name,
-            balance.period_label                      AS period_label,
-            balance.end_date::text                    AS end_date,
-            balance.renewal_date::text                AS renewal_date,
-            (LEAST(
-               CASE WHEN balance.end_date     >= CURRENT_DATE THEN balance.end_date END,
-               CASE WHEN balance.renewal_date >= CURRENT_DATE THEN balance.renewal_date END
-             ) - CURRENT_DATE)                         AS days_remaining,
-            balance.authorized_hours::text             AS authorized_hours,
-            balance.consumed_hours::text               AS used_hours
-     FROM program_budget_balances balance
-     WHERE balance.period_status = 'active'
-       AND (
-         (balance.end_date >= CURRENT_DATE
-           AND balance.end_date <= CURRENT_DATE + $1::int) OR
-         (balance.renewal_date >= CURRENT_DATE
-           AND balance.renewal_date <= CURRENT_DATE + $1::int)
-       )
-     ORDER BY days_remaining NULLS LAST, balance.individual_name, balance.program_code`,
-    [withinDays],
-  );
-  return rows.map((r) => ({
-    authorizationId: r.authorization_id,
-    individualId: r.individual_id,
-    individualName: r.individual_name,
-    programCode: r.program_code,
-    programName: r.program_name,
-    periodLabel: r.period_label,
-    endDate: r.end_date,
-    renewalDate: r.renewal_date,
-    daysRemaining: Number(r.days_remaining),
-    authorizedHours: toHours(r.authorized_hours),
-    usedHours: toHours(r.used_hours),
-  }));
+  const today = asDate(opts.asOf) ?? agencyDate();
+  const budgets = await listCurrentProgramBudgets(pool, { asOf: today });
+  return budgets.flatMap((row) => {
+    const upcoming = [row.endDate, row.renewalDate]
+      .filter((date): date is string => Boolean(date && date >= today))
+      .map((date) => daysBetween(today, date))
+      .filter((days) => days <= withinDays)
+      .sort((left, right) => left - right);
+    if (upcoming.length === 0) return [];
+    return [{
+      authorizationId: row.authorizationId,
+      individualId: row.individualId,
+      individualName: row.individualName,
+      programCode: row.programCode,
+      programName: row.programName,
+      periodLabel: row.periodLabel,
+      endDate: row.endDate,
+      renewalDate: row.renewalDate,
+      daysRemaining: upcoming[0]!,
+      authorizedHours: row.authorizedHours,
+      usedHours: row.consumedHours,
+    }];
+  }).sort((left, right) => (
+    left.daysRemaining - right.daysRemaining
+      || left.individualName.localeCompare(right.individualName)
+      || left.programCode.localeCompare(right.programCode)
+  ));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -567,51 +512,85 @@ export interface MissingConfigReport {
   missingAssignments: MissingAssignmentRow[];
 }
 
+async function missingRateRows(pool: PgLikePool): Promise<MissingRateRow[]> {
+  const { rows } = await pool.query<{
+    program_id: string;
+    program_code: string;
+    program_name: string;
+  }>(
+    `SELECT p.id AS program_id, p.code AS program_code, p.name AS program_name
+       FROM programs p
+      WHERE p.is_active = true AND p.archived_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM program_rate_schedules r
+           WHERE r.program_id = p.id
+             AND r.effective_from <= CURRENT_DATE
+             AND (r.effective_to IS NULL OR r.effective_to >= CURRENT_DATE)
+        )
+      ORDER BY p.code`,
+  );
+  return rows.map((row) => ({
+    programId: row.program_id,
+    programCode: row.program_code,
+    programName: row.program_name,
+  }));
+}
+
+async function missingAssignmentRows(
+  pool: PgLikePool,
+  budgets: ProgramBudgetRecord[],
+): Promise<MissingAssignmentRow[]> {
+  const authorized = new Map<string, Set<string>>();
+  for (const row of budgets.filter(isOperationalAuthorization)) {
+    const current = authorized.get(row.individualId);
+    if (current) current.add(row.programCode);
+    else authorized.set(row.individualId, new Set([row.programCode]));
+  }
+  const individualIds = [...authorized.keys()];
+  if (individualIds.length === 0) return [];
+
+  const { rows } = await pool.query<{
+    individual_id: string;
+    individual_name: string;
+    has_assignment: boolean;
+  }>(
+    `SELECT i.id AS individual_id, i.display_name AS individual_name,
+            EXISTS (
+              SELECT 1 FROM assignments assignment
+               WHERE assignment.individual_id = i.id
+                 AND assignment.status = 'active'
+            ) AS has_assignment
+       FROM individuals i
+      WHERE i.status = 'active'
+        AND i.archived_at IS NULL
+        AND i.merged_into_id IS NULL
+        AND i.id = ANY($1::uuid[])
+      ORDER BY i.display_name`,
+    [individualIds],
+  );
+  return rows.filter((row) => !row.has_assignment).map((row) => ({
+    individualId: row.individual_id,
+    individualName: row.individual_name,
+    programsAuthorized: [...(authorized.get(row.individual_id) ?? [])]
+      .sort()
+      .join(", ") || null,
+  }));
+}
+
 /**
  * Two gaps that quietly break downstream figures:
  *   - active programs with no rate schedule in force today, and
  *   - active individuals with an active authorization but no active assignment.
  */
 export async function missingConfigReport(pool: PgLikePool): Promise<MissingConfigReport> {
-  const [rateRes, assignRes] = await Promise.all([
-    pool.query<{ program_id: string; program_code: string; program_name: string }>(
-      `SELECT p.id AS program_id, p.code AS program_code, p.name AS program_name
-       FROM programs p
-       WHERE p.is_active = true AND p.archived_at IS NULL
-         AND NOT EXISTS (
-           SELECT 1 FROM program_rate_schedules r
-           WHERE r.program_id = p.id
-             AND r.effective_from <= CURRENT_DATE
-             AND (r.effective_to IS NULL OR r.effective_to >= CURRENT_DATE)
-         )
-       ORDER BY p.code`,
-    ),
-    pool.query<{ individual_id: string; individual_name: string; programs_authorized: string | null }>(
-      `SELECT i.id AS individual_id, i.display_name AS individual_name,
-              (SELECT string_agg(DISTINCT p.code, ', ' ORDER BY p.code)
-                 FROM budget_authorizations ba
-                 JOIN programs p ON p.id = ba.program_id
-                WHERE ba.individual_id = i.id AND ba.status = 'active') AS programs_authorized
-       FROM individuals i
-       WHERE i.status = 'active'
-         AND EXISTS (SELECT 1 FROM budget_authorizations ba
-                      WHERE ba.individual_id = i.id AND ba.status = 'active')
-         AND NOT EXISTS (SELECT 1 FROM assignments a
-                          WHERE a.individual_id = i.id AND a.status = 'active')
-       ORDER BY i.display_name`,
-    ),
+  const [missingRates, budgets] = await Promise.all([
+    missingRateRows(pool),
+    listCurrentProgramBudgets(pool, { asOf: agencyDate() }),
   ]);
+  const missingAssignments = await missingAssignmentRows(pool, budgets);
   return {
-    missingRates: rateRes.rows.map((r) => ({
-      programId: r.program_id,
-      programCode: r.program_code,
-      programName: r.program_name,
-    })),
-    missingAssignments: assignRes.rows.map((r) => ({
-      individualId: r.individual_id,
-      individualName: r.individual_name,
-      programsAuthorized: r.programs_authorized,
-    })),
+    missingRates,
+    missingAssignments,
   };
 }
 
@@ -634,83 +613,61 @@ export interface DashboardReportMetrics {
 }
 
 /**
- * The extra figures the redesigned dashboard tiles need, in one round trip.
- * Money is summed in SQL and returned as text. "available" is false when there
+ * The extra figures the redesigned dashboard tiles need. Money is summed in
+ * SQL and returned as text. "available" is false when there
  * ARE transactions but none carry the figure, so the tile can say why rather
  * than print a misleading $0.
  */
 export async function dashboardReportMetrics(pool: PgLikePool): Promise<DashboardReportMetrics> {
-  const { rows } = await pool.query<{
-    near_exhaustion: string;
-    underutilizing: string;
-    agency_additional: string;
-    agency_additional_rows: string;
-    employee_payable: string;
-    employee_payable_rows: string;
-    transaction_rows: string;
-    expiring_auth: string;
-    unbilled_schedules: string;
-    unscheduled_billing: string;
-    missing_rates: string;
-    missing_assignments: string;
-  }>(
-    `WITH util AS (
-       SELECT balance.authorized_hours AS auth,
-              balance.start_date,
-              balance.end_date,
-              balance.consumed_hours AS used,
-              sched.h AS sched
-       FROM program_budget_balances balance
-       CROSS JOIN LATERAL (
-         SELECT COALESCE(sum(sca.allocation_hours), 0) AS h
-           FROM scheduled_allocations sca
-           JOIN scheduled_sessions scs ON scs.id = sca.scheduled_session_id
-          WHERE sca.individual_id = balance.individual_id
-            AND scs.program_id = balance.program_id
-            AND scs.status = 'pending'
-            AND scs.matched_transaction_id IS NULL
-            AND scs.session_date BETWEEN balance.start_date AND balance.end_date
-       ) sched
-       WHERE balance.period_status = 'active'
-         AND balance.required_auth_type IN ('hours', 'both')
-     )
-     SELECT
-       (SELECT count(*) FROM util
-          WHERE auth > 0 AND (used + sched) >= auth * 0.9)::text                       AS near_exhaustion,
-       (SELECT count(*) FROM util
-          WHERE auth > 0 AND end_date > start_date
-            AND (CURRENT_DATE - start_date)::numeric / (end_date - start_date) >= 0.5
-            AND (used + sched) < auth * 0.5)::text                                      AS underutilizing,
+  const today = agencyDate();
+  const budgets = await listCurrentProgramBudgets(pool, { asOf: today });
+  const [metricResult, missingRates, missingAssignments] = await Promise.all([
+    pool.query<{
+      agency_additional: string;
+      agency_additional_rows: string;
+      employee_payable: string;
+      employee_payable_rows: string;
+      transaction_rows: string;
+      unbilled_schedules: string;
+      unscheduled_billing: string;
+    }>(
+      `SELECT
        (SELECT COALESCE(sum(agency_additional_amount), 0) FROM payroll_transactions)::text AS agency_additional,
        (SELECT count(*) FROM payroll_transactions WHERE agency_additional_amount IS NOT NULL)::text AS agency_additional_rows,
        (SELECT COALESCE(sum(employee_payment_amount), 0) FROM payroll_transactions)::text AS employee_payable,
        (SELECT count(*) FROM payroll_transactions WHERE employee_payment_amount IS NOT NULL)::text AS employee_payable_rows,
        (SELECT count(*) FROM payroll_transactions)::text                                AS transaction_rows,
-       (SELECT count(*) FROM program_budget_balances balance
-         WHERE balance.period_status = 'active'
-           AND ((balance.end_date >= CURRENT_DATE
-                  AND balance.end_date <= CURRENT_DATE + 60) OR
-                (balance.renewal_date >= CURRENT_DATE
-                  AND balance.renewal_date <= CURRENT_DATE + 60)))::text AS expiring_auth,
        (SELECT count(*) FROM scheduled_sessions
          WHERE status = 'pending' AND matched_transaction_id IS NULL)::text             AS unbilled_schedules,
        (SELECT count(*) FROM payroll_transactions t
-         WHERE NOT EXISTS (SELECT 1 FROM scheduled_sessions s WHERE s.matched_transaction_id = t.id))::text
-                                                                                        AS unscheduled_billing,
-       (SELECT count(*) FROM programs p
-         WHERE p.is_active AND p.archived_at IS NULL
-           AND NOT EXISTS (SELECT 1 FROM program_rate_schedules r
-                            WHERE r.program_id = p.id AND r.effective_from <= CURRENT_DATE
-                              AND (r.effective_to IS NULL OR r.effective_to >= CURRENT_DATE)))::text AS missing_rates,
-       (SELECT count(*) FROM individuals i
-         WHERE i.status = 'active'
-           AND EXISTS (SELECT 1 FROM budget_authorizations ba
-                        WHERE ba.individual_id = i.id AND ba.status = 'active')
-           AND NOT EXISTS (SELECT 1 FROM assignments a
-                            WHERE a.individual_id = i.id AND a.status = 'active'))::text AS missing_assignments`,
-  );
-  const r = rows[0]!;
+          WHERE NOT EXISTS (SELECT 1 FROM scheduled_sessions s WHERE s.matched_transaction_id = t.id))::text
+                                                                                         AS unscheduled_billing`,
+    ),
+    missingRateRows(pool),
+    missingAssignmentRows(pool, budgets),
+  ]);
+  const r = metricResult.rows[0]!;
   const txRows = Number(r.transaction_rows ?? 0);
+  const operational = budgets.filter(isOperationalAuthorization);
+  const nearExhaustion = operational.filter((row) => {
+    const authorized = dec(row.authorizedHours);
+    return authorized.gt(0)
+      && dec(row.consumedHours).plus(row.scheduledHours).gte(authorized.times(0.9));
+  }).length;
+  const underutilizing = operational.filter((row) => {
+    const authorized = dec(row.authorizedHours);
+    const periodDays = daysBetween(row.startDate, row.endDate);
+    return authorized.gt(0)
+      && periodDays > 0
+      && daysBetween(row.startDate, today) / periodDays >= 0.5
+      && dec(row.consumedHours).plus(row.scheduledHours).lt(authorized.times(0.5));
+  }).length;
+  const expiringAuthorizations = budgets.filter((row) => (
+    [row.endDate, row.renewalDate].some((date) => {
+      if (!date || date < today) return false;
+      return daysBetween(today, date) <= 60;
+    })
+  )).length;
   return {
     agencyAdditional: {
       amount: toMoney(r.agency_additional ?? 0),
@@ -721,13 +678,13 @@ export async function dashboardReportMetrics(pool: PgLikePool): Promise<Dashboar
       available: txRows === 0 || Number(r.employee_payable_rows ?? 0) > 0,
     },
     counts: {
-      nearExhaustion: Number(r.near_exhaustion ?? 0),
-      underutilizing: Number(r.underutilizing ?? 0),
-      expiringAuthorizations: Number(r.expiring_auth ?? 0),
+      nearExhaustion,
+      underutilizing,
+      expiringAuthorizations,
       unbilledSchedules: Number(r.unbilled_schedules ?? 0),
       unscheduledBilling: Number(r.unscheduled_billing ?? 0),
-      missingRates: Number(r.missing_rates ?? 0),
-      missingAssignments: Number(r.missing_assignments ?? 0),
+      missingRates: missingRates.length,
+      missingAssignments: missingAssignments.length,
     },
   };
 }
@@ -1213,77 +1170,55 @@ export interface UtilizationOutlierRow {
 /**
  * Authorizations that are utilization outliers: OVER-utilizing (> 100% of the
  * authorized hours already used) or UNDER-utilizing (< 50% used once more than
- * half the period has elapsed). Used hours come from the canonical
- * program_budget_balances read model, like the utilization report. Filterable
- * by flag and program; only outliers appear.
+ * half the period has elapsed). Used hours come from the shared current
+ * authorization selector, like the utilization report. Filterable by flag and
+ * program; only outliers appear.
  */
 export async function utilizationOutliersReport(
   pool: PgLikePool,
-  opts: { flag?: string; program?: string } = {},
+  opts: { flag?: string; program?: string; asOf?: string } = {},
 ): Promise<UtilizationOutlierRow[]> {
   const flag =
     opts.flag === "underutilizing" || opts.flag === "overutilizing" ? opts.flag : null;
   const program = (opts.program ?? "").trim() || null;
-  const { rows } = await pool.query<{
-    authorization_id: string;
-    individual_id: string;
-    individual_name: string;
-    program_code: string;
-    program_name: string;
-    period_label: string;
-    authorized_hours: string;
-    used_hours: string;
-    remaining_hours: string;
-    percent_used: string | null;
-    flag: string;
-  }>(
-    `SELECT * FROM (
-       SELECT balance.authorization_id                       AS authorization_id,
-              balance.individual_id                          AS individual_id,
-              balance.individual_name                        AS individual_name,
-              balance.program_code                           AS program_code,
-              balance.program_name                           AS program_name,
-              balance.period_label                           AS period_label,
-              balance.authorized_hours::text                 AS authorized_hours,
-              balance.consumed_hours::text                   AS used_hours,
-              balance.remaining_hours::text                  AS remaining_hours,
-              CASE WHEN balance.authorized_hours > 0
-                   THEN round(balance.consumed_hours / balance.authorized_hours * 100, 4)::text END AS percent_used,
-              CASE
-                WHEN balance.authorized_hours > 0
-                     AND balance.consumed_hours > balance.authorized_hours
-                  THEN 'overutilizing'
-                WHEN balance.authorized_hours > 0
-                     AND balance.consumed_hours < balance.authorized_hours * 0.5
-                     AND balance.end_date > balance.start_date
-                     AND (CURRENT_DATE - balance.start_date)::numeric
-                         / (balance.end_date - balance.start_date) > 0.5
-                  THEN 'underutilizing'
-                ELSE 'ok'
-              END                         AS flag
-       FROM program_budget_balances balance
-       WHERE balance.period_status = 'active'
-         AND balance.required_auth_type IN ('hours', 'both')
-     ) x
-     WHERE x.flag <> 'ok'
-       AND ($1::text IS NULL OR x.flag = $1)
-       AND ($2::text IS NULL OR x.program_code ILIKE '%' || $2 || '%' OR x.program_name ILIKE '%' || $2 || '%')
-     ORDER BY x.flag, x.individual_name, x.program_code`,
-    [flag, program],
-  );
-  return rows.map((r) => ({
-    authorizationId: r.authorization_id,
-    individualId: r.individual_id,
-    individualName: r.individual_name,
-    programCode: r.program_code,
-    programName: r.program_name,
-    periodLabel: r.period_label,
-    authorizedHours: toHours(r.authorized_hours),
-    usedHours: toHours(r.used_hours),
-    remainingHours: toHours(r.remaining_hours),
-    percentUsed: r.percent_used,
-    flag: r.flag,
-  }));
+  const today = asDate(opts.asOf) ?? agencyDate();
+  const rows = await listCurrentProgramBudgets(pool, { asOf: today });
+  return rows.flatMap((row) => {
+    if (!isOperationalAuthorization(row)) return [];
+    const haystack = `${row.programCode} ${row.programName}`.toLocaleLowerCase();
+    if (program && !haystack.includes(program.toLocaleLowerCase())) return [];
+    const authorized = dec(row.authorizedHours);
+    const used = dec(row.consumedHours);
+    const periodDays = daysBetween(row.startDate, row.endDate);
+    const rowFlag = authorized.gt(0) && used.gt(authorized)
+      ? "overutilizing"
+      : authorized.gt(0)
+        && used.lt(authorized.times(0.5))
+        && periodDays > 0
+        && daysBetween(row.startDate, today) / periodDays > 0.5
+          ? "underutilizing"
+          : null;
+    if (!rowFlag || (flag && rowFlag !== flag)) return [];
+    return [{
+      authorizationId: row.authorizationId,
+      individualId: row.individualId,
+      individualName: row.individualName,
+      programCode: row.programCode,
+      programName: row.programName,
+      periodLabel: row.periodLabel,
+      authorizedHours: row.authorizedHours,
+      usedHours: row.consumedHours,
+      remainingHours: row.remainingHours,
+      percentUsed: authorized.gt(0)
+        ? used.dividedBy(authorized).times(100).toDecimalPlaces(4).toFixed(4)
+        : null,
+      flag: rowFlag,
+    }];
+  }).sort((left, right) => (
+    left.flag.localeCompare(right.flag)
+      || left.individualName.localeCompare(right.individualName)
+      || left.programCode.localeCompare(right.programCode)
+  ));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1308,8 +1243,8 @@ export const REPORTS: Record<string, ReportDefinition> = {
         type: "select",
         options: [
           { value: "", label: "All period types" },
-          { value: "calendar_year", label: "Calendar year" },
-          { value: "rolling_12_month", label: "Rolling 12 month" },
+          { value: "calendar", label: "Calendar year" },
+          { value: "rolling", label: "Rolling 12 month" },
           { value: "custom", label: "Custom" },
         ],
       },

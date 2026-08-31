@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fullAccess } from "@/lib/auth/access";
-import { getIndividualMasserStatement } from "@/lib/data/direct-pay-operations";
+import { getCollectionsWorkspace, getIndividualMasserStatement } from "@/lib/data/direct-pay-operations";
 import type { PgLikePool } from "@/lib/import/commit";
 
 const INDIVIDUAL_ID = "123e4567-e89b-12d3-a456-426614174000";
@@ -13,9 +13,10 @@ describe("individual Masser statement", () => {
       }
       if (sql.includes("current_balances AS")) {
         return { rows: [{
-          period_start: "2026-01-01",
-          period_end: "2027-01-01",
-          approved_reserve: "1200",
+          approved_monthly_plan: "1200",
+          active_plans: "2",
+          tracked_plans: "1",
+          missing_renewal_plans: "1",
           recorded_reserve: "350",
           remaining_reserve: "850",
           available_credit: "25",
@@ -39,9 +40,10 @@ describe("individual Masser statement", () => {
     )).resolves.toEqual({
       individualId: INDIVIDUAL_ID,
       individualName: "Example Individual",
-      periodStart: "2026-01-01",
-      periodEnd: "2027-01-01",
-      approvedReserve: "1200.0000",
+      approvedMonthlyPlan: "1200.0000",
+      activePlans: 2,
+      trackedPlans: 1,
+      missingRenewalPlans: 1,
       recordedReserve: "350.0000",
       remainingReserve: "850.0000",
       availableCredit: "25.0000",
@@ -53,10 +55,14 @@ describe("individual Masser statement", () => {
 
     const statementSql = query.mock.calls.map(([sql]) => sql).join("\n");
     expect(statementSql).toContain("AS month_end");
+    expect(statementSql).toContain("sum(abs(strategy.after_all))");
+    expect(statementSql).toContain("strategy.after_all IS NOT NULL");
+    expect(statementSql).toContain("strategy.status = 'active'");
     expect(statementSql).toContain("o.period_begin <= requested.month_end");
     expect(statementSql).toContain("o.period_end > requested.month_end");
-    expect(statementSql).toContain("selected_plan AS");
-    expect(statementSql).toContain("LIMIT 1");
+    expect(statementSql).toContain("selected_plans AS");
+    expect(statementSql).toContain("DISTINCT ON (calculation_strategy_id)");
+    expect(statementSql).not.toContain("selected_plan AS");
     expect(statementSql).not.toContain("requested.month_start >= date_trunc('month', o.period_begin)");
     expect(query.mock.calls.filter(([sql]) => sql.includes("settlement_")).every(([, params]) => (
       Array.isArray(params) && params[1] === "2026-08"
@@ -64,5 +70,49 @@ describe("individual Masser statement", () => {
     expect(statementSql).not.toContain("JOIN employees");
     expect(statementSql).not.toContain("employee_payroll_checks");
     expect(statementSql).not.toContain("payroll_transactions");
+  });
+
+  it("sums every active approved final even when a setup has no renewal date", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("strategy_plans AS")) {
+        return { rows: [{
+          individual_id: INDIVIDUAL_ID,
+          individual_name: "Example Individual",
+          approved_monthly_plan: "33930",
+          set_aside_this_month: "1200",
+          remaining_set_aside: "850",
+          active_plans: "3",
+          tracked_plans: "2",
+          missing_renewal_plans: "1",
+        }] };
+      }
+      return { rows: [] };
+    });
+    const pool = { query } as unknown as PgLikePool;
+
+    const workspace = await getCollectionsWorkspace(
+      pool,
+      fullAccess("owner", "admin"),
+      "2026-08",
+    );
+
+    expect(workspace.summary.approvedMonthlySetAside).toBe("33930.0000");
+    expect(workspace.individualSetAsides).toEqual([{
+      individualId: INDIVIDUAL_ID,
+      individualName: "Example Individual",
+      approvedMonthlyPlan: "33930.0000",
+      setAsideThisMonth: "1200.0000",
+      remainingSetAside: "850.0000",
+      activePlans: 3,
+      trackedPlans: 2,
+      missingRenewalPlans: 1,
+    }]);
+
+    const boardSql = query.mock.calls.map(([sql]) => sql).find((sql) => sql.includes("strategy_plans AS"))!;
+    expect(boardSql).toContain("sum(abs(strategy.after_all))");
+    expect(boardSql).toContain("strategy.status = 'active'");
+    expect(boardSql).toContain("strategy.after_all IS NOT NULL");
+    expect(boardSql).toContain("DISTINCT ON (individual_id, calculation_strategy_id)");
+    expect(boardSql).toContain("strategy.renewal_date IS NULL");
   });
 });

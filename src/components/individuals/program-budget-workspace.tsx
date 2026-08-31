@@ -49,6 +49,8 @@ export interface VisibleProgramBudget {
   undatedUsageCount: number | null;
   hasUndatedUsage: boolean;
   revision: number;
+  isExplicit: boolean;
+  sourceCandidateCount: number;
   canManageRenewal: boolean;
   showEventHistory: boolean;
   monthlyHistory: VisibleProgramBudgetMonth[];
@@ -495,7 +497,9 @@ export default function ProgramBudgetWorkspace({
           {budgets.map((budget) => {
             const manualUsageAllowed = budget.consumptionSource === "manual" || budget.consumptionSource === "mixed";
             const canManageAuthorization = canManage
+              && budget.isExplicit
               && (!hoursOnlyManagement || budget.requiredAuthType === "hours");
+            const conversionPrograms = programs.filter((program) => program.id === budget.programId);
             return (
               <article key={`${budget.budgetPeriodId}:${budget.programId}`} className="overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-surface)]">
                 <div className="px-4 py-4 sm:px-5">
@@ -522,6 +526,49 @@ export default function ProgramBudgetWorkspace({
                       </span>
                     </div>
                   </div>
+
+                  {!budget.isExplicit ? (
+                    <div className="mt-4 border-l-2 border-[var(--color-info)] bg-[var(--color-info-soft)] px-3 py-3 text-sm text-[var(--color-ink-soft)]">
+                      <p className="font-semibold text-[var(--color-ink)]">Read-only budget from Financial setup</p>
+                      <p className="mt-1">
+                        This current allowance is still stored in the older financial plan. Its hours are included once in every budget total.
+                      </p>
+                      {budget.sourceCandidateCount > 1 ? (
+                        <p className="mt-1 font-medium text-[var(--color-warn)]">
+                          {budget.sourceCandidateCount} active plans list this same program. The primary plan is shown; the hours were not added together.
+                        </p>
+                      ) : null}
+                      {canManage && conversionPrograms.length > 0 ? (
+                        <div className="mt-3">
+                          {budget.programCode === "CLASSES" ? (
+                            <ButtonLink href={`/classes?individualId=${individualId}`} variant="secondary">
+                              Open Classes
+                            </ButtonLink>
+                          ) : (
+                            <CreateButton
+                              label="Make editable"
+                              title={`Create service authorization - ${budget.programName}`}
+                              endpoint="/api/program-budgets"
+                              hidden={{ individualId }}
+                              size="sm"
+                              variant="secondary"
+                              fields={(
+                                <ProgramBudgetFields
+                                  programs={conversionPrograms}
+                                  showInternalRate={showInternalRate}
+                                  showAgencyRate={showAgencyRate}
+                                  defaultProgramId={budget.programId}
+                                  defaultLabel={budget.periodLabel.split(" / ")[0]}
+                                  defaultRenewalDate={budget.renewalDate ?? undefined}
+                                  defaultAuthorizedHours={budget.authorizedHours ?? undefined}
+                                />
+                              )}
+                            />
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
 
                   <div className="mt-4 space-y-4">
                     <HoursMetrics budget={budget} />

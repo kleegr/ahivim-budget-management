@@ -39,6 +39,28 @@ describe("Masser request feedback", () => {
     expect(workspaceSource).toContain("Record set-aside");
   });
 
+  it("separates the approved monthly plan from recorded ledger facts", () => {
+    expect(workspaceSource).toContain("Approved monthly set-aside");
+    expect(workspaceSource).toContain("Recorded this month");
+    expect(workspaceSource).toContain("Ledger remaining");
+    expect(workspaceSource).toContain("data.summary.approvedMonthlySetAside");
+    expect(workspaceSource).toContain("canManage && row.trackedPlans > 0");
+  });
+
+  it("makes a missing renewal actionable only for financial-plan managers", () => {
+    const pageSource = readFileSync(resolve("src/app/(app)/masser/page.tsx"), "utf8");
+    const statementSource = readFileSync(
+      resolve("src/app/(app)/masser/individuals/[id]/page.tsx"),
+      "utf8",
+    );
+    expect(workspaceSource).toContain("Renewal dates needed");
+    expect(workspaceSource).toContain("canManageFinancialPlans ?");
+    expect(workspaceSource).toContain('href={`/individuals/${row.individualId}?view=financial`}');
+    expect(pageSource).toContain('scope.full && scope.canSeeBudgets');
+    expect(statementSource).toContain("Employee and payroll details are excluded.");
+    expect(statementSource).toContain("Ask an owner or manager to add the renewal date.");
+  });
+
   it("uses a short check identity for transaction drilldowns", () => {
     expect(workspaceSource).toContain("payrollCheckRowsHref(row)");
     expect(workspaceSource).toContain('params.set("checkDateFrom", check.checkDate)');

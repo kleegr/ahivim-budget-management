@@ -173,7 +173,7 @@ suite("phase 4D — reporting read models (real PostgreSQL)", () => {
       internalAmount: "425",
     });
 
-    const rows = await budgetUtilizationReport(pool, {});
+    const rows = await budgetUtilizationReport(pool, { asOf: "2025-06-01" });
     expect(rows).toHaveLength(1);
     const row = rows[0];
     expect(dec(row.authorizedHours).toNumber()).toBe(100);
@@ -196,7 +196,7 @@ suite("phase 4D — reporting read models (real PostgreSQL)", () => {
       [session.rows[0].id, ind.id],
     );
 
-    const after = await budgetUtilizationReport(pool, {});
+    const after = await budgetUtilizationReport(pool, { asOf: "2025-06-01" });
     expect(dec(after[0].percentUsed!).toNumber()).toBe(25);
     expect(dec(after[0].percentCommitted!).toNumber()).toBe(40);
     expect(dec(after[0].scheduledHours).toNumber()).toBe(15);

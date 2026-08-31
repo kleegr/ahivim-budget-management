@@ -1,6 +1,10 @@
 import type { PgLikePool } from "@/lib/import/commit";
 import { agencyDate } from "@/lib/business/agency-time";
 import { dec, toHours, toMoney } from "@/lib/money";
+import {
+  directIndividualScopeClause,
+  type AccessScope,
+} from "@/lib/auth/access";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -45,6 +49,11 @@ export interface ProgramBudgetRecord {
   undatedUsageCount: number;
   hasUndatedUsage: boolean;
   revision: number;
+  /** Physical authorization rows can be revised; strategy fallbacks are read-only. */
+  isExplicit: boolean;
+  source: string;
+  /** More than one means the primary financial plan won a duplicate-source tie. */
+  sourceCandidateCount: number;
 }
 
 interface ProgramBudgetRow {
@@ -83,6 +92,9 @@ interface ProgramBudgetRow {
   undated_usage_count: number | string;
   has_undated_usage: boolean;
   revision: number;
+  is_explicit: boolean;
+  authorization_source: string;
+  source_candidate_count: number | string;
 }
 
 const PROGRAM_BUDGET_SELECT = `
@@ -115,7 +127,10 @@ const PROGRAM_BUDGET_SELECT = `
            AS remaining_after_scheduled_hours,
          balance.undated_usage_count,
          balance.has_undated_usage,
-         balance.revision
+         balance.revision,
+         true AS is_explicit,
+         'explicit_authorization'::text AS authorization_source,
+         1::integer AS source_candidate_count
     FROM program_budget_balances balance
     CROSS JOIN LATERAL (
       SELECT COALESCE(sum(allocation.allocation_hours), 0) AS scheduled_hours
@@ -168,6 +183,9 @@ function toProgramBudget(row: ProgramBudgetRow): ProgramBudgetRecord {
     undatedUsageCount: Number(row.undated_usage_count),
     hasUndatedUsage: row.has_undated_usage,
     revision: row.revision,
+    isExplicit: row.is_explicit !== false,
+    source: row.authorization_source ?? "explicit_authorization",
+    sourceCandidateCount: Number(row.source_candidate_count ?? 1),
   };
 }
 
@@ -176,6 +194,162 @@ export interface ProgramBudgetFilters {
   programId?: string | null;
   status?: "active" | "closed" | null;
   asOf?: string | null;
+}
+
+export interface CurrentProgramBudgetFilters {
+  asOf: string;
+  individualId?: string | null;
+  programId?: string | null;
+  scope?: AccessScope;
+}
+
+/**
+ * Current operational authorizations shared with Scheduling.
+ *
+ * Explicit service authorizations win. Until legacy data is converted, the
+ * database selector supplies one primary calculation-strategy line per
+ * person/program and reports how many source candidates existed. That prevents
+ * duplicate financial plans from inflating authorized hours.
+ */
+export async function listCurrentProgramBudgets(
+  pool: PgLikePool,
+  filters: CurrentProgramBudgetFilters,
+): Promise<ProgramBudgetRecord[]> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(filters.asOf)) return [];
+  const params: unknown[] = [filters.asOf];
+  const where: string[] = [
+    "individual.status = 'active'",
+    "individual.archived_at IS NULL",
+    "individual.merged_into_id IS NULL",
+    "program.is_active = true",
+    "program.archived_at IS NULL",
+  ];
+  if (filters.individualId) {
+    if (!UUID.test(filters.individualId)) return [];
+    params.push(filters.individualId);
+    where.push(`effective.individual_id = $${params.length}`);
+  }
+  if (filters.programId) {
+    if (!UUID.test(filters.programId)) return [];
+    params.push(filters.programId);
+    where.push(`effective.program_id = $${params.length}`);
+  }
+  const directScope = filters.scope
+    ? directIndividualScopeClause(filters.scope, "effective.individual_id", params)
+    : "";
+
+  const { rows } = await pool.query<ProgramBudgetRow>(
+    `WITH current_authorizations AS (
+       SELECT * FROM effective_budget_authorizations_at($1::date)
+     )
+     SELECT effective.authorization_id,
+            effective.period_id AS budget_period_id,
+            effective.individual_id,
+            COALESCE(individual.display_name, individual.normalized_name) AS individual_name,
+            effective.program_id, program.code AS program_code, program.name AS program_name,
+            effective.period_label,
+            effective.start_date::text AS start_date,
+            effective.end_date::text AS end_date,
+            CASE WHEN explicit_balance.authorization_id IS NOT NULL
+                 THEN explicit_balance.renewal_date
+                 ELSE effective.end_date + 1 END::text AS renewal_date,
+            COALESCE(
+              explicit_balance.period_type,
+              CASE WHEN program.renewal_policy = 'calendar' THEN 'calendar' ELSE 'rolling' END
+            ) AS period_type,
+            'active'::text AS period_status,
+            program.required_auth_type, program.service_category,
+            program.payment_recipient, program.consumption_source,
+            program.rate_scope, program.renewal_policy,
+            program.allow_individual_rate_override,
+            effective.authorized_hours::text AS authorized_hours,
+            explicit_balance.authorized_dollars::text AS authorized_dollars,
+            effective.internal_rate::text AS internal_rate,
+            COALESCE(explicit_balance.agency_rate, catalog_rate.agency_rate)::text AS agency_rate,
+            explicit_balance.individual_rate_override::text AS individual_rate_override,
+            explicit_balance.notes,
+            CASE WHEN explicit_balance.authorization_id IS NOT NULL
+                 THEN explicit_balance.consumed_hours ELSE effective_usage.hours END::text AS consumed_hours,
+            CASE WHEN explicit_balance.authorization_id IS NOT NULL
+                 THEN explicit_balance.consumed_dollars ELSE payroll_usage.amount END::text AS consumed_dollars,
+            (effective.authorized_hours - CASE WHEN explicit_balance.authorization_id IS NOT NULL
+                 THEN explicit_balance.consumed_hours ELSE effective_usage.hours END)::text AS remaining_hours,
+            explicit_balance.remaining_dollars::text AS remaining_dollars,
+            CASE WHEN program.required_auth_type = 'dollars' THEN 0
+                 ELSE schedule.scheduled_hours END::text AS scheduled_hours,
+            CASE WHEN program.required_auth_type = 'dollars' THEN effective.authorized_hours
+                  ELSE effective.authorized_hours
+                    - CASE WHEN explicit_balance.authorization_id IS NOT NULL
+                           THEN explicit_balance.consumed_hours ELSE effective_usage.hours END
+                    - schedule.scheduled_hours END::text AS remaining_after_scheduled_hours,
+            CASE WHEN explicit_balance.authorization_id IS NOT NULL
+                 THEN explicit_balance.undated_usage_count ELSE undated_usage.row_count END AS undated_usage_count,
+            CASE WHEN explicit_balance.authorization_id IS NOT NULL
+                 THEN explicit_balance.has_undated_usage ELSE undated_usage.row_count > 0 END AS has_undated_usage,
+            effective.revision,
+            explicit_balance.authorization_id IS NOT NULL AS is_explicit,
+            effective.source AS authorization_source,
+            effective.source_candidate_count
+       FROM current_authorizations effective
+       JOIN individuals individual ON individual.id = effective.individual_id
+       JOIN programs program ON program.id = effective.program_id
+       LEFT JOIN program_budget_balances explicit_balance
+         ON explicit_balance.authorization_id = effective.authorization_id
+        AND explicit_balance.budget_period_id = effective.period_id
+       LEFT JOIN LATERAL (
+         SELECT schedule_rate.agency_rate
+           FROM program_rate_schedules schedule_rate
+          WHERE schedule_rate.program_id = effective.program_id
+            AND schedule_rate.effective_from <= effective.end_date
+            AND (schedule_rate.effective_to IS NULL OR schedule_rate.effective_to >= effective.end_date)
+          ORDER BY schedule_rate.effective_from DESC, schedule_rate.id DESC
+          LIMIT 1
+       ) catalog_rate ON true
+       CROSS JOIN LATERAL (
+         SELECT effective_billed_hours(
+                  effective.individual_id,
+                  effective.program_id,
+                  effective.start_date,
+                  effective.end_date,
+                  effective.internal_rate
+                ) AS hours
+       ) effective_usage
+       CROSS JOIN LATERAL (
+         SELECT COALESCE(sum(COALESCE(payroll_row.imported_amount, 0)), 0) AS amount
+           FROM payroll_transactions payroll_row
+          WHERE program.consumption_source IN ('payroll', 'mixed')
+            AND payroll_row.individual_id = effective.individual_id
+            AND payroll_row.program_id = effective.program_id
+            AND canonical_service_date(
+                  payroll_row.period_begin, payroll_row.check_date, payroll_row.period_end
+                ) BETWEEN effective.start_date AND effective.end_date
+       ) payroll_usage
+       CROSS JOIN LATERAL (
+         SELECT count(payroll_row.id)::integer AS row_count
+           FROM payroll_transactions payroll_row
+          WHERE program.consumption_source IN ('payroll', 'mixed')
+            AND payroll_row.individual_id = effective.individual_id
+            AND payroll_row.program_id = effective.program_id
+            AND canonical_service_date(
+                  payroll_row.period_begin, payroll_row.check_date, payroll_row.period_end
+                ) IS NULL
+       ) undated_usage
+       CROSS JOIN LATERAL (
+         SELECT COALESCE(sum(allocation.allocation_hours), 0) AS scheduled_hours
+           FROM scheduled_allocations allocation
+           JOIN scheduled_sessions scheduled_session
+             ON scheduled_session.id = allocation.scheduled_session_id
+          WHERE allocation.individual_id = effective.individual_id
+            AND scheduled_session.program_id = effective.program_id
+            AND scheduled_session.status = 'pending'
+            AND scheduled_session.matched_transaction_id IS NULL
+            AND scheduled_session.session_date BETWEEN effective.start_date AND effective.end_date
+       ) schedule
+      WHERE ${where.join(" AND ")}${directScope}
+      ORDER BY effective.end_date, individual_name, program.name, effective.period_id`,
+    params,
+  );
+  return rows.map(toProgramBudget);
 }
 
 export async function listProgramBudgets(
@@ -262,6 +436,7 @@ export async function listProgramBudgetMonthlyHistory(
   asOf: Date = new Date(),
 ): Promise<ProgramBudgetMonthRecord[]> {
   if (!UUID.test(budgetPeriodId) || !UUID.test(programId)) return [];
+  const today = agencyDate(asOf);
   const { rows } = await pool.query<ProgramBudgetMonthRow>(
     `WITH account AS (
        SELECT balance.budget_period_id, balance.individual_id, balance.program_id,
@@ -269,6 +444,18 @@ export async function listProgramBudgetMonthlyHistory(
               balance.internal_rate, balance.consumption_source, balance.rate_scope
          FROM program_budget_balances balance
         WHERE balance.budget_period_id = $1 AND balance.program_id = $2
+       UNION ALL
+       SELECT effective.period_id, effective.individual_id, effective.program_id,
+              effective.start_date, effective.end_date, effective.authorized_hours,
+              effective.internal_rate, program.consumption_source, program.rate_scope
+         FROM effective_budget_authorizations_at($3::date) effective
+         JOIN programs program ON program.id = effective.program_id
+        WHERE effective.period_id = $1 AND effective.program_id = $2
+          AND NOT EXISTS (
+            SELECT 1
+              FROM program_budget_balances balance
+             WHERE balance.budget_period_id = $1 AND balance.program_id = $2
+          )
      ), months AS (
        SELECT month_start::date AS month_start,
               greatest(month_start::date, account.start_date) AS effective_start,
@@ -338,10 +525,9 @@ export async function listProgramBudgetMonthlyHistory(
        LEFT JOIN events ON events.month_start = months.month_start
        LEFT JOIN schedule ON schedule.month_start = months.month_start
       ORDER BY months.month_start`,
-    [budgetPeriodId, programId],
+    [budgetPeriodId, programId, today],
   );
 
-  const today = agencyDate(asOf);
   let cumulativeUsed = dec(0);
   let cumulativeScheduled = dec(0);
   return rows.map((row) => {

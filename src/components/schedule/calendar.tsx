@@ -690,7 +690,9 @@ function UtilizationStrip({ summary, loading }: { summary: ScheduleUtilizationSu
         </p>
       </div>
 
-      {summary.programs.length > 1 ? <AuthorizationPaceRows programs={summary.programs} /> : null}
+      {summary.programs.length > 1 || summary.programs.some((program) => program.sourceAmbiguous)
+        ? <AuthorizationPaceRows programs={summary.programs} />
+        : null}
     </div>
   );
 }
@@ -709,6 +711,11 @@ function AuthorizationPaceRows({ programs }: { programs: ScheduleUtilizationProg
                 {program.authorizationAmbiguous ? (
                   <span className="text-[11px] font-semibold" style={{ color: "var(--color-pace-near)" }}>Overlapping authorization</span>
                 ) : null}
+                {program.sourceAmbiguous ? (
+                  <span className="text-[11px] font-semibold" style={{ color: "var(--color-pace-near)" }}>
+                    {program.sourceCandidateCount} source plans; primary shown
+                  </span>
+                ) : null}
                 <UtilizationBadge status={program.status} />
               </div>
               <p className="mt-1 break-words text-[11px] text-[var(--color-ink-faint)]">
@@ -718,6 +725,11 @@ function AuthorizationPaceRows({ programs }: { programs: ScheduleUtilizationProg
                 {formatHours(program.usedHours)} used · {formatHours(program.scheduledHours)} scheduled · {formatHours(program.authorizedHours ?? "0")} authorized
                 {program.requiredWeeklyHours !== null ? ` · ${formatHours(program.requiredWeeklyHours)} h/week still needed` : ""}
               </p>
+              {program.sourceAmbiguous ? (
+                <p className="mt-1 text-[11px] font-medium" style={{ color: "var(--color-pace-near)" }}>
+                  Multiple active plans list this program. Only the primary plan is counted; their hours are not added together.
+                </p>
+              ) : null}
             </div>
             <div className="min-w-0">
               <div className="mb-1 flex items-center justify-between gap-2 text-xs">

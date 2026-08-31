@@ -69,6 +69,8 @@ describe("series authorization projection", () => {
           seriesHours: "5.0000",
           remainingAfterHours: "70.0000",
           calculationSafe: true,
+          sourceCandidateCount: 1,
+          sourceAmbiguous: false,
         },
         {
           periodId: SECOND_PERIOD_ID,
@@ -82,6 +84,8 @@ describe("series authorization projection", () => {
           seriesHours: "5.0000",
           remainingAfterHours: "95.0000",
           calculationSafe: true,
+          sourceCandidateCount: 1,
+          sourceAmbiguous: false,
         },
       ],
       uncoveredOccurrenceCount: 0,
@@ -167,5 +171,43 @@ describe("series authorization projection", () => {
       { id: FIRST_PERIOD_ID, visits: 1, hours: "2.0000", remaining: null, safe: false },
       { id: SECOND_PERIOD_ID, visits: 1, hours: "2.0000", remaining: null, safe: false },
     ]);
+  });
+
+  it("shows duplicate source plans while counting only the selected primary plan", async () => {
+    const query = vi.fn(async (sql: string) => sql.includes("FROM individuals")
+      ? { rows: personRows }
+      : {
+        rows: [{
+          individual_id: INDIVIDUAL_ID,
+          period_id: FIRST_PERIOD_ID,
+          period_label: "Primary plan",
+          start_date: "2026-01-01",
+          end_date: "2026-12-31",
+          authorized_hours: "100",
+          actual_hours: "20",
+          scheduled_hours: "5",
+          source_candidate_count: 3,
+        }],
+      });
+    const pool = { query } as unknown as PgLikePool;
+
+    const result = await projectSeriesAuthorization(pool, {
+      programId: PROGRAM_ID,
+      individualIds: [INDIVIDUAL_ID],
+      occurrenceDates: ["2026-06-01"],
+      durationHours: "2",
+    });
+
+    expect(result.individuals[0]).toMatchObject({
+      ambiguousOccurrenceCount: 0,
+      projectionSafe: false,
+      periods: [{
+        authorizedHours: "100.0000",
+        remainingAfterHours: "73.0000",
+        sourceCandidateCount: 3,
+        sourceAmbiguous: true,
+      }],
+    });
+    expect(query.mock.calls.map(([sql]) => sql).join("\n")).toContain("ea.source_candidate_count");
   });
 });

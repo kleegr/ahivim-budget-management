@@ -32,12 +32,24 @@ export default function ProgramBudgetFields({
   programs,
   showInternalRate,
   showAgencyRate,
+  defaultProgramId,
+  defaultLabel,
+  defaultRenewalDate,
+  defaultAuthorizedHours,
 }: {
   programs: ProgramBudgetOption[];
   showInternalRate: boolean;
   showAgencyRate: boolean;
+  defaultProgramId?: string;
+  defaultLabel?: string;
+  defaultRenewalDate?: string;
+  defaultAuthorizedHours?: string;
 }) {
-  const [programId, setProgramId] = useState(programs[0]?.id ?? "");
+  const [programId, setProgramId] = useState(
+    programs.some((program) => program.id === defaultProgramId)
+      ? defaultProgramId!
+      : programs[0]?.id ?? "",
+  );
   const selected = programs.find((program) => program.id === programId) ?? programs[0];
   const needsHours = selected?.requiredAuthType === "hours" || selected?.requiredAuthType === "both";
   const needsDollars = selected?.requiredAuthType === "dollars" || selected?.requiredAuthType === "both";
@@ -61,13 +73,13 @@ export default function ProgramBudgetFields({
         </select>
       </label>
 
-      <Field label="Period label" name="label" placeholder="Annual authorization" />
+      <Field label="Period label" name="label" placeholder="Annual authorization" defaultValue={defaultLabel} />
       <input type="hidden" name="periodType" value="rolling" />
-      <Field label="Renewal date" name="renewalDate" type="date" required />
+      <Field label="Renewal date" name="renewalDate" type="date" defaultValue={defaultRenewalDate} required />
 
       <div className={`grid gap-3 ${needsHours && needsDollars ? "sm:grid-cols-2" : ""}`}>
         {needsHours ? (
-          <Field label="Authorized hours" name="authorizedHours" type="number" required />
+          <Field label="Authorized hours" name="authorizedHours" type="number" defaultValue={defaultAuthorizedHours} required />
         ) : (
           <input type="hidden" name="authorizedHours" value="0" />
         )}

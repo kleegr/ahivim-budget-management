@@ -51,6 +51,8 @@ export interface PlanningCoverageRow {
   eligibleEmployeeCount: number;
   eligibleEmployeeIds: string[];
   nextScheduledDate: string | null;
+  sourceCandidateCount: number;
+  sourceAmbiguous: boolean;
 }
 
 export type PlanningSeriesIssue =
@@ -437,24 +439,25 @@ export async function getPlanningWorkspace(
       program_id: string; program_code: string; program_name: string; period_label: string;
       start_date: string; end_date: string; authorized_hours: string; actual_hours: string;
       scheduled_hours: string; eligible_employee_count: string; eligible_employee_ids: string[] | null;
-      next_scheduled_date: string | null;
+      next_scheduled_date: string | null; source_candidate_count: number | string;
     }>(
       `WITH current_auth AS (
          SELECT ea.authorization_id, ea.individual_id, ea.program_id,
                 ea.authorized_hours, ea.period_label,
-                ea.start_date, ea.end_date, ea.internal_rate
+                ea.start_date, ea.end_date, ea.internal_rate,
+                ea.source_candidate_count
          FROM effective_budget_authorizations_at($1::date) ea
          JOIN individuals i ON i.id = ea.individual_id
          JOIN programs p ON p.id = ea.program_id
          WHERE i.status = 'active' AND p.is_active = true
            AND ($2::uuid[] IS NULL OR ea.individual_id = ANY($2::uuid[]))
-           AND ($4::boolean IS NOT TRUE OR (
-             p.required_auth_type <> 'dollars' AND p.consumption_source IN ('payroll', 'mixed')
-           ))
+           AND p.required_auth_type <> 'dollars'
+           AND ($4::boolean IS NOT TRUE OR p.consumption_source IN ('payroll', 'mixed'))
        )
        SELECT ca.authorization_id, ca.individual_id, i.display_name AS individual_name,
               ca.program_id, p.code AS program_code, p.name AS program_name,
               ca.period_label, ca.start_date::text AS start_date, ca.end_date::text AS end_date,
+              ca.source_candidate_count,
               ca.authorized_hours::text AS authorized_hours,
               effective_billed_hours(
                 ca.individual_id, ca.program_id, ca.start_date, ca.end_date, ca.internal_rate
@@ -800,9 +803,8 @@ export async function getPlanningWorkspace(
          JOIN programs p ON p.id = ea.program_id
          WHERE i.status = 'active' AND p.is_active = true
            AND ($2::uuid[] IS NULL OR ea.individual_id = ANY($2::uuid[]))
-           AND ($4::boolean IS NOT TRUE OR (
-             p.required_auth_type <> 'dollars' AND p.consumption_source IN ('payroll', 'mixed')
-           ))
+           AND p.required_auth_type <> 'dollars'
+           AND ($4::boolean IS NOT TRUE OR p.consumption_source IN ('payroll', 'mixed'))
            AND ($5::uuid[] IS NULL OR EXISTS (
              SELECT 1 FROM agency_individuals ai
              WHERE ai.agency_id = ANY($5::uuid[])
@@ -1066,6 +1068,8 @@ export async function getPlanningWorkspace(
       eligibleEmployeeCount: Number(row.eligible_employee_count),
       eligibleEmployeeIds: row.eligible_employee_ids ?? [],
       nextScheduledDate: row.next_scheduled_date,
+      sourceCandidateCount: Number(row.source_candidate_count ?? 1),
+      sourceAmbiguous: Number(row.source_candidate_count ?? 1) > 1,
     };
   }).sort((a, b) =>
     Number(a.eligibleEmployeeCount > 0) - Number(b.eligibleEmployeeCount > 0)

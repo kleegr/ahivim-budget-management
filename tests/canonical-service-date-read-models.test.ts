@@ -15,7 +15,7 @@ import {
   groupActivityReport,
   utilizationOutliersReport,
 } from "@/lib/data/report-queries";
-import { individualProgramForecast } from "@/lib/data/schedule-queries";
+import { individualProgramForecast, listSessionWarningFlags } from "@/lib/data/schedule-queries";
 import type { PgLikePool } from "@/lib/import/commit";
 
 const EMPLOYEE_ID = "00000000-0000-4000-8000-000000000001";
@@ -28,20 +28,15 @@ describe("canonical service-date read models", () => {
     const pool = {
       query: vi.fn(async (query: string) => {
         sql.push(query);
-        if (query.includes("WITH util AS")) {
+        if (query.includes("AS transaction_rows")) {
           return { rows: [{
-            near_exhaustion: "0",
-            underutilizing: "0",
             agency_additional: "0",
             agency_additional_rows: "0",
             employee_payable: "0",
             employee_payable_rows: "0",
             transaction_rows: "0",
-            expiring_auth: "0",
             unbilled_schedules: "0",
             unscheduled_billing: "0",
-            missing_rates: "0",
-            missing_assignments: "0",
           }] };
         }
         return { rows: [] };
@@ -57,22 +52,20 @@ describe("canonical service-date read models", () => {
     await dashboardReportMetrics(pool);
 
     const utilization = sql.find((query) => query.includes("AS scheduled_hours"));
-    expect(utilization).toContain("FROM program_budget_balances balance");
+    expect(utilization).toContain("effective_budget_authorizations_at($1::date)");
+    expect(utilization).toContain("LEFT JOIN program_budget_balances explicit_balance");
     expect(utilization).toContain(
-      "scs.session_date BETWEEN balance.start_date AND balance.end_date",
+      "scheduled_session.session_date BETWEEN effective.start_date AND effective.end_date",
     );
     expect(utilization).not.toContain("FROM service_allocations");
 
-    const outliers = sql.find((query) => query.includes("THEN 'underutilizing'"));
-    expect(outliers).toContain("FROM program_budget_balances balance");
-    expect(outliers).not.toContain("FROM service_allocations");
+    const currentBudgetReads = sql.filter((query) =>
+      query.includes("effective_budget_authorizations_at($1::date)"),
+    );
+    expect(currentBudgetReads.length).toBeGreaterThanOrEqual(4);
+    expect(sql.join("\n")).not.toContain("FROM program_budget_balances balance");
 
-    const expiring = sql.find((query) => query.includes("AS days_remaining"));
-    expect(expiring).toContain("FROM program_budget_balances balance");
-    expect(expiring).not.toContain("FROM service_allocations");
-
-    const metrics = sql.find((query) => query.includes("WITH util AS"));
-    expect(metrics).toContain("FROM program_budget_balances balance");
+    const metrics = sql.find((query) => query.includes("AS transaction_rows"));
     expect(metrics).not.toContain("FROM service_allocations");
 
     const earnings = sql.find((query) => query.includes("AS agency_gross"));
@@ -150,33 +143,93 @@ describe("canonical service-date read models", () => {
     expect(readiness).not.toContain("t.created_at::date");
   });
 
-  it("uses the same date for implicit planner hours and amount windows", async () => {
+  it("uses canonical usage for both explicit and fallback planner authorizations", async () => {
+    for (const isExplicit of [true, false]) {
+      const sql: string[] = [];
+      const pool = {
+        query: vi.fn(async (query: string) => {
+          sql.push(query);
+          if (query.includes("effective_budget_authorizations_at")) {
+            return {
+              rows: [{
+                authorization_id: "00000000-0000-4000-8000-000000000004",
+                period_id: "00000000-0000-4000-8000-000000000005",
+                period_label: "2026",
+                program_id: PROGRAM_ID,
+                program_code: "COMHAB",
+                program_name: "Community Habilitation",
+                start_date: "2026-01-01",
+                end_date: "2026-12-31",
+                authorized_hours: "100",
+                internal_rate: "21",
+                is_explicit: isExplicit,
+                source_candidate_count: 1,
+              }],
+            };
+          }
+          return { rows: [{ h: "0", amt: "0" }] };
+        }),
+      } as unknown as PgLikePool;
+
+      await individualProgramForecast(
+        pool,
+        INDIVIDUAL_ID,
+        PROGRAM_ID,
+        null,
+        "2026-08-01",
+      );
+
+      const actual = sql.find((query) => query.includes("effective_billed_hours"));
+      expect(actual).toContain(
+        "canonical_service_date(t.period_begin, t.check_date, t.period_end)",
+      );
+      expect(actual).not.toContain("FROM service_allocations");
+      expect(actual).not.toContain("AND t.period_begin BETWEEN");
+    }
+  });
+
+  it("uses canonical budget usage for live calendar risk flags", async () => {
     const sql: string[] = [];
     const pool = {
       query: vi.fn(async (query: string) => {
         sql.push(query);
+        return { rows: [] };
+      }),
+    } as unknown as PgLikePool;
+
+    await listSessionWarningFlags(pool, { from: "2026-08-01", to: "2026-08-31" });
+
+    expect(sql[0]).toContain("effective_billed_hours(");
+    expect(sql[0]).not.toContain("FROM service_allocations actual_a");
+    expect(sql[0]).not.toContain("WHEN EXISTS (\n                              SELECT 1 FROM budget_authorizations");
+  });
+
+  it("keeps one primary plan total while exposing duplicate authorization sources", async () => {
+    const queries: string[] = [];
+    const pool = {
+      query: vi.fn(async (query: string) => {
+        queries.push(query);
         if (query.includes("effective_budget_authorizations_at")) {
-          return {
-            rows: [{
-              authorization_id: "00000000-0000-4000-8000-000000000004",
-              period_id: "00000000-0000-4000-8000-000000000005",
-              period_label: "2026",
-              program_id: PROGRAM_ID,
-              program_code: "COMHAB",
-              program_name: "Community Habilitation",
-              start_date: "2026-01-01",
-              end_date: "2026-12-31",
-              authorized_hours: "100",
-              internal_rate: "21",
-              is_explicit: false,
-            }],
-          };
+          return { rows: [{
+            authorization_id: "00000000-0000-4000-8000-000000000004",
+            period_id: "00000000-0000-4000-8000-000000000005",
+            period_label: "Primary",
+            program_id: PROGRAM_ID,
+            program_code: "COMHAB",
+            program_name: "Community Habilitation",
+            start_date: "2026-01-01",
+            end_date: "2026-12-31",
+            authorized_hours: "40",
+            internal_rate: "21",
+            is_explicit: false,
+            source_candidate_count: 2,
+          }] };
         }
         return { rows: [{ h: "0", amt: "0" }] };
       }),
     } as unknown as PgLikePool;
 
-    await individualProgramForecast(
+    const forecast = await individualProgramForecast(
       pool,
       INDIVIDUAL_ID,
       PROGRAM_ID,
@@ -184,11 +237,14 @@ describe("canonical service-date read models", () => {
       "2026-08-01",
     );
 
-    const actual = sql.find((query) => query.includes("effective_billed_hours"));
-    expect(actual).toContain(
-      "canonical_service_date(t.period_begin, t.check_date, t.period_end)",
-    );
-    expect(actual).not.toContain("AND t.period_begin BETWEEN");
+    expect(forecast).toMatchObject({
+      authorizedHours: "40.0000",
+      authorizationCount: 1,
+      authorizationAmbiguous: false,
+      sourceCandidateCount: 2,
+      sourceAmbiguous: true,
+    });
+    expect(queries[0]).toContain("ea.source_candidate_count");
   });
 
   it("uses the canonical date and routing in the financial budget window", async () => {

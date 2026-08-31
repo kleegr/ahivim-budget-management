@@ -394,6 +394,11 @@ export default function CreateSessionModal({
                 {preview.forecast.map((f) => (
                   <div key={f.individualId} className="text-xs">
                     <p className="font-medium">{f.individualName}</p>
+                    {f.sourceAmbiguous ? (
+                      <p className="mt-1 font-medium text-[var(--color-pace-near)]">
+                        {f.sourceCandidateCount} active plans list this program. The primary plan is shown; their hours are not added together.
+                      </p>
+                    ) : null}
                     {f.authorizationAmbiguous ? (
                       <p className="mt-1 text-[var(--color-ink-soft)]">
                         {f.authorizationCount} overlapping authorizations need review. Combined remaining hours are hidden.
@@ -466,6 +471,11 @@ function SeriesAuthorizationForecast({ projection }: { projection: SeriesAuthori
                   </dl>
                   {!period.calculationSafe ? (
                     <p className="mt-1 text-[var(--color-pace-over)]">Overlapping authorization dates</p>
+                  ) : null}
+                  {period.sourceAmbiguous ? (
+                    <p className="mt-1 font-medium text-[var(--color-pace-near)]">
+                      {period.sourceCandidateCount} active plans list this program. The primary plan is shown; their hours are not added together.
+                    </p>
                   ) : null}
                 </div>
               );
@@ -687,6 +697,15 @@ export function SchedulePreflightSummary({
 
   const seriesAuthorizationWarnings: string[] = [];
   for (const individual of preview.seriesAuthorization?.individuals ?? []) {
+    const sourceAmbiguousPeriods = individual.periods.filter((period) => period.sourceAmbiguous);
+    if (sourceAmbiguousPeriods.length > 0) {
+      const sourceCandidateCount = Math.max(
+        ...sourceAmbiguousPeriods.map((period) => period.sourceCandidateCount),
+      );
+      seriesAuthorizationWarnings.push(
+        `${individual.individualName} has ${sourceCandidateCount} active plans for this program. The primary plan is used and their hours are not added together.`,
+      );
+    }
     if (individual.uncoveredOccurrenceCount > 0) {
       seriesAuthorizationWarnings.push(
         `${individual.individualName} has ${individual.uncoveredOccurrenceCount} visit${individual.uncoveredOccurrenceCount === 1 ? "" : "s"} without an authorization.`,

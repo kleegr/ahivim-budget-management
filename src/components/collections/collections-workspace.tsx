@@ -254,6 +254,7 @@ export default function CollectionsWorkspace({
   data,
   canManage,
   canManageEmployeeDeals,
+  canManageFinancialPlans,
   canRepairImports,
   initialView = "summary",
   initialCheckDraft = null,
@@ -261,6 +262,7 @@ export default function CollectionsWorkspace({
   data: CollectionsWorkspaceData;
   canManage: boolean;
   canManageEmployeeDeals: boolean;
+  canManageFinancialPlans: boolean;
   canRepairImports: boolean;
   initialView?: View;
   initialCheckDraft?: PayrollCheckDraft | null;
@@ -278,6 +280,10 @@ export default function CollectionsWorkspace({
   const canManageTargets = canManage && data.visibility.canSeeTargetMoney;
   const canManageChecks = canManage && data.visibility.canSeeCheckNet && data.visibility.canSeeTaxes;
   const checksToReview = data.payrollChecks.filter((check) => check.verificationStatus === "unverified");
+  const missingRenewalPlans = data.individualSetAsides.reduce(
+    (total, row) => total + row.missingRenewalPlans,
+    0,
+  );
   const targetGrid = data.visibility.canSeeTargetMoney && data.visibility.canSeeTargetHours
     ? "sm:grid-cols-[minmax(10rem,1fr)_repeat(3,minmax(7rem,auto))_auto]"
     : "sm:grid-cols-[minmax(10rem,1fr)_repeat(2,minmax(7rem,auto))_auto]";
@@ -397,13 +403,18 @@ export default function CollectionsWorkspace({
           {checksToReview.length.toLocaleString()} imported {checksToReview.length === 1 ? "check needs" : "checks need"} confirmation. No employee collection is created until the whole-check net is verified.
         </Notice>
       ) : null}
+      {missingRenewalPlans > 0 ? (
+        <Notice tone="warning" title="Renewal dates needed">
+          {missingRenewalPlans.toLocaleString()} approved monthly {missingRenewalPlans === 1 ? "setup is" : "setups are"} included in the plan total but cannot be recorded yet. {canManageFinancialPlans ? "Use the renewal link beside each affected individual." : "Ask an owner or manager to add the renewal date."}
+        </Notice>
+      ) : null}
       <div className="overflow-x-auto border-y border-[var(--color-rule-strong)] bg-[var(--color-surface)]">
         <div className="grid min-w-[760px] grid-cols-5">
           <SummaryMetric label="Give-backs from checks" value={data.summary.dueFromChecks} />
           <SummaryMetric label="Collected this month" value={data.summary.collectedThisMonth} tone="good" />
           <SummaryMetric label="Employee balance" value={data.summary.remainingReceivable} tone="warn" />
-          <SummaryMetric label="Set-aside plan" value={data.summary.plannedSetAside} />
-          <SummaryMetric label="Set aside this month" value={data.summary.setAsideThisMonth} tone="good" />
+          <SummaryMetric label="Approved monthly set-aside" value={data.summary.approvedMonthlySetAside} />
+          <SummaryMetric label="Recorded this month" value={data.summary.setAsideThisMonth} tone="good" />
         </div>
       </div>
 
@@ -432,9 +443,60 @@ export default function CollectionsWorkspace({
               <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-sm"><thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]"><tr><th className="px-4 py-2.5 text-left">Employee</th><th className="px-3 py-2.5 text-right">Due</th><th className="px-3 py-2.5 text-right">Collected</th><th className="px-3 py-2.5 text-right">Remaining</th><th className="px-3 py-2.5 text-right">Credit</th><th className="px-3 py-2.5 text-right">Action</th></tr></thead><tbody className="divide-y divide-[var(--color-rule)]">{data.employeeCollections.map((row) => <tr key={row.employeeId}><td className="px-4 py-3"><p className="font-medium">{row.employeeName}</p><Link className="text-xs font-medium text-[var(--color-primary)] hover:underline" href={`/employees/${row.employeeId}?view=deal`}>{canManageEmployeeDeals ? "View or change deal" : "View deal"}</Link>{!canManageEmployeeDeals ? <span className="ml-1 text-xs text-[var(--color-ink-faint)]">(manager changes)</span> : null}</td><td className="tnum px-3 py-3 text-right">{formatMoney(row.dueFromChecks)}</td><td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.collectedThisMonth)}</td><td className="tnum px-3 py-3 text-right font-semibold">{formatMoney(row.remainingReceivable)}</td><td className="tnum px-3 py-3 text-right">{formatMoney(row.availableCredit)}</td><td className="px-3 py-3 text-right"><Link className="btn btn-sm btn-ghost whitespace-nowrap" href={`/settlements?employeeId=${row.employeeId}&queue=receivable`}>Record collection</Link></td></tr>)}</tbody></table></div>
             )}
           </Card>
-          <Card title="Individual set-asides" description={`Month-end position for ${data.month}, using each individual's plan active on the final calendar day.`}>
+          <Card title="Individual set-asides" description={`Approved monthly amounts use every active setup. Recorded and remaining amounts show the ledger position for ${data.month}.`}>
             {data.individualSetAsides.length === 0 ? <EmptyState compact title="No individual set-aside activity" /> : (
-              <div className="overflow-x-auto"><table className="w-full min-w-[700px] text-sm"><thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]"><tr><th className="px-4 py-2.5 text-left">Individual</th><th className="px-3 py-2.5 text-right">Plan</th><th className="px-3 py-2.5 text-right">Set aside</th><th className="px-3 py-2.5 text-right">Remaining</th><th className="px-3 py-2.5 text-right">Action</th></tr></thead><tbody className="divide-y divide-[var(--color-rule)]">{data.individualSetAsides.map((row) => <tr key={row.individualId}><td className="px-4 py-3 font-medium">{row.individualName}</td><td className="tnum px-3 py-3 text-right">{formatMoney(row.plannedThisMonth)}</td><td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.setAsideThisMonth)}</td><td className="tnum px-3 py-3 text-right font-semibold">{formatMoney(row.remainingSetAside)}</td><td className="px-3 py-3"><div className="flex justify-end gap-1">{canManage ? <Link className="btn btn-sm btn-secondary whitespace-nowrap" href={`/settlements?individualId=${row.individualId}&queue=reserve`}>Record set-aside</Link> : null}<Link className="btn btn-sm btn-ghost whitespace-nowrap" href={`/masser/individuals/${row.individualId}?month=${data.month}`}>View statement</Link></div></td></tr>)}</tbody></table></div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[820px] text-sm">
+                  <thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]">
+                    <tr>
+                      <th className="px-4 py-2.5 text-left">Individual</th>
+                      <th className="px-3 py-2.5 text-right">Approved monthly</th>
+                      <th className="px-3 py-2.5 text-right">Recorded</th>
+                      <th className="px-3 py-2.5 text-right">Ledger remaining</th>
+                      <th className="px-3 py-2.5 text-left">Status</th>
+                      <th className="px-3 py-2.5 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--color-rule)]">
+                    {data.individualSetAsides.map((row) => {
+                      const noSetAsideDue = Number(row.approvedMonthlyPlan) === 0;
+                      const ledgerIncomplete = row.trackedPlans < row.activePlans;
+                      return (
+                        <tr key={row.individualId}>
+                          <td className="px-4 py-3">
+                            <p className="font-medium">{row.individualName}</p>
+                            <p className="text-xs text-[var(--color-ink-faint)]">
+                              {row.activePlans.toLocaleString()} approved {row.activePlans === 1 ? "setup" : "setups"}
+                            </p>
+                          </td>
+                          <td className="tnum px-3 py-3 text-right">{formatMoney(row.approvedMonthlyPlan)}</td>
+                          <td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.setAsideThisMonth)}</td>
+                          <td className="tnum px-3 py-3 text-right font-semibold">{formatMoney(row.remainingSetAside)}</td>
+                          <td className="px-3 py-3">
+                            {row.missingRenewalPlans > 0 ? (
+                              canManageFinancialPlans ? (
+                                <Link className="font-semibold text-[var(--color-warn)] underline" href={`/individuals/${row.individualId}?view=financial`}>
+                                  Add renewal date
+                                </Link>
+                              ) : <span className="font-semibold text-[var(--color-warn)]">Renewal date needed</span>
+                            ) : noSetAsideDue ? (
+                              <span className="text-[var(--color-ink-faint)]">No set-aside due</span>
+                            ) : ledgerIncomplete ? (
+                              <span className="font-semibold text-[var(--color-warn)]">Ledger not ready</span>
+                            ) : <span className="font-semibold text-[var(--color-success)]">Ready</span>}
+                          </td>
+                          <td className="px-3 py-3">
+                            <div className="flex justify-end gap-1">
+                              {canManage && row.trackedPlans > 0 ? <Link className="btn btn-sm btn-secondary whitespace-nowrap" href={`/settlements?individualId=${row.individualId}&queue=reserve`}>Record set-aside</Link> : null}
+                              <Link className="btn btn-sm btn-ghost whitespace-nowrap" href={`/masser/individuals/${row.individualId}?month=${data.month}`}>View statement</Link>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
           </Card>
         </div>

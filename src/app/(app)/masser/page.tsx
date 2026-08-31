@@ -29,6 +29,7 @@ export default async function MasserPage({
         data: null,
         canManage: false,
         canManageEmployeeDeals: false,
+        canManageFinancialPlans: false,
         canRepairImports: false,
       };
     }
@@ -38,6 +39,7 @@ export default async function MasserPage({
       data: await getCollectionsWorkspace(pool, scope, month),
       canManage: scope.canManageSettlements,
       canManageEmployeeDeals: user.role !== "viewer" && scope.canSeeEmployeeDeals,
+      canManageFinancialPlans: user.role !== "viewer" && scope.full && scope.canSeeBudgets,
       canRepairImports: scope.canManageSettlements
         && scope.allEmployees
         && scope.allIndividuals
@@ -83,6 +85,7 @@ export default async function MasserPage({
             data={result.data.data}
             canManage={result.data.canManage}
             canManageEmployeeDeals={result.data.canManageEmployeeDeals}
+            canManageFinancialPlans={result.data.canManageFinancialPlans}
             canRepairImports={result.data.canRepairImports}
             initialView={initialState?.view}
             initialCheckDraft={initialState?.checkDraft}

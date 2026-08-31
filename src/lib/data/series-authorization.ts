@@ -27,6 +27,8 @@ export interface SeriesAuthorizationPeriod {
   seriesHours: string;
   remainingAfterHours: string | null;
   calculationSafe: boolean;
+  sourceCandidateCount: number;
+  sourceAmbiguous: boolean;
 }
 
 export interface IndividualSeriesAuthorization {
@@ -60,6 +62,7 @@ interface AuthorizationRow {
   authorized_hours: string;
   actual_hours: string;
   scheduled_hours: string;
+  source_candidate_count: number | string;
 }
 
 /**
@@ -114,7 +117,8 @@ export async function projectSeriesAuthorization(
        SELECT DISTINCT unnest($3::date[]) AS occurrence_date
      ), effective_authorizations AS (
        SELECT DISTINCT ea.individual_id, ea.period_id, ea.period_label,
-              ea.start_date, ea.end_date, ea.authorized_hours, ea.internal_rate
+              ea.start_date, ea.end_date, ea.authorized_hours, ea.internal_rate,
+              ea.source_candidate_count
          FROM occurrence_dates dates
          CROSS JOIN LATERAL effective_budget_authorizations_at(dates.occurrence_date) ea
         WHERE ea.individual_id = ANY($1::uuid[])
@@ -123,6 +127,7 @@ export async function projectSeriesAuthorization(
      SELECT ea.individual_id, ea.period_id, ea.period_label,
             ea.start_date::text AS start_date, ea.end_date::text AS end_date,
             ea.authorized_hours::text AS authorized_hours,
+            ea.source_candidate_count,
             effective_billed_hours(
               ea.individual_id, $2::uuid, ea.start_date, ea.end_date, ea.internal_rate
             )::text AS actual_hours,
@@ -189,6 +194,7 @@ export async function projectSeriesAuthorization(
         const seriesOccurrenceCount = occurrenceCounts.get(row.period_id) ?? 0;
         const seriesHours = dec(durationHours).times(seriesOccurrenceCount);
         const calculationSafe = !unsafePeriodIds.has(row.period_id);
+        const sourceCandidateCount = Number(row.source_candidate_count ?? 1);
         const remaining = calculationSafe
           ? dec(row.authorized_hours)
             .minus(dec(row.actual_hours))
@@ -207,6 +213,8 @@ export async function projectSeriesAuthorization(
           seriesHours: toHours(seriesHours),
           remainingAfterHours: remaining === null ? null : toHours(remaining),
           calculationSafe,
+          sourceCandidateCount,
+          sourceAmbiguous: sourceCandidateCount > 1,
         };
       });
 
@@ -220,7 +228,7 @@ export async function projectSeriesAuthorization(
       ambiguousHours: toHours(dec(durationHours).times(ambiguousOccurrenceCount)),
       projectionSafe: uncoveredOccurrenceCount === 0
         && ambiguousOccurrenceCount === 0
-        && periods.every((period) => period.calculationSafe),
+        && periods.every((period) => period.calculationSafe && !period.sourceAmbiguous),
     };
   });
 

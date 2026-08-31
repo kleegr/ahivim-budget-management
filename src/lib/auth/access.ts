@@ -339,6 +339,20 @@ export function individualScopeClause(scope: AccessScope, column: string, params
   return ` AND ${column} = ANY($${params.length}::uuid[])`;
 }
 
+/**
+ * Sensitive person-owned records use direct grants only. Connected people may
+ * remain available for roster navigation without inheriting budget visibility.
+ */
+export function directIndividualScopeClause(
+  scope: AccessScope,
+  column: string,
+  params: unknown[],
+): string {
+  if (scope.full || scope.allIndividuals) return "";
+  params.push(scope.grantedIndividualIds);
+  return ` AND ${column} = ANY($${params.length}::uuid[])`;
+}
+
 /** As above, for an employee-id column, restricted to the visible employee set. */
 export function employeeScopeClause(scope: AccessScope, column: string, params: unknown[]): string {
   if (scope.full || scope.allEmployees) return "";
