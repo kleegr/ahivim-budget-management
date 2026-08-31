@@ -16,7 +16,7 @@ describe("document mobile width containment", () => {
   });
 
   it("contains wide editor tools, the PDF canvas, and thumbnails inside their own scrollers", () => {
-    expect(editor).toContain("max-w-full space-y-4 overflow-x-clip");
+    expect(editor).toContain("max-w-full space-y-4 overflow-x-hidden");
     expect(editor.match(/\[contain:inline-size\]/g)).toHaveLength(3);
     expect(editor).toMatch(/aria-label="PDF editing tools"/);
     expect(editor).toContain("overflow-auto overscroll-contain");

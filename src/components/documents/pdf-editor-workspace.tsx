@@ -1738,7 +1738,7 @@ export default function PdfEditorWorkspace({
       : "Image or scan";
 
   return (
-    <div className="min-w-0 max-w-full space-y-4 overflow-x-clip pb-16 lg:pb-0">
+    <div className="min-w-0 max-w-full space-y-4 overflow-x-hidden pb-16 lg:pb-0">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
           <Link href="/documents" className="eyebrow inline-flex items-center gap-1 hover:text-[var(--color-primary)]">
