@@ -571,7 +571,7 @@ export default function IndividualsList({
       </div>
 
       <div className="scroll-thin max-h-[62vh] overflow-auto rounded-md border border-[var(--color-rule-strong)]">
-        <table className="w-full border-collapse text-sm">
+        <table className="touch-table w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10">
             <tr>
               {grid.visibleColumns.map((column) => (

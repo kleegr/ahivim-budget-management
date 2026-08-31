@@ -374,7 +374,7 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
           <div className="px-5 py-10 text-center text-sm text-[var(--color-ink-soft)]">No syncs have run yet.</div>
         ) : (
           <div className="scroll-thin overflow-x-auto">
-            <table className="w-full border-collapse text-sm">
+            <table className="touch-table relative w-full border-collapse text-sm">
               <thead>
                 <tr className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-left">
                   <Th>Started</Th><Th>Trigger</Th><Th>Status</Th>

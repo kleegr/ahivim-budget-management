@@ -332,7 +332,7 @@ export function Table({
 }) {
   return (
     <div className="scroll-thin overflow-x-auto">
-      <table className="min-w-full border-collapse text-sm">
+      <table className="touch-table relative min-w-full border-collapse text-sm">
         {caption ? <caption className="sr-only">{caption}</caption> : null}
         <thead>
           <tr className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-left">{head}</tr>

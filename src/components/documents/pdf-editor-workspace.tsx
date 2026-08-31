@@ -1738,7 +1738,7 @@ export default function PdfEditorWorkspace({
       : "Image or scan";
 
   return (
-    <div className="space-y-4 pb-16 lg:pb-0">
+    <div className="min-w-0 max-w-full space-y-4 overflow-x-clip pb-16 lg:pb-0">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
           <Link href="/documents" className="eyebrow inline-flex items-center gap-1 hover:text-[var(--color-primary)]">
@@ -1843,9 +1843,9 @@ export default function PdfEditorWorkspace({
         </div>
       ) : null}
 
-      <section className="card overflow-hidden">
+      <section className="card min-w-0 max-w-full overflow-hidden">
         <div
-          className="scroll-thin flex min-h-14 touch-pan-x items-center gap-1 overflow-x-auto overscroll-x-contain border-b border-[var(--color-rule)] px-2 py-2 sm:px-3"
+          className="scroll-thin flex min-h-14 max-w-full touch-pan-x items-center gap-1 overflow-x-auto overscroll-x-contain border-b border-[var(--color-rule)] px-2 py-2 [contain:inline-size] sm:px-3"
           role="toolbar"
           aria-label="PDF editing tools"
         >
@@ -1971,7 +1971,7 @@ export default function PdfEditorWorkspace({
           </div>
         </div>
 
-        <div className="grid min-h-[42rem] min-w-0 grid-cols-1 lg:grid-cols-[19rem_minmax(0,1fr)_9rem]">
+        <div className="grid min-h-[42rem] min-w-0 max-w-full grid-cols-1 lg:grid-cols-[19rem_minmax(0,1fr)_9rem]">
           <aside
             aria-label="PDF inspector"
             className={`${mobileInspectorOpen ? "fixed" : "hidden"} inset-x-2 bottom-2 z-40 min-w-0 max-h-[58vh] overflow-hidden rounded-lg border border-[var(--color-rule-strong)] bg-white shadow-2xl lg:order-1 lg:static lg:inset-auto lg:z-auto lg:block lg:max-h-none lg:rounded-none lg:border-y-0 lg:border-l-0 lg:border-r lg:shadow-none`}
@@ -2519,7 +2519,7 @@ export default function PdfEditorWorkspace({
 
           <div
             ref={pageViewportRef}
-            className="scroll-thin min-w-0 overflow-auto bg-[var(--color-surface-strong)] p-3 sm:p-5 lg:order-2"
+            className="scroll-thin min-w-0 max-w-full overflow-auto overscroll-contain bg-[var(--color-surface-strong)] p-3 [contain:inline-size] sm:p-5 lg:order-2"
           >
             <div
               ref={pageSurfaceRef}
@@ -2800,7 +2800,7 @@ export default function PdfEditorWorkspace({
             </div>
           </div>
 
-          <aside className="scroll-thin flex gap-2 overflow-x-auto border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] p-2 lg:order-3 lg:block lg:space-y-3 lg:overflow-x-hidden lg:overflow-y-auto lg:border-b-0 lg:border-l">
+          <aside className="scroll-thin flex max-w-full gap-2 overflow-x-auto border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] p-2 [contain:inline-size] lg:order-3 lg:block lg:space-y-3 lg:overflow-x-hidden lg:overflow-y-auto lg:border-b-0 lg:border-l">
             {Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => (
               <button
                 key={page}

@@ -207,7 +207,7 @@ export default function DocumentLibrary() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="min-w-0 max-w-full space-y-5 overflow-x-clip">
       <header className="flex flex-wrap items-end justify-between gap-4 border-b border-[var(--color-rule)] pb-5">
         <div>
           <p className="eyebrow">Documents</p>
@@ -234,13 +234,13 @@ export default function DocumentLibrary() {
         <div className="rounded-md border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-4 py-3 text-sm text-[var(--color-danger)]" role="alert">{error}</div>
       ) : null}
 
-      <section aria-label="Document filters" className="flex flex-wrap items-center gap-3 border-b border-[var(--color-rule)] pb-4">
-        <div className="segmented-control grid grid-cols-3" role="group" aria-label="Document status">
+      <section aria-label="Document filters" className="flex min-w-0 flex-wrap items-center gap-3 border-b border-[var(--color-rule)] pb-4">
+        <div className="segmented-control scroll-thin grid w-full min-w-0 grid-cols-3 overflow-x-auto [&>button]:flex-1 sm:w-auto" role="group" aria-label="Document status">
           <button type="button" aria-pressed={status === "active"} onClick={() => setStatus("active")}>Documents{counts.active === null ? "" : ` ${counts.active}`}</button>
           <button type="button" aria-pressed={status === "uploading"} onClick={() => setStatus("uploading")}>Incomplete{counts.uploading === null ? "" : ` ${counts.uploading}`}</button>
           <button type="button" aria-pressed={status === "archived"} onClick={() => setStatus("archived")}>Archived{counts.archived === null ? "" : ` ${counts.archived}`}</button>
         </div>
-        <label className="relative min-w-56 flex-1 sm:max-w-sm">
+        <label className="relative w-full min-w-0 flex-1 sm:w-auto sm:min-w-56 sm:max-w-sm">
           <span className="sr-only">Search documents</span>
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-ink-faint)]" aria-hidden />
           <input className="input w-full" style={{ paddingLeft: "2.25rem" }} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search documents" />
@@ -264,8 +264,67 @@ export default function DocumentLibrary() {
             </div>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[54rem] border-collapse text-left text-sm">
+          <>
+            <ul className="divide-y divide-[var(--color-rule)] sm:hidden" data-document-mobile-list>
+              {documents.map((document) => (
+                <li key={document.id} className="relative py-4">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <button
+                      type="button"
+                      className="flex min-h-11 min-w-0 flex-1 items-start gap-3 text-left disabled:cursor-default"
+                      disabled={!document.currentVersionId}
+                      onClick={() => router.push(`/documents/pdf-editor?document=${document.id}`)}
+                    >
+                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-[var(--color-primary-tint)] text-[var(--color-primary)]"><FileText className="h-4 w-4" aria-hidden /></span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block break-words font-semibold text-[var(--color-ink)]">{document.title}</span>
+                        <span className="mt-0.5 block break-all text-xs text-[var(--color-ink-faint)]">{document.currentFilename ?? "PDF upload pending"}</span>
+                      </span>
+                    </button>
+                    <div className="relative shrink-0">
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-icon h-11 w-11"
+                        aria-label={`Actions for ${document.title}`}
+                        aria-expanded={menuId === document.id}
+                        aria-haspopup="menu"
+                        title="Document actions"
+                        onClick={() => setMenuId((current) => current === document.id ? null : document.id)}
+                      >
+                        <MoreHorizontal className="h-4 w-4" aria-hidden />
+                      </button>
+                      {menuId === document.id ? (
+                        <div className="absolute right-0 top-11 z-20 w-44 rounded-md border border-[var(--color-rule-strong)] bg-white p-1 text-left shadow-lg" role="menu">
+                          {document.currentVersionId ? <button type="button" role="menuitem" className="w-full rounded px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-muted)]" onClick={() => router.push(`/documents/pdf-editor?document=${document.id}`)}>Open editor</button> : null}
+                          {status === "archived" && !document.currentVersionId ? null : (
+                            <button type="button" role="menuitem" className="w-full rounded px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-muted)]" onClick={() => void setArchived(document, status !== "archived")}>{status === "archived" ? "Restore to library" : status === "uploading" ? "Archive incomplete upload" : "Archive"}</button>
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                  <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 pl-[3.25rem] text-xs">
+                    <div className="min-w-0">
+                      <dt className="text-[var(--color-ink-faint)]">Category</dt>
+                      <dd className="mt-0.5 truncate capitalize font-medium text-[var(--color-ink-soft)]">{document.category ?? "General"}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[var(--color-ink-faint)]">Version</dt>
+                      <dd className="tnum mt-0.5 font-semibold text-[var(--color-ink-soft)]">v{document.currentVersionNumber ?? 0}</dd>
+                    </div>
+                    <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[var(--color-ink-soft)]">
+                      <dt className="sr-only">Modified</dt>
+                      <dd className="flex min-w-0 items-center gap-1.5"><Clock3 className="h-3.5 w-3.5 shrink-0" aria-hidden /><span>{formatDate(document.updatedAt)}</span></dd>
+                      <dt className="sr-only">Size</dt>
+                      <dd className="tnum">{formatBytes(document.currentByteSize)}</dd>
+                    </div>
+                  </dl>
+                </li>
+              ))}
+            </ul>
+
+            <div className="scroll-thin hidden max-w-full overflow-x-auto sm:block" data-document-desktop-table>
+              <table className="w-full min-w-[54rem] border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-[var(--color-rule-strong)] text-xs font-semibold uppercase text-[var(--color-ink-faint)]">
                   <th className="px-3 py-2.5">Name</th>
@@ -311,8 +370,9 @@ export default function DocumentLibrary() {
                   </tr>
                 ))}
               </tbody>
-            </table>
-          </div>
+              </table>
+            </div>
+          </>
         )}
       </section>
     </div>

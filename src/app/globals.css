@@ -474,6 +474,22 @@ body {
   }
 }
 
+/* Dense data tables stay compact on desktop, but every table action gets a
+   full finger-sized target when the app switches to its mobile shell. */
+@media (max-width: 767px) {
+  .touch-table :where(a[href], button) {
+    min-height: 2.75rem;
+  }
+  .touch-table a[href] {
+    display: inline-flex;
+    align-items: center;
+  }
+  .touch-table a[href].block {
+    display: grid;
+    align-content: center;
+  }
+}
+
 :focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;

@@ -80,7 +80,7 @@ export default function PlanningEmployeesList({
       </div>
 
       <div className="scroll-thin max-h-[62vh] overflow-auto rounded-md border border-[var(--color-rule-strong)]">
-        <table className="w-full border-collapse text-sm">
+        <table className="touch-table w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10 bg-[var(--color-surface-strong)] text-left">
             <tr>
               <th className="border-b border-[var(--color-rule-strong)] px-3 py-2 font-semibold">Employee</th>
