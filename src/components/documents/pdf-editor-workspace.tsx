@@ -1954,9 +1954,9 @@ export default function PdfEditorWorkspace({
               <ChevronLeft className="h-[1.1rem] w-[1.1rem]" aria-hidden />
             </ToolButton>
             <label className="flex items-center gap-1 text-xs text-[var(--color-ink-soft)]">
-              <span className="sr-only">Current page</span>
               <input
                 type="number"
+                aria-label="Current page"
                 className="input tnum h-9 w-14 px-2 text-center"
                 min={1}
                 max={pageCount}

@@ -21,5 +21,7 @@ describe("document mobile width containment", () => {
     expect(editor).toMatch(/aria-label="PDF editing tools"/);
     expect(editor).toContain("overflow-auto overscroll-contain");
     expect(editor).toContain("overflow-x-auto border-b");
+    expect(editor).toContain('aria-label="Current page"');
+    expect(editor).not.toContain('<span className="sr-only">Current page</span>');
   });
 });

@@ -30,4 +30,10 @@ describe("mobile table usability", () => {
     expect(syncConsole).toContain('className="touch-table relative w-full');
     expect(syncConsole).toContain('<span className="sr-only">Open</span>');
   });
+
+  it("uses the shared touch-sized primary control for sync and settings actions", () => {
+    expect(syncConsole).toMatch(/onClick=\{syncNow\}[\s\S]{0,160}className="btn btn-primary"/);
+    expect(syncConsole).toMatch(/type="submit" disabled=\{busy !== null\} className="btn btn-primary"/);
+    expect(syncConsole.match(/className="btn btn-primary"/g)).toHaveLength(2);
+  });
 });

@@ -182,7 +182,7 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
               type="button"
               onClick={syncNow}
               disabled={busy !== null}
-              className="rounded bg-[var(--color-primary)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+              className="btn btn-primary"
             >
               {busy === "sync" ? "Updating..." : "Sync Google Sheet"}
             </button>
@@ -346,7 +346,7 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
           <Field label="Min minutes between runs" name="minIntervalMinutes" type="number" defaultValue={String(config.minIntervalMinutes)} disabled={!isAdmin} />
           {isAdmin ? (
             <div className="sm:col-span-2">
-              <button type="submit" disabled={busy !== null} className="rounded bg-[var(--color-primary)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60">
+              <button type="submit" disabled={busy !== null} className="btn btn-primary">
                 {busy === "config" ? "Saving…" : "Save settings"}
               </button>
             </div>
