@@ -10,6 +10,7 @@ import { evaluateRateException } from "@/lib/business/rate-exceptions";
 import { normalizePersonName } from "@/lib/business/name-matching";
 import { backfillPaymentAttribution } from "@/lib/manage/payment-attribution";
 import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
+import { syncImportedPayrollCheckReviews } from "@/lib/manage/direct-pay-operations";
 
 /**
  * IMPORT COMMIT
@@ -160,6 +161,11 @@ export async function commitStagedImport(
       await backfillPaymentAttribution(pool, { batchId: result.importBatchId }, input.committedByUserId);
     } catch {
       /* attribution is derived, re-runnable data; a failure must not fail the import */
+    }
+    try {
+      await syncImportedPayrollCheckReviews(pool, result.importBatchId, input.committedByUserId);
+    } catch {
+      /* imported check review items are derived and can be rebuilt safely */
     }
     return result;
   } catch (error) {

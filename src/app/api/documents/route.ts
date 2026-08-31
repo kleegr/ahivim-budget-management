@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { apiDocumentEditorUser } from "@/lib/auth/document-access";
 import { listDocuments, type DocumentStatus } from "@/lib/data/documents";
+import { hasDocumentStorage } from "@/lib/documents/document-storage";
 import { jsonError, readJson, redactError, resultResponse, sameOriginOrFail } from "@/lib/http";
 import { createDocument } from "@/lib/manage/documents";
 
@@ -32,6 +33,9 @@ export async function POST(request: NextRequest) {
   if (cross) return cross;
   const access = await apiDocumentEditorUser();
   if (!access) return jsonError("Document access required", 403);
+  if (!hasDocumentStorage()) {
+    return jsonError("Private document storage is not configured. Ask an administrator to connect document storage.", 503);
+  }
   const body = await readJson(request);
   try {
     return resultResponse(await createDocument(access.pool, {

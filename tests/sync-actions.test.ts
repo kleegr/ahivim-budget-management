@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   syncOutcomePresentation,
+  syncRoundTripOutcomePresentation,
   syncRunActions,
 } from "@/lib/nav/sync-actions";
 
@@ -32,6 +33,38 @@ describe("sync action destinations", () => {
       tone: "err",
       message: "The source sheet could not be reached. The run was recorded; review it below or try again.",
       action: { href: "/sync#sync-history", label: "Open recorded run" },
+    });
+  });
+
+  it("does not hide a failed payment-marker write-back behind a successful pull", () => {
+    expect(syncRoundTripOutcomePresentation({
+      summary: { status: "success", note: "3 new rows loaded." },
+      writeback: { status: "failed", error: "The Google Sheet write-back could not be completed." },
+    })).toEqual({
+      tone: "err",
+      message: "The Google Sheet write-back could not be completed. The latest Sheet information was still refreshed, and those payment changes remain pending.",
+      action: { href: "/sync#sync-settings", label: "Review sync setup" },
+    });
+  });
+
+  it("labels a successful pull-only refresh honestly", () => {
+    expect(syncRoundTripOutcomePresentation({
+      summary: { status: "no_changes", note: "The sheet is unchanged." },
+      writeback: { status: "not_configured" },
+    })).toMatchObject({
+      tone: "ok",
+      message: "The sheet is unchanged. Payment write-back is not configured, so this refresh was read only.",
+    });
+  });
+
+  it("reports partial matching and keeps the pending changes visible", () => {
+    expect(syncRoundTripOutcomePresentation({
+      summary: { status: "success", note: "Latest rows loaded." },
+      writeback: { status: "partial", skipped: 1 },
+    })).toEqual({
+      tone: "err",
+      message: "The latest Sheet information was refreshed, but 1 payment change was not matched safely. Those changes remain pending.",
+      action: { href: "/sync", label: "Open sync details" },
     });
   });
 });

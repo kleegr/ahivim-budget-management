@@ -1,8 +1,11 @@
 import type { PgLikePool } from "@/lib/import/commit";
 import { getPool } from "@/lib/db";
+import { setGlobalPortalRoleAssignmentQuery } from "@/lib/manage/portal-identities";
+import { fail, ok, type Result, type ResultCode } from "@/lib/manage/errors";
 import { hashPassword, verifyPassword } from "./crypto";
 import type { Role } from "./session";
 import type { VisibilityPermissions } from "./access";
+import type { AccountPresetId } from "./account-presets";
 
 /**
  * User records and the credential checks performed against them.
@@ -240,6 +243,78 @@ export type CreateUserOutcome =
   | { ok: true; user: UserRecord }
   | { ok: false; reason: "duplicate_email" | "too_short" | "invalid_role" | "invalid_email" };
 
+export interface PreparedUserInput {
+  email: string;
+  displayName: string;
+  passwordHash: string;
+  role: Role;
+}
+
+/**
+ * Create one already-validated user on the caller's database transaction.
+ *
+ * Preset provisioning also needs to create portal roles and subject bindings.
+ * Keeping this write transaction-aware lets all of those records commit or
+ * roll back together, while the public `createUser` API retains its existing
+ * self-contained transaction.
+ */
+export async function createUserWithAccessQuery(
+  queryable: Pick<PgLikePool, "query">,
+  input: PreparedUserInput,
+  access: UserAccessConfig,
+  actorId: string | null,
+): Promise<CreateUserOutcome> {
+  const trustedStaff = input.role !== "viewer";
+  const { rows } = await queryable.query<UserRow>(
+    `INSERT INTO users (
+       email, display_name, password_hash, role, access_scope,
+       can_see_transactions, can_see_money, can_see_hours, can_see_billed_amounts,
+       can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
+       can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements,
+       can_see_class_financials, can_manage_class_invoices, can_edit_documents, can_plan
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+     ON CONFLICT (email) DO NOTHING
+     RETURNING id, email, display_name, password_hash, role, is_active,
+               last_login_at::text AS last_login_at, created_at::text AS created_at`,
+    [
+      input.email,
+      input.displayName,
+      input.passwordHash,
+      input.role,
+      trustedStaff ? "full" : "scoped",
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      false,
+      false,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+      trustedStaff,
+    ],
+  );
+  if (!rows[0]) return { ok: false, reason: "duplicate_email" };
+
+  const accessCreated = await writeUserAccessConfigQuery(queryable, rows[0].id, access);
+  if (!accessCreated) throw new Error("New user disappeared while its access was being created.");
+  await writeAuditQuery(queryable, {
+    userId: actorId,
+    action: "user_created",
+    entityType: "user",
+    entityId: rows[0].id,
+    metadata: { email: input.email, role: input.role },
+  });
+  await writeUserAccessAuditQuery(queryable, rows[0].id, access, actorId);
+  return { ok: true, user: toUser(rows[0]) };
+}
+
 export async function createUser(
   pool: PgLikePool,
   input: { email: string; displayName: string; password: string; role: string },
@@ -253,63 +328,22 @@ export async function createUser(
   if (await findUserByEmail(pool, email)) return { ok: false, reason: "duplicate_email" };
 
   const passwordHash = await hashPassword(input.password);
-  const trustedStaff = input.role !== "viewer";
   const access = userAccessConfigFromInput(accessInput, input.role);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const { rows } = await client.query<UserRow>(
-      `INSERT INTO users (
-         email, display_name, password_hash, role, access_scope,
-         can_see_transactions, can_see_money, can_see_hours, can_see_billed_amounts,
-         can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
-         can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements,
-         can_see_class_financials, can_manage_class_invoices, can_edit_documents, can_plan
-       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
-       ON CONFLICT (email) DO NOTHING
-       RETURNING id, email, display_name, password_hash, role, is_active,
-                 last_login_at::text AS last_login_at, created_at::text AS created_at`,
-      [
-        email,
-        input.displayName.trim() || email,
-        passwordHash,
-        input.role,
-        trustedStaff ? "full" : "scoped",
-        trustedStaff,
-        trustedStaff,
-        trustedStaff,
-        trustedStaff,
-        trustedStaff,
-        trustedStaff,
-        trustedStaff,
-        trustedStaff,
-        trustedStaff,
-        false,
-        false,
-        trustedStaff,
-        trustedStaff,
-        trustedStaff,
-        trustedStaff,
-      ],
-    );
-    if (!rows[0]) {
+    const created = await createUserWithAccessQuery(client, {
+      email,
+      displayName: input.displayName.trim() || email,
+      passwordHash,
+      role: input.role,
+    }, access, actorId);
+    if (!created.ok) {
       await client.query("ROLLBACK");
-      return { ok: false, reason: "duplicate_email" };
+      return created;
     }
-
-    const accessCreated = await writeUserAccessConfigQuery(client, rows[0].id, access);
-    if (!accessCreated) throw new Error("New user disappeared while its access was being created.");
-    await writeAuditQuery(client, {
-      userId: actorId,
-      action: "user_created",
-      entityType: "user",
-      entityId: rows[0].id,
-      metadata: { email, role: input.role },
-    });
-    await writeUserAccessAuditQuery(client, rows[0].id, access, actorId);
     await client.query("COMMIT");
-    return { ok: true, user: toUser(rows[0]) };
+    return created;
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
     throw error;
@@ -455,6 +489,10 @@ export interface UserWithAccess extends UserRecord, VisibilityPermissions {
   canEditDocuments: boolean;
   individualCount: number;
   employeeCount: number;
+  /** Server-derived identity preset for owner and external portal accounts. */
+  accountPreset: AccountPresetId | null;
+  /** True when non-owner portal assignments must be managed in Portal administration. */
+  portalManaged: boolean;
 }
 
 interface VisibilityRow {
@@ -473,6 +511,44 @@ interface VisibilityRow {
   can_manage_class_invoices: boolean;
   can_edit_documents: boolean;
   can_plan: boolean;
+}
+
+interface PortalPresetRow {
+  global_portal_roles: string[];
+  agency_portal_roles: string[];
+  has_individual_relationship: boolean;
+  has_employee_relationship: boolean;
+}
+
+function accountPresetFromPortal(row: PortalPresetRow): AccountPresetId | null {
+  const globalRoles = new Set(row.global_portal_roles ?? []);
+  if (globalRoles.has("owner")) return "owner";
+
+  const presets = new Set<AccountPresetId>();
+  if (
+    row.has_individual_relationship
+    && (globalRoles.has("individual") || globalRoles.has("parent"))
+  ) presets.add("individual_parent");
+  if (row.has_employee_relationship && globalRoles.has("employee")) presets.add("employee");
+
+  const agencyRolePresets: Record<string, AccountPresetId> = {
+    agency: "agency",
+    scheduler: "agency_scheduler",
+    staffing_manager: "agency_staffing_manager",
+    collector: "agency_collector",
+  };
+  for (const role of row.agency_portal_roles ?? []) {
+    const preset = agencyRolePresets[role];
+    if (preset) presets.add(preset);
+  }
+  return presets.size === 1 ? [...presets][0]! : null;
+}
+
+function portalManagedFromPortal(row: PortalPresetRow): boolean {
+  return (row.global_portal_roles ?? []).some((role) => role !== "owner")
+    || (row.agency_portal_roles ?? []).length > 0
+    || row.has_individual_relationship
+    || row.has_employee_relationship;
 }
 
 function storedVisibility(row: VisibilityRow): VisibilityPermissions {
@@ -500,7 +576,7 @@ function storedVisibility(row: VisibilityRow): VisibilityPermissions {
 /** Users plus a summary of each one's access, for the admin console. */
 export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAccess[]> {
   const { rows } = await pool.query<
-    UserRow & VisibilityRow & {
+    UserRow & VisibilityRow & PortalPresetRow & {
       access_scope: string;
       see_all_individuals: boolean;
       see_all_employees: boolean;
@@ -518,7 +594,19 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
             u.can_manage_settlements,
             u.can_see_class_financials, u.can_manage_class_invoices, u.can_edit_documents, u.can_plan,
             (SELECT count(*) FROM user_individual_access a WHERE a.user_id = u.id)::int AS individual_count,
-            (SELECT count(*) FROM user_employee_access a WHERE a.user_id = u.id)::int AS employee_count
+            (SELECT count(*) FROM user_employee_access a WHERE a.user_id = u.id)::int AS employee_count,
+            ARRAY(SELECT role.portal_role
+                    FROM user_portal_roles role
+                   WHERE role.user_id = u.id AND role.is_active = true
+                   ORDER BY role.portal_role) AS global_portal_roles,
+            ARRAY(SELECT access.portal_role
+                    FROM user_agency_access access
+                   WHERE access.user_id = u.id AND access.is_active = true
+                   ORDER BY access.portal_role) AS agency_portal_roles,
+            EXISTS (SELECT 1 FROM user_individual_relationships rel
+                     WHERE rel.user_id = u.id AND rel.is_active = true) AS has_individual_relationship,
+            EXISTS (SELECT 1 FROM user_employee_relationships rel
+                     WHERE rel.user_id = u.id AND rel.is_active = true) AS has_employee_relationship
        FROM users u
       ORDER BY u.email`,
   );
@@ -535,6 +623,8 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
     ...storedVisibility(r),
     individualCount: Number(r.individual_count ?? 0),
     employeeCount: Number(r.employee_count ?? 0),
+    accountPreset: accountPresetFromPortal(r),
+    portalManaged: portalManagedFromPortal(r),
   }));
 }
 
@@ -727,6 +817,171 @@ async function writeUserAccessAuditQuery(
       employees: employeeIds.length,
     },
   });
+}
+
+export interface ManagedUserUpdateInput {
+  role?: Role;
+  access?: UserAccessConfig;
+  isActive?: boolean;
+  password?: string;
+}
+
+class ManagedUserUpdateAbort extends Error {
+  constructor(
+    readonly code: ResultCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function abortManagedUserUpdate<T>(result: Result<T>): T {
+  if (!result.ok) throw new ManagedUserUpdateAbort(result.code, result.message);
+  return result.data;
+}
+
+/**
+ * Apply an administrator's account edit as one transaction. Owner is a paired
+ * internal + portal role, so promotion and demotion always update both facts.
+ */
+export async function updateManagedUser(
+  pool: PgLikePool,
+  userId: string,
+  input: ManagedUserUpdateInput,
+  actorId: string,
+): Promise<Result<{ id: string }>> {
+  const hasPassword = typeof input.password === "string" && input.password.length > 0;
+  if (hasPassword && input.password!.length < MIN_PASSWORD_LENGTH) {
+    return fail("validation", `Choose a password of at least ${MIN_PASSWORD_LENGTH} characters.`);
+  }
+  const passwordHash = hasPassword ? await hashPassword(input.password!) : null;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const changesAuthority = input.role !== undefined || input.isActive !== undefined;
+    if (changesAuthority) {
+      // Serialize the last-administrator check with all competing user writes.
+      await client.query("LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE");
+    }
+    const target = await client.query<{ role: string; is_active: boolean }>(
+      `SELECT role, is_active FROM users WHERE id = $1 FOR UPDATE`,
+      [userId],
+    );
+    if (!target.rows[0]) {
+      throw new ManagedUserUpdateAbort("not_found", "That account no longer exists.");
+    }
+
+    const previousRole = isRole(target.rows[0].role) ? target.rows[0].role : "viewer";
+    const previousActive = target.rows[0].is_active;
+    const nextRole = input.role ?? previousRole;
+    const nextActive = input.isActive ?? previousActive;
+
+    if (previousRole === "admin" && previousActive && (nextRole !== "admin" || !nextActive)) {
+      const remaining = await client.query<{ active_admin_count: number | string }>(
+        `SELECT COUNT(*)::int AS active_admin_count
+           FROM users
+          WHERE role = 'admin' AND is_active = true AND id <> $1`,
+        [userId],
+      );
+      if (Number(remaining.rows[0]?.active_admin_count ?? 0) === 0) {
+        throw new ManagedUserUpdateAbort(
+          "conflict",
+          "This is the last enabled administrator. Promote another account first.",
+        );
+      }
+    }
+
+    const ownerAssignment = changesAuthority
+      ? await client.query<{ is_active: boolean }>(
+          `SELECT is_active
+             FROM user_portal_roles
+            WHERE user_id = $1 AND portal_role = 'owner'
+            FOR UPDATE`,
+          [userId],
+        )
+      : null;
+
+    let normalizedAccess: UserAccessConfig | undefined;
+    if (input.role !== undefined || input.access !== undefined) {
+      normalizedAccess = nextRole === "viewer"
+        ? normalizeAccessConfigForRole(input.access, nextRole)
+        : input.access
+          ? normalizeAccessConfigForRole(input.access, nextRole)
+          : undefined;
+    }
+
+    if (changesAuthority) {
+      const updated = await client.query(
+        `UPDATE users
+            SET role = $2, is_active = $3, updated_at = now()
+          WHERE id = $1`,
+        [userId, nextRole, nextActive],
+      );
+      if (!updated.rowCount) throw new Error("User disappeared while its account was being updated.");
+    }
+    if (normalizedAccess) {
+      const accessUpdated = await writeUserAccessConfigQuery(client, userId, normalizedAccess);
+      if (!accessUpdated) throw new Error("User disappeared while its access was being updated.");
+    }
+    if (passwordHash) {
+      const passwordUpdated = await client.query(
+        `UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1`,
+        [userId, passwordHash],
+      );
+      if (!passwordUpdated.rowCount) throw new Error("User disappeared while its password was being updated.");
+    }
+
+    const shouldSyncOwner = changesAuthority && (
+      previousRole === "admin"
+      || nextRole === "admin"
+      || Boolean(ownerAssignment?.rows[0])
+    );
+    if (shouldSyncOwner) {
+      abortManagedUserUpdate(await setGlobalPortalRoleAssignmentQuery(
+        client,
+        { userId, role: "owner", isActive: nextRole === "admin" && nextActive },
+        actorId,
+        null,
+      ));
+    }
+
+    if (input.role !== undefined) {
+      await writeAuditQuery(client, {
+        userId: actorId,
+        action: "user_role_changed",
+        entityType: "user",
+        entityId: userId,
+        metadata: { previousRole, role: nextRole },
+      });
+    }
+    if (input.isActive !== undefined) {
+      await writeAuditQuery(client, {
+        userId: actorId,
+        action: nextActive ? "user_enabled" : "user_disabled",
+        entityType: "user",
+        entityId: userId,
+      });
+    }
+    if (normalizedAccess) {
+      await writeUserAccessAuditQuery(client, userId, normalizedAccess, actorId);
+    }
+    if (passwordHash) {
+      await writeAuditQuery(client, {
+        userId: actorId,
+        action: "user_password_reset_by_admin",
+        entityType: "user",
+        entityId: userId,
+      });
+    }
+    await client.query("COMMIT");
+    return ok({ id: userId });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    if (error instanceof ManagedUserUpdateAbort) return fail(error.code, error.message);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

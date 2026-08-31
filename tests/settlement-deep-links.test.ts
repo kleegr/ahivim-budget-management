@@ -141,7 +141,7 @@ describe("Money operations deep links", () => {
       canSeeTransactions: true,
     })).toEqual({
       label: "Record verified check",
-      href: "/collections?view=checks&newCheck=1&employeeId=123e4567-e89b-12d3-a456-426614174000&checkNumber=9001&checkDate=2026-08-15&periodBegin=2026-08-01&periodEnd=2026-08-14&sourceTransactionId=123e4567-e89b-12d3-a456-426614174010&sourceTransactionId=123e4567-e89b-12d3-a456-426614174011&sourceTransactionId=123e4567-e89b-12d3-a456-426614174012",
+      href: "/masser?view=checks&newCheck=1&employeeId=123e4567-e89b-12d3-a456-426614174000&checkNumber=9001&checkDate=2026-08-15&periodBegin=2026-08-01&periodEnd=2026-08-14&sourceTransactionId=123e4567-e89b-12d3-a456-426614174010&sourceTransactionId=123e4567-e89b-12d3-a456-426614174011&sourceTransactionId=123e4567-e89b-12d3-a456-426614174012",
     });
 
     expect(settlementCheckIssueAction({ ...issue, issue: "missing_base" }, {

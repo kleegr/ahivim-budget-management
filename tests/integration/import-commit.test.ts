@@ -166,6 +166,17 @@ suite("Excel import workflow end to end (real PostgreSQL)", () => {
     expect(await countRows("rate_exceptions")).toBe(1);
     expect(await countRows("individuals")).toBe(5);
     expect(await countRows("employees")).toBe(3);
+
+    const { rows: importedChecks } = await testPool().query<{
+      verification_status: string; linked_rows: string;
+    }>(
+      `SELECT c.verification_status, count(t.id)::text AS linked_rows
+         FROM employee_payroll_checks c
+         LEFT JOIN payroll_transactions t ON t.payroll_check_id = c.id
+        WHERE c.source = 'import'
+        GROUP BY c.id, c.verification_status`,
+    );
+    expect(importedChecks).toEqual([{ verification_status: "unverified", linked_rows: "1" }]);
   }, 60_000);
 
   it("stores group hours once on the session and in full on each allocation", async () => {

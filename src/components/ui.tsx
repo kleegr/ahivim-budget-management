@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { formatMoney, formatHours, dec } from "@/lib/money";
+import { friendlyActionError } from "@/lib/nav/review-actions";
+import { ReloadButton } from "@/components/ui-client";
 
 /** Shared presentation pieces. Nothing here fetches or derives a figure. */
 
@@ -219,8 +221,23 @@ export function Notice({
   );
 }
 
-export function ErrorPanel({ title, children }: { title: string; children?: ReactNode }) {
-  return <Notice tone="error" title={title}>{children}</Notice>;
+export function ErrorPanel({
+  title,
+  children,
+  action,
+}: {
+  title: string;
+  children?: ReactNode;
+  action?: ReactNode;
+}) {
+  const detail = typeof children === "string"
+    ? friendlyActionError(children, "This page could not load. Try again.")
+    : children;
+  return (
+    <Notice tone="error" title={title} action={action ?? <ReloadButton />}>
+      {detail}
+    </Notice>
+  );
 }
 
 // Semantic → (background, text) using the soft tokens; every badge gets a dot.

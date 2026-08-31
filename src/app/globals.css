@@ -114,7 +114,7 @@ body {
   border: 1px solid transparent;
 }
 .btn:active {
-  transform: translateY(0.5px);
+  filter: brightness(0.94);
 }
 .btn:disabled {
   opacity: 0.5;
@@ -220,8 +220,13 @@ body {
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
-:where(button, a[href], [role="button"]) {
+:where(button:not(:disabled), a[href], [role="button"], summary) {
+  cursor: pointer;
   touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(11, 93, 86, 0.14);
+}
+:where(button:not(:disabled), a[href], [role="button"]):active {
+  opacity: 0.86;
 }
 .input-leading-icon {
   padding-left: 2.25rem;

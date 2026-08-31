@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AlertTriangle, CalendarDays, History, RefreshCcw } from "lucide-react";
 import { ActionButton, CreateButton, Field, TextAreaField } from "@/components/manage/client";
-import { StatusBadge } from "@/components/ui";
+import { ButtonLink, StatusBadge } from "@/components/ui";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import ProgramBudgetFields, { type ProgramBudgetOption } from "./program-budget-fields";
 
@@ -371,14 +371,18 @@ export default function ProgramBudgetWorkspace({
           <h2 className="text-base font-semibold text-[var(--color-ink)]">Service authorizations</h2>
           <p className="mt-1 text-sm text-[var(--color-ink-soft)]">Current and prior program periods, utilization, and renewal timing.</p>
         </div>
-        {canManage && programs.length > 0 ? (
-          <CreateButton
-            label="New authorization"
-            title="New program authorization"
-            endpoint="/api/program-budgets"
-            hidden={{ individualId }}
-            fields={<ProgramBudgetFields programs={programs} showInternalRate={showInternalRate} showAgencyRate={showAgencyRate} />}
-          />
+        {canManage ? (
+          programs.length > 0 ? (
+            <CreateButton
+              label="New authorization"
+              title="New program authorization"
+              endpoint="/api/program-budgets"
+              hidden={{ individualId }}
+              fields={<ProgramBudgetFields programs={programs} showInternalRate={showInternalRate} showAgencyRate={showAgencyRate} />}
+            />
+          ) : (
+            <ButtonLink href="/settings#programs" variant="primary">Add a program first</ButtonLink>
+          )
         ) : null}
       </div>
 
@@ -423,10 +427,10 @@ export default function ProgramBudgetWorkspace({
 
                   {budget.hasUndatedUsage ? (
                     <div
-                      className="mt-4 flex items-start gap-2 border-l-2 border-[var(--color-warning)] bg-[var(--color-surface-muted)] px-3 py-2 text-sm text-[var(--color-ink-soft)]"
+                      className="mt-4 flex items-start gap-2 border-l-2 border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-3 py-2 text-sm text-[var(--color-ink-soft)]"
                       role="status"
                     >
-                      <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-warning)]" />
+                      <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-warn)]" />
                       {budget.undatedUsageCount === null ? (
                         <p>Some imported usage needs a service date before it can count toward this authorization.</p>
                       ) : (

@@ -3,7 +3,10 @@ import fontkit from "@pdf-lib/fontkit";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PDFDocument, StandardFonts } from "pdf-lib";
-import { buildClassCoverSheetPdf } from "@/lib/documents/class-cover-sheet-pdf";
+import {
+  buildClassCoverSheetPdf,
+  CLASS_REIMBURSEMENT_ATTESTATION,
+} from "@/lib/documents/class-cover-sheet-pdf";
 import { buildClassInvoicePdf } from "@/lib/documents/class-invoice-pdf";
 import type { ClassInvoiceRecord } from "@/lib/data/class-invoices";
 import type { ClassReimbursementProfile } from "@/lib/data/class-reimbursement-profiles";
@@ -76,6 +79,12 @@ const profile: ClassReimbursementProfile = {
 };
 
 describe("class PDF generation", () => {
+  it("retains the complete reimbursement attestation from the supplied form", () => {
+    expect(CLASS_REIMBURSEMENT_ATTESTATION).toContain("items being purchased, or services being requested");
+    expect(CLASS_REIMBURSEMENT_ATTESTATION).toContain("provided exclusively for the participant");
+    expect(CLASS_REIMBURSEMENT_ATTESTATION).toContain("current Life Plan and budget");
+  });
+
   it("keeps a standard 22-line monthly invoice on one letter page", async () => {
     const pdf = await PDFDocument.load(await buildClassInvoicePdf(invoice()));
     expect(pdf.getPageCount()).toBe(1);

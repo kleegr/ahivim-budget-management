@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createUser, userAccessConfigFromInput } from "@/lib/auth/users";
-import { BUDGET_PLANNER_ACCESS } from "@/lib/auth/access-presets";
+import { BUDGET_PLANNER_ACCESS, STAFFING_MANAGER_ACCESS } from "@/lib/auth/access-presets";
 import type { PgLikePool } from "@/lib/import/commit";
 
 describe("new user access defaults", () => {
@@ -85,6 +85,20 @@ describe("new user access defaults", () => {
       canPlan: true,
       individualIds: ["individual-1"],
       employeeIds: ["employee-1"],
+    });
+  });
+
+  it("keeps the staffing manager on schedules and assignments without budgets or money", () => {
+    expect(STAFFING_MANAGER_ACCESS).toMatchObject({
+      accessScope: "scoped",
+      seeAllIndividuals: true,
+      seeAllEmployees: true,
+      canPlan: true,
+      canSeeHours: true,
+      canSeeBudgets: false,
+      canSeeTransactions: false,
+      canSeeMoney: false,
+      canSeeSettlements: false,
     });
   });
 

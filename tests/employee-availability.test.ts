@@ -41,6 +41,19 @@ describe("employee planning availability", () => {
           ],
         };
       }
+      if (sql.includes("FROM employee_weekly_availability")) {
+        return {
+          rows: [{
+            employee_id: EMPLOYEE_IDS.alice,
+            weekday: 1,
+            start_time: "09:00",
+            end_time: "12:00",
+            effective_from: "2026-01-01",
+            effective_to: null,
+          }],
+        };
+      }
+      if (sql.includes("FROM employee_unavailability")) return { rows: [] };
       return {
         rows: [
           { employee_id: EMPLOYEE_IDS.bob, session_date: "2026-08-24", start_time: "10:00", end_time: "11:00" },
@@ -64,10 +77,38 @@ describe("employee planning availability", () => {
     expect(result.timeRangeKnown).toBe(true);
     expect(result.occurrenceCount).toBe(2);
     expect(result.employees).toEqual([
-      { employeeId: EMPLOYEE_IDS.alice, employeeName: "Alice", assignedToAll: true, assignedOccurrenceCount: 2, conflictCount: 0, conflictingOccurrenceCount: 0, available: true },
-      { employeeId: EMPLOYEE_IDS.bob, employeeName: "Bob", assignedToAll: true, assignedOccurrenceCount: 2, conflictCount: 2, conflictingOccurrenceCount: 1, available: false },
-      { employeeId: EMPLOYEE_IDS.dana, employeeName: "Dana", assignedToAll: true, assignedOccurrenceCount: 2, conflictCount: 1, conflictingOccurrenceCount: 1, available: false },
-      { employeeId: EMPLOYEE_IDS.cara, employeeName: "Cara", assignedToAll: false, assignedOccurrenceCount: 1, conflictCount: 0, conflictingOccurrenceCount: 0, available: false },
+      {
+        employeeId: EMPLOYEE_IDS.alice, employeeName: "Alice", assignedToAll: true,
+        assignedOccurrenceCount: 2, conflictCount: 0, conflictingOccurrenceCount: 0,
+        withinDeclaredAvailabilityOccurrenceCount: 2,
+        outsideDeclaredAvailabilityOccurrenceCount: 0,
+        undeclaredAvailabilityOccurrenceCount: 0, unavailableOccurrenceCount: 0,
+        reasonCodes: [], available: true,
+      },
+      {
+        employeeId: EMPLOYEE_IDS.bob, employeeName: "Bob", assignedToAll: true,
+        assignedOccurrenceCount: 2, conflictCount: 2, conflictingOccurrenceCount: 1,
+        withinDeclaredAvailabilityOccurrenceCount: 0,
+        outsideDeclaredAvailabilityOccurrenceCount: 0,
+        undeclaredAvailabilityOccurrenceCount: 2, unavailableOccurrenceCount: 0,
+        reasonCodes: ["schedule_conflict", "availability_not_declared"], available: false,
+      },
+      {
+        employeeId: EMPLOYEE_IDS.dana, employeeName: "Dana", assignedToAll: true,
+        assignedOccurrenceCount: 2, conflictCount: 1, conflictingOccurrenceCount: 1,
+        withinDeclaredAvailabilityOccurrenceCount: 0,
+        outsideDeclaredAvailabilityOccurrenceCount: 0,
+        undeclaredAvailabilityOccurrenceCount: 2, unavailableOccurrenceCount: 0,
+        reasonCodes: ["schedule_conflict", "availability_not_declared"], available: false,
+      },
+      {
+        employeeId: EMPLOYEE_IDS.cara, employeeName: "Cara", assignedToAll: false,
+        assignedOccurrenceCount: 1, conflictCount: 0, conflictingOccurrenceCount: 0,
+        withinDeclaredAvailabilityOccurrenceCount: 0,
+        outsideDeclaredAvailabilityOccurrenceCount: 0,
+        undeclaredAvailabilityOccurrenceCount: 2, unavailableOccurrenceCount: 0,
+        reasonCodes: ["not_assigned", "availability_not_declared"], available: false,
+      },
     ]);
     expect(JSON.stringify(result).toLowerCase()).not.toMatch(/rate|amount|transaction|check|payout|dollar/);
 
@@ -110,8 +151,96 @@ describe("employee planning availability", () => {
         assignedOccurrenceCount: 1,
         conflictCount: 0,
         conflictingOccurrenceCount: 0,
+        withinDeclaredAvailabilityOccurrenceCount: 0,
+        outsideDeclaredAvailabilityOccurrenceCount: 0,
+        undeclaredAvailabilityOccurrenceCount: 0,
+        unavailableOccurrenceCount: 0,
+        reasonCodes: ["time_range_required"],
         available: false,
       }],
+    });
+  });
+
+  it("applies recurring hours and dated unavailability across every visit", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM employees")) {
+        return {
+          rows: [
+            { employee_id: EMPLOYEE_IDS.alice, employee_name: "Alice" },
+            { employee_id: EMPLOYEE_IDS.bob, employee_name: "Bob" },
+            { employee_id: EMPLOYEE_IDS.cara, employee_name: "Cara" },
+            { employee_id: EMPLOYEE_IDS.dana, employee_name: "Dana" },
+          ],
+        };
+      }
+      if (sql.includes("FROM assignments")) {
+        return {
+          rows: Object.values(EMPLOYEE_IDS).flatMap((employee_id) =>
+            INDIVIDUAL_IDS.map((individual_id) => ({
+              employee_id,
+              individual_id,
+              start_date: null,
+              end_date: null,
+            }))),
+        };
+      }
+      if (sql.includes("FROM scheduled_sessions")) return { rows: [] };
+      if (sql.includes("FROM employee_weekly_availability")) {
+        return {
+          rows: [
+            { employee_id: EMPLOYEE_IDS.alice, weekday: 1, start_time: "09:00", end_time: "10:00", effective_from: "2026-01-01", effective_to: null },
+            { employee_id: EMPLOYEE_IDS.bob, weekday: 1, start_time: "10:00", end_time: "12:00", effective_from: "2026-01-01", effective_to: null },
+            { employee_id: EMPLOYEE_IDS.cara, weekday: 1, start_time: "09:00", end_time: "12:00", effective_from: "2026-01-01", effective_to: null },
+          ],
+        };
+      }
+      if (sql.includes("FROM employee_unavailability")) {
+        return {
+          rows: [
+            { employee_id: EMPLOYEE_IDS.alice, start_date: "2026-08-24", end_date: "2026-08-24", start_time: "10:00", end_time: "11:00" },
+            { employee_id: EMPLOYEE_IDS.cara, start_date: "2026-08-31", end_date: "2026-08-31", start_time: null, end_time: null },
+          ],
+        };
+      }
+      return { rows: [] };
+    });
+    const pool = { query } as unknown as PgLikePool;
+
+    const result = await listEmployeeAvailability(pool, {
+      programId: PROGRAM_ID,
+      individualIds: INDIVIDUAL_IDS,
+      sessionDate: "2026-08-24",
+      sessionDates: ["2026-08-24", "2026-08-31"],
+      startTime: "09:00",
+      endTime: "10:00",
+    });
+
+    expect(result.employees.map((employee) => employee.employeeId)).toEqual([
+      EMPLOYEE_IDS.alice,
+      EMPLOYEE_IDS.dana,
+      EMPLOYEE_IDS.bob,
+      EMPLOYEE_IDS.cara,
+    ]);
+    expect(result.employees[0]).toMatchObject({
+      available: true,
+      withinDeclaredAvailabilityOccurrenceCount: 2,
+      unavailableOccurrenceCount: 0,
+      reasonCodes: [],
+    });
+    expect(result.employees[1]).toMatchObject({
+      available: true,
+      undeclaredAvailabilityOccurrenceCount: 2,
+      reasonCodes: ["availability_not_declared"],
+    });
+    expect(result.employees[2]).toMatchObject({
+      available: false,
+      outsideDeclaredAvailabilityOccurrenceCount: 2,
+      reasonCodes: ["outside_declared_availability"],
+    });
+    expect(result.employees[3]).toMatchObject({
+      available: false,
+      unavailableOccurrenceCount: 1,
+      reasonCodes: ["dated_unavailability"],
     });
   });
 

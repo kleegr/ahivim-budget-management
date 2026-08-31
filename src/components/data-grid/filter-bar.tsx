@@ -145,10 +145,10 @@ export function ColumnFilterControl<Row>({
 
       <div className="flex items-center justify-between text-xs">
         <div className="flex gap-2">
-          <button type="button" className="font-medium text-[var(--color-primary)] hover:underline" onClick={selectAllVisible}>
+          <button type="button" className="touch-target inline-flex items-center px-1 font-medium text-[var(--color-primary)] hover:underline" onClick={selectAllVisible}>
             {q.trim() ? "Select shown" : "Select all"}
           </button>
-          <button type="button" className="text-[var(--color-ink-faint)] hover:underline" onClick={clearVisible}>
+          <button type="button" className="touch-target inline-flex items-center px-1 text-[var(--color-ink-faint)] hover:underline" onClick={clearVisible}>
             {q.trim() ? "Clear shown" : "Clear all"}
           </button>
         </div>
@@ -167,7 +167,7 @@ export function ColumnFilterControl<Row>({
               <span className="flex-1 truncate">{labelForValue(col, v, dateGroup)}</span>
               <button
                 type="button"
-                className="hidden text-[0.65rem] font-medium text-[var(--color-primary)] hover:underline group-hover:inline"
+                className="touch-target ml-auto hidden items-center px-1 text-[0.65rem] font-medium text-[var(--color-primary)] hover:underline group-focus-within:inline-flex group-hover:inline-flex"
                 onClick={(e) => {
                   e.preventDefault();
                   only(v);
@@ -186,7 +186,7 @@ export function ColumnFilterControl<Row>({
           <button
             type="button"
             onClick={() => setShowRange((v) => !v)}
-            className="flex w-full items-center justify-between px-2 py-1 text-xs font-medium text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"
+            className="touch-target flex w-full items-center justify-between px-2 py-1 text-xs font-medium text-[var(--color-ink-soft)] hover:text-[var(--color-ink)]"
             aria-expanded={showRange}
           >
             <span>{isDate ? "Exact date range" : "Exact number range"}</span>
@@ -223,7 +223,7 @@ export function ColumnFilterControl<Row>({
       ) : null}
 
       <div className="flex justify-end border-t border-[var(--color-rule)] pt-2 text-xs">
-        <button type="button" className="text-[var(--color-danger)] hover:underline" onClick={onClear}>
+        <button type="button" className="touch-target inline-flex items-center px-1 text-[var(--color-danger)] hover:underline" onClick={onClear}>
           Remove filter
         </button>
       </div>

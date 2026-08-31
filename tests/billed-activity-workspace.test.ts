@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   checkGroupIdentity,
   groupChecks,
@@ -90,5 +92,18 @@ describe("billed activity check grouping", () => {
       employeeId: null,
       transactionIds: ["row-1", "row-2"],
     }]);
+  });
+
+  it("opens check evidence with a short stable filter instead of every row id", () => {
+    const source = readFileSync(
+      resolve("src/components/transactions/billed-activity-workspace.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain('params.set("checkNumber", check.checkNumber)');
+    expect(source).toContain('params.set("payToKey", check.payTo.trim().toLocaleLowerCase())');
+    expect(source).toContain('params.set("checkDateFrom", check.checkDate)');
+    expect(source).toContain('params.set("pbFrom", check.periodBegin)');
+    expect(source).not.toContain('params.append("transactionId"');
   });
 });

@@ -337,53 +337,63 @@ export async function setAgencyUserAccess(
   actorId: string,
   reason?: string | null,
 ): Promise<Result<{ agencyId: string; userId: string; role: AgencyPortalRole; isActive: boolean }>> {
+  return inTransaction(pool, (client) =>
+    setAgencyUserAccessQuery(client, agencyId, input, actorId, reason));
+}
+
+/** Write agency-scoped portal access on an existing caller-owned transaction. */
+export async function setAgencyUserAccessQuery(
+  queryable: Pick<PgLikePool, "query">,
+  agencyId: string,
+  input: AgencyUserAccessInput,
+  actorId: string,
+  reason?: string | null,
+): Promise<Result<{ agencyId: string; userId: string; role: AgencyPortalRole; isActive: boolean }>> {
   if (!UUID.test(agencyId) || !UUID.test(input.userId)) return fail("validation", "Choose a valid agency and user.");
   if (!isAgencyPortalRole(input.role)) return fail("validation", "Choose a valid agency portal role.");
-  return inTransaction(pool, async (client) => {
-    const [agency, user, current] = await Promise.all([
-      client.query(`SELECT id FROM agencies WHERE id = $1`, [agencyId]),
-      client.query(`SELECT id FROM users WHERE id = $1 AND is_active = true`, [input.userId]),
-      client.query<{ capability_grants: string[]; capability_denials: string[] }>(
-        `SELECT capability_grants, capability_denials
-           FROM user_agency_access
-          WHERE user_id = $1 AND agency_id = $2 AND portal_role = $3
-          FOR UPDATE`,
-        [input.userId, agencyId, input.role],
-      ),
-    ]);
-    if (!agency.rows[0]) return fail("not_found", "That agency no longer exists.");
-    if (!user.rows[0]) return fail("not_found", "That active user no longer exists.");
-    const configuredPolicy = capabilityPolicy(
-      input.role,
-      input.capabilityGrants ?? current.rows[0]?.capability_grants,
-      input.capabilityDenials ?? current.rows[0]?.capability_denials,
-    );
-    if (!configuredPolicy.ok) return configuredPolicy;
-    const isActive = input.isActive ?? true;
-    await client.query(
-      `INSERT INTO user_agency_access
-         (user_id, agency_id, portal_role, is_active, capability_grants, capability_denials,
-          created_by_user_id, updated_by_user_id)
-       VALUES ($1, $2, $3, $4, $5::text[], $6::text[], $7, $7)
-       ON CONFLICT (user_id, agency_id, portal_role) DO UPDATE SET
-         is_active = EXCLUDED.is_active,
-         capability_grants = EXCLUDED.capability_grants,
-         capability_denials = EXCLUDED.capability_denials,
-         updated_by_user_id = EXCLUDED.updated_by_user_id,
-         updated_at = now()`,
-      [input.userId, agencyId, input.role, isActive, configuredPolicy.data.grants,
-        configuredPolicy.data.denials, actorId],
-    );
-    await recordChange(client, {
-      actorId,
-      action: "agency_user_access_set",
-      entityType: "agency",
-      entityId: agencyId,
-      next: { userId: input.userId, role: input.role, isActive, ...configuredPolicy.data },
-      reason,
-    });
-    return ok({ agencyId, userId: input.userId, role: input.role, isActive });
+  const [agency, user, current] = await Promise.all([
+    queryable.query(`SELECT id FROM agencies WHERE id = $1`, [agencyId]),
+    queryable.query(`SELECT id FROM users WHERE id = $1 AND is_active = true`, [input.userId]),
+    queryable.query<{ capability_grants: string[]; capability_denials: string[] }>(
+      `SELECT capability_grants, capability_denials
+         FROM user_agency_access
+        WHERE user_id = $1 AND agency_id = $2 AND portal_role = $3
+        FOR UPDATE`,
+      [input.userId, agencyId, input.role],
+    ),
+  ]);
+  if (!agency.rows[0]) return fail("not_found", "That agency no longer exists.");
+  if (!user.rows[0]) return fail("not_found", "That active user no longer exists.");
+  const configuredPolicy = capabilityPolicy(
+    input.role,
+    input.capabilityGrants ?? current.rows[0]?.capability_grants,
+    input.capabilityDenials ?? current.rows[0]?.capability_denials,
+  );
+  if (!configuredPolicy.ok) return configuredPolicy;
+  const isActive = input.isActive ?? true;
+  await queryable.query(
+    `INSERT INTO user_agency_access
+       (user_id, agency_id, portal_role, is_active, capability_grants, capability_denials,
+        created_by_user_id, updated_by_user_id)
+     VALUES ($1, $2, $3, $4, $5::text[], $6::text[], $7, $7)
+     ON CONFLICT (user_id, agency_id, portal_role) DO UPDATE SET
+       is_active = EXCLUDED.is_active,
+       capability_grants = EXCLUDED.capability_grants,
+       capability_denials = EXCLUDED.capability_denials,
+       updated_by_user_id = EXCLUDED.updated_by_user_id,
+       updated_at = now()`,
+    [input.userId, agencyId, input.role, isActive, configuredPolicy.data.grants,
+      configuredPolicy.data.denials, actorId],
+  );
+  await recordChange(queryable, {
+    actorId,
+    action: "agency_user_access_set",
+    entityType: "agency",
+    entityId: agencyId,
+    next: { userId: input.userId, role: input.role, isActive, ...configuredPolicy.data },
+    reason,
   });
+  return ok({ agencyId, userId: input.userId, role: input.role, isActive });
 }
 
 export interface AgencyIndividualMembershipInput {

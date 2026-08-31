@@ -13,6 +13,7 @@ const AGENCY_B_INDIVIDUAL = "00000000-0000-4000-8000-000000000006";
 const OUTSIDE_INDIVIDUAL = "00000000-0000-4000-8000-000000000007";
 const AGENCY_A_EMPLOYEE = "00000000-0000-4000-8000-000000000008";
 const AGENCY_B_EMPLOYEE = "00000000-0000-4000-8000-000000000009";
+const PROGRAM = "00000000-0000-4000-8000-000000000010";
 
 describe("portal-safe home read model", () => {
   it("includes strategy-backed hours on every scoped surface without widening category access", async () => {
@@ -73,20 +74,21 @@ describe("portal-safe home read model", () => {
           authorized_hours: "120",
           used_hours: "42",
           remaining_hours: "78",
+          program_breakdown: [{ id: PROGRAM, code: "COMHAB", name: "Community Habilitation", authorized: "120", used: "42", remaining: "78" }],
         }] };
       }
       if (sql.includes("FROM payroll_transactions")
         && sql.includes("COALESCE(sum(imported_amount), 0)::text AS amount")
         && !sql.includes("AS person_id")) {
-        return { rows: [{ scope_id: INDIVIDUAL, amount: "250" }] };
+        return { rows: [{ scope_id: INDIVIDUAL, amount: "250", program_breakdown: [{ id: PROGRAM, code: "COMHAB", name: "Community Habilitation", amount: "250" }] }] };
       }
       if (sql.includes("transaction.individual_id AS scope_id")
         && sql.includes("= 'employee'")) {
-        return { rows: [{ scope_id: INDIVIDUAL, amount: "250" }] };
+        return { rows: [{ scope_id: INDIVIDUAL, amount: "250", program_breakdown: [{ id: PROGRAM, code: "COMHAB", name: "Community Habilitation", amount: "250" }] }] };
       }
       if (sql.includes("transaction.individual_id AS scope_id")
         && sql.includes("= 'excellent_staffing'")) {
-        return { rows: [{ scope_id: INDIVIDUAL, amount: "250" }] };
+        return { rows: [{ scope_id: INDIVIDUAL, amount: "250", program_breakdown: [{ id: PROGRAM, code: "COMHAB", name: "Community Habilitation", amount: "250" }] }] };
       }
       if (sql.includes("FROM agencies a")) {
         return { rows: [
@@ -119,16 +121,17 @@ describe("portal-safe home read model", () => {
           authorized_hours: "70",
           used_hours: "30",
           remaining_hours: "40",
+          program_breakdown: [{ id: PROGRAM, code: "RESPITE", name: "Respite", authorized: "70", used: "30", remaining: "40" }],
         }] };
       }
       if (sql.includes("event.individual_id AS person_id")) {
         return { rows: [{ agency_id: AGENCY_A, person_id: AGENCY_A_INDIVIDUAL, amount: "25" }] };
       }
       if (sql.includes("transaction.individual_id AS person_id") && sql.includes("= 'employee'")) {
-        return { rows: [{ agency_id: AGENCY_A, person_id: AGENCY_A_INDIVIDUAL, amount: "90" }] };
+        return { rows: [{ agency_id: AGENCY_A, person_id: AGENCY_A_INDIVIDUAL, amount: "90", program_breakdown: [{ id: PROGRAM, code: "COMHAB", name: "Community Habilitation", amount: "90" }] }] };
       }
       if (sql.includes("transaction.individual_id AS person_id") && sql.includes("= 'excellent_staffing'")) {
-        return { rows: [{ agency_id: AGENCY_A, person_id: AGENCY_A_INDIVIDUAL, amount: "40" }] };
+        return { rows: [{ agency_id: AGENCY_A, person_id: AGENCY_A_INDIVIDUAL, amount: "40", program_breakdown: [{ id: PROGRAM, code: "COMHAB", name: "Community Habilitation", amount: "40" }] }] };
       }
       if (sql.includes("checks.employee_id AS person_id")) {
         return { rows: [{ agency_id: AGENCY_A, person_id: AGENCY_A_EMPLOYEE, gross: null, net: "1200" }] };
@@ -182,6 +185,14 @@ describe("portal-safe home read model", () => {
       setAsideThisMonth: null,
       directChecksThisMonth: "250.0000",
       agencyPaidThisMonth: "250.0000",
+      programs: [{
+        id: PROGRAM,
+        hours: { authorized: "120.0000", used: "42.0000", remaining: "78.0000" },
+        dollars: null,
+        billedThisMonth: "250.0000",
+        directChecksThisMonth: "250.0000",
+        agencyPaidThisMonth: "250.0000",
+      }],
     });
     expect(model.agencies[0]).toMatchObject({
       id: AGENCY_A,
@@ -197,6 +208,13 @@ describe("portal-safe home read model", () => {
         setAsideThisMonth: "25.0000",
         directChecksThisMonth: "90.0000",
         agencyPaidThisMonth: "40.0000",
+        programs: [{
+          id: PROGRAM,
+          hours: null,
+          billedThisMonth: null,
+          directChecksThisMonth: "90.0000",
+          agencyPaidThisMonth: "40.0000",
+        }],
       }],
       employees: [{
         id: AGENCY_A_EMPLOYEE,
@@ -220,6 +238,13 @@ describe("portal-safe home read model", () => {
         setAsideThisMonth: null,
         directChecksThisMonth: null,
         agencyPaidThisMonth: null,
+        programs: [{
+          id: PROGRAM,
+          hours: { authorized: "70.0000", used: "30.0000", remaining: "40.0000" },
+          billedThisMonth: null,
+          directChecksThisMonth: null,
+          agencyPaidThisMonth: null,
+        }],
       }],
       employees: [{
         id: AGENCY_B_EMPLOYEE,
@@ -708,6 +733,19 @@ describe("portal-safe home read model", () => {
       void params;
       if (sql.includes("FROM employees")) return { rows: [{ id: EMPLOYEE, name: "Employee One" }] };
       if (sql.includes("FROM employee_payroll_checks c")) return { rows };
+      if (sql.includes("FROM payroll_transactions transaction")) {
+        return { rows: [{
+          id: "direct-service-1",
+          employee_id: EMPLOYEE,
+          service_date: "2024-02-12",
+          check_number: "1002",
+          individual_name: "Individual One",
+          program_code: "COMHAB",
+          program_name: "Community Habilitation",
+          hours: "6.5",
+          gross_service_value: "136.50",
+        }] };
+      }
       if (sql.includes("FROM settlement_obligations o")) {
         return { rows: [{ scope_id: EMPLOYEE, due_this_month: "50", collected_this_month: "25", remaining: "25" }] };
       }
@@ -729,16 +767,66 @@ describe("portal-safe home read model", () => {
     });
     expect(model.employees[0]?.checks?.[0]).not.toHaveProperty("actualGross");
     expect(model.employees[0]?.checks?.[0]).not.toHaveProperty("taxWithheld");
+    expect(model.employees[0]?.directPay).toEqual([{
+      id: "direct-service-1",
+      serviceDate: "2024-02-12",
+      checkNumber: "1002",
+      individualName: "Individual One",
+      programCode: "COMHAB",
+      programName: "Community Habilitation",
+      hours: "6.5000",
+      grossServiceValue: "136.5000",
+    }]);
 
     const checkCall = query.mock.calls.find(([sql]) => sql.includes("FROM employee_payroll_checks c"));
     expect(checkCall?.[0]).toContain("date_trunc('month', canonical_service_date(");
     expect(checkCall?.[0]).toContain("= $5::date");
     expect(checkCall?.[0]).not.toMatch(/portal_row|row_number/i);
     expect(checkCall?.[1]?.[4]).toBe("2024-02-01");
+    const directPayCall = query.mock.calls.find(([sql]) => sql.includes("FROM payroll_transactions transaction"));
+    expect(directPayCall?.[0]).toContain("checks.verification_status = 'verified'");
+    expect(directPayCall?.[0]).toContain("effective_payment_recipient(");
+    expect(directPayCall?.[0]).toContain("= 'employee'");
+    expect(directPayCall?.[0]).toContain("transaction.employee_id = ANY($1::uuid[])");
+    expect(directPayCall?.[1]).toEqual([[EMPLOYEE], "2024-02-01"]);
     const giveBackCall = query.mock.calls.find(([sql]) => sql.includes("FROM settlement_obligations o"));
     const dueFilter = giveBackCall?.[0].match(
       /sum\(o\.original_amount\) FILTER \(([\s\S]*?)\), 0\)::text AS due_this_month/,
     )?.[1];
     expect(dueFilter).toContain("o.status = 'active'");
+  });
+
+  it("does not query or return direct-pay services when that employee capability is denied", async () => {
+    const context: PortalAccessContext = {
+      userId: "employee-with-limited-view",
+      globalRoles: [{
+        role: "employee",
+        grants: [],
+        denials: [
+          "employee_pay.self.read",
+          "employee_checks.self.gross.read",
+          "employee_checks.self.net.read",
+          "employee_checks.self.tax.read",
+          "employee_giveback.self.read",
+        ],
+      }],
+      individualLinks: [],
+      employeeLinks: [{ employeeId: EMPLOYEE, relationship: "self", grants: [], denials: [] }],
+      agencyAccess: [],
+    };
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM employees")) return { rows: [{ id: EMPLOYEE, name: "Employee One" }] };
+      throw new Error(`Unexpected limited employee portal query: ${sql}`);
+    });
+    const pool = { query, connect: vi.fn() } as unknown as PgLikePool;
+
+    const model = await getPortalHomeReadModel(pool, context, "2024-02");
+
+    expect(model.employees[0]).toMatchObject({
+      checks: null,
+      directPay: null,
+      giveBack: null,
+    });
+    expect(query.mock.calls.map(([sql]) => sql).join("\n")).not.toContain("payroll_transactions");
   });
 });

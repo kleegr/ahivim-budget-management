@@ -9,8 +9,11 @@ import {
 import {
   agencyEarningsReport,
   budgetUtilizationReport,
+  dashboardReportMetrics,
   employeePayableReport,
+  expiringAuthorizationsReport,
   groupActivityReport,
+  utilizationOutliersReport,
 } from "@/lib/data/report-queries";
 import { individualProgramForecast } from "@/lib/data/schedule-queries";
 import type { PgLikePool } from "@/lib/import/commit";
@@ -25,6 +28,22 @@ describe("canonical service-date read models", () => {
     const pool = {
       query: vi.fn(async (query: string) => {
         sql.push(query);
+        if (query.includes("WITH util AS")) {
+          return { rows: [{
+            near_exhaustion: "0",
+            underutilizing: "0",
+            agency_additional: "0",
+            agency_additional_rows: "0",
+            employee_payable: "0",
+            employee_payable_rows: "0",
+            transaction_rows: "0",
+            expiring_auth: "0",
+            unbilled_schedules: "0",
+            unscheduled_billing: "0",
+            missing_rates: "0",
+            missing_assignments: "0",
+          }] };
+        }
         return { rows: [] };
       }),
     } as unknown as PgLikePool;
@@ -33,12 +52,28 @@ describe("canonical service-date read models", () => {
     await agencyEarningsReport(pool, { from: "2026-01-01", to: "2026-01-31" });
     await employeePayableReport(pool, { from: "2026-01-01", to: "2026-01-31" });
     await groupActivityReport(pool, { from: "2026-01-01", to: "2026-01-31" });
+    await utilizationOutliersReport(pool);
+    await expiringAuthorizationsReport(pool);
+    await dashboardReportMetrics(pool);
 
-    const utilization = sql.find((query) => query.includes("FROM budget_authorizations ba"));
+    const utilization = sql.find((query) => query.includes("AS scheduled_hours"));
+    expect(utilization).toContain("FROM program_budget_balances balance");
     expect(utilization).toContain(
-      "canonical_service_date(ss.period_begin, NULL, ss.period_end)",
+      "scs.session_date BETWEEN balance.start_date AND balance.end_date",
     );
-    expect(utilization).toContain("scs.session_date BETWEEN bp.start_date AND bp.end_date");
+    expect(utilization).not.toContain("FROM service_allocations");
+
+    const outliers = sql.find((query) => query.includes("THEN 'underutilizing'"));
+    expect(outliers).toContain("FROM program_budget_balances balance");
+    expect(outliers).not.toContain("FROM service_allocations");
+
+    const expiring = sql.find((query) => query.includes("AS days_remaining"));
+    expect(expiring).toContain("FROM program_budget_balances balance");
+    expect(expiring).not.toContain("FROM service_allocations");
+
+    const metrics = sql.find((query) => query.includes("WITH util AS"));
+    expect(metrics).toContain("FROM program_budget_balances balance");
+    expect(metrics).not.toContain("FROM service_allocations");
 
     const earnings = sql.find((query) => query.includes("AS agency_gross"));
     expect(earnings).toContain(

@@ -3,15 +3,13 @@ import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import {
   isRole,
-  setUserActive,
-  setUserRoleAndAccess,
-  setUserPassword,
   listUsers,
   getUserAccessConfig,
+  updateManagedUser,
   userAccessConfigFromInput,
   type UserAccessConfig,
 } from "@/lib/auth/users";
-import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
+import { jsonError, redactError, resultResponse, sameOriginOrFail } from "@/lib/http";
 import { isUuid } from "@/lib/data/app-queries";
 
 export const runtime = "nodejs";
@@ -90,21 +88,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (typeof body.role === "string" && !isRole(body.role)) {
       return jsonError("Role must be viewer, manager or admin.", 400);
     }
-    const requestedRole = typeof body.role === "string" ? body.role : target.role;
-    const activeAdmins = users.filter((u) => u.role === "admin" && u.isActive);
-    const removingAdmin =
-      target.role === "admin" &&
-      (requestedRole !== "admin" || body.isActive === false);
-    if (removingAdmin && activeAdmins.length <= 1) {
-      return jsonError(
-        "This is the last enabled administrator. Promote another account first.",
-        409,
-      );
-    }
-
+    const requestedRole = typeof body.role === "string" && isRole(body.role)
+      ? body.role
+      : target.role;
     const accessSubmitted = ACCESS_KEYS.some((key) => key in body);
+    let access: UserAccessConfig | undefined;
     if (typeof body.role === "string" || accessSubmitted) {
-      let access: UserAccessConfig | undefined;
       if (requestedRole === "viewer") {
         // A viewer request must explicitly include accessScope="scoped". Any
         // omitted or stale full-scope manager payload is reduced to the locked
@@ -124,24 +113,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         };
         access = userAccessConfigFromInput(mergedInput, requestedRole);
       }
-      if (!(await setUserRoleAndAccess(pool, id, requestedRole, access, actor.id))) {
-        return jsonError("Not found", 404);
-      }
     }
 
-    if (typeof body.isActive === "boolean") {
-      await setUserActive(pool, id, body.isActive, actor.id);
-    }
-
-    // Admin password reset (hand out a new credential).
-    if (typeof body.password === "string" && body.password.length > 0) {
-      const reset = await setUserPassword(pool, id, body.password, actor.id);
-      if (!reset.ok) {
-        return jsonError(
-          reset.reason === "too_short" ? "Choose a password of at least 10 characters." : "Not found",
-          reset.reason === "too_short" ? 400 : 404,
-        );
-      }
+    const hasPassword = typeof body.password === "string" && body.password.length > 0;
+    if (typeof body.role === "string" || accessSubmitted || typeof body.isActive === "boolean" || hasPassword) {
+      const outcome = await updateManagedUser(pool, id, {
+        role: typeof body.role === "string" || accessSubmitted ? requestedRole : undefined,
+        access,
+        isActive: typeof body.isActive === "boolean" ? body.isActive : undefined,
+        password: hasPassword ? body.password as string : undefined,
+      }, actor.id);
+      if (!outcome.ok) return resultResponse(outcome);
     }
 
     return NextResponse.json({ ok: true });

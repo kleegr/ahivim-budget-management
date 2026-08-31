@@ -187,6 +187,215 @@ export interface SavePayrollCheckInput {
   sourceTransactionIds?: string[];
 }
 
+/**
+ * Turn consistent direct-pay check facts from a committed import into review
+ * items. Imported NET is useful evidence, but it remains unverified until the
+ * money operator confirms the whole check.
+ */
+export async function syncImportedPayrollCheckReviews(
+  pool: PgLikePool,
+  importBatchId: string | null,
+  actorId: string | null,
+): Promise<{ checks: number; linkedTransactions: number }> {
+  if (importBatchId !== null && !UUID.test(importBatchId)) return { checks: 0, linkedTransactions: 0 };
+
+  return inTransaction(pool, async (client) => {
+    const possible = await client.query<{ has_changes: boolean }>(
+      `WITH target_identities AS (
+         SELECT DISTINCT t.employee_id,
+                NULLIF(btrim(t.check_number), '') AS check_number,
+                t.check_date,
+                t.period_begin,
+                t.period_end
+           FROM payroll_transactions t
+           LEFT JOIN programs p ON p.id = t.program_id
+          WHERE (($1::uuid IS NULL AND t.import_batch_id IS NOT NULL) OR t.import_batch_id = $1)
+            AND t.payroll_check_id IS NULL
+            AND t.employee_id IS NOT NULL
+            AND effective_payment_recipient(t.payment_recipient, p.payment_recipient) = 'employee'
+            AND (
+              NULLIF(btrim(t.check_number), '') IS NOT NULL
+              OR t.check_date IS NOT NULL
+              OR t.period_begin IS NOT NULL
+              OR t.period_end IS NOT NULL
+            )
+       ), candidates AS (
+         SELECT source_row.employee_id,
+                NULLIF(btrim(source_row.check_number), '') AS check_number,
+                source_row.check_date,
+                source_row.period_begin,
+                source_row.period_end,
+                min(source_row.total_net_pay) AS actual_net,
+                bool_or(
+                  ($1::uuid IS NULL AND source_row.import_batch_id IS NOT NULL)
+                  OR source_row.import_batch_id = $1
+                ) AS has_scoped_net
+           FROM payroll_transactions source_row
+           LEFT JOIN programs source_program ON source_program.id = source_row.program_id
+           JOIN target_identities target
+             ON target.employee_id = source_row.employee_id
+            AND target.check_number IS NOT DISTINCT FROM NULLIF(btrim(source_row.check_number), '')
+            AND target.check_date IS NOT DISTINCT FROM source_row.check_date
+            AND target.period_begin IS NOT DISTINCT FROM source_row.period_begin
+            AND target.period_end IS NOT DISTINCT FROM source_row.period_end
+          WHERE effective_payment_recipient(
+                  source_row.payment_recipient,
+                  source_program.payment_recipient
+                ) = 'employee'
+            AND source_row.total_net_pay IS NOT NULL
+          GROUP BY source_row.employee_id, NULLIF(btrim(source_row.check_number), ''),
+                   source_row.check_date, source_row.period_begin, source_row.period_end
+         HAVING count(DISTINCT source_row.total_net_pay) = 1
+            AND min(source_row.total_net_pay) >= 0
+       )
+       SELECT EXISTS (
+         SELECT 1
+           FROM candidates candidate
+           LEFT JOIN employee_payroll_checks check_fact
+             ON check_fact.employee_id = candidate.employee_id
+            AND check_fact.check_number IS NOT DISTINCT FROM candidate.check_number
+            AND check_fact.check_date IS NOT DISTINCT FROM candidate.check_date
+            AND check_fact.period_begin IS NOT DISTINCT FROM candidate.period_begin
+            AND check_fact.period_end IS NOT DISTINCT FROM candidate.period_end
+          WHERE (check_fact.id IS NULL AND candidate.has_scoped_net)
+             OR (check_fact.actual_net = candidate.actual_net
+                 AND check_fact.verification_status <> 'void')
+       ) AS has_changes`,
+      [importBatchId],
+    );
+    if (!possible.rows[0]?.has_changes) return { checks: 0, linkedTransactions: 0 };
+
+    const inserted = await client.query<{ id: string }>(
+      `WITH candidates AS (
+         SELECT t.employee_id,
+                NULLIF(btrim(t.check_number), '') AS check_number,
+                t.check_date,
+                t.period_begin,
+                t.period_end,
+                min(t.total_net_pay) AS actual_net
+           FROM payroll_transactions t
+           LEFT JOIN programs p ON p.id = t.program_id
+          WHERE (($1::uuid IS NULL AND t.import_batch_id IS NOT NULL) OR t.import_batch_id = $1)
+            AND t.payroll_check_id IS NULL
+            AND t.employee_id IS NOT NULL
+            AND effective_payment_recipient(t.payment_recipient, p.payment_recipient) = 'employee'
+            AND t.total_net_pay IS NOT NULL
+            AND (
+              NULLIF(btrim(t.check_number), '') IS NOT NULL
+              OR t.check_date IS NOT NULL
+              OR t.period_begin IS NOT NULL
+              OR t.period_end IS NOT NULL
+            )
+          GROUP BY t.employee_id, NULLIF(btrim(t.check_number), ''),
+                   t.check_date, t.period_begin, t.period_end
+         HAVING count(DISTINCT t.total_net_pay) = 1
+            AND min(t.total_net_pay) >= 0
+       )
+       INSERT INTO employee_payroll_checks
+         (employee_id, check_number, check_date, period_begin, period_end,
+          actual_net, source, source_ref, verification_status, notes,
+          created_by_user_id, updated_by_user_id)
+       SELECT candidate.employee_id, candidate.check_number, candidate.check_date,
+              candidate.period_begin, candidate.period_end, candidate.actual_net,
+              'import',
+              CASE WHEN $1::uuid IS NULL THEN 'rebuild:' ELSE 'import-batch:' || $1::text || ':' END
+                || md5(concat_ws('|',
+                candidate.employee_id::text, candidate.check_number,
+                candidate.check_date::text, candidate.period_begin::text,
+                candidate.period_end::text)),
+              'unverified',
+              'Imported check NET; verify the whole check before collecting.',
+              $2, $2
+         FROM candidates candidate
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [importBatchId, actorId],
+    );
+
+    const linked = await client.query<{ id: string }>(
+      `WITH target_identities AS (
+         SELECT DISTINCT t.employee_id,
+                NULLIF(btrim(t.check_number), '') AS check_number,
+                t.check_date,
+                t.period_begin,
+                t.period_end
+           FROM payroll_transactions t
+           LEFT JOIN programs p ON p.id = t.program_id
+          WHERE (($1::uuid IS NULL AND t.import_batch_id IS NOT NULL) OR t.import_batch_id = $1)
+            AND t.payroll_check_id IS NULL
+            AND t.employee_id IS NOT NULL
+            AND effective_payment_recipient(t.payment_recipient, p.payment_recipient) = 'employee'
+            AND (
+              NULLIF(btrim(t.check_number), '') IS NOT NULL
+              OR t.check_date IS NOT NULL
+              OR t.period_begin IS NOT NULL
+              OR t.period_end IS NOT NULL
+            )
+       ), candidates AS (
+         SELECT source_row.employee_id,
+                NULLIF(btrim(source_row.check_number), '') AS check_number,
+                source_row.check_date,
+                source_row.period_begin,
+                source_row.period_end,
+                min(source_row.total_net_pay) AS actual_net
+           FROM payroll_transactions source_row
+           LEFT JOIN programs source_program ON source_program.id = source_row.program_id
+           JOIN target_identities target
+             ON target.employee_id = source_row.employee_id
+            AND target.check_number IS NOT DISTINCT FROM NULLIF(btrim(source_row.check_number), '')
+            AND target.check_date IS NOT DISTINCT FROM source_row.check_date
+            AND target.period_begin IS NOT DISTINCT FROM source_row.period_begin
+            AND target.period_end IS NOT DISTINCT FROM source_row.period_end
+          WHERE effective_payment_recipient(
+                  source_row.payment_recipient,
+                  source_program.payment_recipient
+                ) = 'employee'
+            AND source_row.total_net_pay IS NOT NULL
+          GROUP BY source_row.employee_id, NULLIF(btrim(source_row.check_number), ''),
+                   source_row.check_date, source_row.period_begin, source_row.period_end
+         HAVING count(DISTINCT source_row.total_net_pay) = 1
+            AND min(source_row.total_net_pay) >= 0
+       )
+       UPDATE payroll_transactions t
+          SET payroll_check_id = check_fact.id,
+              updated_at = now()
+         FROM candidates candidate
+         JOIN employee_payroll_checks check_fact
+           ON check_fact.employee_id = candidate.employee_id
+          AND check_fact.check_number IS NOT DISTINCT FROM candidate.check_number
+          AND check_fact.check_date IS NOT DISTINCT FROM candidate.check_date
+          AND check_fact.period_begin IS NOT DISTINCT FROM candidate.period_begin
+          AND check_fact.period_end IS NOT DISTINCT FROM candidate.period_end
+          AND check_fact.actual_net = candidate.actual_net
+          AND check_fact.verification_status <> 'void'
+         WHERE (($1::uuid IS NULL AND t.import_batch_id IS NOT NULL) OR t.import_batch_id = $1)
+          AND t.employee_id = candidate.employee_id
+          AND NULLIF(btrim(t.check_number), '') IS NOT DISTINCT FROM candidate.check_number
+          AND t.check_date IS NOT DISTINCT FROM candidate.check_date
+          AND t.period_begin IS NOT DISTINCT FROM candidate.period_begin
+          AND t.period_end IS NOT DISTINCT FROM candidate.period_end
+          AND effective_payment_recipient(
+                t.payment_recipient,
+                (SELECT p.payment_recipient FROM programs p WHERE p.id = t.program_id)
+              ) = 'employee'
+          AND t.payroll_check_id IS NULL
+       RETURNING t.id`,
+      [importBatchId],
+    );
+
+    if (inserted.rows.length > 0 || linked.rows.length > 0) {
+      await recordChange(client, {
+        actorId,
+        action: "payroll_check.import_reviews_synced",
+        entityType: importBatchId ? "import_batch" : "payroll_check_review",
+        entityId: importBatchId,
+        next: { checks: inserted.rows.length, linkedTransactions: linked.rows.length },
+      });
+    }
+    return { checks: inserted.rows.length, linkedTransactions: linked.rows.length };
+  });
+}
+
 export async function savePayrollCheck(
   pool: PgLikePool,
   input: SavePayrollCheckInput,

@@ -37,7 +37,7 @@ describe("dashboardWorkstreamSummaries", () => {
 
     expect(summaries.map(({ key, role, href }) => ({ key, role, href }))).toEqual([
       { key: "planning", role: "Planner", href: "/schedule" },
-      { key: "money", role: "Collector", href: "/collections" },
+      { key: "money", role: "Collector", href: "/masser" },
       { key: "staffing", role: "Staffing", href: "/employees" },
       { key: "review", role: "Administrator", href: "/review" },
     ]);

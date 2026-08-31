@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import { Clock3 } from "lucide-react";
+import { CalendarClock, Clock3 } from "lucide-react";
 import ScheduleCalendar, { type ScheduleCalendarProps } from "@/components/schedule/calendar";
 import AssignmentManager from "@/components/schedule/assignment-manager";
+import EmployeeAvailabilityManager from "@/components/schedule/employee-availability-manager";
 import ServiceSchedules from "@/components/schedule/service-schedules";
 import { TabPanels } from "@/components/ui-client";
 import type { PlanningWorkspaceData } from "@/lib/data/planning-queries";
@@ -104,6 +105,25 @@ export default function PlanningWorkspace({
                 programs={programs}
                 canManageAssignments={canManageAssignments}
               />
+            ),
+          },
+          {
+            id: "availability",
+            label: "Employee hours",
+            content: (
+              <section>
+                <SectionHeading
+                  title="Employee hours and time off"
+                  description="Keep the calendar aligned with when each employee can work."
+                  icon={<CalendarClock aria-hidden className="h-4 w-4" />}
+                />
+                <EmployeeAvailabilityManager
+                  employees={employees}
+                  initialEmployeeId={initialFilters?.employeeId}
+                  today={today}
+                  canManage={canManageAssignments}
+                />
+              </section>
             ),
           },
         ]}

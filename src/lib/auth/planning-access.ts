@@ -180,6 +180,25 @@ export function planningSubjectsAllowed(
     && (subjects.employeeId === null || membershipCovers(roster.employeeMemberships, subjects.employeeId)));
 }
 
+/** Scope employee-only planner records such as working hours and time off. */
+export function planningEmployeeAllowed(
+  planning: PlanningAccess,
+  employeeId: string,
+  action: "read" | "assignment" = "read",
+  range?: PlanningDateRange,
+): boolean {
+  if (planning.agencyIds.length === 0) return true;
+  const agencyIds = action === "assignment"
+    ? planning.assignmentManageAgencyIds
+    : planning.agencyIds;
+  const defaultDate = agencyDate();
+  const requested = range ?? { from: defaultDate, to: defaultDate };
+  return planning.agencyRosters.some((roster) =>
+    agencyIds.includes(roster.agencyId)
+    && roster.employeeMemberships.some((membership) =>
+      membershipCoversRange(membership, employeeId, requested)));
+}
+
 function membershipCoversRange(
   membership: PlanningMembership,
   subjectId: string,

@@ -1,5 +1,5 @@
 import SettlementDashboard from "@/components/settlements/settlement-dashboard";
-import { ErrorPanel, PageHeader } from "@/components/ui";
+import { ButtonLink, ErrorPanel, PageHeader } from "@/components/ui";
 import { isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
 import { requireUser } from "@/lib/auth/session";
 import { getSettlementDashboard } from "@/lib/data/settlements";
@@ -75,7 +75,7 @@ export default async function SettlementsPage({
       {!result.ok ? (
         <ErrorPanel title="Could not load money operations">{result.error}</ErrorPanel>
       ) : result.data.denied ? (
-        <ErrorPanel title="No access to Money operations">
+        <ErrorPanel title="No access to Money operations" action={<ButtonLink href="/home">Back to home</ButtonLink>}>
           Your account doesn&rsquo;t include permission to view payment balances. Ask an administrator if you need it.
         </ErrorPanel>
       ) : (

@@ -113,7 +113,7 @@ export function Modal({
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="icon-button"
+            className="btn btn-sm btn-icon btn-ghost"
           >
             <X size={16} aria-hidden />
           </button>
@@ -151,7 +151,7 @@ export function Field({
         placeholder={placeholder}
         defaultValue={defaultValue ?? undefined}
         step={type === "number" ? "any" : undefined}
-        className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm"
+        className="input mt-1 w-full"
       />
       {help ? <span className="mt-0.5 block text-xs text-[var(--color-ink-faint)]">{help}</span> : null}
     </label>
@@ -183,7 +183,7 @@ export function TextAreaField({
         minLength={minLength}
         placeholder={placeholder}
         defaultValue={defaultValue ?? undefined}
-        className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm"
+        className="input mt-1 w-full py-2"
       />
     </label>
   );
@@ -211,7 +211,7 @@ export function SelectField({
         name={name}
         required={required}
         defaultValue={defaultValue ?? ""}
-        className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm"
+        className="select mt-1 w-full"
       >
         {placeholder ? <option value="">{placeholder}</option> : null}
         {options.map((o) => (
@@ -270,15 +270,9 @@ export function CreateButton({
     router.refresh();
   }
 
-  const cls =
-    variant === "primary"
-      ? "bg-[var(--color-primary)] text-white"
-      : "border border-[var(--color-rule-strong)] bg-white text-[var(--color-ink)]";
-  const pad = size === "sm" ? "px-2.5 py-1 text-xs" : "px-3 py-1.5 text-sm";
-
   return (
     <>
-      <button type="button" className={`rounded font-medium ${cls} ${pad}`} onClick={() => setOpen(true)}>
+      <button type="button" className={`btn btn-${variant} ${size === "sm" ? "btn-sm" : ""}`} onClick={() => setOpen(true)}>
         {label}
       </button>
       {open ? (
@@ -291,10 +285,10 @@ export function CreateButton({
             ) : null}
             {fields}
             <div className="flex justify-end gap-2 pt-1">
-              <button type="button" onClick={() => setOpen(false)} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-sm">
+              <button type="button" onClick={() => setOpen(false)} className="btn btn-secondary">
                 Cancel
               </button>
-              <button type="submit" disabled={busy} className="rounded bg-[var(--color-primary)] px-4 py-1.5 text-sm font-medium text-white disabled:opacity-60">
+              <button type="submit" disabled={busy} aria-busy={busy} className="btn btn-primary">
                 {busy ? "Saving…" : "Save"}
               </button>
             </div>
@@ -373,18 +367,10 @@ export function ActionButton({
     void run(value);
   }
 
-  const cls =
-    variant === "danger"
-      ? "border border-[var(--color-pace-over)] text-[var(--color-pace-over)]"
-      : variant === "primary"
-        ? "bg-[var(--color-primary)] text-white"
-        : "border border-[var(--color-rule-strong)] text-[var(--color-ink)]";
-  const pad = size === "sm" ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm";
-
   return (
     <>
       <span className="inline-flex flex-col items-start gap-0.5">
-        <button type="button" onClick={requestAction} disabled={busy} className={`rounded font-medium ${cls} ${pad} disabled:opacity-60`}>
+        <button type="button" onClick={requestAction} disabled={busy} aria-busy={busy} className={`btn btn-${variant} ${size === "sm" ? "btn-sm" : ""}`}>
           {busy ? "Working..." : label}
         </button>
         {!reasonOpen && error ? <span role="alert" className="text-xs text-[var(--color-pace-over)]">{error}</span> : null}
@@ -401,14 +387,14 @@ export function ActionButton({
                 rows={3}
                 minLength={5}
                 required
-                className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-2 text-sm"
+                className="input mt-1 w-full py-2"
               />
               <span className="mt-1 block text-xs text-[var(--color-ink-faint)]">This will be recorded in the audit history.</span>
             </label>
             {error ? <p role="alert" className="rounded border border-[var(--color-pace-over)] bg-[#fdf2f5] px-3 py-2 text-sm text-[var(--color-pace-over)]">{error}</p> : null}
             <div className="flex justify-end gap-2">
-              <button type="button" disabled={busy} onClick={() => setReasonOpen(false)} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-sm">Cancel</button>
-              <button type="submit" disabled={busy} className="rounded bg-[var(--color-primary)] px-4 py-1.5 text-sm font-medium text-white disabled:opacity-60">
+              <button type="button" disabled={busy} onClick={() => setReasonOpen(false)} className="btn btn-secondary">Cancel</button>
+              <button type="submit" disabled={busy} aria-busy={busy} className="btn btn-primary">
                 {busy ? "Working..." : label}
               </button>
             </div>

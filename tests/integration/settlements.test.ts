@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PgLikePool } from "@/lib/import/commit";
 import { getPersonSettlementBalance, getSettlementDashboard } from "@/lib/data/settlements";
 import { getFinancialDashboard } from "@/lib/data/financial-dashboard";
-import { getCollectionsWorkspace } from "@/lib/data/direct-pay-operations";
+import { getCollectionsWorkspace, getIndividualMasserStatement } from "@/lib/data/direct-pay-operations";
 import { fullAccess } from "@/lib/auth/access";
 import { createEmployee } from "@/lib/manage/employees";
 import { mergeEmployees } from "@/lib/manage/employee-merge";
@@ -260,6 +260,64 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       plannedThisMonth: "80.0000",
       setAsideThisMonth: "500.0000",
       remainingSetAside: "400.0000",
+    });
+  });
+
+  it("uses only the plan active at month end when renewal periods meet mid-month", async () => {
+    const individual = unwrap(await createIndividual(pool, { displayName: "Renewal Boundary Person" }, ACTOR));
+    const oldStrategy = unwrap(await createStrategy(pool, {
+      individualId: individual.id,
+      label: "Prior plan",
+    }, ACTOR));
+    const newStrategy = unwrap(await createStrategy(pool, {
+      individualId: individual.id,
+      label: "Renewed plan",
+    }, ACTOR));
+    const roots = await pool.query<{ id: string; source_key: string }>(
+      `INSERT INTO settlement_obligations
+         (source_key, kind, direction, individual_id, calculation_strategy_id,
+          original_amount, period_begin, period_end, calculation_metadata, created_by_user_id)
+       VALUES
+         ('month-end-prior-plan', 'individual_masser', 'reserve', $1, $2,
+          120, '2025-09-15', '2026-09-15',
+          '{"flow":"individual_plan","monthlyAmount":"10"}'::jsonb, $4),
+         ('month-end-renewed-plan', 'individual_masser', 'reserve', $1, $3,
+          240, '2026-09-15', '2027-09-15',
+          '{"flow":"individual_plan","monthlyAmount":"20"}'::jsonb, $4)
+       RETURNING id, source_key`,
+      [individual.id, oldStrategy.id, newStrategy.id, ACTOR],
+    );
+    const oldRoot = roots.rows.find((row) => row.source_key === "month-end-prior-plan")!;
+    const newRoot = roots.rows.find((row) => row.source_key === "month-end-renewed-plan")!;
+    await pool.query(
+      `INSERT INTO settlement_events
+         (settlement_obligation_id, individual_id, event_type, amount, occurred_on, created_by_user_id)
+       VALUES
+         ($1, $3, 'set_aside', 40, '2026-09-10', $4),
+         ($2, $3, 'set_aside', 50, '2026-09-20', $4)`,
+      [oldRoot.id, newRoot.id, individual.id, ACTOR],
+    );
+
+    const collections = await getCollectionsWorkspace(pool, fullAccess(ACTOR, "admin"), "2026-09");
+    expect(collections.individualSetAsides.find((row) => row.individualId === individual.id)).toMatchObject({
+      setAsideThisMonth: "50.0000",
+      remainingSetAside: "190.0000",
+      activePlans: 1,
+    });
+
+    const statement = await getIndividualMasserStatement(
+      pool,
+      fullAccess(ACTOR, "admin"),
+      individual.id,
+      "2026-09",
+    );
+    expect(statement).toMatchObject({
+      periodStart: "2026-09-15",
+      periodEnd: "2027-09-15",
+      approvedReserve: "240.0000",
+      recordedReserve: "50.0000",
+      remainingReserve: "190.0000",
+      history: [{ month: "2026-09", setAside: "50.0000", reversals: "0.0000" }],
     });
   });
 

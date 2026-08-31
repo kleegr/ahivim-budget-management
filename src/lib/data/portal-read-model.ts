@@ -32,6 +32,17 @@ export interface PortalDollarUsageSummary {
   remaining: string | null;
 }
 
+export interface PortalIndividualProgramSummary {
+  id: string | null;
+  code: string | null;
+  name: string;
+  hours: PortalUsageSummary | null;
+  dollars: PortalDollarUsageSummary | null;
+  billedThisMonth: string | null;
+  directChecksThisMonth: string | null;
+  agencyPaidThisMonth: string | null;
+}
+
 export interface PortalIndividualSummary {
   id: string;
   name: string;
@@ -43,6 +54,18 @@ export interface PortalIndividualSummary {
   setAsideThisMonth: string | null;
   directChecksThisMonth: string | null;
   agencyPaidThisMonth: string | null;
+  programs: PortalIndividualProgramSummary[] | null;
+}
+
+export interface PortalEmployeeDirectPaySummary {
+  id: string;
+  serviceDate: string;
+  checkNumber: string | null;
+  individualName: string;
+  programCode: string | null;
+  programName: string;
+  hours: string | null;
+  grossServiceValue: string | null;
 }
 
 export interface PortalPayrollCheckSummary {
@@ -67,6 +90,7 @@ export interface PortalEmployeeSummary {
     tax: boolean;
   };
   checks: PortalPayrollCheckSummary[] | null;
+  directPay: PortalEmployeeDirectPaySummary[] | null;
   giveBack: {
     month: string;
     dueThisMonth: string;
@@ -87,6 +111,7 @@ export interface PortalAgencyIndividualSummary {
   setAsideThisMonth: string | null;
   directChecksThisMonth: string | null;
   agencyPaidThisMonth: string | null;
+  programs: PortalIndividualProgramSummary[] | null;
 }
 
 export interface PortalAgencyEmployeeSummary {
@@ -147,12 +172,14 @@ interface HoursAggregateFields {
   authorized_hours: string;
   used_hours: string;
   remaining_hours: string;
+  program_breakdown?: unknown;
 }
 
 interface DollarAggregateFields {
   authorized_dollars: string | null;
   used_dollars: string;
   remaining_dollars: string | null;
+  program_breakdown?: unknown;
 }
 
 interface HoursAggregateRow extends HoursAggregateFields {
@@ -166,6 +193,19 @@ interface DollarAggregateRow extends DollarAggregateFields {
 interface MoneyAggregateRow {
   scope_id: string;
   amount: string;
+  program_breakdown?: unknown;
+}
+
+interface EmployeeDirectPayRow {
+  id: string;
+  employee_id: string;
+  service_date: string;
+  check_number: string | null;
+  individual_name: string;
+  program_code: string | null;
+  program_name: string;
+  hours: string | null;
+  gross_service_value: string | null;
 }
 
 interface PayrollCheckRow {
@@ -233,6 +273,7 @@ interface AgencyPersonMoneyRow {
   agency_id: string;
   person_id: string;
   amount: string;
+  program_breakdown?: unknown;
 }
 
 interface AgencyEmployeeCheckRow {
@@ -475,6 +516,94 @@ function dollarUsage(row: DollarAggregateFields | undefined): PortalDollarUsageS
   };
 }
 
+interface ProgramBreakdownRow {
+  id?: unknown;
+  code?: unknown;
+  name?: unknown;
+  authorized?: unknown;
+  used?: unknown;
+  remaining?: unknown;
+  amount?: unknown;
+}
+
+function programBreakdown(value: unknown): ProgramBreakdownRow[] {
+  if (typeof value === "string") {
+    try {
+      return programBreakdown(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(value)
+    ? value.filter((item): item is ProgramBreakdownRow => item !== null && typeof item === "object")
+    : [];
+}
+
+function programKey(row: ProgramBreakdownRow): string {
+  if (typeof row.id === "string" && row.id) return `id:${row.id}`;
+  if (typeof row.code === "string" && row.code) return `code:${row.code}`;
+  return `name:${String(row.name ?? "Unassigned program").trim().toLowerCase()}`;
+}
+
+function programIdentity(row: ProgramBreakdownRow): Pick<PortalIndividualProgramSummary, "id" | "code" | "name"> {
+  return {
+    id: typeof row.id === "string" && row.id ? row.id : null,
+    code: typeof row.code === "string" && row.code ? row.code : null,
+    name: typeof row.name === "string" && row.name.trim() ? row.name : "Unassigned program",
+  };
+}
+
+function mergeProgramBreakdowns({
+  hours,
+  dollars,
+  billed,
+  directChecks,
+  agencyPaid,
+}: {
+  hours?: unknown;
+  dollars?: unknown;
+  billed?: unknown;
+  directChecks?: unknown;
+  agencyPaid?: unknown;
+}): PortalIndividualProgramSummary[] {
+  const programs = new Map<string, PortalIndividualProgramSummary>();
+  const get = (row: ProgramBreakdownRow) => {
+    const key = programKey(row);
+    const existing = programs.get(key);
+    if (existing) return existing;
+    const created: PortalIndividualProgramSummary = {
+      ...programIdentity(row),
+      hours: null,
+      dollars: null,
+      billedThisMonth: null,
+      directChecksThisMonth: null,
+      agencyPaidThisMonth: null,
+    };
+    programs.set(key, created);
+    return created;
+  };
+
+  for (const row of programBreakdown(hours)) {
+    get(row).hours = usage({
+      authorized_hours: String(row.authorized ?? 0),
+      used_hours: String(row.used ?? 0),
+      remaining_hours: String(row.remaining ?? 0),
+    });
+  }
+  for (const row of programBreakdown(dollars)) {
+    get(row).dollars = dollarUsage({
+      authorized_dollars: row.authorized == null ? null : String(row.authorized),
+      used_dollars: String(row.used ?? 0),
+      remaining_dollars: row.remaining == null ? null : String(row.remaining),
+    });
+  }
+  for (const row of programBreakdown(billed)) get(row).billedThisMonth = toMoney(String(row.amount ?? 0));
+  for (const row of programBreakdown(directChecks)) get(row).directChecksThisMonth = toMoney(String(row.amount ?? 0));
+  for (const row of programBreakdown(agencyPaid)) get(row).agencyPaidThisMonth = toMoney(String(row.amount ?? 0));
+
+  return [...programs.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
 function directIndividualIds(context: PortalAccessContext): string[] {
   return unique(
     context.individualLinks
@@ -553,7 +682,27 @@ async function directIndividualSummaries(
                   COALESCE(sum(effective_hours.used_hours), 0)::text AS used_hours,
                   COALESCE(sum(
                     effective_hours.authorized_hours - effective_hours.used_hours
-                  ), 0)::text AS remaining_hours
+                  ), 0)::text AS remaining_hours,
+                  COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object(
+                      'id', program_totals.id,
+                      'code', program_totals.code,
+                      'name', program_totals.name,
+                      'authorized', program_totals.authorized_hours::text,
+                      'used', program_totals.used_hours::text,
+                      'remaining', program_totals.remaining_hours::text
+                    ) ORDER BY program_totals.name)
+                      FROM (
+                        SELECT program.id, program.code, program.name,
+                               COALESCE(sum(detail.authorized_hours), 0) AS authorized_hours,
+                               COALESCE(sum(detail.used_hours), 0) AS used_hours,
+                               COALESCE(sum(detail.authorized_hours - detail.used_hours), 0) AS remaining_hours
+                          FROM effective_hours detail
+                          JOIN programs program ON program.id = detail.program_id
+                         WHERE detail.individual_id = effective_hours.individual_id
+                         GROUP BY program.id, program.code, program.name
+                      ) program_totals
+                  ), '[]'::jsonb) AS program_breakdown
              FROM effective_hours
             WHERE effective_hours.individual_id = ANY($1::uuid[])
             GROUP BY effective_hours.individual_id`,
@@ -567,7 +716,32 @@ async function directIndividualSummaries(
                     THEN sum(authorized_dollars)::text END AS authorized_dollars,
                   COALESCE(sum(consumed_dollars), 0)::text AS used_dollars,
                   CASE WHEN count(remaining_dollars) > 0
-                    THEN sum(remaining_dollars)::text END AS remaining_dollars
+                    THEN sum(remaining_dollars)::text END AS remaining_dollars,
+                  COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object(
+                      'id', program_totals.id,
+                      'code', program_totals.code,
+                      'name', program_totals.name,
+                      'authorized', program_totals.authorized_dollars,
+                      'used', program_totals.used_dollars,
+                      'remaining', program_totals.remaining_dollars
+                    ) ORDER BY program_totals.name)
+                      FROM (
+                        SELECT program.id, program.code, program.name,
+                               CASE WHEN count(detail.authorized_dollars) > 0
+                                 THEN sum(detail.authorized_dollars)::text END AS authorized_dollars,
+                               COALESCE(sum(detail.consumed_dollars), 0)::text AS used_dollars,
+                               CASE WHEN count(detail.remaining_dollars) > 0
+                                 THEN sum(detail.remaining_dollars)::text END AS remaining_dollars
+                          FROM program_budget_balances detail
+                          JOIN programs program ON program.id = detail.program_id
+                         WHERE detail.individual_id = program_budget_balances.individual_id
+                           AND detail.period_status = 'active'
+                           AND (now() AT TIME ZONE 'America/New_York')::date
+                               BETWEEN detail.start_date AND detail.end_date
+                         GROUP BY program.id, program.code, program.name
+                      ) program_totals
+                  ), '[]'::jsonb) AS program_breakdown
              FROM program_budget_balances
             WHERE individual_id = ANY($1::uuid[])
               AND period_status = 'active'
@@ -578,7 +752,29 @@ async function directIndividualSummaries(
       : empty<DollarAggregateRow>(),
     billedIds.length > 0
       ? pool.query<MoneyAggregateRow>(
-          `SELECT individual_id AS scope_id, COALESCE(sum(imported_amount), 0)::text AS amount
+          `SELECT individual_id AS scope_id, COALESCE(sum(imported_amount), 0)::text AS amount,
+                  COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object(
+                      'id', program_totals.id,
+                      'code', program_totals.code,
+                      'name', program_totals.name,
+                      'amount', program_totals.amount
+                    ) ORDER BY program_totals.name)
+                      FROM (
+                        SELECT program.id, program.code,
+                               COALESCE(program.name, detail.program_raw, 'Unassigned program') AS name,
+                               COALESCE(sum(detail.imported_amount), 0)::text AS amount
+                          FROM payroll_transactions detail
+                          LEFT JOIN programs program ON program.id = detail.program_id
+                         WHERE detail.individual_id = payroll_transactions.individual_id
+                           AND canonical_service_date(detail.period_begin, detail.check_date, detail.period_end) IS NOT NULL
+                           AND date_trunc('month', canonical_service_date(
+                                 detail.period_begin, detail.check_date, detail.period_end
+                               )) = $2::date
+                         GROUP BY program.id, program.code,
+                                  COALESCE(program.name, detail.program_raw, 'Unassigned program')
+                      ) program_totals
+                  ), '[]'::jsonb) AS program_breakdown
              FROM payroll_transactions
             WHERE individual_id = ANY($1::uuid[])
               AND canonical_service_date(period_begin, check_date, period_end) IS NOT NULL
@@ -603,7 +799,32 @@ async function directIndividualSummaries(
     directCheckIds.length > 0
       ? pool.query<MoneyAggregateRow>(
           `SELECT transaction.individual_id AS scope_id,
-                  COALESCE(sum(transaction.employee_payment_amount), 0)::text AS amount
+                  COALESCE(sum(transaction.employee_payment_amount), 0)::text AS amount,
+                  COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object(
+                      'id', program_totals.id,
+                      'code', program_totals.code,
+                      'name', program_totals.name,
+                      'amount', program_totals.amount
+                    ) ORDER BY program_totals.name)
+                      FROM (
+                        SELECT detail_program.id, detail_program.code,
+                               COALESCE(detail_program.name, detail.program_raw, 'Unassigned program') AS name,
+                               COALESCE(sum(detail.employee_payment_amount), 0)::text AS amount
+                          FROM payroll_transactions detail
+                          LEFT JOIN programs detail_program ON detail_program.id = detail.program_id
+                         WHERE detail.individual_id = transaction.individual_id
+                           AND effective_payment_recipient(
+                                 detail.payment_recipient, detail_program.payment_recipient
+                               ) = 'employee'
+                           AND canonical_service_date(detail.period_begin, detail.check_date, detail.period_end) IS NOT NULL
+                           AND date_trunc('month', canonical_service_date(
+                                 detail.period_begin, detail.check_date, detail.period_end
+                               )) = $2::date
+                         GROUP BY detail_program.id, detail_program.code,
+                                  COALESCE(detail_program.name, detail.program_raw, 'Unassigned program')
+                      ) program_totals
+                  ), '[]'::jsonb) AS program_breakdown
              FROM payroll_transactions transaction
              LEFT JOIN programs program ON program.id = transaction.program_id
             WHERE transaction.individual_id = ANY($1::uuid[])
@@ -624,7 +845,32 @@ async function directIndividualSummaries(
     agencyPaidIds.length > 0
       ? pool.query<MoneyAggregateRow>(
           `SELECT transaction.individual_id AS scope_id,
-                  COALESCE(sum(transaction.employee_payment_amount), 0)::text AS amount
+                  COALESCE(sum(transaction.employee_payment_amount), 0)::text AS amount,
+                  COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object(
+                      'id', program_totals.id,
+                      'code', program_totals.code,
+                      'name', program_totals.name,
+                      'amount', program_totals.amount
+                    ) ORDER BY program_totals.name)
+                      FROM (
+                        SELECT detail_program.id, detail_program.code,
+                               COALESCE(detail_program.name, detail.program_raw, 'Unassigned program') AS name,
+                               COALESCE(sum(detail.employee_payment_amount), 0)::text AS amount
+                          FROM payroll_transactions detail
+                          LEFT JOIN programs detail_program ON detail_program.id = detail.program_id
+                         WHERE detail.individual_id = transaction.individual_id
+                           AND effective_payment_recipient(
+                                 detail.payment_recipient, detail_program.payment_recipient
+                               ) = 'excellent_staffing'
+                           AND canonical_service_date(detail.period_begin, detail.check_date, detail.period_end) IS NOT NULL
+                           AND date_trunc('month', canonical_service_date(
+                                 detail.period_begin, detail.check_date, detail.period_end
+                               )) = $2::date
+                         GROUP BY detail_program.id, detail_program.code,
+                                  COALESCE(detail_program.name, detail.program_raw, 'Unassigned program')
+                      ) program_totals
+                  ), '[]'::jsonb) AS program_breakdown
              FROM payroll_transactions transaction
              LEFT JOIN programs program ON program.id = transaction.program_id
             WHERE transaction.individual_id = ANY($1::uuid[])
@@ -665,6 +911,15 @@ async function directIndividualSummaries(
     setAsideThisMonth: setAsideIds.includes(person.id) ? toMoney(setAside.get(person.id)?.amount ?? 0) : null,
     directChecksThisMonth: directCheckIds.includes(person.id) ? toMoney(directChecks.get(person.id)?.amount ?? 0) : null,
     agencyPaidThisMonth: agencyPaidIds.includes(person.id) ? toMoney(agencyPaid.get(person.id)?.amount ?? 0) : null,
+    programs: [hourIds, dollarIds, billedIds, directCheckIds, agencyPaidIds].some((allowed) => allowed.includes(person.id))
+      ? mergeProgramBreakdowns({
+          hours: hourBudgets.get(person.id)?.program_breakdown,
+          dollars: dollarBudgets.get(person.id)?.program_breakdown,
+          billed: billed.get(person.id)?.program_breakdown,
+          directChecks: directChecks.get(person.id)?.program_breakdown,
+          agencyPaid: agencyPaid.get(person.id)?.program_breakdown,
+        })
+      : null,
   }));
 }
 
@@ -680,9 +935,10 @@ async function directEmployeeSummaries(
   const netIds = employeeIdsWith(context, ids, "employee_checks.self.net.read");
   const taxIds = employeeIdsWith(context, ids, "employee_checks.self.tax.read");
   const checkIds = unique([...grossIds, ...netIds, ...taxIds]);
+  const directPayIds = employeeIdsWith(context, ids, "employee_pay.self.read");
   const giveBackIds = employeeIdsWith(context, ids, "employee_giveback.self.read");
 
-  const [peopleResult, checksResult, giveBackResult] = await Promise.all([
+  const [peopleResult, checksResult, directPayResult, giveBackResult] = await Promise.all([
     pool.query<PersonRow>(
       `SELECT id, display_name AS name FROM employees
         WHERE id = ANY($1::uuid[]) AND status <> 'archived'
@@ -710,6 +966,44 @@ async function directEmployeeSummaries(
           [checkIds, grossIds, netIds, taxIds, monthStart],
         )
       : empty<PayrollCheckRow>(),
+    directPayIds.length > 0
+      ? pool.query<EmployeeDirectPayRow>(
+          `SELECT transaction.id, transaction.employee_id,
+                  to_char(canonical_service_date(
+                    transaction.period_begin, transaction.check_date, transaction.period_end
+                  ), 'YYYY-MM-DD') AS service_date,
+                  COALESCE(checks.check_number, transaction.check_number) AS check_number,
+                  COALESCE(individual.display_name, transaction.individual_raw, 'Unknown individual') AS individual_name,
+                  program.code AS program_code,
+                  COALESCE(program.name, transaction.program_raw, 'Unassigned program') AS program_name,
+                  transaction.imported_hours::text AS hours,
+                  transaction.employee_payment_amount::text AS gross_service_value
+             FROM payroll_transactions transaction
+             JOIN employee_payroll_checks checks
+               ON checks.id = transaction.payroll_check_id
+              AND checks.employee_id = transaction.employee_id
+              AND checks.verification_status = 'verified'
+             LEFT JOIN individuals individual ON individual.id = transaction.individual_id
+             LEFT JOIN programs program ON program.id = transaction.program_id
+            WHERE transaction.employee_id = ANY($1::uuid[])
+              AND effective_payment_recipient(
+                    transaction.payment_recipient, program.payment_recipient
+                  ) = 'employee'
+              AND canonical_service_date(
+                    transaction.period_begin, transaction.check_date, transaction.period_end
+                  ) IS NOT NULL
+              AND date_trunc('month', canonical_service_date(
+                    transaction.period_begin, transaction.check_date, transaction.period_end
+                  )) = $2::date
+            ORDER BY canonical_service_date(
+                       transaction.period_begin, transaction.check_date, transaction.period_end
+                     ) DESC,
+                     checks.check_number,
+                     individual_name,
+                     program_name`,
+          [directPayIds, monthStart],
+        )
+      : empty<EmployeeDirectPayRow>(),
     giveBackIds.length > 0
       ? pool.query<GiveBackRow>(
           `WITH event_totals AS (
@@ -759,6 +1053,20 @@ async function directEmployeeSummaries(
     if (taxIds.includes(row.employee_id)) item.taxWithheld = row.tax_withheld === null ? null : toMoney(row.tax_withheld);
     checks.set(row.employee_id, [...(checks.get(row.employee_id) ?? []), item]);
   }
+  const directPay = new Map<string, PortalEmployeeDirectPaySummary[]>();
+  for (const row of directPayResult.rows) {
+    const item: PortalEmployeeDirectPaySummary = {
+      id: row.id,
+      serviceDate: row.service_date,
+      checkNumber: row.check_number,
+      individualName: row.individual_name,
+      programCode: row.program_code,
+      programName: row.program_name,
+      hours: row.hours === null ? null : toHours(row.hours),
+      grossServiceValue: row.gross_service_value === null ? null : toMoney(row.gross_service_value),
+    };
+    directPay.set(row.employee_id, [...(directPay.get(row.employee_id) ?? []), item]);
+  }
   const giveBack = mapByScope(giveBackResult.rows);
   return peopleResult.rows.map((person) => {
     const collection = giveBack.get(person.id);
@@ -772,6 +1080,7 @@ async function directEmployeeSummaries(
         tax: taxIds.includes(person.id),
       },
       checks: checkIds.includes(person.id) ? checks.get(person.id) ?? [] : null,
+      directPay: directPayIds.includes(person.id) ? directPay.get(person.id) ?? [] : null,
       giveBack: giveBackIds.includes(person.id) ? {
         month,
         dueThisMonth: toMoney(collection?.due_this_month ?? 0),
@@ -891,7 +1200,27 @@ async function agencyMemberSummaries(
                   COALESCE(sum(effective_hours.used_hours), 0)::text AS used_hours,
                   COALESCE(sum(
                     effective_hours.authorized_hours - effective_hours.used_hours
-                  ), 0)::text AS remaining_hours
+                  ), 0)::text AS remaining_hours,
+                  COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object(
+                      'id', program_totals.id,
+                      'code', program_totals.code,
+                      'name', program_totals.name,
+                      'authorized', program_totals.authorized_hours::text,
+                      'used', program_totals.used_hours::text,
+                      'remaining', program_totals.remaining_hours::text
+                    ) ORDER BY program_totals.name)
+                      FROM (
+                        SELECT program.id, program.code, program.name,
+                               COALESCE(sum(detail.authorized_hours), 0) AS authorized_hours,
+                               COALESCE(sum(detail.used_hours), 0) AS used_hours,
+                               COALESCE(sum(detail.authorized_hours - detail.used_hours), 0) AS remaining_hours
+                          FROM effective_hours detail
+                          JOIN programs program ON program.id = detail.program_id
+                         WHERE detail.individual_id = membership.individual_id
+                         GROUP BY program.id, program.code, program.name
+                      ) program_totals
+                  ), '[]'::jsonb) AS program_breakdown
              FROM agency_individuals membership
              LEFT JOIN effective_hours
                ON effective_hours.individual_id = membership.individual_id
@@ -913,7 +1242,32 @@ async function agencyMemberSummaries(
                     THEN sum(balance.authorized_dollars)::text END AS authorized_dollars,
                   COALESCE(sum(balance.consumed_dollars), 0)::text AS used_dollars,
                   CASE WHEN count(balance.remaining_dollars) > 0
-                    THEN sum(balance.remaining_dollars)::text END AS remaining_dollars
+                    THEN sum(balance.remaining_dollars)::text END AS remaining_dollars,
+                  COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object(
+                      'id', program_totals.id,
+                      'code', program_totals.code,
+                      'name', program_totals.name,
+                      'authorized', program_totals.authorized_dollars,
+                      'used', program_totals.used_dollars,
+                      'remaining', program_totals.remaining_dollars
+                    ) ORDER BY program_totals.name)
+                      FROM (
+                        SELECT program.id, program.code, program.name,
+                               CASE WHEN count(detail.authorized_dollars) > 0
+                                 THEN sum(detail.authorized_dollars)::text END AS authorized_dollars,
+                               COALESCE(sum(detail.consumed_dollars), 0)::text AS used_dollars,
+                               CASE WHEN count(detail.remaining_dollars) > 0
+                                 THEN sum(detail.remaining_dollars)::text END AS remaining_dollars
+                          FROM program_budget_balances detail
+                          JOIN programs program ON program.id = detail.program_id
+                         WHERE detail.individual_id = membership.individual_id
+                           AND detail.period_status = 'active'
+                           AND (now() AT TIME ZONE 'America/New_York')::date
+                               BETWEEN detail.start_date AND detail.end_date
+                         GROUP BY program.id, program.code, program.name
+                      ) program_totals
+                  ), '[]'::jsonb) AS program_breakdown
              FROM agency_individuals membership
              LEFT JOIN program_budget_balances balance
                ON balance.individual_id = membership.individual_id
@@ -934,7 +1288,41 @@ async function agencyMemberSummaries(
       ? pool.query<AgencyPersonMoneyRow>(
           `SELECT membership.agency_id,
                   transaction.individual_id AS person_id,
-                  COALESCE(sum(transaction.imported_amount), 0)::text AS amount
+                  COALESCE(sum(transaction.imported_amount), 0)::text AS amount,
+                  COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object(
+                      'id', program_totals.id,
+                      'code', program_totals.code,
+                      'name', program_totals.name,
+                      'amount', program_totals.amount
+                    ) ORDER BY program_totals.name)
+                      FROM (
+                        SELECT detail_program.id, detail_program.code,
+                               COALESCE(detail_program.name, detail.program_raw, 'Unassigned program') AS name,
+                               COALESCE(sum(detail.imported_amount), 0)::text AS amount
+                          FROM payroll_transactions detail
+                          LEFT JOIN programs detail_program ON detail_program.id = detail.program_id
+                         WHERE detail.individual_id = transaction.individual_id
+                           AND canonical_service_date(detail.period_begin, detail.check_date, detail.period_end) IS NOT NULL
+                           AND date_trunc('month', canonical_service_date(
+                                 detail.period_begin, detail.check_date, detail.period_end
+                               )) = $2::date
+                           AND EXISTS (
+                             SELECT 1
+                               FROM agency_individuals detail_membership
+                              WHERE detail_membership.agency_id = membership.agency_id
+                                AND detail_membership.individual_id = detail.individual_id
+                                AND detail_membership.is_active = true
+                                AND detail_membership.bills_services = true
+                                AND canonical_service_date(
+                                      detail.period_begin, detail.check_date, detail.period_end
+                                    ) BETWEEN detail_membership.effective_from
+                                        AND COALESCE(detail_membership.effective_to, 'infinity'::date)
+                           )
+                         GROUP BY detail_program.id, detail_program.code,
+                                  COALESCE(detail_program.name, detail.program_raw, 'Unassigned program')
+                      ) program_totals
+                  ), '[]'::jsonb) AS program_breakdown
              FROM payroll_transactions transaction
              JOIN agency_individuals membership
                ON membership.individual_id = transaction.individual_id
@@ -978,7 +1366,44 @@ async function agencyMemberSummaries(
       ? pool.query<AgencyPersonMoneyRow>(
           `SELECT membership.agency_id,
                   transaction.individual_id AS person_id,
-                  COALESCE(sum(transaction.employee_payment_amount), 0)::text AS amount
+                  COALESCE(sum(transaction.employee_payment_amount), 0)::text AS amount,
+                  COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object(
+                      'id', program_totals.id,
+                      'code', program_totals.code,
+                      'name', program_totals.name,
+                      'amount', program_totals.amount
+                    ) ORDER BY program_totals.name)
+                      FROM (
+                        SELECT detail_program.id, detail_program.code,
+                               COALESCE(detail_program.name, detail.program_raw, 'Unassigned program') AS name,
+                               COALESCE(sum(detail.employee_payment_amount), 0)::text AS amount
+                          FROM payroll_transactions detail
+                          LEFT JOIN programs detail_program ON detail_program.id = detail.program_id
+                         WHERE detail.individual_id = transaction.individual_id
+                           AND effective_payment_recipient(
+                                 detail.payment_recipient, detail_program.payment_recipient
+                               ) = 'employee'
+                           AND canonical_service_date(detail.period_begin, detail.check_date, detail.period_end) IS NOT NULL
+                           AND date_trunc('month', canonical_service_date(
+                                 detail.period_begin, detail.check_date, detail.period_end
+                               )) = $2::date
+                           AND EXISTS (
+                             SELECT 1
+                               FROM agency_individuals detail_membership
+                              WHERE detail_membership.agency_id = membership.agency_id
+                                AND detail_membership.individual_id = detail.individual_id
+                                AND detail_membership.is_active = true
+                                AND detail_membership.bills_services = true
+                                AND canonical_service_date(
+                                      detail.period_begin, detail.check_date, detail.period_end
+                                    ) BETWEEN detail_membership.effective_from
+                                        AND COALESCE(detail_membership.effective_to, 'infinity'::date)
+                           )
+                         GROUP BY detail_program.id, detail_program.code,
+                                  COALESCE(detail_program.name, detail.program_raw, 'Unassigned program')
+                      ) program_totals
+                  ), '[]'::jsonb) AS program_breakdown
              FROM payroll_transactions transaction
              LEFT JOIN programs program ON program.id = transaction.program_id
              JOIN agency_individuals membership
@@ -1006,7 +1431,44 @@ async function agencyMemberSummaries(
       ? pool.query<AgencyPersonMoneyRow>(
           `SELECT membership.agency_id,
                   transaction.individual_id AS person_id,
-                  COALESCE(sum(transaction.employee_payment_amount), 0)::text AS amount
+                  COALESCE(sum(transaction.employee_payment_amount), 0)::text AS amount,
+                  COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object(
+                      'id', program_totals.id,
+                      'code', program_totals.code,
+                      'name', program_totals.name,
+                      'amount', program_totals.amount
+                    ) ORDER BY program_totals.name)
+                      FROM (
+                        SELECT detail_program.id, detail_program.code,
+                               COALESCE(detail_program.name, detail.program_raw, 'Unassigned program') AS name,
+                               COALESCE(sum(detail.employee_payment_amount), 0)::text AS amount
+                          FROM payroll_transactions detail
+                          LEFT JOIN programs detail_program ON detail_program.id = detail.program_id
+                         WHERE detail.individual_id = transaction.individual_id
+                           AND effective_payment_recipient(
+                                 detail.payment_recipient, detail_program.payment_recipient
+                               ) = 'excellent_staffing'
+                           AND canonical_service_date(detail.period_begin, detail.check_date, detail.period_end) IS NOT NULL
+                           AND date_trunc('month', canonical_service_date(
+                                 detail.period_begin, detail.check_date, detail.period_end
+                               )) = $2::date
+                           AND EXISTS (
+                             SELECT 1
+                               FROM agency_individuals detail_membership
+                              WHERE detail_membership.agency_id = membership.agency_id
+                                AND detail_membership.individual_id = detail.individual_id
+                                AND detail_membership.is_active = true
+                                AND detail_membership.bills_services = true
+                                AND canonical_service_date(
+                                      detail.period_begin, detail.check_date, detail.period_end
+                                    ) BETWEEN detail_membership.effective_from
+                                        AND COALESCE(detail_membership.effective_to, 'infinity'::date)
+                           )
+                         GROUP BY detail_program.id, detail_program.code,
+                                  COALESCE(detail_program.name, detail.program_raw, 'Unassigned program')
+                      ) program_totals
+                  ), '[]'::jsonb) AS program_breakdown
              FROM payroll_transactions transaction
              LEFT JOIN programs program ON program.id = transaction.program_id
              JOIN agency_individuals membership
@@ -1139,6 +1601,30 @@ async function agencyMemberSummaries(
         : null,
       agencyPaidThisMonth: memberAgencyPaid.includes(person.agency_id)
         ? toMoney(agencyPaid.get(key)?.amount ?? 0)
+        : null,
+      programs: (
+        (person.manages_budget && (canReadHours || canReadDollars))
+        || memberBilled.includes(person.agency_id)
+        || memberDirectChecks.includes(person.agency_id)
+        || memberAgencyPaid.includes(person.agency_id)
+      )
+        ? mergeProgramBreakdowns({
+            hours: canReadHours && person.manages_budget
+              ? hourBudgets.get(key)?.program_breakdown
+              : undefined,
+            dollars: canReadDollars && person.manages_budget
+              ? dollarBudgets.get(key)?.program_breakdown
+              : undefined,
+            billed: memberBilled.includes(person.agency_id)
+              ? billed.get(key)?.program_breakdown
+              : undefined,
+            directChecks: memberDirectChecks.includes(person.agency_id)
+              ? directChecks.get(key)?.program_breakdown
+              : undefined,
+            agencyPaid: memberAgencyPaid.includes(person.agency_id)
+              ? agencyPaid.get(key)?.program_breakdown
+              : undefined,
+          })
         : null,
     };
     individuals.set(person.agency_id, [...(individuals.get(person.agency_id) ?? []), summary]);

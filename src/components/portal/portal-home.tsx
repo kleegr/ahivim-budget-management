@@ -76,6 +76,70 @@ function BudgetSummary({
   );
 }
 
+function ProgramBreakdown({
+  programs,
+  month,
+}: {
+  programs: PortalIndividualSummary["programs"];
+  month: string;
+}) {
+  if (programs === null) return null;
+  const selectedMonth = monthLabel(month);
+  if (programs.length === 0) {
+    return (
+      <div className="border-t border-[var(--color-rule)]">
+        <EmptyState compact title="No program budget or activity in this view" icon={<Clock3 aria-hidden className="h-5 w-5" />} />
+      </div>
+    );
+  }
+  const hasHours = programs.some((program) => program.hours !== null);
+  const hasDollars = programs.some((program) => program.dollars !== null);
+  const hasBilled = programs.some((program) => program.billedThisMonth !== null);
+  const hasDirectChecks = programs.some((program) => program.directChecksThisMonth !== null);
+  const hasAgencyPaid = programs.some((program) => program.agencyPaidThisMonth !== null);
+  const hasCurrentBudget = hasHours || hasDollars;
+  const hasMonthlyActivity = hasBilled || hasDirectChecks || hasAgencyPaid;
+  const heading = hasCurrentBudget && hasMonthlyActivity
+    ? `Current program budget and ${selectedMonth} activity`
+    : hasCurrentBudget
+      ? "Current program budget"
+      : `Program activity for ${selectedMonth}`;
+
+  return (
+    <div className="border-t border-[var(--color-rule)]">
+      <p className="border-b border-[var(--color-rule)] px-5 py-2.5 text-xs font-medium text-[var(--color-ink-soft)]">
+        {heading}
+      </p>
+      <Table head={<>
+        <Th>Program</Th>
+        {hasHours ? <><Th numeric>Hours authorized</Th><Th numeric>Hours used</Th><Th numeric>Hours left</Th></> : null}
+        {hasDollars ? <Th numeric>Dollar balance</Th> : null}
+        {hasBilled ? <Th numeric>Billed ({selectedMonth})</Th> : null}
+        {hasDirectChecks ? <Th numeric>Direct ({selectedMonth})</Th> : null}
+        {hasAgencyPaid ? <Th numeric>Agency-paid ({selectedMonth})</Th> : null}
+      </>}>
+        {programs.map((program) => (
+          <Tr key={program.id ?? `${program.code ?? "program"}:${program.name}`}>
+            <Td>
+              <div className="font-medium">{program.name}</div>
+              {program.code ? <div className="text-xs text-[var(--color-ink-faint)]">{program.code}</div> : null}
+            </Td>
+            {hasHours ? <>
+              <Td numeric>{program.hours ? <Hours value={program.hours.authorized} /> : <Plain value={null} />}</Td>
+              <Td numeric>{program.hours ? <Hours value={program.hours.used} /> : <Plain value={null} />}</Td>
+              <Td numeric>{program.hours ? <Hours value={program.hours.remaining} /> : <Plain value={null} />}</Td>
+            </> : null}
+            {hasDollars ? <Td numeric>{program.dollars ? <Money value={program.dollars.remaining} /> : <Plain value={null} />}</Td> : null}
+            {hasBilled ? <Td numeric>{program.billedThisMonth !== null ? <Money value={program.billedThisMonth} /> : <Plain value={null} />}</Td> : null}
+            {hasDirectChecks ? <Td numeric>{program.directChecksThisMonth !== null ? <Money value={program.directChecksThisMonth} /> : <Plain value={null} />}</Td> : null}
+            {hasAgencyPaid ? <Td numeric>{program.agencyPaidThisMonth !== null ? <Money value={program.agencyPaidThisMonth} /> : <Plain value={null} />}</Td> : null}
+          </Tr>
+        ))}
+      </Table>
+    </div>
+  );
+}
+
 function agencyIndividualResponsibility(individual: PortalAgencyIndividualSummary): string | null {
   if (individual.managesBudget === null && individual.billsServices === null) return null;
   if (individual.managesBudget && individual.billsServices) return "Budget + billing";
@@ -111,6 +175,7 @@ function AgencyIndividualMember({ individual }: { individual: PortalAgencyIndivi
             ? { label: `Agency-paid (${selectedMonth})`, value: <Money value={individual.agencyPaidThisMonth} /> }
             : null,
         ].filter(present)} />
+        <ProgramBreakdown programs={individual.programs} month={individual.month} />
       </div>
     </details>
   );
@@ -312,6 +377,7 @@ function IndividualAccess({ individual }: { individual: PortalIndividualSummary 
         individual.directChecksThisMonth !== null ? { label: `Direct checks (${selectedMonth})`, value: <Money value={individual.directChecksThisMonth} /> } : null,
         individual.agencyPaidThisMonth !== null ? { label: `Agency-paid (${selectedMonth})`, value: <Money value={individual.agencyPaidThisMonth} /> } : null,
       ].filter(present)} />
+      <ProgramBreakdown programs={individual.programs} month={individual.month} />
     </Card>
   );
 }
@@ -332,6 +398,32 @@ function EmployeeAccess({ employee }: { employee: PortalEmployeeSummary }) {
         { label: `Collected (${selectedMonth})`, value: <Money value={employee.giveBack.collectedThisMonth} /> },
         { label: "Give-back remaining", value: <Money value={employee.giveBack.remaining} /> },
       ]} /> : null}
+      {employee.directPay !== null ? employee.directPay.length === 0 ? (
+        <EmptyState compact title={`No direct-pay services linked to verified checks for ${selectedMonth}`} icon={<ReceiptText aria-hidden className="h-5 w-5" />} />
+      ) : (
+        <div>
+          <p className="border-b border-[var(--color-rule)] px-5 py-2.5 text-xs font-medium text-[var(--color-ink-soft)]">
+            Direct-pay services linked to verified checks for {selectedMonth}
+          </p>
+          <Table head={<>
+            <Th>Service date</Th><Th>Check</Th><Th>Individual</Th><Th>Program</Th><Th numeric>Hours</Th><Th numeric>Gross service value</Th>
+          </>}>
+            {employee.directPay.map((item) => (
+              <Tr key={item.id}>
+                <Td><Plain value={item.serviceDate} /></Td>
+                <Td><Plain value={item.checkNumber} /></Td>
+                <Td>{item.individualName}</Td>
+                <Td>
+                  <div className="font-medium">{item.programName}</div>
+                  {item.programCode ? <div className="text-xs text-[var(--color-ink-faint)]">{item.programCode}</div> : null}
+                </Td>
+                <Td numeric><Hours value={item.hours} /></Td>
+                <Td numeric><Money value={item.grossServiceValue} /></Td>
+              </Tr>
+            ))}
+          </Table>
+        </div>
+      ) : null}
       {employee.checks !== null ? employee.checks.length === 0 ? (
         <EmptyState compact title={`No verified payroll checks for ${selectedMonth}`} icon={<ReceiptText aria-hidden className="h-5 w-5" />} />
       ) : (

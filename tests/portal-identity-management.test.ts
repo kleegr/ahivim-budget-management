@@ -24,7 +24,8 @@ function transactionalPool(
 
 describe("portal identity management", () => {
   it("does not activate a portal role as a side effect of a subject link", async () => {
-    const { pool, clientQuery } = transactionalPool([{ user_exists: true, person_exists: true }]);
+    const { pool, clientQuery } = transactionalPool([], (sql) =>
+      sql.includes("SELECT EXISTS") ? [{ user_exists: true, person_exists: true }] : []);
 
     const result = await setIndividualPortalAssignment(pool, {
       userId: USER,
@@ -40,8 +41,12 @@ describe("portal identity management", () => {
 
   it("prevents concurrent administration from removing the final owner", async () => {
     const { pool, clientQuery } = transactionalPool(
-      [{ id: USER }],
-      (sql) => sql.includes("active_owner_count") ? [{ active_owner_count: 0 }] : [],
+      [],
+      (sql) => sql.includes("FROM users")
+        ? [{ id: USER }]
+        : sql.includes("active_owner_count")
+          ? [{ active_owner_count: 0 }]
+          : [],
     );
 
     const result = await setGlobalPortalRoleAssignment(pool, {

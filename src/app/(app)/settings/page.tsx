@@ -4,6 +4,7 @@ import { withDb } from "@/lib/data/pool";
 import { listUsersWithAccess } from "@/lib/auth/users";
 import { listIndividualsManaged } from "@/lib/manage/individuals";
 import { listEmployeesManaged } from "@/lib/manage/employees";
+import { listAgencies } from "@/lib/manage/agencies";
 import { listPrograms, listAudit } from "@/lib/data/app-queries";
 import { listProgramRules } from "@/lib/manage/program-rules";
 import {
@@ -29,10 +30,11 @@ export default async function SettingsPage() {
     const canSeeBilledAmounts = scope.canSeeBilledAmounts;
     const canSeeEmployeeAmounts = scope.canSeeEmployeeAmounts;
     const canViewProgramRates = canSeeBilledAmounts || canSeeEmployeeAmounts;
-    const [users, managedIndividuals, managedEmployees, programs, programRules, audit] = await Promise.all([
+    const [users, managedIndividuals, managedEmployees, agencies, programs, programRules, audit] = await Promise.all([
       isAdmin ? listUsersWithAccess(pool) : Promise.resolve([]),
       isAdmin ? listIndividualsManaged(pool, {}) : Promise.resolve([]),
       isAdmin ? listEmployeesManaged(pool, {}) : Promise.resolve([]),
+      isAdmin ? listAgencies(pool) : Promise.resolve([]),
       canViewProgramRates ? listPrograms(pool) : Promise.resolve([]),
       isAdmin ? listProgramRules(pool) : Promise.resolve([]),
       isAdmin ? listAudit(pool, 40) : Promise.resolve([]),
@@ -41,6 +43,9 @@ export default async function SettingsPage() {
       users,
       individuals: managedIndividuals.map((i) => ({ id: i.id, name: i.displayName })),
       employees: managedEmployees.map((e) => ({ id: e.id, name: e.displayName })),
+      agencies: agencies
+        .filter((agency) => agency.status === "active")
+        .map((agency) => ({ id: agency.id, name: agency.name })),
       programs: programs.map((program) => ({
         ...program,
         agencyRate: canSeeBilledAmounts ? program.agencyRate : null,
@@ -130,11 +135,14 @@ export default async function SettingsPage() {
                   canManageClassInvoices: u.canManageClassInvoices,
                   canPlan: u.canPlan,
                   canEditDocuments: u.canEditDocuments,
+                  accountPreset: u.accountPreset,
+                  portalManaged: u.portalManaged,
                   individualCount: u.individualCount,
                   employeeCount: u.employeeCount,
                 }))}
                 individuals={result.data.individuals}
                 employees={result.data.employees}
+                agencies={result.data.agencies}
               /></section>
             ) : null}
 

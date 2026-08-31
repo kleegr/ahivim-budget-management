@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { LayoutList, TableProperties } from "lucide-react";
+import { LayoutList, RefreshCw, TableProperties } from "lucide-react";
 import { dec, formatMoney, formatHours } from "@/lib/money";
 import type { StrategyGridRow, ProgramRate } from "@/lib/manage/calculation-strategies";
 import { type ColumnDef, type GridFieldKind, isNumericKind } from "@/components/data-grid/types";
@@ -11,6 +11,7 @@ import { formatCell, rawValue } from "@/components/data-grid/engine";
 import { useGrid } from "@/components/data-grid/use-grid";
 import { Toolbar } from "@/components/data-grid/toolbar";
 import { FilterBar, HeaderFilter } from "@/components/data-grid/filter-bar";
+import { friendlyActionError } from "@/lib/nav/review-actions";
 
 /**
  * The Calculations workspace on top of the shared data-grid engine. The engine
@@ -798,13 +799,13 @@ export default function CalculationsGrid({
                   );
                 })}
                 <td className="whitespace-nowrap border-b border-[var(--color-rule)] px-2 py-1 text-xs">
-                  <button type="button" className="text-[var(--color-primary)] hover:underline" onClick={() => setDrawerId(r.id)}>Explain</button>
+                  <button type="button" className="touch-target inline-flex items-center px-1 text-[var(--color-primary)] hover:underline" onClick={() => setDrawerId(r.id)}>Explain</button>
                   {canManage && (
                     <>
                       <span className="px-1 text-[var(--color-text-soft)]">·</span>
-                      <button type="button" className="text-[var(--color-primary)] hover:underline" onClick={() => rowAction(r.id, "duplicate")}>Duplicate</button>
+                      <button type="button" disabled={busy} aria-busy={busy} className="touch-target inline-flex items-center px-1 text-[var(--color-primary)] hover:underline disabled:opacity-50" onClick={() => rowAction(r.id, "duplicate")}>Duplicate</button>
                       <span className="px-1 text-[var(--color-text-soft)]">·</span>
-                      <button type="button" className="text-[var(--color-text-soft)] hover:text-red-600 hover:underline" onClick={() => { if (confirm(`Archive ${r.individualName} ${r.label}? It is kept in history, not deleted.`)) rowAction(r.id, "archive"); }}>Archive</button>
+                      <button type="button" disabled={busy} aria-busy={busy} className="touch-target inline-flex items-center px-1 text-[var(--color-text-soft)] hover:text-red-600 hover:underline disabled:opacity-50" onClick={() => { if (confirm(`Archive ${r.individualName} ${r.label}? It is kept in history, not deleted.`)) rowAction(r.id, "archive"); }}>Archive</button>
                     </>
                   )}
                 </td>
@@ -857,8 +858,11 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
   const [data, setData] = useState<{ explain: ExplainResult; revisions: Revision[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savingRate, setSavingRate] = useState<string | null>(null);
+  const [failedRate, setFailedRate] = useState<{ programId: string; value: string } | null>(null);
 
   const load = useCallback(() => {
+    setError(null);
+    setFailedRate(null);
     return fetch(`/api/calculation-strategies/${strategyId}`)
       .then((r) => r.json())
       .then((j) => { if (j.ok) setData(j.data); else setError(j.error ?? "Could not load."); })
@@ -876,6 +880,8 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
 
   const saveRate = async (programId: string, value: string) => {
     setSavingRate(programId);
+    setError(null);
+    setFailedRate(null);
     try {
       const res = await fetch(`/api/calculation-strategies/${strategyId}`, {
         method: "PATCH",
@@ -885,7 +891,14 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
       if (res.ok) {
         await load(); // refresh the drawer's own numbers
         router.refresh(); // refresh the grid's computed columns
+      } else {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        setError(friendlyActionError(body.error, "Could not save this rate. Try again."));
+        setFailedRate({ programId, value });
       }
+    } catch {
+      setError("Could not reach the server. This rate was not saved.");
+      setFailedRate({ programId, value });
     } finally {
       setSavingRate(null);
     }
@@ -899,10 +912,22 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
           <div className="text-lg font-semibold">{row ? `${row.individualName} — ${row.label}` : "Financial setup"}</div>
           {row?.renewalDate && <div className="text-xs text-[var(--color-text-soft)]">Renewal date {row.renewalDate}</div>}
         </div>
-        <button type="button" onClick={onClose} className="rounded px-2 py-1 text-lg hover:bg-black/5" aria-label="Close">×</button>
+        <button type="button" onClick={onClose} className="btn btn-sm btn-icon btn-ghost text-lg" aria-label="Close" title="Close">×</button>
       </div>
       <div className="px-4 py-3 text-sm">
-        {error && <div className="text-red-600">{error}</div>}
+        {error ? (
+          <div role="alert" className="flex flex-wrap items-center gap-3 rounded-md border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-3 py-2">
+            <p className="min-w-0 flex-1 text-[var(--color-ink-soft)]">{friendlyActionError(error, "This calculation could not load. Try again.")}</p>
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              disabled={savingRate !== null}
+              onClick={() => failedRate ? void saveRate(failedRate.programId, failedRate.value) : void load()}
+            >
+              <RefreshCw aria-hidden className="h-4 w-4" /> {failedRate ? "Retry save" : "Try again"}
+            </button>
+          </div>
+        ) : null}
         {!data && !error && <div className="text-[var(--color-text-soft)]">Loading…</div>}
         {data && (
           <>

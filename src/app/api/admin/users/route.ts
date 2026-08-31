@@ -5,7 +5,8 @@ import {
   createUser,
   listUsersWithAccess,
 } from "@/lib/auth/users";
-import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
+import { provisionUser } from "@/lib/auth/provision-user";
+import { jsonError, redactError, resultResponse, sameOriginOrFail } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,6 +53,8 @@ export async function GET() {
         canManageClassInvoices: u.canManageClassInvoices,
         canEditDocuments: u.canEditDocuments,
         canPlan: u.canPlan,
+        accountPreset: u.accountPreset,
+        portalManaged: u.portalManaged,
         individualCount: u.individualCount,
         employeeCount: u.employeeCount,
       })),
@@ -71,6 +74,24 @@ export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   const pool = getPool();
   try {
+    if ("preset" in body) {
+      const result = await provisionUser(pool, {
+        preset: typeof body.preset === "string" ? body.preset : "",
+        email: String(body.email ?? ""),
+        displayName: String(body.displayName ?? ""),
+        password: String(body.password ?? ""),
+        individualId: typeof body.individualId === "string" ? body.individualId : undefined,
+        relationship: typeof body.relationship === "string" ? body.relationship : undefined,
+        employeeId: typeof body.employeeId === "string" ? body.employeeId : undefined,
+        agencyId: typeof body.agencyId === "string" ? body.agencyId : undefined,
+        capabilityGrants: body.capabilityGrants as string[] | undefined,
+        capabilityDenials: body.capabilityDenials as string[] | undefined,
+        reason: typeof body.reason === "string" ? body.reason : null,
+      }, actor.id);
+      if (!result.ok) return resultResponse(result);
+      return NextResponse.json({ ok: true, user: result.data }, { status: 201 });
+    }
+
     const role = String(body.role ?? "viewer");
     const outcome = await createUser(
       pool,

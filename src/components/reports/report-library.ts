@@ -69,8 +69,9 @@ export const REPORT_LIBRARY: ReportLibraryGroup[] = [
         key: "actual-vs-scheduled",
         title: "Actual vs. scheduled",
         question: "Where does delivered activity differ from the current schedule?",
-        description: "Compares scheduled hours and expected Employee base with delivered hours and recorded Employee base.",
-        timeBasis: "All scheduled and committed activity",
+        description: "Compares scheduled hours and expected Employee base with committed transaction hours and recorded Employee base.",
+        timeBasis: "Scheduled session date and transaction service date",
+        note: "Actuals come directly from committed transactions, not reconciliation matches.",
         columnLabels: {
           scheduledInternal: "Scheduled Employee base",
           actualInternal: "Recorded Employee base",
@@ -116,9 +117,10 @@ export const REPORT_LIBRARY: ReportLibraryGroup[] = [
       {
         key: "program-totals",
         title: "Program performance",
-        question: "Which programs carry the most people, hours, and Funder billed?",
-        description: "Summarizes people, hours, Funder billed, Employee base, and Agency spread by program.",
-        timeBasis: "All committed transactions",
+        question: "Which programs carry the most people, credited hours, physical work, and Funder billed?",
+        description: "Summarizes people, credited individual hours, physical employee hours, Funder billed, Employee base, and Agency spread by program.",
+        timeBasis: "Committed transaction service date",
+        note: "For group services, each member receives the full credited hours while employee time is counted once.",
         columnLabels: {
           agencyGross: "Funder billed",
           internalAmount: "Employee base",

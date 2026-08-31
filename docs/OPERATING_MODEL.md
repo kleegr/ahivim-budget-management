@@ -49,7 +49,7 @@ Generated obligations are immutable calculation records. Payments, collections, 
 
 The security role controls administrative power. The portal role controls the experience and default visibility. A user may have multiple scoped relationships, but external access never expands through connected people.
 
-Internal workspaces and external agency portals are deliberately different. Ahivim's internal Planner profile may create and change schedules in the hours-only Planning workspace. Ahivim's internal Money operator may record checks, collections, and set-asides in Collections. Agency portal roles named Scheduler, Staffing manager, or Collector receive only scoped reports for their agency; those labels do not grant access to the internal Planning or Collections write endpoints. An internal staff account must be assigned the corresponding internal access profile separately.
+Internal workspaces and external agency portals are deliberately different. Ahivim's internal Planner profile may create and change schedules in the hours-only Planning workspace. Ahivim's internal Money Collector may record checks, collections, and set-asides in Masser. Agency portal roles named Scheduler, Staffing manager, or Collector receive only scoped reports for their agency; those labels do not grant access to the internal Planning or Masser write endpoints. An internal staff account must be assigned the corresponding internal access profile separately.
 
 | Portal role | Primary work | Money visibility | People scope |
 | --- | --- | --- | --- |

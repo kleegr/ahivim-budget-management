@@ -66,7 +66,7 @@ export function collectionsPayrollCheckHref(source: PayrollCheckLinkSource): str
   if (source.periodBegin) params.set("periodBegin", source.periodBegin);
   if (source.periodEnd) params.set("periodEnd", source.periodEnd);
   for (const id of source.transactionIds ?? []) params.append("sourceTransactionId", id);
-  return `/collections?${params.toString()}`;
+  return `/masser?${params.toString()}`;
 }
 
 /**

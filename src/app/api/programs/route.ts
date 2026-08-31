@@ -9,15 +9,22 @@ import { createProgram, type ProgramInput } from "@/lib/manage/programs";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** List every program, including archived ones. Any signed-in role may read. */
+/** List every program for an authorized internal workspace, including archived ones. */
 export async function GET() {
   const user = await apiUser("viewer");
   if (!user) return jsonError("Authentication required", 401);
 
   try {
     const pool = getPool();
-    const data = await listPrograms(pool);
     const scope = await resolveAccessScope(pool, user);
+    // Portal-only accounts use their relationship-scoped portal read model and
+    // must not be able to enumerate the agency-wide catalog through this
+    // internal endpoint. Planning and financial staff still need the catalog;
+    // each rate category remains independently redacted below.
+    if (!scope.full && !scope.canSeeHours && !scope.canSeeMoney) {
+      return jsonError("No access to programs", 403);
+    }
+    const data = await listPrograms(pool);
     return NextResponse.json({
       ok: true,
       data: data.map((program) => ({

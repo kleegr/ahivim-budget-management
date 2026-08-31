@@ -33,19 +33,16 @@ const routingLabel = (routing: CheckRouting) => {
 
 function checkRowsHref(check: CheckSummary): string {
   const params = new URLSearchParams({ view: "rows" });
-  if (check.transactionIds.length <= 200) {
-    for (const id of check.transactionIds) params.append("transactionId", id);
-    return `/transactions?${params.toString()}`;
-  }
   if (check.checkNumber) params.set("checkNumber", check.checkNumber);
   if (check.payTo) params.set("payToKey", check.payTo.trim().toLocaleLowerCase());
   else if (check.employeeId) params.set("employeeId", check.employeeId);
   else if (check.employee) params.set("employee", check.employee);
-  if (check.checkDate) params.set("period", `${check.checkDate}..${check.checkDate}`);
-  else {
-    if (check.periodBegin) params.set("pbFrom", check.periodBegin);
-    if (check.periodEnd) params.set("pbTo", check.periodEnd);
+  if (check.checkDate) {
+    params.set("checkDateFrom", check.checkDate);
+    params.set("checkDateTo", check.checkDate);
   }
+  if (check.periodBegin) params.set("pbFrom", check.periodBegin);
+  if (check.periodEnd) params.set("pbTo", check.periodEnd);
   return `/transactions?${params.toString()}`;
 }
 

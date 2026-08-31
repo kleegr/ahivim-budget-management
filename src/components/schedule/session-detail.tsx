@@ -54,8 +54,8 @@ export default function SessionDetail({
         {canManage ? (
           <>
             <label className="block">
-              <span className="text-xs text-[var(--color-ink-faint)]">Reason (recorded in the audit log)</span>
-              <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Optional, but recommended for changes" className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm" />
+              <span className="text-xs text-[var(--color-ink-faint)]">Reason (required when the calendar finds a warning)</span>
+              <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Add a reason for an exception" className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm" />
             </label>
 
             {mode === null ? (

@@ -107,13 +107,14 @@ export interface BudgetUtilizationRow {
 }
 
 /**
- * Per individual + program: authorized hours, actual used hours (from
- * service_allocations, where a group member's full-hours entitlement lives),
- * scheduled-but-pending hours, remaining, %used and %committed.
+ * Per individual + program: authorized hours and transaction-backed actual
+ * usage from the same program_budget_balances read model as the budget
+ * workspace, plus scheduled-but-pending hours, remaining, %used and
+ * %committed.
  *
- * The two usage aggregates are LATERAL sub-selects with COALESCE, so an
- * authorization with no usage at all still returns one row of real zeros — the
- * individual is surfaced with context, not hidden by an inner join.
+ * Scheduled usage is a LATERAL sub-select with COALESCE, so an authorization
+ * with no schedule still returns one row of real zeros. Actual usage and
+ * remaining hours are projected directly from the canonical balance view.
  */
 export async function budgetUtilizationReport(
   pool: PgLikePool,
@@ -140,53 +141,40 @@ export async function budgetUtilizationReport(
     percent_used: string | null;
     percent_committed: string | null;
   }>(
-    `SELECT ba.id                             AS authorization_id,
-            ba.individual_id                  AS individual_id,
-            i.display_name                    AS individual_name,
-            ba.program_id                     AS program_id,
-            p.code                            AS program_code,
-            p.name                            AS program_name,
-            bp.id                             AS budget_period_id,
-            bp.label                          AS period_label,
-            bp.period_type                    AS period_type,
-            bp.start_date::text               AS start_date,
-            bp.end_date::text                 AS end_date,
-            ba.authorized_hours::text         AS authorized_hours,
-            used.h::text                      AS used_hours,
-            sched.h::text                     AS scheduled_hours,
-            (ba.authorized_hours - used.h)::text                 AS remaining_hours,
-            (ba.authorized_hours - used.h - sched.h)::text       AS remaining_after_scheduled_hours,
-            CASE WHEN ba.authorized_hours > 0
-                 THEN round(used.h / ba.authorized_hours * 100, 4)::text END AS percent_used,
-            CASE WHEN ba.authorized_hours > 0
-                 THEN round((used.h + sched.h) / ba.authorized_hours * 100, 4)::text END AS percent_committed
-     FROM budget_authorizations ba
-     JOIN budget_periods bp ON bp.id = ba.budget_period_id
-     JOIN individuals i     ON i.id = ba.individual_id
-     JOIN programs p        ON p.id = ba.program_id
-     CROSS JOIN LATERAL (
-       SELECT COALESCE(sum(sa.allocation_hours), 0) AS h
-       FROM service_allocations sa
-       JOIN service_sessions ss ON ss.id = sa.service_session_id
-       LEFT JOIN payroll_transactions source_t ON source_t.id = sa.payroll_transaction_id
-       WHERE sa.individual_id = ba.individual_id AND ss.program_id = ba.program_id
-         AND COALESCE(
-               canonical_service_date(source_t.period_begin, source_t.check_date, source_t.period_end),
-               canonical_service_date(ss.period_begin, NULL, ss.period_end)
-             )
-             BETWEEN bp.start_date AND bp.end_date
-     ) used
+    `SELECT balance.authorization_id                         AS authorization_id,
+            balance.individual_id                            AS individual_id,
+            balance.individual_name                          AS individual_name,
+            balance.program_id                               AS program_id,
+            balance.program_code                             AS program_code,
+            balance.program_name                             AS program_name,
+            balance.budget_period_id                         AS budget_period_id,
+            balance.period_label                             AS period_label,
+            balance.period_type                              AS period_type,
+            balance.start_date::text                         AS start_date,
+            balance.end_date::text                           AS end_date,
+            balance.authorized_hours::text                   AS authorized_hours,
+            balance.consumed_hours::text                     AS used_hours,
+            sched.h::text                                    AS scheduled_hours,
+            balance.remaining_hours::text                    AS remaining_hours,
+            (balance.remaining_hours - sched.h)::text        AS remaining_after_scheduled_hours,
+            CASE WHEN balance.authorized_hours > 0
+                 THEN round(balance.consumed_hours / balance.authorized_hours * 100, 4)::text END AS percent_used,
+            CASE WHEN balance.authorized_hours > 0
+                 THEN round((balance.consumed_hours + sched.h) / balance.authorized_hours * 100, 4)::text END AS percent_committed
+     FROM program_budget_balances balance
      CROSS JOIN LATERAL (
        SELECT COALESCE(sum(sca.allocation_hours), 0) AS h
        FROM scheduled_allocations sca
        JOIN scheduled_sessions scs ON scs.id = sca.scheduled_session_id
-       WHERE sca.individual_id = ba.individual_id AND scs.program_id = ba.program_id
+       WHERE sca.individual_id = balance.individual_id
+         AND scs.program_id = balance.program_id
          AND scs.status = 'pending' AND scs.matched_transaction_id IS NULL
-         AND scs.session_date BETWEEN bp.start_date AND bp.end_date
+         AND scs.session_date BETWEEN balance.start_date AND balance.end_date
      ) sched
-     WHERE ba.status = 'active' AND bp.status = 'active'
-       AND ($1::text IS NULL OR bp.period_type = $1)
-     ORDER BY i.display_name, p.code`,
+     WHERE balance.period_status = 'active'
+       AND balance.required_auth_type IN ('hours', 'both')
+       AND ($1::text IS NULL OR balance.period_type = $1)
+     ORDER BY balance.individual_name, balance.program_code`,
     [periodType],
   );
 
@@ -365,43 +353,104 @@ export interface ProgramTotalsRow {
   programName: string;
   individualsServed: number;
   employees: number;
-  actualHours: string;
+  /** Full service hours credited to every individual transaction row. */
+  creditedIndividualHours: string;
+  /** Employee time counted once per delivered service session. */
+  physicalEmployeeHours: string;
   agencyGross: string;
   internalAmount: string;
   agencyAdditional: string;
   groupSessions: number;
 }
 
-/** Per program: people served, employees, actual hours, money, group sessions. */
-export async function programTotalsReport(pool: PgLikePool): Promise<ProgramTotalsRow[]> {
+/**
+ * Per program: people served, employees, credited individual hours, physical
+ * employee hours, money, and group sessions.
+ *
+ * Group services deliberately produce two different hour totals. Every member
+ * receives the full hours as a budget credit, while the employee only worked
+ * the session once. Transaction rows are the committed activity ledger;
+ * service_sessions are consulted only to count that physical time once.
+ */
+export async function programTotalsReport(
+  pool: PgLikePool,
+  opts: { from?: string; to?: string } = {},
+): Promise<ProgramTotalsRow[]> {
+  const from = asDate(opts.from) ?? null;
+  const to = asDate(opts.to) ?? null;
   const { rows } = await pool.query<{
     program_id: string;
     program_code: string;
     program_name: string;
     individuals_served: string;
     employees: string;
-    actual_hours: string;
+    credited_individual_hours: string;
+    physical_employee_hours: string;
     agency_gross: string;
     internal_amount: string;
     agency_additional: string;
     group_sessions: string;
   }>(
-    `SELECT p.id                                            AS program_id,
-            p.code                                          AS program_code,
-            p.name                                          AS program_name,
-            count(DISTINCT t.individual_id)::text           AS individuals_served,
-            count(DISTINCT t.employee_id)::text             AS employees,
-            COALESCE(sum(t.imported_hours), 0)::text        AS actual_hours,
-            COALESCE(sum(t.imported_amount), 0)::text       AS agency_gross,
-            COALESCE(sum(t.calculated_internal_amount), 0)::text AS internal_amount,
-            COALESCE(sum(t.agency_additional_amount), 0)::text   AS agency_additional,
-            (SELECT count(*) FROM service_sessions ss
-              WHERE ss.program_id = p.id
-                AND ss.group_detection_status = 'detected')::text AS group_sessions
-     FROM programs p
-     LEFT JOIN payroll_transactions t ON t.program_id = p.id
-     GROUP BY p.id, p.code, p.name
-     ORDER BY p.code`,
+    `WITH activity AS (
+       SELECT t.*
+         FROM payroll_transactions t
+        WHERE ($1::date IS NULL OR canonical_service_date(
+                 t.period_begin, t.check_date, t.period_end
+               ) >= $1)
+          AND ($2::date IS NULL OR canonical_service_date(
+                 t.period_begin, t.check_date, t.period_end
+               ) <= $2)
+     ),
+     transaction_totals AS (
+       SELECT t.program_id,
+              count(DISTINCT t.individual_id) AS individuals_served,
+              count(DISTINCT t.employee_id) AS employees,
+              COALESCE(sum(t.imported_hours), 0) AS credited_individual_hours,
+              COALESCE(sum(t.imported_amount), 0) AS agency_gross,
+              COALESCE(sum(t.calculated_internal_amount), 0) AS internal_amount,
+              COALESCE(sum(t.agency_additional_amount), 0) AS agency_additional
+         FROM activity t
+        GROUP BY t.program_id
+     ),
+     physical_sessions AS (
+       SELECT t.program_id,
+              COALESCE(
+                'session:' || t.service_session_id::text,
+                'transaction:' || t.id::text
+              ) AS activity_key,
+              max(COALESCE(ss.physical_hours, t.imported_hours, 0)) AS physical_hours,
+              bool_or(COALESCE(ss.group_size > 1, false) OR t.is_group_service) AS is_group
+         FROM activity t
+         LEFT JOIN service_sessions ss ON ss.id = t.service_session_id
+        GROUP BY t.program_id,
+                 COALESCE(
+                   'session:' || t.service_session_id::text,
+                   'transaction:' || t.id::text
+                 )
+     ),
+     physical_totals AS (
+       SELECT program_id,
+              COALESCE(sum(physical_hours), 0) AS physical_employee_hours,
+              count(*) FILTER (WHERE is_group) AS group_sessions
+         FROM physical_sessions
+        GROUP BY program_id
+     )
+     SELECT p.id                                                    AS program_id,
+            p.code                                                  AS program_code,
+            p.name                                                  AS program_name,
+            COALESCE(tx.individuals_served, 0)::text                AS individuals_served,
+            COALESCE(tx.employees, 0)::text                         AS employees,
+            COALESCE(tx.credited_individual_hours, 0)::text         AS credited_individual_hours,
+            COALESCE(physical.physical_employee_hours, 0)::text     AS physical_employee_hours,
+            COALESCE(tx.agency_gross, 0)::text                      AS agency_gross,
+            COALESCE(tx.internal_amount, 0)::text                   AS internal_amount,
+            COALESCE(tx.agency_additional, 0)::text                 AS agency_additional,
+            COALESCE(physical.group_sessions, 0)::text              AS group_sessions
+       FROM programs p
+       LEFT JOIN transaction_totals tx ON tx.program_id = p.id
+       LEFT JOIN physical_totals physical ON physical.program_id = p.id
+      ORDER BY p.code`,
+    [from, to],
   );
   return rows.map((r) => ({
     programId: r.program_id,
@@ -409,7 +458,8 @@ export async function programTotalsReport(pool: PgLikePool): Promise<ProgramTota
     programName: r.program_name,
     individualsServed: Number(r.individuals_served),
     employees: Number(r.employees),
-    actualHours: toHours(r.actual_hours),
+    creditedIndividualHours: toHours(r.credited_individual_hours),
+    physicalEmployeeHours: toHours(r.physical_employee_hours),
     agencyGross: toMoney(r.agency_gross),
     internalAmount: toMoney(r.internal_amount),
     agencyAdditional: toMoney(r.agency_additional),
@@ -438,7 +488,7 @@ export interface ExpiringAuthorizationRow {
 /**
  * Authorizations whose budget period end_date or renewal_date falls within the
  * next N days (default 60). daysRemaining counts to the nearest of the two
- * upcoming dates. Used hours come from service_allocations, like utilization.
+ * upcoming dates. Used hours come from the canonical balance read model.
  */
 export async function expiringAuthorizationsReport(
   pool: PgLikePool,
@@ -458,42 +508,29 @@ export async function expiringAuthorizationsReport(
     authorized_hours: string;
     used_hours: string;
   }>(
-    `SELECT ba.id                     AS authorization_id,
-            ba.individual_id          AS individual_id,
-            i.display_name            AS individual_name,
-            p.code                    AS program_code,
-            p.name                    AS program_name,
-            bp.label                  AS period_label,
-            bp.end_date::text         AS end_date,
-            bp.renewal_date::text     AS renewal_date,
+    `SELECT balance.authorization_id                  AS authorization_id,
+            balance.individual_id                     AS individual_id,
+            balance.individual_name                   AS individual_name,
+            balance.program_code                      AS program_code,
+            balance.program_name                      AS program_name,
+            balance.period_label                      AS period_label,
+            balance.end_date::text                    AS end_date,
+            balance.renewal_date::text                AS renewal_date,
             (LEAST(
-               CASE WHEN bp.end_date     >= CURRENT_DATE THEN bp.end_date END,
-               CASE WHEN bp.renewal_date >= CURRENT_DATE THEN bp.renewal_date END
-             ) - CURRENT_DATE)        AS days_remaining,
-            ba.authorized_hours::text AS authorized_hours,
-            used.h::text              AS used_hours
-     FROM budget_authorizations ba
-     JOIN budget_periods bp ON bp.id = ba.budget_period_id
-     JOIN individuals i     ON i.id = ba.individual_id
-     JOIN programs p        ON p.id = ba.program_id
-     CROSS JOIN LATERAL (
-       SELECT COALESCE(sum(sa.allocation_hours), 0) AS h
-       FROM service_allocations sa
-       JOIN service_sessions ss ON ss.id = sa.service_session_id
-       LEFT JOIN payroll_transactions source_t ON source_t.id = sa.payroll_transaction_id
-       WHERE sa.individual_id = ba.individual_id AND ss.program_id = ba.program_id
-         AND COALESCE(
-               canonical_service_date(source_t.period_begin, source_t.check_date, source_t.period_end),
-               canonical_service_date(ss.period_begin, NULL, ss.period_end)
-             )
-             BETWEEN bp.start_date AND bp.end_date
-     ) used
-     WHERE ba.status = 'active' AND bp.status = 'active'
+               CASE WHEN balance.end_date     >= CURRENT_DATE THEN balance.end_date END,
+               CASE WHEN balance.renewal_date >= CURRENT_DATE THEN balance.renewal_date END
+             ) - CURRENT_DATE)                         AS days_remaining,
+            balance.authorized_hours::text             AS authorized_hours,
+            balance.consumed_hours::text               AS used_hours
+     FROM program_budget_balances balance
+     WHERE balance.period_status = 'active'
        AND (
-         (bp.end_date     >= CURRENT_DATE AND bp.end_date     <= CURRENT_DATE + $1::int) OR
-         (bp.renewal_date >= CURRENT_DATE AND bp.renewal_date <= CURRENT_DATE + $1::int)
+         (balance.end_date >= CURRENT_DATE
+           AND balance.end_date <= CURRENT_DATE + $1::int) OR
+         (balance.renewal_date >= CURRENT_DATE
+           AND balance.renewal_date <= CURRENT_DATE + $1::int)
        )
-     ORDER BY days_remaining NULLS LAST, i.display_name, p.code`,
+     ORDER BY days_remaining NULLS LAST, balance.individual_name, balance.program_code`,
     [withinDays],
   );
   return rows.map((r) => ({
@@ -618,27 +655,24 @@ export async function dashboardReportMetrics(pool: PgLikePool): Promise<Dashboar
     missing_assignments: string;
   }>(
     `WITH util AS (
-       SELECT ba.authorized_hours AS auth, bp.start_date, bp.end_date,
-              (SELECT COALESCE(sum(sa.allocation_hours), 0)
-                 FROM service_allocations sa
-                 JOIN service_sessions ss ON ss.id = sa.service_session_id
-                 LEFT JOIN payroll_transactions source_t ON source_t.id = sa.payroll_transaction_id
-                WHERE sa.individual_id = ba.individual_id AND ss.program_id = ba.program_id
-                  AND COALESCE(
-                        canonical_service_date(source_t.period_begin, source_t.check_date, source_t.period_end),
-                        canonical_service_date(ss.period_begin, NULL, ss.period_end)
-                      )
-                      BETWEEN bp.start_date AND bp.end_date) AS used,
-              (SELECT COALESCE(sum(sca.allocation_hours), 0)
-                 FROM scheduled_allocations sca
-                 JOIN scheduled_sessions scs ON scs.id = sca.scheduled_session_id
-                WHERE sca.individual_id = ba.individual_id AND scs.program_id = ba.program_id
-                  AND scs.status = 'pending'
-                  AND scs.matched_transaction_id IS NULL
-                  AND scs.session_date BETWEEN bp.start_date AND bp.end_date) AS sched
-       FROM budget_authorizations ba
-       JOIN budget_periods bp ON bp.id = ba.budget_period_id
-       WHERE ba.status = 'active' AND bp.status = 'active'
+       SELECT balance.authorized_hours AS auth,
+              balance.start_date,
+              balance.end_date,
+              balance.consumed_hours AS used,
+              sched.h AS sched
+       FROM program_budget_balances balance
+       CROSS JOIN LATERAL (
+         SELECT COALESCE(sum(sca.allocation_hours), 0) AS h
+           FROM scheduled_allocations sca
+           JOIN scheduled_sessions scs ON scs.id = sca.scheduled_session_id
+          WHERE sca.individual_id = balance.individual_id
+            AND scs.program_id = balance.program_id
+            AND scs.status = 'pending'
+            AND scs.matched_transaction_id IS NULL
+            AND scs.session_date BETWEEN balance.start_date AND balance.end_date
+       ) sched
+       WHERE balance.period_status = 'active'
+         AND balance.required_auth_type IN ('hours', 'both')
      )
      SELECT
        (SELECT count(*) FROM util
@@ -652,11 +686,12 @@ export async function dashboardReportMetrics(pool: PgLikePool): Promise<Dashboar
        (SELECT COALESCE(sum(employee_payment_amount), 0) FROM payroll_transactions)::text AS employee_payable,
        (SELECT count(*) FROM payroll_transactions WHERE employee_payment_amount IS NOT NULL)::text AS employee_payable_rows,
        (SELECT count(*) FROM payroll_transactions)::text                                AS transaction_rows,
-       (SELECT count(*) FROM budget_authorizations ba
-          JOIN budget_periods bp ON bp.id = ba.budget_period_id
-         WHERE ba.status = 'active' AND bp.status = 'active'
-           AND ((bp.end_date     >= CURRENT_DATE AND bp.end_date     <= CURRENT_DATE + 60) OR
-                (bp.renewal_date >= CURRENT_DATE AND bp.renewal_date <= CURRENT_DATE + 60)))::text AS expiring_auth,
+       (SELECT count(*) FROM program_budget_balances balance
+         WHERE balance.period_status = 'active'
+           AND ((balance.end_date >= CURRENT_DATE
+                  AND balance.end_date <= CURRENT_DATE + 60) OR
+                (balance.renewal_date >= CURRENT_DATE
+                  AND balance.renewal_date <= CURRENT_DATE + 60)))::text AS expiring_auth,
        (SELECT count(*) FROM scheduled_sessions
          WHERE status = 'pending' AND matched_transaction_id IS NULL)::text             AS unbilled_schedules,
        (SELECT count(*) FROM payroll_transactions t
@@ -1042,14 +1077,25 @@ export interface ActualVsScheduledRow {
 /**
  * Per individual + program: scheduled hours and expected internal (from
  * scheduled_allocations on pending/completed sessions) set against actual hours
- * and internal (from service_allocations), with the variance (actual − scheduled)
- * for both hours and money. A UNION of the two key sets means a pair that is only
- * scheduled, or only actual, still appears with real zeros on the missing side.
+ * and internal from the committed payroll transaction ledger. Reconciliation
+ * allocations are intentionally not an actuals source. A UNION of the two key
+ * sets means a pair that is only scheduled, or only actual, still appears with
+ * real zeros on the missing side.
  */
 export async function actualVsScheduledReport(
   pool: PgLikePool,
-  opts: { program?: string } = {},
+  opts: {
+    from?: string;
+    to?: string;
+    individual?: string;
+    employee?: string;
+    program?: string;
+  } = {},
 ): Promise<ActualVsScheduledRow[]> {
+  const from = asDate(opts.from) ?? null;
+  const to = asDate(opts.to) ?? null;
+  const individual = (opts.individual ?? "").trim() || null;
+  const employee = (opts.employee ?? "").trim() || null;
   const program = (opts.program ?? "").trim() || null;
   const { rows } = await pool.query<{
     individual_id: string;
@@ -1069,16 +1115,42 @@ export async function actualVsScheduledReport(
               COALESCE(sum(sa.allocated_amount), 0) AS internal
        FROM scheduled_allocations sa
        JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
+       JOIN individuals sched_individual ON sched_individual.id = sa.individual_id
+       LEFT JOIN employees sched_employee ON sched_employee.id = s.employee_id
+       LEFT JOIN programs sched_program ON sched_program.id = s.program_id
        WHERE s.status IN ('pending', 'completed')
+         AND ($1::date IS NULL OR s.session_date >= $1)
+         AND ($2::date IS NULL OR s.session_date <= $2)
+         AND ($3::text IS NULL OR sa.individual_id::text = $3
+              OR sched_individual.display_name ILIKE '%' || $3 || '%')
+         AND ($4::text IS NULL OR s.employee_id::text = $4
+              OR sched_employee.display_name ILIKE '%' || $4 || '%')
+         AND ($5::text IS NULL OR sched_program.code ILIKE '%' || $5 || '%'
+              OR sched_program.name ILIKE '%' || $5 || '%')
        GROUP BY sa.individual_id, s.program_id
      ),
      actual AS (
-       SELECT al.individual_id, ss.program_id,
-              COALESCE(sum(al.allocation_hours), 0) AS hours,
-              COALESCE(sum(al.allocated_amount), 0) AS internal
-       FROM service_allocations al
-       JOIN service_sessions ss ON ss.id = al.service_session_id
-       GROUP BY al.individual_id, ss.program_id
+       SELECT t.individual_id, t.program_id,
+              COALESCE(sum(t.imported_hours), 0) AS hours,
+              COALESCE(sum(t.calculated_internal_amount), 0) AS internal
+       FROM payroll_transactions t
+       JOIN individuals actual_individual ON actual_individual.id = t.individual_id
+       LEFT JOIN employees actual_employee ON actual_employee.id = t.employee_id
+       LEFT JOIN programs actual_program ON actual_program.id = t.program_id
+       WHERE t.individual_id IS NOT NULL
+         AND ($1::date IS NULL OR canonical_service_date(
+                t.period_begin, t.check_date, t.period_end
+              ) >= $1)
+         AND ($2::date IS NULL OR canonical_service_date(
+                t.period_begin, t.check_date, t.period_end
+              ) <= $2)
+         AND ($3::text IS NULL OR t.individual_id::text = $3
+              OR actual_individual.display_name ILIKE '%' || $3 || '%')
+         AND ($4::text IS NULL OR t.employee_id::text = $4
+              OR actual_employee.display_name ILIKE '%' || $4 || '%')
+         AND ($5::text IS NULL OR actual_program.code ILIKE '%' || $5 || '%'
+              OR actual_program.name ILIKE '%' || $5 || '%')
+       GROUP BY t.individual_id, t.program_id
      ),
      keys AS (
        SELECT individual_id, program_id FROM sched
@@ -1102,9 +1174,8 @@ export async function actualVsScheduledReport(
                       AND s.program_id IS NOT DISTINCT FROM k.program_id
      LEFT JOIN actual a ON a.individual_id = k.individual_id
                        AND a.program_id IS NOT DISTINCT FROM k.program_id
-     WHERE ($1::text IS NULL OR p.code ILIKE '%' || $1 || '%' OR p.name ILIKE '%' || $1 || '%')
      ORDER BY i.display_name, p.code NULLS FIRST`,
-    [program],
+    [from, to, individual, employee, program],
   );
   return rows.map((r) => ({
     individualId: r.individual_id,
@@ -1142,8 +1213,9 @@ export interface UtilizationOutlierRow {
 /**
  * Authorizations that are utilization outliers: OVER-utilizing (> 100% of the
  * authorized hours already used) or UNDER-utilizing (< 50% used once more than
- * half the period has elapsed). Used hours come from service_allocations, like
- * the utilization report. Filterable by flag and program; only outliers appear.
+ * half the period has elapsed). Used hours come from the canonical
+ * program_budget_balances read model, like the utilization report. Filterable
+ * by flag and program; only outliers appear.
  */
 export async function utilizationOutliersReport(
   pool: PgLikePool,
@@ -1166,43 +1238,32 @@ export async function utilizationOutliersReport(
     flag: string;
   }>(
     `SELECT * FROM (
-       SELECT ba.id                       AS authorization_id,
-              ba.individual_id            AS individual_id,
-              i.display_name              AS individual_name,
-              p.code                      AS program_code,
-              p.name                      AS program_name,
-              bp.label                    AS period_label,
-              ba.authorized_hours::text   AS authorized_hours,
-              used.h::text                AS used_hours,
-              (ba.authorized_hours - used.h)::text AS remaining_hours,
-              CASE WHEN ba.authorized_hours > 0
-                   THEN round(used.h / ba.authorized_hours * 100, 4)::text END AS percent_used,
+       SELECT balance.authorization_id                       AS authorization_id,
+              balance.individual_id                          AS individual_id,
+              balance.individual_name                        AS individual_name,
+              balance.program_code                           AS program_code,
+              balance.program_name                           AS program_name,
+              balance.period_label                           AS period_label,
+              balance.authorized_hours::text                 AS authorized_hours,
+              balance.consumed_hours::text                   AS used_hours,
+              balance.remaining_hours::text                  AS remaining_hours,
+              CASE WHEN balance.authorized_hours > 0
+                   THEN round(balance.consumed_hours / balance.authorized_hours * 100, 4)::text END AS percent_used,
               CASE
-                WHEN ba.authorized_hours > 0 AND used.h > ba.authorized_hours
+                WHEN balance.authorized_hours > 0
+                     AND balance.consumed_hours > balance.authorized_hours
                   THEN 'overutilizing'
-                WHEN ba.authorized_hours > 0 AND used.h < ba.authorized_hours * 0.5
-                     AND bp.end_date > bp.start_date
-                     AND (CURRENT_DATE - bp.start_date)::numeric / (bp.end_date - bp.start_date) > 0.5
+                WHEN balance.authorized_hours > 0
+                     AND balance.consumed_hours < balance.authorized_hours * 0.5
+                     AND balance.end_date > balance.start_date
+                     AND (CURRENT_DATE - balance.start_date)::numeric
+                         / (balance.end_date - balance.start_date) > 0.5
                   THEN 'underutilizing'
                 ELSE 'ok'
               END                         AS flag
-       FROM budget_authorizations ba
-       JOIN budget_periods bp ON bp.id = ba.budget_period_id
-       JOIN individuals i     ON i.id = ba.individual_id
-       JOIN programs p        ON p.id = ba.program_id
-       CROSS JOIN LATERAL (
-         SELECT COALESCE(sum(sa.allocation_hours), 0) AS h
-         FROM service_allocations sa
-         JOIN service_sessions ss ON ss.id = sa.service_session_id
-         LEFT JOIN payroll_transactions source_t ON source_t.id = sa.payroll_transaction_id
-         WHERE sa.individual_id = ba.individual_id AND ss.program_id = ba.program_id
-           AND COALESCE(
-                 canonical_service_date(source_t.period_begin, source_t.check_date, source_t.period_end),
-                 canonical_service_date(ss.period_begin, NULL, ss.period_end)
-               )
-               BETWEEN bp.start_date AND bp.end_date
-       ) used
-       WHERE ba.status = 'active' AND bp.status = 'active'
+       FROM program_budget_balances balance
+       WHERE balance.period_status = 'active'
+         AND balance.required_auth_type IN ('hours', 'both')
      ) x
      WHERE x.flag <> 'ok'
        AND ($1::text IS NULL OR x.flag = $1)
@@ -1356,10 +1417,10 @@ export const REPORTS: Record<string, ReportDefinition> = {
     key: "program-totals",
     title: "Program totals",
     description:
-      "Individuals served, employees, actual hours, agency gross, internal amount and group sessions for every program.",
-    filters: [],
-    async run(pool) {
-      const rows = await programTotalsReport(pool);
+      "Individuals served, employees, credited individual hours, physical employee hours, Funder billed, Employee base, Agency spread, and group sessions for every program.",
+    filters: DATE_FILTERS,
+    async run(pool, filters) {
+      const rows = await programTotalsReport(pool, { from: filters.from, to: filters.to });
       return [
         {
           key: "program-totals",
@@ -1368,17 +1429,19 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "programName", header: "Program", type: "text" },
             { key: "individualsServed", header: "Individuals", type: "int" },
             { key: "employees", header: "Employees", type: "int" },
-            { key: "actualHours", header: "Actual hours", type: "hours" },
-            { key: "agencyGross", header: "Agency gross", type: "money" },
-            { key: "internalAmount", header: "Internal amount", type: "money" },
-            { key: "agencyAdditional", header: "Agency additional", type: "money" },
+            { key: "creditedIndividualHours", header: "Credited individual hours", type: "hours" },
+            { key: "physicalEmployeeHours", header: "Physical employee hours", type: "hours" },
+            { key: "agencyGross", header: "Funder billed", type: "money" },
+            { key: "internalAmount", header: "Employee base", type: "money" },
+            { key: "agencyAdditional", header: "Agency spread", type: "money" },
             { key: "groupSessions", header: "Group sessions", type: "int" },
           ],
           rows: rows.map((r) => ({
             programName: r.programName,
             individualsServed: r.individualsServed,
             employees: r.employees,
-            actualHours: r.actualHours,
+            creditedIndividualHours: r.creditedIndividualHours,
+            physicalEmployeeHours: r.physicalEmployeeHours,
             agencyGross: r.agencyGross,
             internalAmount: r.internalAmount,
             agencyAdditional: r.agencyAdditional,
@@ -1738,10 +1801,21 @@ export const REPORTS: Record<string, ReportDefinition> = {
     key: "actual-vs-scheduled",
     title: "Actual vs scheduled",
     description:
-      "Per individual and program: scheduled hours and expected internal set against actual hours and internal, with the variance (actual minus scheduled) for both.",
-    filters: [{ key: "program", label: "Program", type: "text", placeholder: "Code or name" }],
+      "Per individual and program: scheduled hours and expected Employee base compared with committed transaction hours and recorded Employee base.",
+    filters: [
+      ...DATE_FILTERS,
+      { key: "individual", label: "Individual", type: "text", placeholder: "Name" },
+      { key: "employee", label: "Employee", type: "text", placeholder: "Name" },
+      { key: "program", label: "Program", type: "text", placeholder: "Code or name" },
+    ],
     async run(pool, filters) {
-      const rows = await actualVsScheduledReport(pool, { program: filters.program });
+      const rows = await actualVsScheduledReport(pool, {
+        from: filters.from,
+        to: filters.to,
+        individual: filters.individual,
+        employee: filters.employee,
+        program: filters.program,
+      });
       return [
         {
           key: "actual-vs-scheduled",
@@ -1752,9 +1826,9 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "scheduledHours", header: "Scheduled hours", type: "hours" },
             { key: "actualHours", header: "Actual hours", type: "hours" },
             { key: "hoursVariance", header: "Hours variance", type: "hours" },
-            { key: "scheduledInternal", header: "Scheduled internal", type: "money" },
-            { key: "actualInternal", header: "Actual internal", type: "money" },
-            { key: "internalVariance", header: "Internal variance", type: "money" },
+            { key: "scheduledInternal", header: "Scheduled Employee base", type: "money" },
+            { key: "actualInternal", header: "Recorded Employee base", type: "money" },
+            { key: "internalVariance", header: "Employee base variance", type: "money" },
           ],
           rows: rows.map((r) => ({
             individualName: r.individualName,

@@ -1,5 +1,30 @@
 import type { UserAccessConfig } from "./users";
 
+/** Portal accounts receive no internal workspace access unless explicitly added. */
+export const PORTAL_ONLY_ACCESS = {
+  accessScope: "scoped",
+  seeAllIndividuals: false,
+  seeAllEmployees: false,
+  canSeeTransactions: false,
+  canSeeMoney: false,
+  canSeeHours: false,
+  canSeeBilledAmounts: false,
+  canSeeEmployeeAmounts: false,
+  canSeeAgencySpread: false,
+  canSeeCheckNet: false,
+  canSeeTaxes: false,
+  canSeeBudgets: false,
+  canSeeEmployeeDeals: false,
+  canSeeSettlements: false,
+  canManageSettlements: false,
+  canSeeClassFinancials: false,
+  canManageClassInvoices: false,
+  canEditDocuments: false,
+  canPlan: false,
+  individualIds: [],
+  employeeIds: [],
+} satisfies UserAccessConfig;
+
 /** Full-roster, hours-only access for the staff member who manages schedules. */
 export const BUDGET_PLANNER_ACCESS = {
   // Viewer access must remain scoped at the database boundary. The two
@@ -26,6 +51,12 @@ export const BUDGET_PLANNER_ACCESS = {
   canPlan: true,
   individualIds: [],
   employeeIds: [],
+} satisfies UserAccessConfig;
+
+/** Full-roster staffing and schedule access without budgets or money. */
+export const STAFFING_MANAGER_ACCESS = {
+  ...BUDGET_PLANNER_ACCESS,
+  canSeeBudgets: false,
 } satisfies UserAccessConfig;
 
 /** Full-roster financial operations without budgets or agency revenue. */

@@ -5,6 +5,7 @@ import {
   archiveDirectPayTarget,
   saveDirectPayTarget,
   savePayrollCheck,
+  syncImportedPayrollCheckReviews,
 } from "@/lib/manage/direct-pay-operations";
 import {
   closeTestPool,
@@ -166,5 +167,98 @@ suite("direct-pay operations (real PostgreSQL)", () => {
       `SELECT payroll_check_id FROM payroll_transactions WHERE transaction_fingerprint = 'direct-pay-check-link'`,
     );
     expect(unlinked.rows[0]?.payroll_check_id).toBeNull();
+  });
+
+  it("links blank repeated-NET rows without linking agency-paid rows and is idempotent", async () => {
+    const employee = unwrap(await createEmployee(pool, { displayName: "Imported Check Employee" }, ACTOR));
+    const program = await pool.query<{ id: string }>(
+      `SELECT id FROM programs WHERE payment_recipient = 'employee' ORDER BY code LIMIT 1`,
+    );
+    expect(program.rows[0]).toBeDefined();
+    const file = await pool.query<{ id: string }>(
+      `INSERT INTO imported_files (file_name, file_size, checksum)
+       VALUES ('imported-checks.xlsx', 1, 'imported-checks-review') RETURNING id`,
+    );
+    const batch = await pool.query<{ id: string }>(
+      `INSERT INTO import_batches (imported_file_id, status)
+       VALUES ($1, 'committed') RETURNING id`,
+      [file.rows[0]!.id],
+    );
+    await pool.query(
+      `INSERT INTO payroll_transactions
+         (employee_id, program_id, import_batch_id, check_number, check_date, period_begin, period_end,
+          imported_hours, imported_amount, total_net_pay, payment_recipient,
+          transaction_fingerprint)
+       VALUES
+         ($1, $2, $3, 'IMPORT-10', '2026-08-15', '2026-08-01', '2026-08-14',
+          10, 250, 420, 'employee', 'import-check-with-net'),
+         ($1, $2, $3, 'IMPORT-10', '2026-08-15', '2026-08-01', '2026-08-14',
+          10, 250, NULL, 'employee', 'import-check-blank-net'),
+         ($1, $2, $3, 'IMPORT-10', '2026-08-15', '2026-08-01', '2026-08-14',
+          10, 250, 420, 'excellent_staffing', 'import-check-agency-paid'),
+         ($1, $2, $3, 'IMPORT-CONFLICT', '2026-08-30', '2026-08-15', '2026-08-29',
+          10, 250, 400, 'employee', 'import-conflict-one'),
+         ($1, $2, $3, 'IMPORT-CONFLICT', '2026-08-30', '2026-08-15', '2026-08-29',
+          10, 250, 410, 'employee', 'import-conflict-two'),
+         ($1, $2, NULL, 'IMPORT-10', '2026-08-15', '2026-08-01', '2026-08-14',
+          10, 250, 420, 'employee', 'import-check-manual-row')`,
+      [employee.id, program.rows[0]!.id, batch.rows[0]!.id],
+    );
+
+    await expect(syncImportedPayrollCheckReviews(pool, null, ACTOR)).resolves.toEqual({
+      checks: 1,
+      linkedTransactions: 2,
+    });
+    const linked = await pool.query<{ transaction_fingerprint: string; payroll_check_id: string | null }>(
+      `SELECT transaction_fingerprint, payroll_check_id
+         FROM payroll_transactions
+        WHERE transaction_fingerprint LIKE 'import-check-%'
+        ORDER BY transaction_fingerprint`,
+    );
+    const byFingerprint = new Map(linked.rows.map((row) => [row.transaction_fingerprint, row.payroll_check_id]));
+    expect(byFingerprint.get("import-check-with-net")).toBeTruthy();
+    expect(byFingerprint.get("import-check-blank-net")).toBe(byFingerprint.get("import-check-with-net"));
+    expect(byFingerprint.get("import-check-agency-paid")).toBeNull();
+    expect(byFingerprint.get("import-check-manual-row")).toBeNull();
+    const conflicting = await pool.query<{ payroll_check_id: string | null }>(
+      `SELECT payroll_check_id FROM payroll_transactions
+        WHERE transaction_fingerprint LIKE 'import-conflict-%'`,
+    );
+    expect(conflicting.rows).toEqual([
+      { payroll_check_id: null },
+      { payroll_check_id: null },
+    ]);
+
+    await pool.query(
+      `INSERT INTO payroll_transactions
+         (employee_id, program_id, import_batch_id, check_number, check_date, period_begin, period_end,
+          imported_hours, imported_amount, total_net_pay, payment_recipient,
+          transaction_fingerprint)
+       VALUES
+         ($1, $2, $3, 'IMPORT-10', '2026-08-15', '2026-08-01', '2026-08-14',
+          5, 125, NULL, 'employee', 'import-check-later-blank-net')`,
+      [employee.id, program.rows[0]!.id, batch.rows[0]!.id],
+    );
+    await expect(syncImportedPayrollCheckReviews(pool, null, ACTOR)).resolves.toEqual({
+      checks: 0,
+      linkedTransactions: 1,
+    });
+    const laterBlank = await pool.query<{ payroll_check_id: string | null }>(
+      `SELECT payroll_check_id FROM payroll_transactions
+        WHERE transaction_fingerprint = 'import-check-later-blank-net'`,
+    );
+    expect(laterBlank.rows[0]?.payroll_check_id).toBe(byFingerprint.get("import-check-with-net"));
+
+    const freshnessBeforeNoop = await pool.query<{ source_version: string }>(
+      `SELECT source_version::text FROM settlement_ledger_state WHERE singleton = true`,
+    );
+    await expect(syncImportedPayrollCheckReviews(pool, null, ACTOR)).resolves.toEqual({
+      checks: 0,
+      linkedTransactions: 0,
+    });
+    const freshnessAfterNoop = await pool.query<{ source_version: string }>(
+      `SELECT source_version::text FROM settlement_ledger_state WHERE singleton = true`,
+    );
+    expect(freshnessAfterNoop.rows[0]?.source_version).toBe(freshnessBeforeNoop.rows[0]?.source_version);
   });
 });

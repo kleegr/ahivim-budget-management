@@ -29,7 +29,12 @@ export function schedulePreviewRequiresOverride(
   const selectedEmployee = options.selectedEmployeeId
     ? preview.employeeAvailability.employees.find((employee) => employee.employeeId === options.selectedEmployeeId)
     : null;
-  if (selectedEmployee && (!selectedEmployee.assignedToAll || selectedEmployee.conflictingOccurrenceCount > 0)) {
+  if (selectedEmployee && (
+    !selectedEmployee.assignedToAll
+    || selectedEmployee.conflictingOccurrenceCount > 0
+    || selectedEmployee.outsideDeclaredAvailabilityOccurrenceCount > 0
+    || selectedEmployee.unavailableOccurrenceCount > 0
+  )) {
     return true;
   }
 

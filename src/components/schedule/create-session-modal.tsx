@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Clock3, UserMinus } from "lucide-react";
+import { CalendarOff, Check, CircleHelp, Clock3, UserMinus } from "lucide-react";
 import type {
   EmployeeAvailability,
   EmployeeAvailabilityResult,
@@ -346,24 +346,24 @@ export default function CreateSessionModal({
 
           <label className="block text-sm">
             <span className="font-medium">Service type <span className="text-[var(--color-ink-faint)]">(optional)</span></span>
-            <input value={serviceType} onChange={(e) => setServiceType(e.target.value)} placeholder="e.g. respite, community habilitation" className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm" />
+            <input value={serviceType} onChange={(e) => setServiceType(e.target.value)} placeholder="e.g. respite, community habilitation" className="input mt-1 w-full" />
           </label>
 
           <label className="block text-sm">
             <span className="font-medium">Notes</span>
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm" />
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className="input mt-1 w-full py-2" />
           </label>
 
           {hasWarnings ? (
             <label className="block text-sm">
               <span className="font-medium text-[var(--color-pace-near)]">Override reason (warnings present)</span>
-              <input value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} placeholder="Why schedule despite the warnings" className="mt-1 w-full rounded border border-[var(--color-pace-near)] bg-white px-3 py-1.5 text-sm" />
+              <input value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} placeholder="Why schedule despite the warnings" className="input mt-1 w-full border-[var(--color-pace-near)]" />
             </label>
           ) : null}
 
           <div className="flex justify-end gap-2 pt-1">
-            <button type="button" onClick={onClose} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-sm">Cancel</button>
-            <button type="button" disabled={busy} onClick={submit} className="rounded bg-[var(--color-primary)] px-4 py-1.5 text-sm font-medium text-white disabled:opacity-60">
+            <button type="button" onClick={onClose} className="btn btn-secondary">Cancel</button>
+            <button type="button" disabled={busy} aria-busy={busy} onClick={submit} className="btn btn-primary">
               {busy ? "Saving…" : recurring ? "Create schedule" : "Add session"}
             </button>
           </div>
@@ -504,8 +504,17 @@ function employeeAvailabilityLabel(
     return `Not assigned on ${missingAssignments} visit${missingAssignments === 1 ? "" : "s"}${busy}`;
   }
   if (!timeRangeKnown) return "Assigned; set start and end times";
+  if (employee.unavailableOccurrenceCount > 0) {
+    return `Unavailable on ${employee.unavailableOccurrenceCount} visit${employee.unavailableOccurrenceCount === 1 ? "" : "s"}`;
+  }
+  if (employee.outsideDeclaredAvailabilityOccurrenceCount > 0) {
+    return `Outside working hours on ${employee.outsideDeclaredAvailabilityOccurrenceCount} visit${employee.outsideDeclaredAvailabilityOccurrenceCount === 1 ? "" : "s"}`;
+  }
   if (employee.conflictingOccurrenceCount > 0) {
     return `Busy on ${employee.conflictingOccurrenceCount} visit${employee.conflictingOccurrenceCount === 1 ? "" : "s"}`;
+  }
+  if (employee.undeclaredAvailabilityOccurrenceCount > 0) {
+    return `Available; hours not entered for ${employee.undeclaredAvailabilityOccurrenceCount} visit${employee.undeclaredAvailabilityOccurrenceCount === 1 ? "" : "s"}`;
   }
   return "Available";
 }
@@ -524,6 +533,12 @@ function EmployeeAvailabilityAssist({
   const available = availability.employees.filter((employee) => employee.available);
   const busy = availability.employees.filter((employee) =>
     employee.assignedToAll && employee.conflictingOccurrenceCount > 0);
+  const unavailable = availability.employees.filter((employee) =>
+    employee.assignedToAll && employee.unavailableOccurrenceCount > 0);
+  const outsideHours = availability.employees.filter((employee) =>
+    employee.assignedToAll && employee.outsideDeclaredAvailabilityOccurrenceCount > 0);
+  const hoursNotEntered = availability.employees.filter((employee) =>
+    employee.available && employee.undeclaredAvailabilityOccurrenceCount > 0);
   const notAssigned = availability.employees.filter((employee) => !employee.assignedToAll);
   const visibleAvailable = available.slice(0, 6);
 
@@ -574,6 +589,29 @@ function EmployeeAvailabilityAssist({
             `${employee.employeeName} (${employee.conflictingOccurrenceCount}/${availability.occurrenceCount} visits)`)}
         />
       ) : null}
+      {availability.timeRangeKnown && unavailable.length > 0 ? (
+        <AvailabilityStatus
+          icon="unavailable"
+          label="Unavailable"
+          detail={summarizeEmployees(unavailable, (employee) =>
+            `${employee.employeeName} (${employee.unavailableOccurrenceCount}/${availability.occurrenceCount} visits)`) }
+        />
+      ) : null}
+      {availability.timeRangeKnown && outsideHours.length > 0 ? (
+        <AvailabilityStatus
+          icon="outside-hours"
+          label="Outside working hours"
+          detail={summarizeEmployees(outsideHours, (employee) =>
+            `${employee.employeeName} (${employee.outsideDeclaredAvailabilityOccurrenceCount}/${availability.occurrenceCount} visits)`) }
+        />
+      ) : null}
+      {availability.timeRangeKnown && hoursNotEntered.length > 0 ? (
+        <AvailabilityStatus
+          icon="not-entered"
+          label="Hours not entered"
+          detail={summarizeEmployees(hoursNotEntered, (employee) => employee.employeeName)}
+        />
+      ) : null}
       {notAssigned.length > 0 ? (
         <AvailabilityStatus
           icon="not-assigned"
@@ -591,11 +629,17 @@ function AvailabilityStatus({
   label,
   detail,
 }: {
-  icon: "busy" | "not-assigned";
+  icon: "busy" | "not-assigned" | "unavailable" | "outside-hours" | "not-entered";
   label: string;
   detail: string;
 }) {
-  const Icon = icon === "busy" ? Clock3 : UserMinus;
+  const Icon = icon === "unavailable"
+    ? CalendarOff
+    : icon === "not-assigned"
+      ? UserMinus
+      : icon === "not-entered"
+        ? CircleHelp
+        : Clock3;
   return (
     <p className="mt-1 flex items-start gap-1 text-xs text-[var(--color-ink-faint)]">
       <Icon className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
@@ -672,6 +716,16 @@ export function SchedulePreflightSummary({
     if (employeeReadiness.conflictingOccurrenceCount > 0) {
       employeeSeriesWarnings.push(
         `The selected employee is busy for ${employeeReadiness.conflictingOccurrenceCount} visit${employeeReadiness.conflictingOccurrenceCount === 1 ? "" : "s"}.`,
+      );
+    }
+    if (employeeReadiness.unavailableOccurrenceCount > 0) {
+      employeeSeriesWarnings.push(
+        `The selected employee is unavailable for ${employeeReadiness.unavailableOccurrenceCount} visit${employeeReadiness.unavailableOccurrenceCount === 1 ? "" : "s"}.`,
+      );
+    }
+    if (employeeReadiness.outsideDeclaredAvailabilityOccurrenceCount > 0) {
+      employeeSeriesWarnings.push(
+        `The selected employee is outside working hours for ${employeeReadiness.outsideDeclaredAvailabilityOccurrenceCount} visit${employeeReadiness.outsideDeclaredAvailabilityOccurrenceCount === 1 ? "" : "s"}.`,
       );
     }
   }

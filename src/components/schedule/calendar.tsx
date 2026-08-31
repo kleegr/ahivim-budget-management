@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
 import type {
   CalendarSession, ScheduleUtilizationProgram, SessionWarningFlags, ScheduleUtilizationSummary,
 } from "@/lib/data/schedule-queries";
@@ -16,6 +16,7 @@ import CreateSessionModal from "./create-session-modal";
 import { PaceBar } from "@/components/ui";
 import { BigStat, ProgressBar, UtilizationBadge } from "@/components/ui-viz";
 import { dec, formatHours, formatPercent } from "@/lib/money";
+import { friendlyActionError } from "@/lib/nav/review-actions";
 
 type FlagMap = Map<string, SessionFlags>;
 type Perspective = "all" | "employee" | "individual";
@@ -67,6 +68,8 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
   const [creating, setCreating] = useState<null | { date: string; mode: "one_time" | "recurring" }>(null);
   const [summary, setSummary] = useState<ScheduleUtilizationSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [summaryRetryKey, setSummaryRetryKey] = useState(0);
   const loadRequestId = useRef(0);
 
   const range = useMemo(() => {
@@ -115,19 +118,26 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
     if (!individualId) {
       setSummary(null);
       setSummaryLoading(false);
+      setSummaryError(null);
       return;
     }
     let cancelled = false;
     setSummary(null); // avoid showing a prior individual's figures while loading
     setSummaryLoading(true);
+    setSummaryError(null);
     void (async () => {
       const res = await send("GET", `/api/schedule/utilization?individualId=${encodeURIComponent(individualId)}`);
       if (cancelled) return;
       setSummaryLoading(false);
-      setSummary(res.ok ? ((res.data as ScheduleUtilizationSummary | null) ?? null) : null);
+      if (!res.ok) {
+        setSummaryError(friendlyActionError(res.error, "Could not load this person's budget pace."));
+        setSummary(null);
+        return;
+      }
+      setSummary((res.data as ScheduleUtilizationSummary | null) ?? null);
     })();
     return () => { cancelled = true; };
-  }, [filters.individualId]);
+  }, [filters.individualId, summaryRetryKey]);
 
   const byDate = useMemo(() => {
     const map = new Map<string, CalendarSession[]>();
@@ -290,17 +300,32 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
               : label
         }
         perspective={perspective}
+        onReview={rangeSummary.flaggedSessions > 0
+          ? () => setSelected(sessions.find((session) => session.warningCount > 0) ?? null)
+          : undefined}
       />
 
       {/* Utilization strip: budget headroom for the individual in focus. */}
       {filters.individualId ? (
-        <UtilizationStrip summary={summary} loading={summaryLoading} />
+        summaryError ? (
+          <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-4 py-3 text-sm">
+            <p className="min-w-0 flex-1 text-[var(--color-ink-soft)]">{summaryError}</p>
+            <button type="button" className="btn btn-sm btn-secondary" onClick={() => setSummaryRetryKey((value) => value + 1)}>
+              <RefreshCw aria-hidden className="h-4 w-4" /> Try again
+            </button>
+          </div>
+        ) : <UtilizationStrip summary={summary} loading={summaryLoading} />
       ) : null}
 
       <CalendarLegend />
 
       {error ? (
-        <div role="alert" className="rounded-lg border border-[var(--color-pace-over)] bg-[#fdf2f5] px-4 py-3 text-sm text-[var(--color-pace-over)]">{error}</div>
+        <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-4 py-3 text-sm">
+          <p className="min-w-0 flex-1 text-[var(--color-ink-soft)]">{friendlyActionError(error, "Could not load the schedule.")}</p>
+          <button type="button" className="btn btn-sm btn-secondary" disabled={loading} onClick={() => void load()}>
+            <RefreshCw aria-hidden className="h-4 w-4" /> {loading ? "Loading..." : "Try again"}
+          </button>
+        </div>
       ) : null}
 
       {view === "month" ? (
@@ -342,6 +367,7 @@ function RangeSummary({
   summary,
   label,
   perspective,
+  onReview,
 }: {
   summary: {
     sessions: number;
@@ -354,6 +380,7 @@ function RangeSummary({
   };
   label: string;
   perspective: Perspective;
+  onReview?: () => void;
 }) {
   const hours = perspective === "employee" ? summary.serviceHours : summary.budgetHours;
   const items = [
@@ -374,7 +401,13 @@ function RangeSummary({
       {items.map((item) => (
         <div key={item.label} className="min-w-0 px-3 py-2.5 first:pl-0 last:pr-0">
           <dt className="eyebrow">{item.label}</dt>
-          <dd className={`tnum mt-1 text-base font-semibold ${item.label === "Needs review" && summary.flaggedSessions > 0 ? "text-[var(--color-danger)]" : ""}`}>{item.value}</dd>
+          <dd className={`tnum mt-1 text-base font-semibold ${item.label === "Needs review" && summary.flaggedSessions > 0 ? "text-[var(--color-danger)]" : ""}`}>
+            {item.label === "Needs review" && onReview ? (
+              <button type="button" onClick={onReview} className="rounded-sm underline-offset-2 hover:underline" title="Open the first session that needs review">
+                {item.value}
+              </button>
+            ) : item.value}
+          </dd>
           <p className="mt-0.5 truncate text-[11px] text-[var(--color-ink-faint)]" title={item.detail}>{item.detail}</p>
         </div>
       ))}

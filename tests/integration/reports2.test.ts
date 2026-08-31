@@ -98,8 +98,9 @@ suite("phase 4D — additional reports (real PostgreSQL)", () => {
       ),
     );
 
-    // Actual side: an imported transaction and the service session/allocation it
-    // produced. Actual = 7 h and 119 internal (7 h x 17).
+    // Actual side: the committed transaction is authoritative. The linked
+    // reconciliation allocation below is deliberately wrong so this fixture
+    // fails if the report ever starts treating allocations as actuals again.
     const tx = await testPool().query<{ id: string }>(
       `INSERT INTO payroll_transactions
          (individual_id, program_id, period_begin, period_end, imported_hours,
@@ -116,11 +117,25 @@ suite("phase 4D — additional reports (real PostgreSQL)", () => {
       `INSERT INTO service_allocations
          (service_session_id, individual_id, payroll_transaction_id,
           allocation_hours, allocated_rate, allocated_amount)
-       VALUES ($1,$2,$3,'7','17','119')`,
+       VALUES ($1,$2,$3,'70','17','1190')`,
       [session.rows[0].id, ind.id, tx.rows[0].id],
     );
 
-    const rows = await actualVsScheduledReport(pool, {});
+    // Same person/program, but outside the selected service-date window.
+    await testPool().query(
+      `INSERT INTO payroll_transactions
+         (individual_id, program_id, period_begin, period_end, imported_hours,
+          calculated_internal_amount, transaction_fingerprint)
+       VALUES ($1,$2,'2025-04-01','2025-04-15','100','1700','avs-fp-outside')`,
+      [ind.id, dayHab],
+    );
+
+    const rows = await actualVsScheduledReport(pool, {
+      from: "2025-03-01",
+      to: "2025-03-31",
+      individual: "Variance",
+      program: "DAY_HAB",
+    });
     const row = rows.find((r) => r.individualName === "Variance Kid");
     expect(row).toBeTruthy();
     expect(dec(row!.scheduledHours).toNumber()).toBe(10);

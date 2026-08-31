@@ -59,6 +59,7 @@ export interface PayrollCheckRow {
   verificationStatus: "unverified" | "verified" | "void";
   notes: string | null;
   linkedTransactions: number;
+  transactionIds: string[];
   updatedAt: string;
 }
 
@@ -102,6 +103,21 @@ export interface CollectionsWorkspaceData {
     plannedSetAside: string;
     setAsideThisMonth: string;
   };
+}
+
+export interface IndividualMasserStatementData {
+  individualId: string;
+  individualName: string;
+  periodStart: string | null;
+  periodEnd: string | null;
+  approvedReserve: string;
+  recordedReserve: string;
+  remainingReserve: string;
+  history: Array<{
+    month: string;
+    setAside: string;
+    reversals: string;
+  }>;
 }
 
 function employeeFinancialClause(scope: AccessScope, column: string, params: unknown[]): string {
@@ -284,7 +300,7 @@ export async function listPayrollChecks(
     check_date: string | null; period_begin: string | null; period_end: string | null;
     actual_gross: string | null; actual_net: string; tax_withheld: string | null;
     source: string; source_ref: string | null; verification_status: PayrollCheckRow["verificationStatus"];
-    notes: string | null; linked_transactions: string; updated_at: string;
+    notes: string | null; linked_transactions: string; transaction_ids: string[]; updated_at: string;
   }>(
     `SELECT c.id, c.employee_id, e.display_name AS employee_name, c.check_number,
             to_char(c.check_date, 'YYYY-MM-DD') AS check_date,
@@ -292,13 +308,17 @@ export async function listPayrollChecks(
             to_char(c.period_end, 'YYYY-MM-DD') AS period_end,
             c.actual_gross::text, c.actual_net::text, c.tax_withheld::text,
             c.source, c.source_ref, c.verification_status, c.notes,
-            count(t.id)::text AS linked_transactions, c.updated_at::text
+            count(t.id)::text AS linked_transactions,
+            COALESCE(array_agg(t.id::text ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), ARRAY[]::text[]) AS transaction_ids,
+            c.updated_at::text
        FROM employee_payroll_checks c
        JOIN employees e ON e.id = c.employee_id
        LEFT JOIN payroll_transactions t ON t.payroll_check_id = c.id
       WHERE TRUE${scopeClause}
       GROUP BY c.id, e.display_name
-      ORDER BY COALESCE(c.check_date, c.period_end, c.period_begin) DESC NULLS LAST, c.updated_at DESC
+      ORDER BY CASE c.verification_status WHEN 'unverified' THEN 0 WHEN 'verified' THEN 1 ELSE 2 END,
+               COALESCE(c.check_date, c.period_end, c.period_begin) DESC NULLS LAST,
+               c.updated_at DESC
       LIMIT $${params.length}`,
     params,
   );
@@ -318,6 +338,7 @@ export async function listPayrollChecks(
     verificationStatus: row.verification_status,
     notes: row.notes,
     linkedTransactions: Number(row.linked_transactions),
+    transactionIds: row.transaction_ids ?? [],
     updatedAt: row.updated_at,
   }));
 }
@@ -380,15 +401,44 @@ export async function getCollectionsWorkspace(
       individual_id: string; individual_name: string; planned_this_month: string;
       set_aside_this_month: string; remaining_set_aside: string; active_plans: string;
     }>(
-      `WITH requested AS (
-         SELECT make_date(split_part($1, '-', 1)::int, split_part($1, '-', 2)::int, 1) AS month_start
-       ), roots AS (
-         SELECT o.*,
-                COALESCE(latest.calculation_metadata, o.calculation_metadata) AS current_metadata,
-                COALESCE(latest.calculation_metadata->>'recalculatedDirection', o.direction) AS current_direction,
-                COALESCE(NULLIF(latest.calculation_metadata->>'recalculatedOriginalAmount', '')::numeric, o.original_amount) AS current_target
-           FROM settlement_obligations o
-           LEFT JOIN LATERAL (
+       `WITH requested AS (
+          SELECT month_start,
+                 (month_start + interval '1 month' - interval '1 day')::date AS month_end
+            FROM (
+              SELECT make_date(split_part($1, '-', 1)::int, split_part($1, '-', 2)::int, 1) AS month_start
+            ) value
+        ), plan_candidates AS (
+          SELECT o.individual_id, o.calculation_strategy_id, o.period_begin, o.period_end,
+                 max(o.created_at) AS latest_root_at
+            FROM settlement_obligations o
+            CROSS JOIN requested
+           WHERE o.individual_id IS NOT NULL
+             AND o.status = 'active'
+             AND o.calculation_metadata->>'flow' = 'individual_plan'
+             AND NOT (o.calculation_metadata ? 'adjustmentForObligationId')
+             AND o.period_begin IS NOT NULL
+             AND o.period_end IS NOT NULL
+             AND o.period_begin <= requested.month_end
+             AND o.period_end > requested.month_end
+           GROUP BY o.individual_id, o.calculation_strategy_id, o.period_begin, o.period_end
+        ), selected_plans AS (
+          SELECT DISTINCT ON (individual_id)
+                 individual_id, calculation_strategy_id, period_begin, period_end
+            FROM plan_candidates
+           ORDER BY individual_id, period_begin DESC, period_end DESC,
+                    latest_root_at DESC, calculation_strategy_id DESC NULLS LAST
+        ), roots AS (
+          SELECT o.*,
+                 COALESCE(latest.calculation_metadata, o.calculation_metadata) AS current_metadata,
+                 COALESCE(latest.calculation_metadata->>'recalculatedDirection', o.direction) AS current_direction,
+                 COALESCE(NULLIF(latest.calculation_metadata->>'recalculatedOriginalAmount', '')::numeric, o.original_amount) AS current_target
+            FROM settlement_obligations o
+            JOIN selected_plans selected
+              ON selected.individual_id = o.individual_id
+             AND selected.calculation_strategy_id IS NOT DISTINCT FROM o.calculation_strategy_id
+             AND selected.period_begin = o.period_begin
+             AND selected.period_end = o.period_end
+            LEFT JOIN LATERAL (
              SELECT correction.calculation_metadata
                FROM settlement_obligations correction
               WHERE correction.calculation_metadata->>'adjustmentForObligationId' = o.id::text
@@ -397,17 +447,21 @@ export async function getCollectionsWorkspace(
               LIMIT 1
            ) latest ON true
           WHERE o.individual_id IS NOT NULL
-            AND o.status = 'active'
-            AND o.calculation_metadata->>'flow' = 'individual_plan'
-            AND NOT (o.calculation_metadata ? 'adjustmentForObligationId')
-       ), event_totals AS (
+             AND o.status = 'active'
+             AND o.calculation_metadata->>'flow' = 'individual_plan'
+             AND NOT (o.calculation_metadata ? 'adjustmentForObligationId')
+        ), event_totals AS (
          SELECT se.individual_id,
-                COALESCE(sum(se.amount) FILTER (
-                  WHERE to_char(se.occurred_on, 'YYYY-MM') = $1
-                    AND obligation.direction = 'reserve'
-                ), 0) AS set_aside_month
+                 COALESCE(sum(CASE
+                   WHEN obligation.direction = 'reserve' THEN se.amount
+                   ELSE -se.amount
+                 END) FILTER (
+                   WHERE to_char(se.occurred_on, 'YYYY-MM') = $1
+                 ), 0) AS set_aside_month
            FROM settlement_events se
            JOIN settlement_obligations obligation ON obligation.id = se.settlement_obligation_id
+           JOIN roots root
+             ON COALESCE(obligation.calculation_metadata->>'adjustmentForObligationId', obligation.id::text) = root.id::text
           WHERE se.individual_id IS NOT NULL
           GROUP BY se.individual_id
        ), obligation_balances AS (
@@ -415,10 +469,10 @@ export async function getCollectionsWorkspace(
                 o.direction,
                 o.original_amount - COALESCE(sum(se.amount), 0) AS balance
            FROM settlement_obligations o
+           JOIN roots root
+             ON COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) = root.id::text
            LEFT JOIN settlement_events se ON se.settlement_obligation_id = o.id
-          WHERE o.individual_id IS NOT NULL
-            AND o.status = 'active'
-            AND o.calculation_metadata->>'flow' = 'individual_plan'
+          WHERE o.status = 'active'
           GROUP BY o.id
        ), current_balances AS (
          SELECT r.individual_id, r.id,
@@ -440,8 +494,8 @@ export async function getCollectionsWorkspace(
                   WHEN r.current_direction = 'reserve'
                     AND r.current_target > 0
                     AND NULLIF(r.current_metadata->>'monthlyAmount', '')::numeric > 0
-                    AND requested.month_start >= date_trunc('month', r.period_begin)::date
-                    AND requested.month_start <= date_trunc('month', r.period_end - interval '1 day')::date
+                    AND r.period_begin <= requested.month_end
+                    AND r.period_end > requested.month_end
                   THEN LEAST(
                     NULLIF(r.current_metadata->>'monthlyAmount', '')::numeric,
                     GREATEST(
@@ -534,5 +588,176 @@ export async function getCollectionsWorkspace(
       plannedSetAside: sum(individualSetAsides, (row) => row.plannedThisMonth),
       setAsideThisMonth: sum(individualSetAsides, (row) => row.setAsideThisMonth),
     },
+  };
+}
+
+/** Aggregate statement safe to show an individual or family representative. */
+export async function getIndividualMasserStatement(
+  pool: PgLikePool,
+  scope: AccessScope,
+  individualId: string,
+  requestedMonth = agencyMonth(),
+): Promise<IndividualMasserStatementData | null> {
+  const month = MONTH.test(requestedMonth) ? requestedMonth : agencyMonth();
+  const params: unknown[] = [individualId];
+  const scopeClause = individualFinancialClause(scope, "i.id", params);
+  const person = await pool.query<{ id: string; display_name: string }>(
+    `SELECT i.id, i.display_name
+       FROM individuals i
+      WHERE i.id = $1${scopeClause}
+      LIMIT 1`,
+    params,
+  );
+  if (!person.rows[0]) return null;
+
+  const [planResult, historyResult] = await Promise.all([
+    pool.query<{
+      period_start: string | null; period_end: string | null;
+      approved_reserve: string; recorded_reserve: string; remaining_reserve: string;
+    }>(
+      `WITH requested AS (
+         SELECT (month_start + interval '1 month' - interval '1 day')::date AS month_end
+           FROM (
+             SELECT make_date(split_part($2, '-', 1)::int, split_part($2, '-', 2)::int, 1) AS month_start
+           ) value
+       ), selected_plan AS (
+         SELECT o.calculation_strategy_id, o.period_begin, o.period_end
+           FROM settlement_obligations o
+           CROSS JOIN requested
+          WHERE o.individual_id = $1
+            AND o.status = 'active'
+            AND o.calculation_metadata->>'flow' = 'individual_plan'
+            AND NOT (o.calculation_metadata ? 'adjustmentForObligationId')
+            AND o.period_begin IS NOT NULL
+            AND o.period_end IS NOT NULL
+            AND o.period_begin <= requested.month_end
+            AND o.period_end > requested.month_end
+          GROUP BY o.calculation_strategy_id, o.period_begin, o.period_end
+          ORDER BY o.period_begin DESC, o.period_end DESC, max(o.created_at) DESC,
+                   o.calculation_strategy_id DESC NULLS LAST
+          LIMIT 1
+       ), roots AS (
+         SELECT o.*,
+                COALESCE(latest.calculation_metadata, o.calculation_metadata) AS current_metadata,
+                COALESCE(latest.calculation_metadata->>'recalculatedDirection', o.direction) AS current_direction,
+                COALESCE(NULLIF(latest.calculation_metadata->>'recalculatedOriginalAmount', '')::numeric, o.original_amount) AS current_target
+           FROM settlement_obligations o
+           JOIN selected_plan selected
+             ON selected.calculation_strategy_id IS NOT DISTINCT FROM o.calculation_strategy_id
+            AND selected.period_begin = o.period_begin
+            AND selected.period_end = o.period_end
+           LEFT JOIN LATERAL (
+             SELECT correction.calculation_metadata
+               FROM settlement_obligations correction
+              WHERE correction.calculation_metadata->>'adjustmentForObligationId' = o.id::text
+                AND correction.status = 'active'
+              ORDER BY correction.created_at DESC, correction.id DESC
+              LIMIT 1
+           ) latest ON true
+          WHERE o.individual_id = $1
+            AND o.status = 'active'
+            AND o.calculation_metadata->>'flow' = 'individual_plan'
+            AND NOT (o.calculation_metadata ? 'adjustmentForObligationId')
+       ), obligation_balances AS (
+         SELECT COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) AS root_key,
+                o.direction,
+                o.original_amount - COALESCE(sum(event.amount), 0) AS balance
+           FROM settlement_obligations o
+           JOIN roots root
+             ON COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) = root.id::text
+           LEFT JOIN settlement_events event ON event.settlement_obligation_id = o.id
+          WHERE o.status = 'active'
+          GROUP BY o.id
+       ), current_balances AS (
+         SELECT root.id, root.current_direction,
+                sum(CASE WHEN entry.direction = 'receivable' THEN -entry.balance ELSE entry.balance END) AS signed_balance
+           FROM roots root
+           JOIN obligation_balances entry ON entry.root_key = root.id::text
+          GROUP BY root.id, root.current_direction
+       )
+       SELECT to_char(min(root.period_begin), 'YYYY-MM-DD') AS period_start,
+              to_char(max(root.period_end), 'YYYY-MM-DD') AS period_end,
+              COALESCE(sum(root.current_target) FILTER (WHERE root.current_direction = 'reserve'), 0)::text AS approved_reserve,
+              COALESCE((
+                 SELECT sum(CASE
+                   WHEN obligation.direction = 'reserve' THEN event.amount
+                   ELSE -event.amount
+                 END)
+                   FROM settlement_events event
+                   JOIN settlement_obligations obligation ON obligation.id = event.settlement_obligation_id
+                   JOIN roots event_root
+                     ON COALESCE(obligation.calculation_metadata->>'adjustmentForObligationId', obligation.id::text) = event_root.id::text
+               ), 0)::text AS recorded_reserve,
+              COALESCE((
+                SELECT sum(GREATEST(balance.signed_balance, 0))
+                  FROM current_balances balance
+                 WHERE balance.current_direction = 'reserve'
+              ), 0)::text AS remaining_reserve
+         FROM roots root`,
+      [individualId, month],
+    ),
+    pool.query<{ month: string; set_aside: string; reversals: string }>(
+      `WITH requested AS (
+         SELECT (month_start + interval '1 month' - interval '1 day')::date AS month_end
+           FROM (
+             SELECT make_date(split_part($2, '-', 1)::int, split_part($2, '-', 2)::int, 1) AS month_start
+           ) value
+       ), selected_plan AS (
+         SELECT obligation.calculation_strategy_id, obligation.period_begin, obligation.period_end
+           FROM settlement_obligations obligation
+           CROSS JOIN requested
+          WHERE obligation.individual_id = $1
+            AND obligation.status = 'active'
+            AND obligation.calculation_metadata->>'flow' = 'individual_plan'
+            AND NOT (obligation.calculation_metadata ? 'adjustmentForObligationId')
+            AND obligation.period_begin IS NOT NULL
+            AND obligation.period_end IS NOT NULL
+            AND obligation.period_begin <= requested.month_end
+            AND obligation.period_end > requested.month_end
+          GROUP BY obligation.calculation_strategy_id, obligation.period_begin, obligation.period_end
+          ORDER BY obligation.period_begin DESC, obligation.period_end DESC, max(obligation.created_at) DESC,
+                   obligation.calculation_strategy_id DESC NULLS LAST
+          LIMIT 1
+       ), roots AS (
+         SELECT obligation.id
+           FROM settlement_obligations obligation
+           JOIN selected_plan selected
+             ON selected.calculation_strategy_id IS NOT DISTINCT FROM obligation.calculation_strategy_id
+            AND selected.period_begin = obligation.period_begin
+            AND selected.period_end = obligation.period_end
+          WHERE obligation.individual_id = $1
+            AND obligation.status = 'active'
+            AND obligation.calculation_metadata->>'flow' = 'individual_plan'
+            AND NOT (obligation.calculation_metadata ? 'adjustmentForObligationId')
+       )
+       SELECT to_char(date_trunc('month', event.occurred_on), 'YYYY-MM') AS month,
+              COALESCE(sum(CASE
+                WHEN obligation.direction = 'reserve' THEN event.amount
+                ELSE -event.amount
+              END), 0)::text AS set_aside,
+              COALESCE(sum(abs(event.amount)) FILTER (WHERE event.event_type = 'reversal'), 0)::text AS reversals
+         FROM settlement_events event
+         JOIN settlement_obligations obligation ON obligation.id = event.settlement_obligation_id
+         JOIN roots root
+           ON COALESCE(obligation.calculation_metadata->>'adjustmentForObligationId', obligation.id::text) = root.id::text
+        GROUP BY date_trunc('month', event.occurred_on)
+        ORDER BY date_trunc('month', event.occurred_on) DESC`,
+      [individualId, month],
+    ),
+  ]);
+  const plan = planResult.rows[0];
+  return {
+    individualId,
+    individualName: person.rows[0].display_name,
+    periodStart: plan?.period_start ?? null,
+    periodEnd: plan?.period_end ?? null,
+    approvedReserve: toMoney(plan?.approved_reserve ?? 0),
+    recordedReserve: toMoney(plan?.recorded_reserve ?? 0),
+    remainingReserve: toMoney(plan?.remaining_reserve ?? 0),
+    history: historyResult.rows.map((row) => ({
+      month: row.month,
+      setAside: toMoney(row.set_aside),
+      reversals: toMoney(row.reversals),
+    })),
   };
 }

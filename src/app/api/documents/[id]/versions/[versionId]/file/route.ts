@@ -2,7 +2,7 @@ import { type NextRequest } from "next/server";
 import { writeAudit } from "@/lib/auth/users";
 import { getDocumentVersionFile } from "@/lib/data/documents";
 import { accessibleDocument } from "@/lib/document-route-helpers";
-import { readPrivateDocumentBlob } from "@/lib/documents/document-storage";
+import { hasDocumentStorage, readPrivateDocumentBlob } from "@/lib/documents/document-storage";
 import { jsonError, redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -24,6 +24,9 @@ export async function GET(
   try {
     const found = await accessibleDocument(id);
     if ("error" in found) return found.error;
+    if (!hasDocumentStorage()) {
+      return jsonError("Private document storage is not configured. Ask an administrator to connect document storage.", 503);
+    }
     const file = await getDocumentVersionFile(found.access.pool, id, versionId);
     if (!file) return jsonError("That document version was not found.", 404);
     const blob = await readPrivateDocumentBlob(file.pathname, request.headers.get("if-none-match"));

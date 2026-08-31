@@ -15,7 +15,11 @@ import { listIndividualBudgetBoard } from "@/lib/data/queries";
 import { listProgramBudgets } from "@/lib/data/program-budgets";
 import { listTransactionsForGrid } from "@/lib/data/transactions-grid";
 import { listStrategies } from "@/lib/manage/calculation-strategies";
-import { buildOwnerDashboardSummary } from "@/lib/dashboard/owner-summary";
+import {
+  buildOwnerActivityFilterOptions,
+  buildOwnerDashboardSummary,
+  normalizeOwnerActivitySelection,
+} from "@/lib/dashboard/owner-summary";
 import { agencyDate } from "@/lib/business/agency-time";
 import { dec, formatHours } from "@/lib/money";
 import { ErrorPanel, PageHeader } from "@/components/ui";
@@ -46,8 +50,8 @@ const PRIMARY_LINKS: HomeLink[] = [
     icon: CalendarDays,
   },
   {
-    href: "/collections",
-    label: "Money",
+    href: "/masser",
+    label: "Masser",
     detail: "Record payments, collections, and set-asides.",
     icon: HandCoins,
   },
@@ -109,10 +113,19 @@ export default async function DashboardPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const user = await requireUser("manager");
-  const denied = (await searchParams).denied;
+  const params = await searchParams;
+  const one = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
+  const denied = params.denied;
   const today = agencyDate();
 
   if (user.role === "admin") {
+    const activitySelection = normalizeOwnerActivitySelection({
+      checkDateFrom: one(params.from) ?? null,
+      checkDateTo: one(params.to) ?? null,
+      individualId: one(params.individualId) ?? null,
+      employeeId: one(params.employeeId) ?? null,
+      payrollPeriod: one(params.payrollPeriod) ?? null,
+    });
     const ownerResult = await withDb(async (pool) => {
       const [transactions, programBudgets, budgetBoard, strategyResult] = await Promise.all([
         listTransactionsForGrid(pool),
@@ -120,12 +133,16 @@ export default async function DashboardPage({
         listIndividualBudgetBoard(pool, new Date(`${today}T12:00:00Z`)),
         listStrategies(pool),
       ]);
-      return buildOwnerDashboardSummary({
-        transactions,
-        programBudgets,
-        budgetBoard,
-        strategies: strategyResult.rows,
-      });
+      return {
+        summary: buildOwnerDashboardSummary({
+          transactions,
+          programBudgets,
+          budgetBoard,
+          strategies: strategyResult.rows,
+          activitySelection,
+        }),
+        activityOptions: buildOwnerActivityFilterOptions(transactions),
+      };
     });
 
     if (!ownerResult.ok) {
@@ -139,7 +156,14 @@ export default async function DashboardPage({
       );
     }
 
-    return <OwnerDashboard summary={ownerResult.data} denied={Boolean(denied)} />;
+    return (
+      <OwnerDashboard
+        summary={ownerResult.data.summary}
+        denied={Boolean(denied)}
+        activitySelection={activitySelection}
+        activityOptions={ownerResult.data.activityOptions}
+      />
+    );
   }
 
   const result = await withDb(async (pool) => {

@@ -5,6 +5,7 @@ import { ensureMigrationsApplied } from "@/lib/db/auto-migrate";
 import { getSetting, setSetting } from "@/lib/manage/app-settings";
 import { getSyncConfig } from "@/lib/sheets/config";
 import { runSheetSync } from "@/lib/sheets/sync";
+import { currentUser } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,6 +43,12 @@ async function verification(pool: PgLikePool) {
  */
 export async function GET() {
   const pool = getPool();
+  let isAdmin = false;
+  try {
+    isAdmin = (await currentUser())?.role === "admin";
+  } catch {
+    isAdmin = false;
+  }
 
   // The bootstrap may be the first request after the deploy that shipped 0011.
   try {
@@ -56,7 +63,7 @@ export async function GET() {
       ok: true,
       alreadyDone: true,
       note: "The initial sync has already run.",
-      ...(await verification(pool)),
+      ...(isAdmin ? await verification(pool) : {}),
     });
   }
 
@@ -67,5 +74,9 @@ export async function GET() {
     await setSetting(pool, BOOTSTRAP_FLAG, true, null);
   }
 
-  return NextResponse.json({ ok: summary.status !== "failed", summary, ...(await verification(pool)) });
+  return NextResponse.json({
+    ok: summary.status !== "failed",
+    status: summary.status,
+    ...(isAdmin ? { summary, ...(await verification(pool)) } : {}),
+  });
 }

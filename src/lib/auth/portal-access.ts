@@ -61,6 +61,7 @@ const INDIVIDUAL_SELF_CAPABILITIES = new Set<PortalCapability>([
 
 const EMPLOYEE_SELF_CAPABILITIES = new Set<PortalCapability>([
   "people.self.read",
+  "employee_pay.self.read",
   "employee_checks.self.gross.read",
   "employee_checks.self.net.read",
   "employee_checks.self.tax.read",
@@ -91,6 +92,7 @@ const ROLE_CAPABILITIES: Record<PortalRole, readonly PortalCapability[]> = {
   ],
   employee: [
     "people.self.read",
+    "employee_pay.self.read",
     "employee_checks.self.gross.read",
     "employee_checks.self.net.read",
     "employee_checks.self.tax.read",

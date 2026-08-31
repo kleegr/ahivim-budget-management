@@ -1742,6 +1742,99 @@ export const settlementLedgerState = pgTable(
   ],
 );
 
+/** Effective-dated recurring hours declared for an employee. */
+export const employeeWeeklyAvailability = pgTable(
+  "employee_weekly_availability",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    employeeId: uuid("employee_id").notNull().references(() => employees.id),
+    /** 0=Sunday..6=Saturday. */
+    weekday: integer("weekday").notNull(),
+    startTime: text("start_time").notNull(),
+    endTime: text("end_time").notNull(),
+    effectiveFrom: date("effective_from").notNull(),
+    effectiveTo: date("effective_to"),
+    notes: text("notes"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    archivedByUserId: uuid("archived_by_user_id").references(() => users.id),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("employee_weekly_availability_active_lookup_idx")
+      .on(table.employeeId, table.effectiveFrom, table.effectiveTo, table.weekday)
+      .where(sql`${table.archivedAt} is null`),
+    check("employee_weekly_availability_weekday_check", sql`${table.weekday} between 0 and 6`),
+    check(
+      "employee_weekly_availability_start_time_check",
+      sql`${table.startTime} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'`,
+    ),
+    check(
+      "employee_weekly_availability_end_time_check",
+      sql`${table.endTime} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'`,
+    ),
+    check("employee_weekly_availability_time_order_check", sql`${table.startTime} < ${table.endTime}`),
+    check(
+      "employee_weekly_availability_date_order_check",
+      sql`${table.effectiveTo} is null or ${table.effectiveTo} >= ${table.effectiveFrom}`,
+    ),
+    check(
+      "employee_weekly_availability_archive_check",
+      sql`(${table.archivedAt} is null and ${table.archivedByUserId} is null) or ${table.archivedAt} is not null`,
+    ),
+  ],
+);
+
+/** A full-day or timed exception that overrides recurring availability. */
+export const employeeUnavailability = pgTable(
+  "employee_unavailability",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    employeeId: uuid("employee_id").notNull().references(() => employees.id),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    startTime: text("start_time"),
+    endTime: text("end_time"),
+    label: text("label"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    archivedByUserId: uuid("archived_by_user_id").references(() => users.id),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("employee_unavailability_active_lookup_idx")
+      .on(table.employeeId, table.startDate, table.endDate)
+      .where(sql`${table.archivedAt} is null`),
+    check("employee_unavailability_date_order_check", sql`${table.endDate} >= ${table.startDate}`),
+    check(
+      "employee_unavailability_time_pair_check",
+      sql`(${table.startTime} is null and ${table.endTime} is null) or (${table.startTime} is not null and ${table.endTime} is not null)`,
+    ),
+    check(
+      "employee_unavailability_start_time_check",
+      sql`${table.startTime} is null or ${table.startTime} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'`,
+    ),
+    check(
+      "employee_unavailability_end_time_check",
+      sql`${table.endTime} is null or ${table.endTime} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'`,
+    ),
+    check(
+      "employee_unavailability_time_order_check",
+      sql`${table.startTime} is null or ${table.startTime} < ${table.endTime}`,
+    ),
+    check(
+      "employee_unavailability_timed_single_day_check",
+      sql`${table.startTime} is null or ${table.startDate} = ${table.endDate}`,
+    ),
+    check(
+      "employee_unavailability_archive_check",
+      sql`(${table.archivedAt} is null and ${table.archivedByUserId} is null) or ${table.archivedAt} is not null`,
+    ),
+  ],
+);
+
 /* -------------------------------------------------------------------------- */
 /* Class revenue and invoicing (0025)                                         */
 /* -------------------------------------------------------------------------- */

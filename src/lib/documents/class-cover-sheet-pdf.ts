@@ -20,6 +20,8 @@ const OFFICE_FILL = rgb(0.86, 0.87, 0.88);
 const PURPLE = rgb(0.39, 0.08, 0.43);
 const RED = rgb(0.76, 0.12, 0.15);
 
+export const CLASS_REIMBURSEMENT_ATTESTATION = "We are requesting reimbursement for the below mentioned item(s). I understand that the items being purchased, or services being requested are for the sole purpose of helping the individual with independence, promote community inclusion, is provided exclusively for the participant, and does not compromise the individual's health and safety, and are included in the individual's current Life Plan and budget.";
+
 function safe(value: string | null | undefined): string {
   return cleanPdfText(value);
 }
@@ -116,10 +118,15 @@ function drawProfile(page: PDFPage, profile: ClassReimbursementProfile, regular:
   });
 }
 
-function drawAttestation(page: PDFPage, regular: PDFFont, bold: PDFFont) {
-  const statement = "We are requesting reimbursement for the item(s) below. I understand that the services are for the sole purpose of helping the individual with independence and community inclusion, do not compromise health or safety, and are included in the individual's current Life Plan and budget.";
-  wrap(statement, bold, 6.7, CONTENT_WIDTH).slice(0, 3).forEach((line, index) => {
-    page.drawText(line, { x: MARGIN, y: 446 - index * 9, size: 6.7, font: index === 0 ? bold : regular, color: INK });
+function drawAttestation(page: PDFPage, bold: PDFFont) {
+  let size = 6.7;
+  let lines = wrap(CLASS_REIMBURSEMENT_ATTESTATION, bold, size, CONTENT_WIDTH);
+  while (lines.length > 4 && size > 5.5) {
+    size -= 0.2;
+    lines = wrap(CLASS_REIMBURSEMENT_ATTESTATION, bold, size, CONTENT_WIDTH);
+  }
+  lines.forEach((line, index) => {
+    page.drawText(line, { x: MARGIN, y: 446 - index * 8, size, font: bold, color: INK });
   });
 }
 
@@ -214,7 +221,7 @@ export async function buildClassCoverSheetPdf(
   const page = document.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   drawHeader(page, regular, bold);
   drawProfile(page, profile, regular, bold);
-  drawAttestation(page, regular, bold);
+  drawAttestation(page, bold);
   const totalY = drawExpenseTable(page, invoice, profile, regular, bold);
   drawSignature(page, invoice, profile, totalY - 12, regular, bold);
   return document.save();

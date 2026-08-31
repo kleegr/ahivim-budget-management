@@ -4,13 +4,19 @@ import {
   BarChart3,
   Calculator,
   Clock3,
+  Filter,
   ReceiptText,
+  RotateCcw,
   WalletCards,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import GoogleSheetSyncButton from "@/components/sync/google-sheet-sync-button";
 import { ButtonLink, PageHeader } from "@/components/ui";
-import type { OwnerDashboardSummary } from "@/lib/dashboard/owner-summary";
+import type {
+  OwnerActivityFilterOptions,
+  OwnerActivitySelection,
+  OwnerDashboardSummary,
+} from "@/lib/dashboard/owner-summary";
 import { formatHours, formatMoney } from "@/lib/money";
 
 const LONG_DATE = new Intl.DateTimeFormat("en-US", {
@@ -98,10 +104,92 @@ function SummaryMetric({
   );
 }
 
-function RecentChecks({ checks }: { checks: OwnerDashboardSummary["transactions"]["recentChecks"] }) {
+function ActivityFilters({
+  selection,
+  options,
+}: {
+  selection: OwnerActivitySelection;
+  options: OwnerActivityFilterOptions;
+}) {
+  const active = Boolean(
+    selection.checkDateFrom
+      || selection.checkDateTo
+      || selection.individualId
+      || selection.employeeId
+      || selection.payrollPeriod,
+  );
+  const fieldClass = "input mt-1 min-h-10 w-full text-sm";
+
+  return (
+    <form
+      action="/dashboard"
+      method="get"
+      aria-label="Filter actual activity"
+      className="mt-5 border-y border-[var(--color-rule-strong)] py-4"
+    >
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <label className="min-w-0 text-xs font-semibold text-[var(--color-ink-soft)]">
+          Check date from
+          <input className={fieldClass} type="date" name="from" defaultValue={selection.checkDateFrom ?? ""} />
+        </label>
+        <label className="min-w-0 text-xs font-semibold text-[var(--color-ink-soft)]">
+          Check date to
+          <input className={fieldClass} type="date" name="to" defaultValue={selection.checkDateTo ?? ""} />
+        </label>
+        <label className="min-w-0 text-xs font-semibold text-[var(--color-ink-soft)]">
+          Person
+          <select className={fieldClass} name="individualId" defaultValue={selection.individualId ?? ""}>
+            <option value="">All people</option>
+            {options.individuals.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="min-w-0 text-xs font-semibold text-[var(--color-ink-soft)]">
+          Employee
+          <select className={fieldClass} name="employeeId" defaultValue={selection.employeeId ?? ""}>
+            <option value="">All employees</option>
+            {options.employees.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="min-w-0 text-xs font-semibold text-[var(--color-ink-soft)]">
+          Payroll period
+          <select className={fieldClass} name="payrollPeriod" defaultValue={selection.payrollPeriod ?? ""}>
+            <option value="">All periods</option>
+            {options.payrollPeriods.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button type="submit" className="btn btn-primary">
+          <Filter aria-hidden className="h-4 w-4" /> Apply
+        </button>
+        {active ? (
+          <Link href="/dashboard" className="btn btn-secondary">
+            <RotateCcw aria-hidden className="h-4 w-4" /> Clear
+          </Link>
+        ) : null}
+      </div>
+    </form>
+  );
+}
+
+function RecentChecks({
+  checks,
+  selected,
+}: {
+  checks: OwnerDashboardSummary["transactions"]["recentChecks"];
+  selected: boolean;
+}) {
   return (
     <div className="mt-6">
-      <h3 className="text-sm font-semibold text-[var(--color-ink)]">Recent checks</h3>
+      <h3 className="text-sm font-semibold text-[var(--color-ink)]">
+        {selected ? "Checks in this selection" : "Recent checks"}
+      </h3>
       {checks.length === 0 ? (
         <p className="mt-3 border-y border-[var(--color-rule)] py-5 text-sm text-[var(--color-ink-soft)]">
           No check-dated transactions yet.
@@ -160,16 +248,25 @@ function RecentChecks({ checks }: { checks: OwnerDashboardSummary["transactions"
 export default function OwnerDashboard({
   summary,
   denied,
+  activitySelection,
+  activityOptions,
 }: {
   summary: OwnerDashboardSummary;
   denied: boolean;
+  activitySelection: OwnerActivitySelection;
+  activityOptions: OwnerActivityFilterOptions;
 }) {
   const transactions = summary.transactions;
   const budgets = summary.budgets;
   const financial = summary.financial;
-  const latestContext = transactions.latestCheckDate
-    ? `${formatDate(transactions.latestCheckDate, LONG_DATE)} · ${transactions.latestTotals.transactions.toLocaleString()} ${transactions.latestTotals.transactions === 1 ? "row" : "rows"} · ${transactions.latestCheckCount.toLocaleString()} ${transactions.latestCheckCount === 1 ? "check" : "checks"}`
-    : null;
+  const selected = transactions.mode === "selection";
+  const activityContext = selected
+    ? transactions.contextTotals.transactions > 0
+      ? `${transactions.contextTotals.transactions.toLocaleString()} ${transactions.contextTotals.transactions === 1 ? "row" : "rows"} · ${transactions.contextCheckCount.toLocaleString()} ${transactions.contextCheckCount === 1 ? "check" : "checks"}`
+      : null
+    : transactions.latestCheckDate
+      ? `${formatDate(transactions.latestCheckDate, LONG_DATE)} · ${transactions.contextTotals.transactions.toLocaleString()} ${transactions.contextTotals.transactions === 1 ? "row" : "rows"} · ${transactions.contextCheckCount.toLocaleString()} ${transactions.contextCheckCount === 1 ? "check" : "checks"}`
+      : null;
 
   return (
     <>
@@ -200,19 +297,22 @@ export default function OwnerDashboard({
             id="owner-transactions-heading"
             eyebrow="Actual activity"
             title="Transactions"
-            description={latestContext ? `Latest check date: ${latestContext}` : "No check-dated transactions yet."}
-            href="/transactions"
-            action="Open transactions"
+            description={activityContext
+              ? selected ? `Selected activity: ${activityContext}` : `Latest check date: ${activityContext}`
+              : selected ? "No transactions match this selection." : "No check-dated transactions yet."}
+            href={transactions.contextHref}
+            action={selected ? "Open selected rows" : "Open transactions"}
             icon={ReceiptText}
           />
+          <ActivityFilters selection={activitySelection} options={activityOptions} />
           <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] md:grid-cols-3 xl:grid-cols-5 xl:divide-y-0">
-            <SummaryMetric label="Funder billed" value={formatMoney(transactions.latestTotals.gross)} href={transactions.latestHref} />
-            <SummaryMetric label="Employee base" value={formatMoney(transactions.latestTotals.internal)} href={transactions.latestHref} />
-            <SummaryMetric label="Agency spread" value={formatMoney(transactions.latestTotals.agencyAdditional)} href={transactions.latestHref} />
-            <SummaryMetric label="Net payroll" value={formatMoney(transactions.latestTotals.netPerCheck)} href={transactions.latestHref} hint="Counted once per payment" />
-            <SummaryMetric label="Hours" value={formatHours(transactions.latestTotals.hours)} href={transactions.latestHref} />
+            <SummaryMetric label="Funder billed" value={formatMoney(transactions.contextTotals.gross)} href={transactions.contextHref} />
+            <SummaryMetric label="Employee base" value={formatMoney(transactions.contextTotals.internal)} href={transactions.contextHref} />
+            <SummaryMetric label="Agency spread" value={formatMoney(transactions.contextTotals.agencyAdditional)} href={transactions.contextHref} />
+            <SummaryMetric label="Net payroll" value={formatMoney(transactions.contextTotals.netPerCheck)} href={transactions.contextHref} hint="Counted once per payment" />
+            <SummaryMetric label="Hours" value={formatHours(transactions.contextTotals.hours)} href={transactions.contextHref} />
           </div>
-          <RecentChecks checks={transactions.recentChecks} />
+          <RecentChecks checks={transactions.recentChecks} selected={selected} />
         </section>
 
         <section aria-labelledby="owner-budgets-heading">

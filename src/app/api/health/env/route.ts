@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { CONNECTION_ENV_CANDIDATES, resolveConnectionEnvName } from "@/lib/db";
+import { hasDocumentStorage } from "@/lib/documents/document-storage";
+import { googleSheetsCredentials } from "@/lib/sheets/writeback";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,13 +24,9 @@ export async function GET() {
     authSecretConfigured: Boolean(process.env.AUTH_SECRET?.trim()),
     migrationTokenConfigured: Boolean(process.env.MIGRATION_TOKEN?.trim()),
     cronSecretConfigured: Boolean(process.env.CRON_SECRET?.trim()),
-    googleSheetWritebackConfigured: Boolean(
-      process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON?.trim()
-      || (process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL?.trim()
-        && process.env.GOOGLE_SHEETS_PRIVATE_KEY?.trim()),
-    ),
+    googleSheetWritebackConfigured: googleSheetsCredentials() !== null,
     bootstrapAdminConfigured: Boolean(process.env.BOOTSTRAP_ADMIN_EMAIL?.trim()),
-    documentStorageConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN?.trim()),
+    documentStorageConfigured: hasDocumentStorage(),
     nodeEnv: process.env.NODE_ENV ?? null,
   });
 }

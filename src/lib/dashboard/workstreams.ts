@@ -95,7 +95,7 @@ export function dashboardWorkstreamSummaries(input: DashboardWorkstreamInput): D
       key: "money",
       label: "Money operations",
       role: "Collector",
-      href: "/collections",
+      href: "/masser",
       openCount: moneyOpen,
       monitoringCount: 0,
       tone: input.money.ledgerNeedsRefresh ? "danger" : moneyOpen > 0 ? "warn" : "good",

@@ -7,6 +7,7 @@ import {
 } from "@/lib/business/scheduling";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
 import { individualProgramForecast } from "@/lib/data/schedule-queries";
+import { listEmployeeAvailability } from "@/lib/data/employee-availability";
 
 const isUuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
 type ScheduleQueryable = Pick<PgLikePool, "query">;
@@ -140,6 +141,30 @@ export async function detectConflicts(
     );
     if (clashes.rows.some((c) => timesOverlap(draft.startTime, draft.endTime, c.start_time, c.end_time))) {
       w.push({ code: "employee_double_booked", severity: "warning", message: "This employee already has an overlapping session that day." });
+    }
+    const availability = await listEmployeeAvailability(pool, {
+      programId: draft.programId,
+      individualIds: draft.individualIds,
+      sessionDate: draft.sessionDate,
+      startTime: draft.startTime,
+      endTime: draft.endTime,
+      excludeSessionId: excludeSessionId ?? null,
+      employeeIds: [draft.employeeId],
+    });
+    const employeeAvailability = availability.employees[0];
+    if (employeeAvailability?.unavailableOccurrenceCount) {
+      w.push({
+        code: "employee_unavailable",
+        severity: "warning",
+        message: "This employee is marked unavailable at this time.",
+      });
+    }
+    if (employeeAvailability?.outsideDeclaredAvailabilityOccurrenceCount) {
+      w.push({
+        code: "employee_outside_working_hours",
+        severity: "warning",
+        message: "This session is outside the employee's working hours.",
+      });
     }
   }
 
@@ -363,6 +388,9 @@ async function insertSessionRows(
   const individualIds = [...new Set(input.individualIds)];
   if (individualIds.length === 0) throw new Error("Choose at least one individual.");
   const draft: SessionDraft = { ...input, individualIds, durationHours: duration };
+  if (draft.employeeId) {
+    await db.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`employee-availability:${draft.employeeId}`]);
+  }
   const warnings = await detectConflicts(db, draft);
   const rate = await currentRate(db, input.programId, input.sessionDate);
   const groupSize = individualIds.length;
@@ -1050,11 +1078,18 @@ export async function rescheduleSession(
       `SELECT individual_id FROM scheduled_allocations WHERE scheduled_session_id = $1`,
       [id],
     );
+    if (s.employee_id) {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`employee-availability:${s.employee_id}`]);
+    }
     const warnings = await detectConflicts(
       client,
       { employeeId: s.employee_id, programId: s.program_id, individualIds: inds.rows.map((r) => r.individual_id), sessionDate, startTime, endTime, durationHours: s.duration_hours },
       id,
     );
+    if (plannerWarnings(warnings).length > 0 && !writtenOverrideReason(reason)) {
+      await client.query("ROLLBACK");
+      return fail("validation", SCHEDULE_OVERRIDE_REQUIRED_MESSAGE);
+    }
     await client.query(
       `UPDATE scheduled_sessions SET session_date = $2, start_time = $3, end_time = $4,
          warnings = $5, updated_at = now() WHERE id = $1`,
@@ -1104,7 +1139,7 @@ export async function duplicateSession(
       serviceType: s.service_type, notes: s.notes,
     },
     actorId,
-    reason ?? "duplicated",
+    reason,
   );
 }
 

@@ -1,6 +1,5 @@
 import { computeGridTotals, type GridTotals } from "@/lib/business/transaction-totals";
 import {
-  checkGroupIdentity,
   groupChecks,
   type CheckRouting,
   type CheckSummary,
@@ -11,7 +10,27 @@ import type { ProgramBudgetRecord } from "@/lib/data/program-budgets";
 import type { StrategyGridRow } from "@/lib/manage/calculation-strategies";
 import { dec } from "@/lib/money";
 
-const MAX_EXACT_TRANSACTION_LINK_ROWS = 200;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+export interface OwnerActivitySelection {
+  checkDateFrom: string | null;
+  checkDateTo: string | null;
+  individualId: string | null;
+  employeeId: string | null;
+  /** Exact Period Begin value from the payroll ledger. */
+  payrollPeriod: string | null;
+}
+
+export interface OwnerActivityOption {
+  value: string;
+  label: string;
+}
+
+export interface OwnerActivityFilterOptions {
+  individuals: OwnerActivityOption[];
+  employees: OwnerActivityOption[];
+  payrollPeriods: OwnerActivityOption[];
+}
 
 export interface OwnerRecentCheck {
   key: string;
@@ -33,10 +52,11 @@ export interface OwnerRecentCheck {
 
 export interface OwnerDashboardSummary {
   transactions: {
+    mode: "latest" | "selection";
     latestCheckDate: string | null;
-    latestCheckCount: number;
-    latestTotals: GridTotals;
-    latestHref: string;
+    contextCheckCount: number;
+    contextTotals: GridTotals;
+    contextHref: string;
     recentChecks: OwnerRecentCheck[];
   };
   budgets: {
@@ -46,7 +66,7 @@ export interface OwnerDashboardSummary {
     usedHours: string;
     remainingHours: string;
     billingWithoutBudget: number;
-    source: "program_authorizations" | "budget_board" | "mixed";
+    source: "program_authorizations";
   };
   financial: {
     strategies: number;
@@ -58,24 +78,115 @@ export interface OwnerDashboardSummary {
   };
 }
 
-function exactTransactionHref(rows: Pick<GridTransaction, "id">[], fallback = "/transactions"): string {
-  if (rows.length === 0 || rows.length > MAX_EXACT_TRANSACTION_LINK_ROWS) return fallback;
-  const params = new URLSearchParams();
-  for (const row of rows) params.append("transactionId", row.id);
+function cleanDate(value: string | null | undefined): string | null {
+  return value && ISO_DATE.test(value) ? value : null;
+}
+
+export function normalizeOwnerActivitySelection(
+  value: Partial<OwnerActivitySelection> | undefined,
+): OwnerActivitySelection {
+  const from = cleanDate(value?.checkDateFrom);
+  const to = cleanDate(value?.checkDateTo);
+  return {
+    checkDateFrom: from && to && from > to ? to : from,
+    checkDateTo: from && to && from > to ? from : to,
+    individualId: value?.individualId?.trim() || null,
+    employeeId: value?.employeeId?.trim() || null,
+    payrollPeriod: cleanDate(value?.payrollPeriod),
+  };
+}
+
+function hasActivitySelection(value: OwnerActivitySelection): boolean {
+  return Boolean(
+    value.checkDateFrom
+      || value.checkDateTo
+      || value.individualId
+      || value.employeeId
+      || value.payrollPeriod,
+  );
+}
+
+function filterActivityRows(
+  rows: GridTransaction[],
+  selection: OwnerActivitySelection,
+): GridTransaction[] {
+  return rows.filter((row) => {
+    if (selection.checkDateFrom && (!row.checkDate || row.checkDate < selection.checkDateFrom)) return false;
+    if (selection.checkDateTo && (!row.checkDate || row.checkDate > selection.checkDateTo)) return false;
+    if (selection.individualId && row.individualId !== selection.individualId) return false;
+    if (selection.employeeId && row.employeeId !== selection.employeeId) return false;
+    if (selection.payrollPeriod && row.periodBegin !== selection.payrollPeriod) return false;
+    return true;
+  });
+}
+
+function activityRowsHref(selection: OwnerActivitySelection): string {
+  const params = new URLSearchParams({ view: "rows" });
+  if (selection.checkDateFrom) params.set("checkDateFrom", selection.checkDateFrom);
+  if (selection.checkDateTo) params.set("checkDateTo", selection.checkDateTo);
+  if (selection.individualId) params.set("individualId", selection.individualId);
+  if (selection.employeeId) params.set("employeeId", selection.employeeId);
+  if (selection.payrollPeriod) {
+    params.set("pbFrom", selection.payrollPeriod);
+    params.set("pbTo", selection.payrollPeriod);
+  }
   return `/transactions?${params.toString()}`;
 }
 
-function checkRowsHref(check: CheckSummary): string {
+function checkRowsHref(
+  check: CheckSummary,
+  selection?: OwnerActivitySelection,
+): string {
   const params = new URLSearchParams({ view: "rows" });
   if (check.checkNumber) params.set("checkNumber", check.checkNumber);
   if (check.payTo) params.set("payToKey", check.payTo.trim().toLocaleLowerCase());
   else if (check.employeeId) params.set("employeeId", check.employeeId);
   else if (check.employee) params.set("employee", check.employee);
-  if (check.checkDate) params.set("period", `${check.checkDate}..${check.checkDate}`);
-  else if (check.periodBegin || check.periodEnd) {
-    params.set("period", `${check.periodBegin ?? ""}..${check.periodEnd ?? ""}`);
+  if (check.checkDate) {
+    params.set("checkDateFrom", check.checkDate);
+    params.set("checkDateTo", check.checkDate);
+  } else if (check.periodBegin || check.periodEnd) {
+    if (check.periodBegin) {
+      params.set("pbFrom", check.periodBegin);
+      params.set("pbTo", check.periodBegin);
+    }
+  }
+  if (selection?.individualId) params.set("individualId", selection.individualId);
+  if (selection?.employeeId) params.set("employeeId", selection.employeeId);
+  if (selection?.payrollPeriod) {
+    params.set("pbFrom", selection.payrollPeriod);
+    params.set("pbTo", selection.payrollPeriod);
   }
   return `/transactions?${params.toString()}`;
+}
+
+export function buildOwnerActivityFilterOptions(
+  rows: GridTransaction[],
+): OwnerActivityFilterOptions {
+  const individuals = new Map<string, string>();
+  const employees = new Map<string, string>();
+  const periods = new Map<string, string | null>();
+
+  for (const row of rows) {
+    if (row.individualId && row.individual) individuals.set(row.individualId, row.individual);
+    if (row.employeeId && row.employee) employees.set(row.employeeId, row.employee);
+    if (row.periodBegin) {
+      const knownEnd = periods.get(row.periodBegin);
+      if (!knownEnd || (row.periodEnd && row.periodEnd > knownEnd)) periods.set(row.periodBegin, row.periodEnd);
+    }
+  }
+
+  const peopleOptions = (values: Map<string, string>): OwnerActivityOption[] => [...values]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label) || a.value.localeCompare(b.value));
+
+  return {
+    individuals: peopleOptions(individuals),
+    employees: peopleOptions(employees),
+    payrollPeriods: [...periods]
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([value, end]) => ({ value, label: end ? `${value} to ${end}` : value })),
+  };
 }
 
 function sum(values: Array<string | number | null | undefined>): string {
@@ -98,59 +209,21 @@ function summarizeBudgets(
     (row) => row.requiredAuthType === "hours" || row.requiredAuthType === "both",
   );
   const authorizedPeople = new Set(hourAuthorizations.map((row) => row.individualId));
-  const fallbackBudgets = board.filter(
-    (row) => !row.archived
-      && row.status === "active"
-      && row.budget
-      && !authorizedPeople.has(row.id),
-  );
   const billingWithoutBudget = board.filter(
     (row) => !row.archived
+      && row.status === "active"
       && row.hasBilling
-      && row.budget === null
       && !authorizedPeople.has(row.id),
   ).length;
 
-  if (hourAuthorizations.length > 0 || fallbackBudgets.length > 0) {
-    return {
-      people: authorizedPeople.size + fallbackBudgets.length,
-      authorizations: hourAuthorizations.length
-        + fallbackBudgets.reduce((total, row) => total + (row.budget?.plans ?? 0), 0),
-      authorizedHours: sum([
-        ...hourAuthorizations.map((row) => row.authorizedHours),
-        ...fallbackBudgets.map((row) => row.budget
-          ? dec(row.budget.usedHours).plus(row.budget.hoursLeft ?? 0).toString()
-          : "0"),
-      ]),
-      usedHours: sum([
-        ...hourAuthorizations.map((row) => row.consumedHours),
-        ...fallbackBudgets.map((row) => row.budget?.usedHours ?? 0),
-      ]),
-      remainingHours: sum([
-        ...hourAuthorizations.map((row) => row.remainingHours),
-        ...fallbackBudgets.map((row) => row.budget?.hoursLeft ?? 0),
-      ]),
-      billingWithoutBudget,
-      source: hourAuthorizations.length > 0 && fallbackBudgets.length > 0
-        ? "mixed"
-        : hourAuthorizations.length > 0
-          ? "program_authorizations"
-          : "budget_board",
-    };
-  }
-
-  const activeBudgets = fallbackBudgets;
   return {
-    people: activeBudgets.length,
-    authorizations: activeBudgets.reduce((total, row) => total + (row.budget?.plans ?? 0), 0),
-    authorizedHours: sum(activeBudgets.map((row) => {
-      const budget = row.budget;
-      return budget ? dec(budget.usedHours).plus(budget.hoursLeft ?? 0).toString() : "0";
-    })),
-    usedHours: sum(activeBudgets.map((row) => row.budget?.usedHours ?? 0)),
-    remainingHours: sum(activeBudgets.map((row) => row.budget?.hoursLeft ?? 0)),
+    people: authorizedPeople.size,
+    authorizations: hourAuthorizations.length,
+    authorizedHours: sum(hourAuthorizations.map((row) => row.authorizedHours)),
+    usedHours: sum(hourAuthorizations.map((row) => row.consumedHours)),
+    remainingHours: sum(hourAuthorizations.map((row) => row.remainingHours)),
     billingWithoutBudget,
-    source: "budget_board",
+    source: "program_authorizations",
   };
 }
 
@@ -159,20 +232,21 @@ export function buildOwnerDashboardSummary(input: {
   programBudgets: ProgramBudgetRecord[];
   budgetBoard: IndividualBudgetBoardRow[];
   strategies: StrategyGridRow[];
+  activitySelection?: Partial<OwnerActivitySelection>;
 }): OwnerDashboardSummary {
-  const latestDate = latestCheckDate(input.transactions);
-  const latestRows = latestDate
-    ? input.transactions.filter((row) => row.checkDate === latestDate)
-    : [];
-  const rowsByCheck = new Map<string, GridTransaction[]>();
-  for (const row of input.transactions) {
-    const key = checkGroupIdentity(row);
-    const existing = rowsByCheck.get(key);
-    if (existing) existing.push(row);
-    else rowsByCheck.set(key, [row]);
-  }
+  const selection = normalizeOwnerActivitySelection(input.activitySelection);
+  const selectionActive = hasActivitySelection(selection);
+  const filteredRows = selectionActive
+    ? filterActivityRows(input.transactions, selection)
+    : input.transactions;
+  const latestDate = latestCheckDate(filteredRows);
+  const contextRows = selectionActive
+    ? filteredRows
+    : latestDate
+      ? filteredRows.filter((row) => row.checkDate === latestDate)
+      : [];
 
-  const recentChecks = groupChecks(input.transactions)
+  const recentChecks = groupChecks(filteredRows)
     .filter((check) => check.checkDate !== null)
     .slice(0, 5)
     .map((check) => ({
@@ -190,20 +264,25 @@ export function buildOwnerDashboardSummary(input: {
       employeeBase: check.employeeBase,
       agencySpread: check.agencySpread,
       netPay: check.netPay,
-      href: exactTransactionHref(rowsByCheck.get(check.key) ?? [], checkRowsHref(check)),
+      href: checkRowsHref(check, selectionActive ? selection : undefined),
     }));
 
   const approved = input.strategies.filter((row) => row.afterAll !== null);
 
   return {
     transactions: {
+      mode: selectionActive ? "selection" : "latest",
       latestCheckDate: latestDate,
-      latestCheckCount: groupChecks(latestRows).length,
-      latestTotals: computeGridTotals(latestRows),
-      latestHref: exactTransactionHref(
-        latestRows,
-        latestDate ? `/transactions?view=rows&period=${latestDate}..${latestDate}` : "/transactions",
-      ),
+      contextCheckCount: groupChecks(contextRows).length,
+      contextTotals: computeGridTotals(contextRows),
+      contextHref: selectionActive
+        ? activityRowsHref(selection)
+        : latestDate
+          ? activityRowsHref(normalizeOwnerActivitySelection({
+              checkDateFrom: latestDate,
+              checkDateTo: latestDate,
+            }))
+          : "/transactions",
       recentChecks,
     },
     budgets: summarizeBudgets(input.programBudgets, input.budgetBoard),

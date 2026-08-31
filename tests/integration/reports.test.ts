@@ -14,6 +14,7 @@ import {
   agencyEarningsReport,
   budgetUtilizationReport,
   employeePayableReport,
+  programTotalsReport,
 } from "@/lib/data/report-queries";
 import { dec } from "@/lib/money";
 
@@ -72,27 +73,6 @@ async function insertTransaction(opts: {
     ],
   );
   return rows[0].id;
-}
-
-/** Record actual used hours: a service session with one allocation to the individual. */
-async function insertUsage(opts: {
-  individualId: string;
-  programId: string;
-  hours: string;
-  amount: string;
-}): Promise<void> {
-  const session = await testPool().query<{ id: string }>(
-    `INSERT INTO service_sessions
-       (program_id, period_begin, period_end, physical_hours, group_size)
-     VALUES ($1, '2025-05-01', '2025-05-15', $2, 1) RETURNING id`,
-    [opts.programId, opts.hours],
-  );
-  await testPool().query(
-    `INSERT INTO service_allocations
-       (service_session_id, individual_id, allocation_hours, allocated_rate, allocated_amount)
-     VALUES ($1,$2,$3,$4,$5)`,
-    [session.rows[0].id, opts.individualId, opts.hours, "17", opts.amount],
-  );
 }
 
 suite("phase 4D — reporting read models (real PostgreSQL)", () => {
@@ -182,8 +162,16 @@ suite("phase 4D — reporting read models (real PostgreSQL)", () => {
       ),
     );
 
-    // 25 actual hours used out of 100 authorized -> 25%.
-    await insertUsage({ individualId: ind.id, programId: dayHab, hours: "25", amount: "425" });
+    // 25 transaction-backed hours used out of 100 authorized -> 25%.
+    // DAY_HAB is a per-group program, so its canonical usage derives hours from
+    // the employee/internal value divided by the authorization's $17 rate.
+    await insertTransaction({
+      individualId: ind.id,
+      programId: dayHab,
+      hours: "25",
+      agencyGross: "425",
+      internalAmount: "425",
+    });
 
     const rows = await budgetUtilizationReport(pool, {});
     expect(rows).toHaveLength(1);
@@ -236,5 +224,89 @@ suite("phase 4D — reporting read models (real PostgreSQL)", () => {
     // Buckets reconcile to the total exactly.
     const bucketSum = dec(r.paidToEmployee).plus(dec(r.payableByAgency)).plus(dec(r.unknownRecipient));
     expect(bucketSum.toNumber()).toBe(dec(r.totalPayment).toNumber());
+  });
+
+  it("programTotalsReport separates group credits from physical employee time", async () => {
+    const dayHab = await programId("DAY_HAB");
+    const first = unwrap(await createIndividual(pool, { displayName: "Group Member One" }, ACTOR));
+    const second = unwrap(await createIndividual(pool, { displayName: "Group Member Two" }, ACTOR));
+    const employee = unwrap(await createEmployee(pool, { displayName: "Group Employee" }, ACTOR));
+
+    const firstTx = await insertTransaction({
+      individualId: first.id,
+      employeeId: employee.id,
+      programId: dayHab,
+      periodBegin: "2025-05-01",
+      periodEnd: "2025-05-15",
+      hours: "13",
+      agencyGross: "247",
+      internalAmount: "221",
+      agencyAdditional: "26",
+    });
+    const secondTx = await insertTransaction({
+      individualId: second.id,
+      employeeId: employee.id,
+      programId: dayHab,
+      periodBegin: "2025-05-01",
+      periodEnd: "2025-05-15",
+      hours: "13",
+      agencyGross: "247",
+      internalAmount: "221",
+      agencyAdditional: "26",
+    });
+    const group = await pool.query<{ id: string }>(
+      `INSERT INTO service_sessions
+         (employee_id, program_id, period_begin, period_end, physical_hours,
+          group_size, group_detection_status)
+       VALUES ($1,$2,'2025-05-01','2025-05-15','13',2,'detected') RETURNING id`,
+      [employee.id, dayHab],
+    );
+    await pool.query(
+      `UPDATE payroll_transactions
+          SET service_session_id = $1, is_group_service = true
+        WHERE id = ANY($2::uuid[])`,
+      [group.rows[0].id, [firstTx, secondTx]],
+    );
+
+    // A one-to-one transaction has no session row in this fixture. It still
+    // contributes its own four physical hours, while the group contributes 13
+    // only once and 13 credits to each participant.
+    await insertTransaction({
+      individualId: first.id,
+      employeeId: employee.id,
+      programId: dayHab,
+      periodBegin: "2025-05-16",
+      periodEnd: "2025-05-31",
+      hours: "4",
+      agencyGross: "76",
+      internalAmount: "68",
+      agencyAdditional: "8",
+    });
+    await insertTransaction({
+      individualId: first.id,
+      employeeId: employee.id,
+      programId: dayHab,
+      periodBegin: "2025-06-01",
+      periodEnd: "2025-06-15",
+      hours: "99",
+      agencyGross: "1881",
+      internalAmount: "1683",
+      agencyAdditional: "198",
+    });
+
+    const rows = await programTotalsReport(pool, {
+      from: "2025-05-01",
+      to: "2025-05-31",
+    });
+    const row = rows.find((candidate) => candidate.programCode === "DAY_HAB");
+    expect(row).toBeTruthy();
+    expect(row!.individualsServed).toBe(2);
+    expect(row!.employees).toBe(1);
+    expect(dec(row!.creditedIndividualHours).toNumber()).toBe(30);
+    expect(dec(row!.physicalEmployeeHours).toNumber()).toBe(17);
+    expect(row!.groupSessions).toBe(1);
+    expect(dec(row!.agencyGross).toNumber()).toBe(570);
+    expect(dec(row!.internalAmount).toNumber()).toBe(510);
+    expect(dec(row!.agencyAdditional).toNumber()).toBe(60);
   });
 });

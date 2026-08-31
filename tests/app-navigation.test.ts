@@ -12,7 +12,7 @@ describe("role-specific workspaces", () => {
     expect(shouldTrackNavigation("/dashboard", "/dashboard")).toBe(false);
   });
 
-  it("gives a finance-only viewer a plain Money destination without budget navigation", () => {
+  it("gives a finance-only viewer a plain Masser destination without budget navigation", () => {
     const access = {
       role: "viewer",
       accessResolved: true,
@@ -24,10 +24,10 @@ describe("role-specific workspaces", () => {
     };
     const workspaces = getVisibleWorkspaces(access);
 
-    expect(workspaces.map((workspace) => workspace.label)).toContain("Money");
+    expect(workspaces.map((workspace) => workspace.label)).toContain("Masser");
     expect(workspaces.map((workspace) => workspace.label)).not.toContain("People & budgets");
     expect(workspaces.map((workspace) => workspace.label)).not.toContain("Transactions");
-    expect(workspaces.find((workspace) => workspace.id === "payroll")?.href).toBe("/collections");
+    expect(workspaces.find((workspace) => workspace.id === "payroll")?.href).toBe("/masser");
     expect(getCommandDestinations(access).some((item) => item.href === "/individuals")).toBe(false);
   });
 

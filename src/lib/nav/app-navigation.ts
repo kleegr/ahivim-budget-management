@@ -120,16 +120,16 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
   },
   {
     id: "payroll",
-    label: "Money",
-    hint: "Payments, collections, and set-asides",
+    label: "Masser",
+    hint: "Employee collections and individual set-asides",
     activePrefixes: ["/collections", "/settlements", "/calculations", "/projections", "/masser"],
     destinations: [
       {
         id: "collections",
-        label: "Money",
-        href: "/collections",
-        hint: "Payments, collections, and set-asides",
-        keywords: "collector receivable monthly check gross net reserve target",
+        label: "Masser",
+        href: "/masser",
+        hint: "Employee collections and individual set-asides",
+        keywords: "money collector receivable monthly check gross net reserve put away masser target",
         gate: "settlements",
       },
     ],

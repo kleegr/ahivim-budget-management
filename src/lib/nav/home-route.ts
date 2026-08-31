@@ -8,7 +8,7 @@ export function viewerHomePath(access: AccessScope, portal: PortalAccessContext)
     canAccessPlanning(access)
     || agencyIdsWithPlanningAccess(portal).length > 0
   ) return "/schedule";
-  if (access.canSeeSettlements && agencyRoles.has("collector")) return "/collections";
+  if (access.canSeeSettlements && agencyRoles.has("collector")) return "/masser";
 
   const externalPortal = portal.globalRoles.some((assignment) => assignment.role !== "owner")
     || portal.agencyAccess.length > 0
@@ -16,7 +16,7 @@ export function viewerHomePath(access: AccessScope, portal: PortalAccessContext)
     || portal.employeeLinks.length > 0;
   if (externalPortal) return "/portal";
   if (access.canSeeBudgets) return "/individuals";
-  if (access.canSeeSettlements) return "/collections";
+  if (access.canSeeSettlements) return "/masser";
   if (access.canSeeTransactions) return "/transactions";
   if (access.canSeeClassFinancials) return "/classes";
   if (access.canEditDocuments) return "/documents";

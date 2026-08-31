@@ -90,6 +90,17 @@ function buildInitialFilters(rows: GridTransaction[], sp: SP): { filters: Filter
     labels.push(`check ${checkNumber}`);
   }
 
+  const checkDateFrom = one(sp.checkDateFrom);
+  const checkDateTo = one(sp.checkDateTo);
+  if (checkDateFrom || checkDateTo) {
+    filters.checkDate = { from: checkDateFrom ?? "", to: checkDateTo ?? "" };
+    if (checkDateFrom && checkDateTo) {
+      labels.push(checkDateFrom === checkDateTo
+        ? `check date ${checkDateFrom}`
+        : `check dates ${checkDateFrom} to ${checkDateTo}`);
+    }
+  }
+
   // Period-begin window (service period), used by budget drill-throughs so the
   // grid matches the period-scoped billed figure exactly (the workbook windows on
   // Period Begin, not on the check date the top period control uses).
@@ -145,7 +156,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     return (
       <>
         <PageHeader eyebrow="Actual activity" title="Transactions" />
-        <ErrorPanel title="No access to Transactions">
+        <ErrorPanel title="No access to Transactions" action={<ButtonLink href="/home">Back to home</ButtonLink>}>
           Your account doesn&rsquo;t include permission to view transactions. Ask an administrator if you need it.
         </ErrorPanel>
       </>
@@ -188,8 +199,11 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
       {!result.ok ? (
         <ErrorPanel title="Billed activity is unavailable">{result.error}</ErrorPanel>
       ) : requestedTransactionIds.length > 0 && !exactSelectionAvailable ? (
-        <ErrorPanel title={requestedTransactionIds.length === 1 ? "This transaction is not available" : "These transactions are not available"}>
-          One or more rows may have been removed, or your account may not include access to them. <ButtonLink href="/transactions">Open all transactions</ButtonLink>
+        <ErrorPanel
+          title={requestedTransactionIds.length === 1 ? "This transaction is not available" : "These transactions are not available"}
+          action={<ButtonLink href="/transactions">Open all transactions</ButtonLink>}
+        >
+          One or more rows may have been removed, or your account may not include access to them.
         </ErrorPanel>
       ) : rows.length === 0 ? (
         <Card>

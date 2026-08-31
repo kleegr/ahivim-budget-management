@@ -1,6 +1,6 @@
 "use client";
 
-import { X } from "lucide-react";
+import { RefreshCw, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 
 /**
@@ -10,6 +10,16 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboard
  */
 
 export type TabDef = { id: string; label: string; badge?: ReactNode };
+
+/** A real browser reload for server-rendered data failures. */
+export function ReloadButton({ label = "Try again" }: { label?: string }) {
+  return (
+    <button type="button" className="btn btn-sm btn-secondary" onClick={() => window.location.reload()}>
+      <RefreshCw aria-hidden className="h-4 w-4" />
+      {label}
+    </button>
+  );
+}
 
 function validTabId(tabs: TabDef[], id: string | undefined): string | undefined {
   return id && tabs.some((tab) => tab.id === id) ? id : undefined;

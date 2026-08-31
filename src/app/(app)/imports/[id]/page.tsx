@@ -271,10 +271,10 @@ export default async function ImportDetailPage({
       ) : null}
 
       {!staging && !committed ? (
-        <ErrorPanel title="This upload has no readable staged payload">
+        <ErrorPanel title="This upload has no readable staged payload" action={<ButtonLink href="/imports" variant="primary">Upload again</ButtonLink>}>
           <p>
             The pending payload is missing or unreadable, so it cannot be reviewed or committed.
-            Upload the workbook again. <Link href="/imports">Back to imports</Link>.
+            Upload the workbook again.
           </p>
         </ErrorPanel>
       ) : null}

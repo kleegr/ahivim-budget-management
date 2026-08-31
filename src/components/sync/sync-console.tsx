@@ -11,7 +11,7 @@ import {
   transactionReviewHref,
 } from "@/lib/nav/review-actions";
 import {
-  syncOutcomePresentation,
+  syncRoundTripOutcomePresentation,
   syncRunActions,
 } from "@/lib/nav/sync-actions";
 
@@ -93,7 +93,7 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
       { acceptDomainFailure: true },
     );
     if (body) {
-      const outcome = syncOutcomePresentation(body.summary as Parameters<typeof syncOutcomePresentation>[0]);
+      const outcome = syncRoundTripOutcomePresentation(body);
       setBanner({ tone: outcome.tone, text: outcome.message, action: outcome.action });
       router.refresh();
     }

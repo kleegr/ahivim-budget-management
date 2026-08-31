@@ -3,7 +3,11 @@ import type { GridTransaction } from "@/lib/data/transactions-grid";
 import type { IndividualBudgetBoardRow } from "@/lib/data/queries";
 import type { ProgramBudgetRecord } from "@/lib/data/program-budgets";
 import type { StrategyGridRow } from "@/lib/manage/calculation-strategies";
-import { buildOwnerDashboardSummary } from "@/lib/dashboard/owner-summary";
+import {
+  buildOwnerActivityFilterOptions,
+  buildOwnerDashboardSummary,
+  normalizeOwnerActivitySelection,
+} from "@/lib/dashboard/owner-summary";
 
 const ids = {
   latest1: "00000000-0000-4000-8000-000000000001",
@@ -183,7 +187,8 @@ describe("buildOwnerDashboardSummary", () => {
     });
 
     expect(summary.transactions.latestCheckDate).toBe("2026-08-22");
-    expect(summary.transactions.latestTotals).toMatchObject({
+    expect(summary.transactions.mode).toBe("latest");
+    expect(summary.transactions.contextTotals).toMatchObject({
       gross: "1500.00",
       internal: "1150.00",
       agencyAdditional: "350.00",
@@ -193,9 +198,14 @@ describe("buildOwnerDashboardSummary", () => {
       individuals: 2,
       employees: 1,
     });
-    expect(summary.transactions.latestHref).toContain(`transactionId=${ids.latest1}`);
-    expect(summary.transactions.latestHref).toContain(`transactionId=${ids.latest2}`);
-    expect(summary.transactions.recentChecks[0]).toMatchObject({ rows: 2, href: summary.transactions.latestHref });
+    expect(summary.transactions.contextHref).toBe(
+      "/transactions?view=rows&checkDateFrom=2026-08-22&checkDateTo=2026-08-22",
+    );
+    expect(summary.transactions.contextHref).not.toContain("transactionId");
+    expect(summary.transactions.recentChecks[0]).toMatchObject({ rows: 2 });
+    expect(summary.transactions.recentChecks[0]?.href).toContain("checkNumber=900");
+    expect(summary.transactions.recentChecks[0]?.href).toContain("checkDateFrom=2026-08-22");
+    expect(summary.transactions.recentChecks[0]?.href).not.toContain("transactionId");
     expect(summary.transactions.recentChecks[0]?.netPay).toBe("800");
 
     expect(summary.budgets).toEqual({
@@ -218,12 +228,13 @@ describe("buildOwnerDashboardSummary", () => {
     });
   });
 
-  it("falls back to the existing budget board when no active authorization rows exist", () => {
+  it("never substitutes a legacy budget-board calculation for canonical authorizations", () => {
     const summary = buildOwnerDashboardSummary({
       transactions: [],
       programBudgets: [],
       budgetBoard: [
         boardRow({
+          hasBilling: true,
           budget: {
             status: "on_pace",
             plainStatus: "on_track",
@@ -247,18 +258,19 @@ describe("buildOwnerDashboardSummary", () => {
     });
 
     expect(summary.budgets).toMatchObject({
-      people: 1,
-      authorizations: 2,
-      authorizedHours: "500.00",
-      usedHours: "200.00",
-      remainingHours: "300.00",
-      source: "budget_board",
+      people: 0,
+      authorizations: 0,
+      authorizedHours: "0.00",
+      usedHours: "0.00",
+      remainingHours: "0.00",
+      billingWithoutBudget: 1,
+      source: "program_authorizations",
     });
     expect(summary.transactions.latestCheckDate).toBeNull();
-    expect(summary.transactions.latestHref).toBe("/transactions");
+    expect(summary.transactions.contextHref).toBe("/transactions");
   });
 
-  it("combines canonical authorizations with uncovered legacy board budgets", () => {
+  it("keeps uncovered legacy board rows out of totals and flags their billing", () => {
     const summary = buildOwnerDashboardSummary({
       transactions: [],
       programBudgets: [programBudget({})],
@@ -266,6 +278,7 @@ describe("buildOwnerDashboardSummary", () => {
         boardRow({}),
         boardRow({
           id: "20000000-0000-4000-8000-000000000009",
+          hasBilling: true,
           budget: {
             status: "on_pace",
             plainStatus: "on_track",
@@ -289,12 +302,105 @@ describe("buildOwnerDashboardSummary", () => {
     });
 
     expect(summary.budgets).toMatchObject({
-      people: 2,
-      authorizations: 2,
-      authorizedHours: "600.00",
-      usedHours: "225.00",
-      remainingHours: "375.00",
-      source: "mixed",
+      people: 1,
+      authorizations: 1,
+      authorizedHours: "500.00",
+      usedHours: "200.00",
+      remainingHours: "300.00",
+      billingWithoutBudget: 1,
+      source: "program_authorizations",
+    });
+  });
+
+  it("totals the full selected activity set and builds the same stable ledger filters", () => {
+    const alexId = "20000000-0000-4000-8000-000000000001";
+    const summary = buildOwnerDashboardSummary({
+      transactions: [
+        transaction({
+          id: ids.older,
+          checkDate: "2026-08-08",
+          checkNumber: "899",
+          gross: "300",
+          internalAmount: "200",
+          agencyAdditional: "100",
+        }),
+        transaction({ id: ids.latest1 }),
+        transaction({
+          id: ids.latest2,
+          individualId: "20000000-0000-4000-8000-000000000002",
+          individual: "Blair Two",
+          gross: "500",
+          internalAmount: "350",
+          agencyAdditional: "150",
+        }),
+      ],
+      programBudgets: [],
+      budgetBoard: [],
+      strategies: [],
+      activitySelection: {
+        checkDateFrom: "2026-08-01",
+        checkDateTo: "2026-08-31",
+        individualId: alexId,
+        payrollPeriod: "2026-08-01",
+      },
+    });
+
+    expect(summary.transactions.mode).toBe("selection");
+    expect(summary.transactions.contextTotals).toMatchObject({
+      gross: "1300.00",
+      internal: "1000.00",
+      agencyAdditional: "300.00",
+      transactions: 2,
+      checks: 2,
+    });
+    expect(summary.transactions.contextHref).toBe(
+      `/transactions?view=rows&checkDateFrom=2026-08-01&checkDateTo=2026-08-31&individualId=${alexId}&pbFrom=2026-08-01&pbTo=2026-08-01`,
+    );
+    expect(summary.transactions.contextHref).not.toContain("transactionId");
+    expect(summary.transactions.recentChecks[0]?.href).toContain(`individualId=${alexId}`);
+    expect(summary.transactions.recentChecks[0]?.href).toContain("pbFrom=2026-08-01");
+  });
+
+  it("builds sorted owner filter options and normalizes a reversed date range", () => {
+    const rows = [
+      transaction({
+        id: ids.latest1,
+        periodBegin: "2026-08-01",
+        periodEnd: "2026-08-14",
+      }),
+      transaction({
+        id: ids.latest2,
+        individualId: "20000000-0000-4000-8000-000000000002",
+        individual: "Blair Two",
+        employeeId: "30000000-0000-4000-8000-000000000002",
+        employee: "Employee Two",
+        periodBegin: "2026-08-15",
+        periodEnd: "2026-08-31",
+      }),
+    ];
+
+    expect(buildOwnerActivityFilterOptions(rows)).toEqual({
+      individuals: [
+        { value: "20000000-0000-4000-8000-000000000001", label: "Alex One" },
+        { value: "20000000-0000-4000-8000-000000000002", label: "Blair Two" },
+      ],
+      employees: [
+        { value: "30000000-0000-4000-8000-000000000001", label: "Employee One" },
+        { value: "30000000-0000-4000-8000-000000000002", label: "Employee Two" },
+      ],
+      payrollPeriods: [
+        { value: "2026-08-15", label: "2026-08-15 to 2026-08-31" },
+        { value: "2026-08-01", label: "2026-08-01 to 2026-08-14" },
+      ],
+    });
+    expect(normalizeOwnerActivitySelection({
+      checkDateFrom: "2026-08-31",
+      checkDateTo: "2026-08-01",
+      payrollPeriod: "not-a-date",
+    })).toMatchObject({
+      checkDateFrom: "2026-08-01",
+      checkDateTo: "2026-08-31",
+      payrollPeriod: null,
     });
   });
 });

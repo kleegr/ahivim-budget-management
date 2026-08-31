@@ -1,7 +1,8 @@
-import { durationBetween, timesOverlap } from "@/lib/business/scheduling";
+import { durationBetween, minutesOf, timesOverlap } from "@/lib/business/scheduling";
 import type { PgLikePool } from "@/lib/import/commit";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+type Queryable = Pick<PgLikePool, "query">;
 
 export interface EmployeeAvailabilityInput {
   programId: string;
@@ -24,8 +25,21 @@ export interface EmployeeAvailability {
   assignedOccurrenceCount: number;
   conflictCount: number;
   conflictingOccurrenceCount: number;
+  withinDeclaredAvailabilityOccurrenceCount: number;
+  outsideDeclaredAvailabilityOccurrenceCount: number;
+  undeclaredAvailabilityOccurrenceCount: number;
+  unavailableOccurrenceCount: number;
+  reasonCodes: EmployeeAvailabilityReasonCode[];
   available: boolean;
 }
+
+export type EmployeeAvailabilityReasonCode =
+  | "time_range_required"
+  | "not_assigned"
+  | "schedule_conflict"
+  | "outside_declared_availability"
+  | "dated_unavailability"
+  | "availability_not_declared";
 
 export interface EmployeeAvailabilityResult {
   timeRangeKnown: boolean;
@@ -52,12 +66,34 @@ interface EmployeeConflictRow {
   end_time: string | null;
 }
 
+interface WeeklyAvailabilityRow {
+  employee_id: string;
+  weekday: number;
+  start_time: string;
+  end_time: string;
+  effective_from: string;
+  effective_to: string | null;
+}
+
+interface EmployeeUnavailabilityRow {
+  employee_id: string;
+  start_date: string;
+  end_date: string;
+  start_time: string | null;
+  end_time: string | null;
+}
+
+function weekdayOf(date: string): number {
+  return new Date(`${date}T00:00:00Z`).getUTCDay();
+}
+
 /**
- * Rank active employees for a draft session using assignment and calendar data
- * only. This DTO intentionally contains no rates, pay, checks, or transactions.
+ * Rank active employees for a draft session using assignments, declared
+ * working hours, dated unavailability, and calendar conflicts only. This DTO
+ * intentionally contains no rates, pay, checks, or transactions.
  */
 export async function listEmployeeAvailability(
-  pool: PgLikePool,
+  pool: Queryable,
   input: EmployeeAvailabilityInput,
 ): Promise<EmployeeAvailabilityResult> {
   const individualIds = [...new Set(input.individualIds)];
@@ -107,6 +143,8 @@ export async function listEmployeeAvailability(
 
   const conflicts = new Map<string, number>();
   const conflictingDates = new Map<string, Set<string>>();
+  const weeklyByEmployee = new Map<string, WeeklyAvailabilityRow[]>();
+  const unavailableByEmployee = new Map<string, EmployeeUnavailabilityRow[]>();
   if (timeRangeKnown && employeeIds.length > 0) {
     const excludeSessionId = input.excludeSessionId && UUID_RE.test(input.excludeSessionId)
       ? input.excludeSessionId
@@ -119,22 +157,43 @@ export async function listEmployeeAvailability(
       && /^\d{4}-\d{2}-\d{2}$/.test(input.excludeSeriesFromDate)
       ? input.excludeSeriesFromDate
       : sessionDates[0]!;
-    const conflictRows = await pool.query<EmployeeConflictRow>(
-      `SELECT employee_id, session_date::text AS session_date, start_time, end_time
-         FROM scheduled_sessions
-        WHERE employee_id = ANY($1::uuid[])
-          AND session_date = ANY($2::date[])
-          AND status IN ('pending', 'completed')
-          AND archived_at IS NULL
-          AND ($3::uuid IS NULL OR id <> $3::uuid)
-          AND (
-            $4::uuid IS NULL
-            OR series_id IS DISTINCT FROM $4::uuid
-            OR session_date < $5::date
-            OR status <> 'pending'
-          )`,
-      [employeeIds, sessionDates, excludeSessionId, excludeSeriesId, excludeSeriesFromDate],
-    );
+    const [conflictRows, weeklyRows, unavailableRows] = await Promise.all([
+      pool.query<EmployeeConflictRow>(
+        `SELECT employee_id, session_date::text AS session_date, start_time, end_time
+           FROM scheduled_sessions
+          WHERE employee_id = ANY($1::uuid[])
+            AND session_date = ANY($2::date[])
+            AND status IN ('pending', 'completed')
+            AND archived_at IS NULL
+            AND ($3::uuid IS NULL OR id <> $3::uuid)
+            AND (
+              $4::uuid IS NULL
+              OR series_id IS DISTINCT FROM $4::uuid
+              OR session_date < $5::date
+              OR status <> 'pending'
+            )`,
+        [employeeIds, sessionDates, excludeSessionId, excludeSeriesId, excludeSeriesFromDate],
+      ),
+      pool.query<WeeklyAvailabilityRow>(
+        `SELECT employee_id, weekday, start_time, end_time,
+                effective_from::text, effective_to::text
+           FROM employee_weekly_availability
+          WHERE employee_id = ANY($1::uuid[])
+            AND archived_at IS NULL
+            AND effective_from <= $2::date
+            AND (effective_to IS NULL OR effective_to >= $3::date)`,
+        [employeeIds, sessionDates.at(-1), sessionDates[0]],
+      ),
+      pool.query<EmployeeUnavailabilityRow>(
+        `SELECT employee_id, start_date::text, end_date::text, start_time, end_time
+           FROM employee_unavailability
+          WHERE employee_id = ANY($1::uuid[])
+            AND archived_at IS NULL
+            AND start_date <= $2::date
+            AND end_date >= $3::date`,
+        [employeeIds, sessionDates.at(-1), sessionDates[0]],
+      ),
+    ]);
     for (const row of conflictRows.rows) {
       if (timesOverlap(input.startTime, input.endTime, row.start_time, row.end_time)) {
         conflicts.set(row.employee_id, (conflicts.get(row.employee_id) ?? 0) + 1);
@@ -142,6 +201,16 @@ export async function listEmployeeAvailability(
         dates.add(row.session_date);
         conflictingDates.set(row.employee_id, dates);
       }
+    }
+    for (const row of weeklyRows.rows) {
+      const rows = weeklyByEmployee.get(row.employee_id) ?? [];
+      rows.push(row);
+      weeklyByEmployee.set(row.employee_id, rows);
+    }
+    for (const row of unavailableRows.rows) {
+      const rows = unavailableByEmployee.get(row.employee_id) ?? [];
+      rows.push(row);
+      unavailableByEmployee.set(row.employee_id, rows);
     }
   }
 
@@ -155,6 +224,52 @@ export async function listEmployeeAvailability(
     const assignedToAll = assignedOccurrenceCount === sessionDates.length;
     const conflictCount = conflicts.get(row.employee_id) ?? 0;
     const conflictingOccurrenceCount = conflictingDates.get(row.employee_id)?.size ?? 0;
+    const weekly = weeklyByEmployee.get(row.employee_id) ?? [];
+    const unavailable = unavailableByEmployee.get(row.employee_id) ?? [];
+    const requestedStart = minutesOf(input.startTime);
+    const requestedEnd = minutesOf(input.endTime);
+    let withinDeclaredAvailabilityOccurrenceCount = 0;
+    let outsideDeclaredAvailabilityOccurrenceCount = 0;
+    let undeclaredAvailabilityOccurrenceCount = 0;
+    let unavailableOccurrenceCount = 0;
+    if (timeRangeKnown && requestedStart !== null && requestedEnd !== null) {
+      for (const date of sessionDates) {
+        const effectiveWindows = weekly.filter((window) =>
+          window.effective_from <= date
+          && (window.effective_to === null || window.effective_to >= date));
+        if (effectiveWindows.length === 0) {
+          undeclaredAvailabilityOccurrenceCount += 1;
+        } else if (effectiveWindows.some((window) => {
+          const start = minutesOf(window.start_time);
+          const end = minutesOf(window.end_time);
+          return window.weekday === weekdayOf(date)
+            && start !== null
+            && end !== null
+            && start <= requestedStart
+            && end >= requestedEnd;
+        })) {
+          withinDeclaredAvailabilityOccurrenceCount += 1;
+        } else {
+          outsideDeclaredAvailabilityOccurrenceCount += 1;
+        }
+
+        if (unavailable.some((window) =>
+          window.start_date <= date
+          && window.end_date >= date
+          && timesOverlap(input.startTime, input.endTime, window.start_time, window.end_time))) {
+          unavailableOccurrenceCount += 1;
+        }
+      }
+    }
+    const reasonCodes: EmployeeAvailabilityReasonCode[] = [];
+    if (!timeRangeKnown) reasonCodes.push("time_range_required");
+    if (!assignedToAll) reasonCodes.push("not_assigned");
+    if (outsideDeclaredAvailabilityOccurrenceCount > 0) {
+      reasonCodes.push("outside_declared_availability");
+    }
+    if (unavailableOccurrenceCount > 0) reasonCodes.push("dated_unavailability");
+    if (conflictingOccurrenceCount > 0) reasonCodes.push("schedule_conflict");
+    if (undeclaredAvailabilityOccurrenceCount > 0) reasonCodes.push("availability_not_declared");
     return {
       employeeId: row.employee_id,
       employeeName: row.employee_name,
@@ -162,18 +277,37 @@ export async function listEmployeeAvailability(
       assignedOccurrenceCount,
       conflictCount,
       conflictingOccurrenceCount,
-      available: timeRangeKnown && assignedToAll && conflictingOccurrenceCount === 0,
+      withinDeclaredAvailabilityOccurrenceCount,
+      outsideDeclaredAvailabilityOccurrenceCount,
+      undeclaredAvailabilityOccurrenceCount,
+      unavailableOccurrenceCount,
+      reasonCodes,
+      available: timeRangeKnown
+        && assignedToAll
+        && conflictingOccurrenceCount === 0
+        && outsideDeclaredAvailabilityOccurrenceCount === 0
+        && unavailableOccurrenceCount === 0,
     };
   });
 
   employees.sort((a, b) => {
     if (a.available !== b.available) return a.available ? -1 : 1;
+    if (a.available && b.available
+      && a.undeclaredAvailabilityOccurrenceCount !== b.undeclaredAvailabilityOccurrenceCount) {
+      return a.undeclaredAvailabilityOccurrenceCount - b.undeclaredAvailabilityOccurrenceCount;
+    }
     if (a.assignedToAll !== b.assignedToAll) return a.assignedToAll ? -1 : 1;
     if (a.assignedOccurrenceCount !== b.assignedOccurrenceCount) {
       return b.assignedOccurrenceCount - a.assignedOccurrenceCount;
     }
     if (a.conflictingOccurrenceCount !== b.conflictingOccurrenceCount) {
       return a.conflictingOccurrenceCount - b.conflictingOccurrenceCount;
+    }
+    if (a.unavailableOccurrenceCount !== b.unavailableOccurrenceCount) {
+      return a.unavailableOccurrenceCount - b.unavailableOccurrenceCount;
+    }
+    if (a.outsideDeclaredAvailabilityOccurrenceCount !== b.outsideDeclaredAvailabilityOccurrenceCount) {
+      return a.outsideDeclaredAvailabilityOccurrenceCount - b.outsideDeclaredAvailabilityOccurrenceCount;
     }
     return a.employeeName.localeCompare(b.employeeName, undefined, { sensitivity: "base" });
   });

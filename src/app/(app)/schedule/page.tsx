@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Schedule - Ahivim" };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const PLANNING_VIEWS = new Set(["calendar", "schedules", "future"]);
+const PLANNING_VIEWS = new Set(["calendar", "schedules", "future", "availability"]);
 const CALENDAR_VIEWS = new Set<View>(["month", "week", "day"]);
 
 export default async function SchedulePage({

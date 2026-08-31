@@ -24,7 +24,7 @@ describe("Collections deep links", () => {
       periodEnd: "2026-08-14",
       transactionIds: [TRANSACTION_ID],
     })).toBe(
-      `/collections?view=checks&newCheck=1&employeeId=${EMPLOYEE_ID}&checkNumber=PAY+10&checkDate=2026-08-15&periodBegin=2026-08-01&periodEnd=2026-08-14&sourceTransactionId=${TRANSACTION_ID}`,
+      `/masser?view=checks&newCheck=1&employeeId=${EMPLOYEE_ID}&checkNumber=PAY+10&checkDate=2026-08-15&periodBegin=2026-08-01&periodEnd=2026-08-14&sourceTransactionId=${TRANSACTION_ID}`,
     );
   });
 
