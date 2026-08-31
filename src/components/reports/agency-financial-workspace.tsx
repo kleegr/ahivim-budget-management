@@ -7,7 +7,6 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
-  CircleDollarSign,
   HandCoins,
   Plus,
   ReceiptText,
@@ -591,7 +590,7 @@ export default function AgencyFinancialWorkspace({
             </SimpleTable> : <p className="px-5 py-10 text-center text-sm text-[var(--color-ink-faint)]">No program splits have been saved.</p>}
           </section>
           <section className="card overflow-hidden">
-            <header className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3.5"><div><h2 className="display text-base font-semibold">Employee and individual pay rules</h2><p className="mt-1 text-sm text-[var(--color-ink-soft)]">Specific rules take priority over the employee's general agency-routed deal.</p></div><button type="button" className="btn btn-sm btn-secondary" onClick={() => openPayRule()}><Plus className="h-4 w-4" aria-hidden /> Add pay rule</button></header>
+            <header className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3.5"><div><h2 className="display text-base font-semibold">Employee and individual pay rules</h2><p className="mt-1 text-sm text-[var(--color-ink-soft)]">Specific rules take priority over the employee&apos;s general agency-routed deal.</p></div><button type="button" className="btn btn-sm btn-secondary" onClick={() => openPayRule()}><Plus className="h-4 w-4" aria-hidden /> Add pay rule</button></header>
             {employeeTerms.length ? <SimpleTable caption="Employee and individual pay rules" headers={[{ label: "Employee" }, { label: "Individual" }, { label: "Employee share of base" }, { label: "Starts" }, { label: "Ends" }, { label: "Notes" }]}>
               {employeeTerms.map((term) => <Tr key={term.id}><Td>{term.employeeName}</Td><Td>{term.individualName}</Td><Td>{percent(term.employeeSharePercent)}</Td><Td>{term.effectiveFrom}</Td><Td>{term.effectiveTo ?? "Open"}</Td><Td>{term.notes ?? "-"}</Td></Tr>)}
             </SimpleTable> : <p className="px-5 py-10 text-center text-sm text-[var(--color-ink-faint)]">No employee-person pay rules have been saved.</p>}
