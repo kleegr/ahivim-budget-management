@@ -45,13 +45,18 @@ export default async function IndividualsPage({
     const [rows, authorizationRows] = await Promise.all([
       listIndividualBudgetBoard(pool, asOf, scope),
       scope.canSeeBudgets
-        ? listProgramBudgets(pool, { status: "active", asOf: today })
+        ? listProgramBudgets(pool, { status: "active" })
         : Promise.resolve([]),
     ]);
     const visibleIds = new Set(rows.map((row) => row.id));
     const authorizationPortfolio = summarizeAuthorizationPortfolio(
       authorizationRows.filter((row) => visibleIds.has(row.individualId)),
       asOf,
+    );
+    const canonicalBudgetPeople = new Set(
+      authorizationRows
+        .filter((row) => row.requiredAuthType !== "dollars" || scope.canSeeBilledAmounts || scope.canSeeClassFinancials)
+        .map((row) => row.individualId),
     );
     return rows.map((row) => (
       scope.canSeeBudgets && scope.canSeeHours && hasDirectIndividualAccess(scope, row.id)
@@ -63,21 +68,20 @@ export default async function IndividualsPage({
             ])].sort(),
             budget: (() => {
               const canonical = authorizationPortfolio.get(row.id)?.budget;
-              const budget = canonical
-                ? {
-                    ...canonical,
-                    transactionCount: row.budget?.transactionCount ?? 0,
-                  }
-                : row.budget;
+              const budget = canonical ? {
+                ...canonical,
+                transactionCount: row.budget?.transactionCount ?? 0,
+              } : null;
               return budget ? {
                 ...budget,
                 transactionCount: scope.canSeeTransactions ? budget.transactionCount : null,
                 billedAmount: scope.canSeeBilledAmounts ? budget.billedAmount : null,
               } : null;
             })(),
+            hasCanonicalBudget: canonicalBudgetPeople.has(row.id),
             insightsVisible: true,
           }
-        : { ...row, programs: [], budget: null, hasBilling: false, lastBilledOn: null, insightsVisible: false }
+        : { ...row, programs: [], budget: null, hasCanonicalBudget: false, hasBilling: false, lastBilledOn: null, insightsVisible: false }
     ));
   });
 

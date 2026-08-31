@@ -1,4 +1,4 @@
-import { requirePlanningUser } from "@/lib/auth/planning-access";
+import { canViewPlannerDirectPayTargets, requirePlanningUser } from "@/lib/auth/planning-access";
 import { withDb } from "@/lib/data/pool";
 import {
   filterPlanningWorkspaceForAgency,
@@ -9,12 +9,13 @@ import { PageHeader, ErrorPanel } from "@/components/ui";
 import PlanningWorkspace from "@/components/schedule/planning-workspace";
 import type { View } from "@/components/schedule/shared";
 import { agencyDate } from "@/lib/business/agency-time";
+import { listPlannerDirectPayTargets } from "@/lib/data/direct-pay-operations";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Schedule - Ahivim" };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const PLANNING_VIEWS = new Set(["calendar", "schedules", "future", "availability"]);
+const PLANNING_VIEWS = new Set(["calendar", "coverage", "schedules", "future", "availability", "targets"]);
 const CALENDAR_VIEWS = new Set<View>(["month", "week", "day"]);
 
 export default async function SchedulePage({
@@ -46,13 +47,17 @@ export default async function SchedulePage({
   };
 
   const result = await withDb(async (pool) => {
-    const [reference, planning] = await Promise.all([
+    const [reference, planning, directPayTargets] = await Promise.all([
       getPlanningReferenceData(pool, planningAccess.access),
       getPlanningWorkspace(pool, today, planningAccess.access, planningAccess.agencyIds),
+      canViewPlannerDirectPayTargets(planningAccess)
+        ? listPlannerDirectPayTargets(pool, today)
+        : Promise.resolve([]),
     ]);
     return {
       reference,
       planning: filterPlanningWorkspaceForAgency(planning, planningAccess.agencyRosters),
+      directPayTargets,
     };
   });
 
@@ -60,8 +65,8 @@ export default async function SchedulePage({
     <>
       <PageHeader
         eyebrow="Schedule"
-        title="Calendar"
-        description="See scheduled work and add sessions."
+        title="Scheduling"
+        description="Plan hours, assignments, employee availability, and budget coverage."
       />
 
       {!result.ok ? (
@@ -85,6 +90,8 @@ export default async function SchedulePage({
               name: p.name,
               isGroupCapable: p.isGroupCapable,
             }))}
+            directPayTargets={result.data.directPayTargets}
+            showDirectPayTargets={canViewPlannerDirectPayTargets(planningAccess)}
           />
         </>
       )}

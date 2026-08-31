@@ -134,7 +134,22 @@ describe("portal-safe home read model", () => {
         return { rows: [{ agency_id: AGENCY_A, person_id: AGENCY_A_INDIVIDUAL, amount: "40", program_breakdown: [{ id: PROGRAM, code: "COMHAB", name: "Community Habilitation", amount: "40" }] }] };
       }
       if (sql.includes("checks.employee_id AS person_id")) {
-        return { rows: [{ agency_id: AGENCY_A, person_id: AGENCY_A_EMPLOYEE, gross: null, net: "1200" }] };
+        return { rows: [{
+          agency_id: AGENCY_A,
+          person_id: AGENCY_A_EMPLOYEE,
+          gross: null,
+          net: "1200",
+          checks: [{
+            id: "00000000-0000-4000-8000-000000000011",
+            checkNumber: "201",
+            checkDate: "2026-05-22",
+            periodBegin: "2026-05-01",
+            periodEnd: "2026-05-15",
+            serviceDate: "2026-05-01",
+            actualGross: null,
+            actualNet: "1200",
+          }],
+        }] };
       }
       if (sql.includes("obligation.employee_id AS person_id")) {
         return { rows: [{
@@ -220,6 +235,12 @@ describe("portal-safe home read model", () => {
         id: AGENCY_A_EMPLOYEE,
         payrollGrossThisMonth: null,
         payrollNetThisMonth: "1200.0000",
+        checks: [{
+          checkNumber: "201",
+          serviceDate: "2026-05-01",
+          actualGross: null,
+          actualNet: "1200.0000",
+        }],
         giveBack: { dueThisMonth: "10.0000", collectedThisMonth: "5.0000", remaining: "75.0000" },
       }],
     });
@@ -282,6 +303,7 @@ describe("portal-safe home read model", () => {
     expect(agencyFinancialCall?.[0]).toContain("obligation.period_begin, obligation.check_date, obligation.period_end");
     expect(agencyFinancialCall?.[0]).toContain("checks.verification_status = 'verified'");
     expect(agencyFinancialCall?.[0]).toContain("count(*) FILTER (WHERE checks.actual_gross IS NULL) > 0");
+    expect(portalSql).toContain("jsonb_agg(jsonb_build_object(");
     expect(agencyFinancialCall?.[0]).not.toContain("checks.verification_status <> 'void'");
     expect(agencyFinancialCall?.[0].match(/AND EXISTS \(/g)?.length).toBeGreaterThanOrEqual(6);
     expect(agencyFinancialCall?.[0]).not.toMatch(/JOIN agency_(?:individuals|employees) membership/);

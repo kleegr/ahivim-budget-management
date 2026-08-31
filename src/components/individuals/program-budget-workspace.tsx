@@ -32,6 +32,7 @@ export interface VisibleProgramBudget {
   requiredAuthType: string;
   consumptionSource: string;
   renewalPolicy: string;
+  isGroupService: boolean;
   authorizedHours: string | null;
   authorizedDollars: string | null;
   internalRate: string | null;
@@ -43,12 +44,28 @@ export interface VisibleProgramBudget {
   consumedDollars: string | null;
   remainingHours: string | null;
   remainingDollars: string | null;
+  scheduledHours: string | null;
+  remainingAfterScheduledHours: string | null;
   undatedUsageCount: number | null;
   hasUndatedUsage: boolean;
   revision: number;
+  canManageRenewal: boolean;
   showEventHistory: boolean;
+  monthlyHistory: VisibleProgramBudgetMonth[];
   events: VisibleProgramBudgetEvent[];
   authorizationRevisions: VisibleAuthorizationRevision[];
+}
+
+export interface VisibleProgramBudgetMonth {
+  month: string;
+  usedHours: string;
+  scheduledHours: string;
+  cumulativeUsedHours: string;
+  cumulativeScheduledHours: string;
+  remainingHours: string;
+  remainingAfterScheduledHours: string;
+  expectedUsedHours: string | null;
+  paceVarianceHours: string | null;
 }
 
 export interface VisibleAuthorizationRevision {
@@ -121,17 +138,93 @@ function UsageBar({
 }
 
 function HoursMetrics({ budget }: { budget: VisibleProgramBudget }) {
-  if (budget.authorizedHours === null || budget.consumedHours === null || budget.remainingHours === null) return null;
+  if (
+    budget.authorizedHours === null
+    || budget.consumedHours === null
+    || budget.remainingHours === null
+    || budget.scheduledHours === null
+    || budget.remainingAfterScheduledHours === null
+  ) return null;
   const isOver = dec(budget.remainingHours).isNegative();
+  const scheduleIsOver = dec(budget.remainingAfterScheduledHours).isNegative();
   return (
     <div className="border-t border-[var(--color-rule)] pt-4">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <div><p className="text-xs text-[var(--color-ink-faint)]">Hours authorized</p><p className="tnum mt-1 text-lg font-semibold">{formatHours(budget.authorizedHours)}</p></div>
-        <div><p className="text-xs text-[var(--color-ink-faint)]">Hours used</p><p className="tnum mt-1 text-lg font-semibold">{formatHours(budget.consumedHours)}</p></div>
-        <div><p className="text-xs text-[var(--color-ink-faint)]">Hours remaining</p><p className={`tnum mt-1 text-lg font-semibold ${isOver ? "text-[var(--color-danger)]" : ""}`}>{formatHours(budget.remainingHours)}</p></div>
+        <div><p className="text-xs text-[var(--color-ink-faint)]">{budget.isGroupService ? "Individual hours used" : "Hours used"}</p><p className="tnum mt-1 text-lg font-semibold">{formatHours(budget.consumedHours)}</p></div>
+        <div><p className="text-xs text-[var(--color-ink-faint)]">Scheduled</p><p className="tnum mt-1 text-lg font-semibold">{formatHours(budget.scheduledHours)}</p></div>
+        <div><p className="text-xs text-[var(--color-ink-faint)]">Remaining now</p><p className={`tnum mt-1 text-lg font-semibold ${isOver ? "text-[var(--color-danger)]" : ""}`}>{formatHours(budget.remainingHours)}</p></div>
+        <div><p className="text-xs text-[var(--color-ink-faint)]">After schedule</p><p className={`tnum mt-1 text-lg font-semibold ${scheduleIsOver ? "text-[var(--color-danger)]" : ""}`}>{formatHours(budget.remainingAfterScheduledHours)}</p></div>
       </div>
       <UsageBar used={budget.consumedHours} authorized={budget.authorizedHours} unit="hours" />
+      <p className="mt-2 text-xs text-[var(--color-ink-faint)]">Scheduled includes pending sessions in this authorization period that are not yet matched to a transaction.</p>
+      {budget.isGroupService ? (
+        <p className="mt-1 text-xs font-medium text-[var(--color-ink-soft)]">Group service totals are hours credited to this individual. Physical employee time is counted separately in employee reports.</p>
+      ) : null}
     </div>
+  );
+}
+
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function monthLabel(value: string): string {
+  const [year, month] = value.split("-");
+  const label = MONTH_LABELS[Number(month) - 1];
+  return label && year ? `${label} ${year}` : value;
+}
+
+function paceLabel(variance: string | null): { label: string; className: string } {
+  if (variance === null) return { label: "Upcoming", className: "text-[var(--color-ink-faint)]" };
+  const amount = dec(variance);
+  if (amount.isZero()) return { label: "On pace", className: "text-[var(--color-success)]" };
+  if (amount.isPositive()) {
+    return { label: `${formatHours(amount)} h ahead`, className: "text-[var(--color-success)]" };
+  }
+  return { label: `${formatHours(amount.abs())} h behind`, className: "text-[var(--color-danger)]" };
+}
+
+function MonthlyHistory({ months, isGroupService }: { months: VisibleProgramBudgetMonth[]; isGroupService: boolean }) {
+  if (months.length === 0) return null;
+  return (
+    <details className="border-t border-[var(--color-rule)] px-4 py-3 sm:px-5">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-[var(--color-ink-soft)]">
+        <CalendarDays aria-hidden className="h-4 w-4" />
+        Monthly authorization trend
+        <span className="tnum text-xs font-normal text-[var(--color-ink-faint)]">{months.length}</span>
+      </summary>
+      <div className="scroll-thin mt-3 overflow-x-auto">
+        <table className="min-w-full border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-[var(--color-rule)] text-left text-xs text-[var(--color-ink-faint)]">
+              <th className="py-2 pr-4 font-semibold">Month</th>
+              <th className="px-3 py-2 text-right font-semibold">{isGroupService ? "Credited" : "Used"}</th>
+              <th className="px-3 py-2 text-right font-semibold">Scheduled</th>
+              <th className="px-3 py-2 text-right font-semibold">Used to date</th>
+              <th className="px-3 py-2 text-right font-semibold">Expected</th>
+              <th className="px-3 py-2 text-right font-semibold">After scheduled</th>
+              <th className="py-2 pl-3 text-right font-semibold">Pace</th>
+            </tr>
+          </thead>
+          <tbody>
+            {months.map((month) => {
+              const pace = paceLabel(month.paceVarianceHours);
+              return (
+                <tr key={month.month} className="border-b border-[var(--color-rule)] last:border-0">
+                  <td className="whitespace-nowrap py-2.5 pr-4 font-medium">{monthLabel(month.month)}</td>
+                  <td className="px-3 py-2.5 text-right tnum">{formatHours(month.usedHours)}</td>
+                  <td className="px-3 py-2.5 text-right tnum">{formatHours(month.scheduledHours)}</td>
+                  <td className="px-3 py-2.5 text-right tnum">{formatHours(month.cumulativeUsedHours)}</td>
+                  <td className="px-3 py-2.5 text-right tnum">{month.expectedUsedHours === null ? "-" : formatHours(month.expectedUsedHours)}</td>
+                  <td className="px-3 py-2.5 text-right tnum">{formatHours(month.remainingAfterScheduledHours)}</td>
+                  <td className={`whitespace-nowrap py-2.5 pl-3 text-right text-xs font-semibold ${pace.className}`}>{pace.label}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2 text-xs text-[var(--color-ink-faint)]">Used comes from committed transactions and ledger adjustments. Scheduled includes pending unmatched sessions.</p>
+    </details>
   );
 }
 
@@ -354,6 +447,7 @@ export default function ProgramBudgetWorkspace({
   budgets,
   programs,
   canManage,
+  hoursOnlyManagement,
   showInternalRate,
   showAgencyRate,
 }: {
@@ -361,6 +455,7 @@ export default function ProgramBudgetWorkspace({
   budgets: VisibleProgramBudget[];
   programs: ProgramBudgetOption[];
   canManage: boolean;
+  hoursOnlyManagement: boolean;
   showInternalRate: boolean;
   showAgencyRate: boolean;
 }) {
@@ -381,7 +476,11 @@ export default function ProgramBudgetWorkspace({
               fields={<ProgramBudgetFields programs={programs} showInternalRate={showInternalRate} showAgencyRate={showAgencyRate} />}
             />
           ) : (
-            <ButtonLink href="/settings#programs" variant="primary">Add a program first</ButtonLink>
+            hoursOnlyManagement ? (
+              <p className="text-sm text-[var(--color-ink-faint)]">No hours-based programs are available.</p>
+            ) : (
+              <ButtonLink href="/settings#programs" variant="primary">Add a program first</ButtonLink>
+            )
           )
         ) : null}
       </div>
@@ -395,6 +494,8 @@ export default function ProgramBudgetWorkspace({
         <div className="grid gap-4 xl:grid-cols-2">
           {budgets.map((budget) => {
             const manualUsageAllowed = budget.consumptionSource === "manual" || budget.consumptionSource === "mixed";
+            const canManageAuthorization = canManage
+              && (!hoursOnlyManagement || budget.requiredAuthType === "hours");
             return (
               <article key={`${budget.budgetPeriodId}:${budget.programId}`} className="overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-surface)]">
                 <div className="px-4 py-4 sm:px-5">
@@ -416,7 +517,9 @@ export default function ProgramBudgetWorkspace({
                     </div>
                     <div className="flex items-center gap-2 text-[var(--color-ink-soft)]">
                       <RefreshCcw aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-ink-faint)]" />
-                      <span>{budget.renewalDate ? `Renews ${dateLabel(budget.renewalDate)}` : `${titleCase(budget.renewalPolicy)} renewal`}</span>
+                      <span className={budget.renewalDate ? "" : "font-semibold text-[var(--color-danger)]"}>
+                        {budget.renewalDate ? `Renews ${dateLabel(budget.renewalDate)}` : "Renewal date missing"}
+                      </span>
                     </div>
                   </div>
 
@@ -459,7 +562,7 @@ export default function ProgramBudgetWorkspace({
                     </div>
                   ) : null}
 
-                  {canManage && budget.periodStatus === "active" && budget.programCode !== "CLASSES" ? (
+                  {canManageAuthorization && budget.periodStatus === "active" && budget.programCode !== "CLASSES" ? (
                     <div className="mt-4 flex flex-wrap gap-2 border-t border-[var(--color-rule)] pt-3">
                       <CreateButton
                         label="Revise"
@@ -476,7 +579,21 @@ export default function ProgramBudgetWorkspace({
                           />
                         )}
                       />
-                      {manualUsageAllowed ? (
+                      {budget.canManageRenewal ? <CreateButton
+                        label={budget.renewalDate ? "Change renewal" : "Set renewal"}
+                        title={`${budget.renewalDate ? "Change" : "Set"} renewal - ${budget.programName}`}
+                        endpoint={`/api/budget-periods/${budget.budgetPeriodId}`}
+                        method="PATCH"
+                        size="sm"
+                        variant={budget.renewalDate ? "secondary" : "primary"}
+                        fields={(
+                          <>
+                            <Field label="Renewal date" name="renewalDate" type="date" defaultValue={budget.renewalDate ?? ""} required />
+                            <TextAreaField label="Change reason" name="reason" required minLength={5} />
+                          </>
+                        )}
+                      /> : null}
+                      {!hoursOnlyManagement && manualUsageAllowed ? (
                         <CreateButton
                           label="Record usage"
                           title={`Record usage - ${budget.programName}`}
@@ -492,7 +609,7 @@ export default function ProgramBudgetWorkspace({
                           fields={<EventFields budget={budget} eventType="consume" />}
                         />
                       ) : null}
-                      <CreateButton
+                      {!hoursOnlyManagement ? <CreateButton
                         label="Add adjustment"
                         title={`Adjust balance - ${budget.programName}`}
                         endpoint="/api/program-budget-events"
@@ -505,7 +622,7 @@ export default function ProgramBudgetWorkspace({
                           sourceId: `manual-${randomUUID()}`,
                         }}
                         fields={<EventFields budget={budget} eventType="adjust" />}
-                      />
+                      /> : null}
                       <ActionButton
                         label="Cancel authorization"
                         endpoint={`/api/authorizations/${budget.authorizationId}`}
@@ -516,8 +633,9 @@ export default function ProgramBudgetWorkspace({
                     </div>
                   ) : null}
                 </div>
+                <MonthlyHistory months={budget.monthlyHistory} isGroupService={budget.isGroupService} />
                 <AuthorizationHistory budget={budget} />
-                {budget.showEventHistory ? <EventHistory budget={budget} canManage={canManage && budget.programCode !== "CLASSES"} /> : null}
+                {budget.showEventHistory ? <EventHistory budget={budget} canManage={!hoursOnlyManagement && canManageAuthorization && budget.programCode !== "CLASSES"} /> : null}
               </article>
             );
           })}

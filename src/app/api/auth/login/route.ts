@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { authenticate, writeAudit } from "@/lib/auth/users";
-import { createSessionCookie, safeRedirectPath } from "@/lib/auth/session";
+import {
+  clearImpersonationCookie,
+  createSessionCookie,
+  safeRedirectPath,
+} from "@/lib/auth/session";
 import { sameOriginOrFail } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -72,6 +76,8 @@ export async function POST(request: NextRequest) {
     return fail(request, wantsJson, message, destination, 401);
   }
 
+  // A fresh credential sign-in must never inherit a stale owner-return proof.
+  await clearImpersonationCookie();
   await createSessionCookie(outcome.user);
   await writeAudit(pool, {
     userId: outcome.user.id,

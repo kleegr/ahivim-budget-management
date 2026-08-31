@@ -15,7 +15,7 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 export interface OwnerActivitySelection {
   checkDateFrom: string | null;
   checkDateTo: string | null;
-  individualId: string | null;
+  individualIds: string[];
   employeeId: string | null;
   /** Exact Period Begin value from the payroll ledger. */
   payrollPeriod: string | null;
@@ -83,14 +83,18 @@ function cleanDate(value: string | null | undefined): string | null {
 }
 
 export function normalizeOwnerActivitySelection(
-  value: Partial<OwnerActivitySelection> | undefined,
+  value: (Partial<OwnerActivitySelection> & { individualId?: string | null }) | undefined,
 ): OwnerActivitySelection {
   const from = cleanDate(value?.checkDateFrom);
   const to = cleanDate(value?.checkDateTo);
+  const individualIds = [...new Set([
+    ...(value?.individualIds ?? []),
+    value?.individualId ?? "",
+  ].map((id) => id.trim()).filter(Boolean))];
   return {
     checkDateFrom: from && to && from > to ? to : from,
     checkDateTo: from && to && from > to ? from : to,
-    individualId: value?.individualId?.trim() || null,
+    individualIds,
     employeeId: value?.employeeId?.trim() || null,
     payrollPeriod: cleanDate(value?.payrollPeriod),
   };
@@ -100,7 +104,7 @@ function hasActivitySelection(value: OwnerActivitySelection): boolean {
   return Boolean(
     value.checkDateFrom
       || value.checkDateTo
-      || value.individualId
+      || value.individualIds.length > 0
       || value.employeeId
       || value.payrollPeriod,
   );
@@ -113,7 +117,7 @@ function filterActivityRows(
   return rows.filter((row) => {
     if (selection.checkDateFrom && (!row.checkDate || row.checkDate < selection.checkDateFrom)) return false;
     if (selection.checkDateTo && (!row.checkDate || row.checkDate > selection.checkDateTo)) return false;
-    if (selection.individualId && row.individualId !== selection.individualId) return false;
+    if (selection.individualIds.length > 0 && (!row.individualId || !selection.individualIds.includes(row.individualId))) return false;
     if (selection.employeeId && row.employeeId !== selection.employeeId) return false;
     if (selection.payrollPeriod && row.periodBegin !== selection.payrollPeriod) return false;
     return true;
@@ -124,7 +128,7 @@ function activityRowsHref(selection: OwnerActivitySelection): string {
   const params = new URLSearchParams({ view: "rows" });
   if (selection.checkDateFrom) params.set("checkDateFrom", selection.checkDateFrom);
   if (selection.checkDateTo) params.set("checkDateTo", selection.checkDateTo);
-  if (selection.individualId) params.set("individualId", selection.individualId);
+  for (const individualId of selection.individualIds) params.append("individualId", individualId);
   if (selection.employeeId) params.set("employeeId", selection.employeeId);
   if (selection.payrollPeriod) {
     params.set("pbFrom", selection.payrollPeriod);
@@ -151,7 +155,7 @@ function checkRowsHref(
       params.set("pbTo", check.periodBegin);
     }
   }
-  if (selection?.individualId) params.set("individualId", selection.individualId);
+  for (const individualId of selection?.individualIds ?? []) params.append("individualId", individualId);
   if (selection?.employeeId) params.set("employeeId", selection.employeeId);
   if (selection?.payrollPeriod) {
     params.set("pbFrom", selection.payrollPeriod);
@@ -232,7 +236,7 @@ export function buildOwnerDashboardSummary(input: {
   programBudgets: ProgramBudgetRecord[];
   budgetBoard: IndividualBudgetBoardRow[];
   strategies: StrategyGridRow[];
-  activitySelection?: Partial<OwnerActivitySelection>;
+  activitySelection?: Partial<OwnerActivitySelection> & { individualId?: string | null };
 }): OwnerDashboardSummary {
   const selection = normalizeOwnerActivitySelection(input.activitySelection);
   const selectionActive = hasActivitySelection(selection);

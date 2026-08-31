@@ -317,10 +317,34 @@ export default function AppNav({
       setPendingHref(`${destination.pathname}${destination.search}`);
     };
 
+    const trackInternalForm = (event: SubmitEvent) => {
+      // Client-managed forms prevent the native submit and already show their
+      // own busy state. Only show route progress for a real page submission.
+      if (event.defaultPrevented) return;
+      const form = event.target instanceof HTMLFormElement ? event.target : null;
+      if (!form || form.target === "_blank") return;
+
+      const submitter = event.submitter instanceof HTMLButtonElement
+        || event.submitter instanceof HTMLInputElement
+        ? event.submitter
+        : null;
+      const action = submitter?.formAction || form.action || window.location.href;
+      const destination = new URL(action, window.location.href);
+      if (destination.origin !== window.location.origin) return;
+
+      setPendingHref(`${destination.pathname}${destination.search}`);
+    };
+
     // Capture the intent before Next.js handles the link so content links and
     // table actions receive the same immediate feedback as sidebar links.
     document.addEventListener("click", trackInternalLink, true);
-    return () => document.removeEventListener("click", trackInternalLink, true);
+    // Submit is intentionally observed in the bubble phase so a client form's
+    // preventDefault runs before we decide whether a page is navigating.
+    document.addEventListener("submit", trackInternalForm);
+    return () => {
+      document.removeEventListener("click", trackInternalLink, true);
+      document.removeEventListener("submit", trackInternalForm);
+    };
   }, []);
 
   useEffect(() => {
@@ -396,12 +420,12 @@ export default function AppNav({
       <CommandBar role={user.role} accessResolved={accessResolved} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} canSeeBudgets={canSeeBudgets} canPlan={canPlan} canSeeClassFinancials={canSeeClassFinancials} canSeeEmployees={canSeeEmployees} canEditDocuments={canEditDocuments} canUsePortal={canUsePortal} canManageAgencies={canManageAgencies} onNavigate={beginNavigation} />
 
       {pendingHref ? (
-        <div className="pointer-events-none fixed inset-x-0 top-0 z-[80] h-1 overflow-hidden bg-[var(--color-primary-soft)]" role="progressbar" aria-label="Loading page">
+        <div className="pointer-events-none fixed inset-x-0 top-[var(--impersonation-bar-height)] z-[80] h-1 overflow-hidden bg-[var(--color-primary-soft)]" role="progressbar" aria-label="Loading page">
           <span className="route-progress-bar block h-full bg-[var(--color-primary)]" />
         </div>
       ) : null}
 
-      <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 md:hidden">
+      <header className="sticky top-[var(--impersonation-bar-height)] z-30 flex items-center justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5 md:hidden">
         <Wordmark onNavigate={beginNavigation} />
         <div className="flex items-center gap-2">
           <button
@@ -439,7 +463,7 @@ export default function AppNav({
         aria-hidden={!open}
         inert={!open}
         tabIndex={-1}
-        className={`fixed inset-y-0 left-0 z-40 flex w-[min(20rem,calc(100vw-2rem))] flex-col border-r border-[var(--color-rule)] bg-[var(--color-surface)] shadow-xl transition-transform md:hidden ${
+        className={`fixed bottom-0 left-0 top-[var(--impersonation-bar-height)] z-40 flex w-[min(20rem,calc(100vw-2rem))] flex-col border-r border-[var(--color-rule)] bg-[var(--color-surface)] shadow-xl transition-transform md:hidden ${
           open ? "translate-x-0" : "pointer-events-none -translate-x-full"
         }`}
       >
@@ -465,7 +489,7 @@ export default function AppNav({
         />
       </aside>
 
-      <aside className="hidden h-screen w-64 shrink-0 flex-col border-r border-[var(--color-rule)] bg-[var(--color-surface)] md:sticky md:top-0 md:flex">
+      <aside className="hidden h-[calc(100vh-var(--impersonation-bar-height))] w-64 shrink-0 flex-col border-r border-[var(--color-rule)] bg-[var(--color-surface)] md:sticky md:top-[var(--impersonation-bar-height)] md:flex">
         <div className="flex flex-col gap-3 px-5 py-4">
           <Wordmark onNavigate={beginNavigation} />
           <button

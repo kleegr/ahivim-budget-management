@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiUser, clearSessionCookie } from "@/lib/auth/session";
+import { apiUser, clearAuthenticationCookies } from "@/lib/auth/session";
 import { changePassword, MIN_PASSWORD_LENGTH } from "@/lib/auth/users";
 import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
 
@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
     return jsonError(redactError(error, "Password could not be changed."), 500);
   }
 
-  await clearSessionCookie();
+  await clearAuthenticationCookies();
   return NextResponse.json({
     ok: true,
     message: "Password changed. Sign in again with your new password.",

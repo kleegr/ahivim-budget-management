@@ -92,6 +92,8 @@ describe("report activity truth", () => {
   });
 
   it("publishes clear hour labels and usable date/person filters", async () => {
+    expect(REPORTS["program-totals"].description).toContain("Credited hours repeat for each individual");
+    expect(REPORTS["program-totals"].description).toContain("without a session link");
     expect(REPORTS["program-totals"].filters.map((filter) => filter.key)).toEqual(["from", "to"]);
     expect(REPORTS["actual-vs-scheduled"].filters.map((filter) => filter.key)).toEqual([
       "from",

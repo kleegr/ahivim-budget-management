@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { derivePeriodDates } from "@/lib/manage/budget-periods";
+import { deriveAnnualPeriodFromRenewal, derivePeriodDates } from "@/lib/manage/budget-periods";
 
 describe("derivePeriodDates (pure)", () => {
   it("calendar: uses the explicit year for Jan 1 – Dec 31", () => {
@@ -57,5 +57,25 @@ describe("derivePeriodDates (pure)", () => {
       startDate: "2025-04-01",
       endDate: "2025-04-01",
     });
+  });
+});
+
+describe("deriveAnnualPeriodFromRenewal", () => {
+  it("derives the 12-month period backwards from the renewal", () => {
+    expect(deriveAnnualPeriodFromRenewal("2027-01-01")).toEqual({
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+  });
+
+  it("clamps a leap-day renewal in the prior non-leap year", () => {
+    expect(deriveAnnualPeriodFromRenewal("2024-02-29")).toEqual({
+      startDate: "2023-02-28",
+      endDate: "2024-02-28",
+    });
+  });
+
+  it("rejects a calendar-shaped but impossible date", () => {
+    expect(() => deriveAnnualPeriodFromRenewal("2026-02-31")).toThrow(/real date/i);
   });
 });

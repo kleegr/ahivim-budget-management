@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/session";
 import { canViewEmployee, canViewIndividual, hasDirectIndividualAccess, resolveAccessScope } from "@/lib/auth/access";
+import { canManageHourAuthorizations } from "@/lib/auth/hour-authorization-access";
 import { withDb } from "@/lib/data/pool";
 import { getIndividualBudgetView, getIndividualPeriodActivity } from "@/lib/data/queries";
 import { BUDGET_STATUS_PRESENT, type BudgetLineStatus } from "@/lib/business/budget-status";
@@ -14,7 +15,12 @@ import { listAliases } from "@/lib/manage/aliases";
 import { scheduledByProgramForIndividual } from "@/lib/data/schedule-queries";
 import { getPersonSettlementBalance } from "@/lib/data/settlements";
 import { listClassBudgets, listClassInvoices } from "@/lib/data/class-invoices";
-import { listProgramBudgetEvents, listProgramBudgets } from "@/lib/data/program-budgets";
+import {
+  listProgramBudgetEvents,
+  listProgramBudgetMonthlyHistory,
+  listProgramBudgets,
+} from "@/lib/data/program-budgets";
+import { summarizeAuthorizationPortfolio } from "@/lib/data/authorization-portfolio";
 import {
   Card, Table, Th, Td, Tr, Money, Hours, ErrorPanel, PageHeader, ButtonLink,
 } from "@/components/ui";
@@ -34,12 +40,10 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Individual — Ahivim Budget Management" };
 
 /*
-  The individual profile, rebuilt to answer one question first: WHERE ARE WE UP
-  TO on this person's budget? It leads with a plain-language budget — used vs.
-  authorized vs. left, per program, straight from the plan and the real
-  transactions — then the money, then everything else folded away so a first-time
-  reader is never buried. Authorized hours come from the same plan the Financial
-  page uses, so the numbers here can never disagree with any other screen.
+  The individual profile leads with the operational authorization truth:
+  authorized, transaction-backed used, pending scheduled, and remaining hours
+  from program_budget_balances. Calculation strategies remain a separate
+  Financial Setup concern and never define the operational Budget tab.
 */
 
 function StatusPill({ status }: { status: BudgetLineStatus }) {
@@ -107,6 +111,7 @@ export default async function IndividualDetailPage({
     const canSeeProgramBudgets = canSeeBudgets || canSeeAnyProgramDollars;
     const canSeeSettlements = scope.canSeeSettlements && directAccess;
     const canSeeClasses = scope.canSeeClassFinancials && directAccess;
+    const canManageHours = canManageHourAuthorizations(scope) && directAccess;
     const budget = await getIndividualBudgetView(pool, id, undefined, scope);
     const [strategies, assignments, aliasesAll, scheduledByProgram, activity, settlement, classBudgets, classInvoices, programBudgetsRaw, programCatalogRaw, authorizationHistoryRaw] = await Promise.all([
       canSeeBudgets
@@ -133,7 +138,7 @@ export default async function IndividualDetailPage({
       canSeeClasses ? listClassBudgets(pool, scope, { individualId: id }) : Promise.resolve([]),
       canSeeClasses ? listClassInvoices(pool, scope, { individualId: id }) : Promise.resolve([]),
       canSeeProgramBudgets ? listProgramBudgets(pool, { individualId: id }) : Promise.resolve([]),
-      canEdit ? listPrograms(pool) : Promise.resolve([]),
+      canEdit || canManageHours ? listPrograms(pool) : Promise.resolve([]),
       canSeeProgramBudgets
         ? listAuthorizationsForIndividual(pool, id)
         : Promise.resolve({ periods: [], authorizations: [] }),
@@ -149,11 +154,29 @@ export default async function IndividualDetailPage({
     const programBudgetHistoryVisibility = visibleProgramBudgetRows.map((row) => (
       (scope.canSeeTransactions || canSeeRowDollars(row.serviceCategory)) && directAccess
     ));
-    const programBudgetEvents = await Promise.all(
-      visibleProgramBudgetRows.map((row, index) => programBudgetHistoryVisibility[index]
-        ? listProgramBudgetEvents(pool, row.budgetPeriodId, row.programId)
-        : Promise.resolve([])),
+    const plannerRenewalPeriods = new Set(
+      programBudgetsRaw
+        .filter((row) => (
+          row.requiredAuthType === "hours"
+          && row.programCode !== "CLASSES"
+          && programBudgetsRaw
+            .filter((candidate) => candidate.budgetPeriodId === row.budgetPeriodId)
+            .every((candidate) => candidate.requiredAuthType === "hours" && candidate.programCode !== "CLASSES")
+        ))
+        .map((row) => row.budgetPeriodId),
     );
+    const [programBudgetEvents, programBudgetMonthlyHistory] = await Promise.all([
+      Promise.all(
+        visibleProgramBudgetRows.map((row, index) => programBudgetHistoryVisibility[index]
+          ? listProgramBudgetEvents(pool, row.budgetPeriodId, row.programId)
+          : Promise.resolve([])),
+      ),
+      Promise.all(
+        visibleProgramBudgetRows.map((row) => canSeeBudgets && row.requiredAuthType !== "dollars"
+          ? listProgramBudgetMonthlyHistory(pool, row.budgetPeriodId, row.programId)
+          : Promise.resolve([])),
+      ),
+    ]);
     const programBudgets = visibleProgramBudgetRows.map((row, index) => ({
       authorizationId: row.authorizationId,
       budgetPeriodId: row.budgetPeriodId,
@@ -169,6 +192,7 @@ export default async function IndividualDetailPage({
       requiredAuthType: row.requiredAuthType,
       consumptionSource: row.consumptionSource,
       renewalPolicy: row.renewalPolicy,
+      isGroupService: row.rateScope === "per_group" || row.serviceCategory === "group_service",
       authorizedHours: canSeeBudgets && row.requiredAuthType !== "dollars" ? row.authorizedHours : null,
       authorizedDollars: canSeeRowDollars(row.serviceCategory) && row.requiredAuthType !== "hours" ? row.authorizedDollars : null,
       internalRate: scope.canSeeEmployeeAmounts && directAccess ? row.internalRate : null,
@@ -180,11 +204,17 @@ export default async function IndividualDetailPage({
       consumedDollars: canSeeRowDollars(row.serviceCategory) && row.requiredAuthType !== "hours" ? row.consumedDollars : null,
       remainingHours: canSeeBudgets && row.requiredAuthType !== "dollars" ? row.remainingHours : null,
       remainingDollars: canSeeRowDollars(row.serviceCategory) && row.requiredAuthType !== "hours" ? row.remainingDollars : null,
+      scheduledHours: canSeeBudgets && row.requiredAuthType !== "dollars" ? row.scheduledHours : null,
+      remainingAfterScheduledHours: canSeeBudgets && row.requiredAuthType !== "dollars"
+        ? row.remainingAfterScheduledHours
+        : null,
       // Planners need the budget-quality warning, not a payroll row count.
       undatedUsageCount: scope.canSeeTransactions ? row.undatedUsageCount : null,
       hasUndatedUsage: row.hasUndatedUsage,
       revision: row.revision,
+      canManageRenewal: canEdit || (canManageHours && plannerRenewalPeriods.has(row.budgetPeriodId)),
       showEventHistory: programBudgetHistoryVisibility[index] ?? false,
+      monthlyHistory: programBudgetMonthlyHistory[index] ?? [],
       events: (programBudgetEvents[index] ?? []).map((event) => ({
         id: event.id,
         eventType: event.eventType,
@@ -224,6 +254,9 @@ export default async function IndividualDetailPage({
           createdAt: authorization.createdAt,
         })),
     }));
+    const operationalBudget = canSeeBudgets
+      ? summarizeAuthorizationPortfolio(programBudgetsRaw).get(id)?.budget ?? null
+      : null;
     // The plan the main view describes (matches the budget board), plus any OTHER
     // plans this individual has — each gets its own budget view so a second plan
     // (different programs / different cuts) shows in full.
@@ -266,7 +299,7 @@ export default async function IndividualDetailPage({
       })),
     };
     return {
-      individual, budget, activity: visibleActivity, settlement,
+      individual, budget, operationalBudget, activity: visibleActivity, settlement,
       strategy,
       otherPlans,
       canSeeHours: scope.canSeeHours,
@@ -278,11 +311,16 @@ export default async function IndividualDetailPage({
       canSeeSettlements,
       canSeeClasses,
       canManageClasses: scope.canManageClassInvoices,
+      canManageHourAuthorizations: canManageHours,
       classBudgets,
       classInvoices,
       programBudgets,
       programCatalog: programCatalogRaw
-        .filter((program) => program.isActive && program.code !== "CLASSES")
+        .filter((program) => (
+          program.isActive
+          && program.code !== "CLASSES"
+          && (canEdit || program.requiredAuthType === "hours")
+        ))
         .map((program) => ({
           id: program.id,
           code: program.code,
@@ -317,40 +355,45 @@ export default async function IndividualDetailPage({
   if (!result.data) notFound();
 
   const {
-    individual, budget, activity, settlement, strategy, otherPlans,
+    individual, budget, operationalBudget, activity, settlement, strategy, otherPlans,
     canSeeHours, canSeeBilledAmounts, canSeeEmployeeAmounts, canSeeAgencySpread,
     canSeeBudgets, canSeeProgramBudgets,
     canSeeSettlements, canSeeTransactions, canSeeClasses, canManageClasses,
+    canManageHourAuthorizations: canManageHours,
     classBudgets, classInvoices, programBudgets, programCatalog,
     programs, assignments, aliases, scheduled,
   } = result.data;
-  const t = budget.totals;
-  const headline = budget.headline ? BUDGET_STATUS_PRESENT[budget.headline] : null;
+  const operationalHeadline = operationalBudget
+    ? BUDGET_STATUS_PRESENT[operationalBudget.plainStatus]
+    : null;
+  const operationalAuthorized = operationalBudget
+    ? dec(operationalBudget.usedHours).plus(operationalBudget.hoursLeft ?? 0)
+    : dec(0);
 
   // Months left until the (rolled) renewal, for the financial plan's remaining pace.
   const monthsToRenewal = budget.daysToRenewal !== null && budget.daysToRenewal > 0 ? budget.daysToRenewal / 30.4375 : null;
-  // "bill X h/month to finish" — summed per program, each toward its OWN renewal
-  // (Day Hab / Supplemental on the calendar year), computed in the read model.
-  const perMonthToFinish = budget.perMonthToFinish ? dec(budget.perMonthToFinish) : null;
   const employeeActivityPeriod = activity.periods.length === 1 ? activity.periods[0] : null;
-
-  const editorLines: BudgetEditorLine[] = budget.lines.map((l) => ({
-    programId: l.programId,
-    programName: l.programName,
-    perHour: canSeeEmployeeAmounts ? l.perHour : "0",
-    authorizedHours: l.authorizedHours,
-    usedHours: l.usedHours,
-    inPlan: l.inPlan,
-    daysToRenewal: l.daysToRenewal,
-    effectiveRenewal: l.effectiveRenewal,
-    calendarYear: l.calendarYear,
+  const editorLines: BudgetEditorLine[] = budget.lines.map((line) => ({
+    programId: line.programId,
+    programName: line.programName,
+    perHour: canSeeEmployeeAmounts ? line.perHour : "0",
+    authorizedHours: line.authorizedHours,
+    usedHours: line.usedHours,
+    inPlan: line.inPlan,
+    daysToRenewal: line.daysToRenewal,
+    effectiveRenewal: line.effectiveRenewal,
+    calendarYear: line.calendarYear,
   }));
-  const editorPrograms = programs.map((p) => ({
-    id: p.id,
-    code: p.code,
-    name: p.name,
-    defaultRate: canSeeEmployeeAmounts ? p.internalRate : "0",
+  const editorPrograms = programs.map((program) => ({
+    id: program.id,
+    code: program.code,
+    name: program.name,
+    defaultRate: canSeeEmployeeAmounts ? program.internalRate : "0",
   }));
+  const canSeeFinancialSetup = canSeeBudgets
+    && canSeeBilledAmounts
+    && canSeeEmployeeAmounts
+    && canSeeAgencySpread;
 
   /* ---- header action: edit the person's name/notes. Active/inactive is a
      switch inside the budget below, not an outside button. ---- */
@@ -387,34 +430,47 @@ export default async function IndividualDetailPage({
           {
             id: "overview",
             label: "Overview",
-            content: canSeeBudgets && budget.hasPlan ? (
-              <section className="card fade-in-up px-5 py-5" style={{ borderTop: `3px solid ${headline?.color ?? "var(--color-primary)"}` }}>
+            content: canSeeBudgets && operationalBudget ? (
+              <section className="card fade-in-up px-5 py-5" style={{ borderTop: `3px solid ${operationalHeadline?.color ?? "var(--color-primary)"}` }}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="eyebrow">Budget this period</p>
+                    <p className="eyebrow">Authorized service budget</p>
                     <p className="mt-1 text-2xl font-semibold leading-tight">
-                      Used <span className="tnum">{formatHours(t.usedHours)}</span> of <span className="tnum">{formatHours(t.authorizedHours)}</span> hours
+                      Used <span className="tnum">{formatHours(operationalBudget.usedHours)}</span> of <span className="tnum">{formatHours(operationalAuthorized.toString())}</span> hours
                     </p>
                     <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
-                      <span className="tnum font-medium" style={{ color: dec(t.remainingHours).isNegative() ? "var(--color-pace-over)" : "var(--color-ink)" }}>
-                        {formatHours(t.remainingHours)} h {dec(t.remainingHours).isNegative() ? "over" : "left"}
+                      <span className="tnum font-medium" style={{ color: (operationalBudget.hoursLeft ?? 0) < 0 ? "var(--color-pace-over)" : "var(--color-ink)" }}>
+                        {formatHours(operationalBudget.hoursLeft ?? 0)} h {(operationalBudget.hoursLeft ?? 0) < 0 ? "over" : "remaining now"}
                       </span>
-                      {" · "}{renewLine(budget.active, budget.daysToRenewal, budget.effectiveRenewal)}
+                      {" · "}{operationalBudget.missingRenewal
+                        ? "One or more renewal dates are missing"
+                        : renewLine(true, operationalBudget.daysToRenewal, operationalBudget.renews)}
                     </p>
-                    {perMonthToFinish && (budget.daysToRenewal === null || budget.daysToRenewal >= 30) ? (
+                    <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
+                      <span className="tnum font-medium text-[var(--color-ink)]">{formatHours(operationalBudget.scheduledHours)} h scheduled</span>
+                      {" · "}
+                      <span className="tnum font-medium" style={{ color: (operationalBudget.hoursAfterScheduled ?? 0) < 0 ? "var(--color-pace-over)" : undefined }}>
+                        {formatHours(operationalBudget.hoursAfterScheduled ?? 0)} h after schedule
+                      </span>
+                    </p>
+                    {operationalBudget.mustUseMonthly && (operationalBudget.daysToRenewal === null || operationalBudget.daysToRenewal >= 30) ? (
                       <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
-                        Required pace: <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(perMonthToFinish.toString())} h/month</span>
+                        Still to plan: <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(operationalBudget.mustUseMonthly)} h/month</span>
                       </p>
-                    ) : budget.daysToRenewal !== null && budget.daysToRenewal > 0 && budget.daysToRenewal < 30 && dec(t.remainingHours).greaterThan(0) ? (
+                    ) : operationalBudget.daysToRenewal !== null && operationalBudget.daysToRenewal > 0 && operationalBudget.daysToRenewal < 30 && (operationalBudget.hoursAfterScheduled ?? 0) > 0 ? (
                       <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
-                        <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(t.remainingHours)} h</span> remain for the next {budget.daysToRenewal} days.
+                        <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(operationalBudget.hoursAfterScheduled ?? 0)} h</span> still need to be planned for the next {operationalBudget.daysToRenewal} days.
                       </p>
                     ) : null}
                   </div>
-                  {headline ? <StatusPill status={budget.headline!} /> : null}
+                  {operationalHeadline ? <StatusPill status={operationalBudget.plainStatus} /> : null}
                 </div>
                 <div className="mt-4 max-w-xl">
-                  <BudgetBar usagePercent={t.usagePercent} elapsedPercent={budget.timeElapsedPercent} color={headline?.color ?? "var(--color-pace-on)"} />
+                  <BudgetBar
+                    usagePercent={operationalBudget.usedPct === null ? null : operationalBudget.usedPct / 100}
+                    elapsedPercent={operationalBudget.elapsedPct === null ? null : operationalBudget.elapsedPct / 100}
+                    color={operationalHeadline?.color ?? "var(--color-pace-on)"}
+                  />
                 </div>
               </section>
             ) : canSeeBudgets ? (
@@ -422,7 +478,7 @@ export default async function IndividualDetailPage({
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <p className="eyebrow">Budget</p>
-                    <p className="mt-1 text-lg font-semibold">No budget is configured</p>
+                    <p className="mt-1 text-lg font-semibold">No hourly authorization is configured</p>
                     {canSeeTransactions && budget.money.txCount > 0 ? (
                       <p className="mt-1 text-sm text-[var(--color-ink-soft)]">{budget.money.txCount.toLocaleString()} billed transactions are already on file.</p>
                     ) : null}
@@ -439,76 +495,17 @@ export default async function IndividualDetailPage({
               </section>
             ),
           },
-          ...(canSeeBudgets ? [{
+          ...(canSeeProgramBudgets ? [{
             id: "budget",
             label: "Budget",
-            content: (
-              <div className="space-y-6">
-                {budget.lines.length > 0 || canEdit ? (
-                  <BudgetEditor
-                    individualId={id}
-                    strategyId={budget.strategyId}
-                    active={budget.active}
-                    renewalDate={budget.renewalDate}
-                    effectiveRenewal={budget.effectiveRenewal}
-                    periodStart={budget.periodStart}
-                    periodEnd={budget.periodEnd}
-                    lines={editorLines}
-                    programs={editorPrograms}
-                    canEdit={canEdit}
-                    canSeeMoney={canSeeEmployeeAmounts}
-                  />
-                ) : (
-                  <section className="card px-5 py-5 text-sm text-[var(--color-ink-soft)]">No budget lines are configured.</section>
-                )}
-                {activity.periods.length > 0 ? (
-                  <Card
-                    title={canSeeTransactions ? "Billing history" : "Service history"}
-                    description={activity.periods.length > 1
-                      ? "Each program is shown in the budget year that controls its used and remaining amounts."
-                      : "Monthly service activity for the current budget year."}
-                  >
-                    <BilledByMonth
-                      periods={activity.periods}
-                      canSeeHours={canSeeHours}
-                      canSeeBilledAmounts={canSeeBilledAmounts}
-                      canSeeEmployeeAmounts={canSeeEmployeeAmounts}
-                      canSeeTransactions={canSeeTransactions}
-                    />
-                  </Card>
-                ) : null}
-                {otherPlans.map((op) => (
-                  <section key={op.strategy.id}>
-                    <p className="eyebrow mb-2">Plan · {op.strategy.label}</p>
-                    <BudgetEditor
-                      individualId={id}
-                      strategyId={op.budget.strategyId}
-                      active={op.budget.active}
-                      renewalDate={op.budget.renewalDate}
-                      effectiveRenewal={op.budget.effectiveRenewal}
-                      periodStart={op.budget.periodStart}
-                      periodEnd={op.budget.periodEnd}
-                      lines={op.budget.lines.map((l) => ({ programId: l.programId, programName: l.programName, perHour: canSeeEmployeeAmounts ? l.perHour : "0", authorizedHours: l.authorizedHours, usedHours: l.usedHours, inPlan: l.inPlan, daysToRenewal: l.daysToRenewal, effectiveRenewal: l.effectiveRenewal, calendarYear: l.calendarYear }))}
-                      programs={editorPrograms}
-                      canEdit={canEdit}
-                      canSeeMoney={canSeeEmployeeAmounts}
-                    />
-                  </section>
-                ))}
-                {canEdit && strategy ? <AddPlanButton individualId={id} nextLabel={String(otherPlans.length + 2)} /> : null}
-              </div>
-            ),
-          }] : []),
-          ...(canSeeProgramBudgets ? [{
-            id: "programs",
-            label: "Programs",
             badge: programBudgets.length || undefined,
             content: (
               <ProgramBudgetWorkspace
                 individualId={id}
                 budgets={programBudgets}
                 programs={programCatalog}
-                canManage={canEdit}
+                canManage={canEdit || canManageHours}
+                hoursOnlyManagement={!canEdit && canManageHours}
                 showInternalRate={canSeeEmployeeAmounts}
                 showAgencyRate={canSeeBilledAmounts}
               />
@@ -564,12 +561,26 @@ export default async function IndividualDetailPage({
             label: "Activity",
             content: (
               <div className="space-y-6">
+                {activity.periods.some((period) => period.byProgramMonth.length > 0) ? (
+                  <Card
+                    title={canSeeTransactions ? "Transaction history" : "Service history"}
+                    description="Monthly actual activity in the financial reporting period. Authorization balances remain in Budget."
+                  >
+                    <BilledByMonth
+                      periods={activity.periods}
+                      canSeeHours={canSeeHours}
+                      canSeeBilledAmounts={canSeeBilledAmounts}
+                      canSeeEmployeeAmounts={canSeeEmployeeAmounts}
+                      canSeeTransactions={canSeeTransactions}
+                    />
+                  </Card>
+                ) : null}
                 {activity.byEmployee.length > 0 ? (
                   <Card
                     title="Employees working with this individual"
                     description={canSeeTransactions
-                      ? "Employees with billed activity in the current program budget periods."
-                      : "Employees with recorded service activity in the current program budget periods."}
+                      ? "Employees with billed activity in the current financial reporting period."
+                      : "Employees with recorded service activity in the current financial reporting period."}
                     action={canSeeTransactions ? <ButtonLink href={txLink({ individualId: id, pbFrom: employeeActivityPeriod?.start, pbTo: employeeActivityPeriod?.end })} variant="secondary">All rows →</ButtonLink> : undefined}
                   >
                     <EmployeesActivity
@@ -585,24 +596,20 @@ export default async function IndividualDetailPage({
                   </Card>
                 ) : null}
                 {activity.periods.every((period) => period.byProgramMonth.length === 0) && activity.byEmployee.length === 0 ? (
-                  <section className="card px-5 py-5 text-sm text-[var(--color-ink-soft)]">No activity is recorded for this budget period.</section>
+                  <section className="card px-5 py-5 text-sm text-[var(--color-ink-soft)]">No activity is recorded for this reporting period.</section>
                 ) : null}
               </div>
             ),
           }] : []),
-          ...(canSeeSettlements || (canSeeBudgets && (
-            ((canSeeBilledAmounts || canSeeEmployeeAmounts) && budget.money.txCount > 0)
-            || (canSeeBilledAmounts && canSeeEmployeeAmounts && canSeeAgencySpread && strategy && budget.hasPlan)
-            || otherPlans.some((plan) => canSeeBilledAmounts && canSeeEmployeeAmounts && canSeeAgencySpread && plan.budget.hasPlan)
-          )) ? [{
+          ...(canSeeSettlements || (canSeeBudgets && (canSeeBilledAmounts || canSeeEmployeeAmounts) && budget.money.txCount > 0) ? [{
             id: "money",
             label: "Money",
             content: (
               <div className="space-y-6">
                 {canSeeBudgets && (canSeeBilledAmounts || canSeeEmployeeAmounts) && budget.money.txCount > 0 ? (
                   <Card
-                    title="Money this budget year"
-                    description="Funder billed and employee base within the active budget year."
+                    title="Transaction money"
+                    description="Funder billed and employee base within the current financial reporting period."
                     action={canSeeTransactions ? <ButtonLink href={txLink({ individualId: id, pbFrom: budget.periodStart ?? undefined, pbTo: budget.periodEnd ?? undefined })} variant="secondary">See these rows →</ButtonLink> : undefined}
                   >
                     <div className="grid gap-3 px-5 py-4 sm:grid-cols-3">
@@ -629,10 +636,39 @@ export default async function IndividualDetailPage({
                     </div>
                   </section>
                 ) : null}
-                {canSeeBudgets && canSeeBilledAmounts && canSeeEmployeeAmounts && canSeeAgencySpread && strategy && budget.hasPlan ? (
+              </div>
+            ),
+          }] : []),
+          ...(canSeeFinancialSetup && (canEdit || strategy || otherPlans.length > 0) ? [{
+            id: "financial",
+            label: "Financial setup",
+            content: (
+              <div className="space-y-6">
+                <section className="border-y border-[var(--color-rule)] bg-[var(--color-surface)] px-5 py-4">
+                  <h2 className="text-base font-semibold text-[var(--color-ink)]">Financial projection assumptions</h2>
+                  <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
+                    Rates, target hours, and cuts here are used only for financial projections. They do not authorize service or change the balances shown in Budget.
+                  </p>
+                </section>
+                {budget.lines.length > 0 || canEdit ? (
+                  <BudgetEditor
+                    individualId={id}
+                    strategyId={budget.strategyId}
+                    active={budget.active}
+                    renewalDate={budget.renewalDate}
+                    effectiveRenewal={budget.effectiveRenewal}
+                    periodStart={budget.periodStart}
+                    periodEnd={budget.periodEnd}
+                    lines={editorLines}
+                    programs={editorPrograms}
+                    canEdit={canEdit}
+                    canSeeMoney
+                  />
+                ) : null}
+                {strategy && budget.hasPlan ? (
                   <Card
-                    title={otherPlans.length > 0 ? `Plan and actuals · ${strategy.label}` : "Plan and actuals"}
-                    description="Annual plan targets compared with actual transactions in the current budget year."
+                    title={otherPlans.length > 0 ? `Projection and actuals · ${strategy.label}` : "Projection and actuals"}
+                    description="Financial targets compared with actual transactions in this projection period."
                   >
                     <FinancialPlan
                       strategyId={strategy.id}
@@ -644,18 +680,47 @@ export default async function IndividualDetailPage({
                     />
                   </Card>
                 ) : null}
-                {otherPlans.map((op) => canSeeBilledAmounts && canSeeEmployeeAmounts && canSeeAgencySpread && op.budget.hasPlan ? (
-                  <Card key={op.strategy.id} title={`Plan and actuals · ${op.strategy.label}`}>
-                    <FinancialPlan
-                      strategyId={op.strategy.id}
-                      lines={op.budget.lines}
-                      strategy={op.strategy}
-                      timeElapsedPercent={op.budget.timeElapsedPercent}
-                      monthsToRenewal={op.budget.daysToRenewal !== null && op.budget.daysToRenewal > 0 ? op.budget.daysToRenewal / 30.4375 : null}
-                      canManage={canEdit}
+                {otherPlans.map((plan) => (
+                  <section key={plan.strategy.id} className="space-y-4">
+                    <p className="eyebrow">Financial projection · {plan.strategy.label}</p>
+                    <BudgetEditor
+                      individualId={id}
+                      strategyId={plan.budget.strategyId}
+                      active={plan.budget.active}
+                      renewalDate={plan.budget.renewalDate}
+                      effectiveRenewal={plan.budget.effectiveRenewal}
+                      periodStart={plan.budget.periodStart}
+                      periodEnd={plan.budget.periodEnd}
+                      lines={plan.budget.lines.map((line) => ({
+                        programId: line.programId,
+                        programName: line.programName,
+                        perHour: canSeeEmployeeAmounts ? line.perHour : "0",
+                        authorizedHours: line.authorizedHours,
+                        usedHours: line.usedHours,
+                        inPlan: line.inPlan,
+                        daysToRenewal: line.daysToRenewal,
+                        effectiveRenewal: line.effectiveRenewal,
+                        calendarYear: line.calendarYear,
+                      }))}
+                      programs={editorPrograms}
+                      canEdit={canEdit}
+                      canSeeMoney
                     />
-                  </Card>
-                ) : null)}
+                    {plan.budget.hasPlan ? (
+                      <Card title={`Projection and actuals · ${plan.strategy.label}`}>
+                        <FinancialPlan
+                          strategyId={plan.strategy.id}
+                          lines={plan.budget.lines}
+                          strategy={plan.strategy}
+                          timeElapsedPercent={plan.budget.timeElapsedPercent}
+                          monthsToRenewal={plan.budget.daysToRenewal !== null && plan.budget.daysToRenewal > 0 ? plan.budget.daysToRenewal / 30.4375 : null}
+                          canManage={canEdit}
+                        />
+                      </Card>
+                    ) : null}
+                  </section>
+                ))}
+                {canEdit && strategy ? <AddPlanButton individualId={id} nextLabel={String(otherPlans.length + 2)} /> : null}
               </div>
             ),
           }] : []),

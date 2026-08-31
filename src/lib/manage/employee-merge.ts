@@ -62,6 +62,28 @@ export async function mergeEmployees(
       );
     }
 
+    const overlappingPersonTerms = await client.query<{ id: string }>(
+      `SELECT source.id
+         FROM employee_individual_compensation_terms source
+         JOIN employee_individual_compensation_terms target
+           ON target.employee_id = $1
+          AND target.individual_id = source.individual_id
+          AND target.status = 'active'
+          AND daterange(target.effective_from, COALESCE(target.effective_to, 'infinity'::date), '[]')
+              && daterange(source.effective_from, COALESCE(source.effective_to, 'infinity'::date), '[]')
+        WHERE source.employee_id = $2
+          AND source.status = 'active'
+        LIMIT 1`,
+      [keepId, mergeId],
+    );
+    if (overlappingPersonTerms.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail(
+        "conflict",
+        "Resolve overlapping individual pay-rule history before merging these employees.",
+      );
+    }
+
     // Repoint every table with an employee_id column (robust to schema growth).
     const cols = await client.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.columns

@@ -4,8 +4,11 @@ import ScheduleCalendar, { type ScheduleCalendarProps } from "@/components/sched
 import AssignmentManager from "@/components/schedule/assignment-manager";
 import EmployeeAvailabilityManager from "@/components/schedule/employee-availability-manager";
 import ServiceSchedules from "@/components/schedule/service-schedules";
+import BudgetCoveragePanel from "@/components/schedule/budget-coverage-panel";
+import DirectPayTargetsPanel from "@/components/schedule/direct-pay-targets-panel";
 import { TabPanels } from "@/components/ui-client";
 import type { PlanningWorkspaceData } from "@/lib/data/planning-queries";
+import type { PlannerDirectPayTargetRow } from "@/lib/data/direct-pay-operations";
 import type { View } from "./shared";
 
 interface PlanningWorkspaceProps {
@@ -20,6 +23,8 @@ interface PlanningWorkspaceProps {
   employees: ScheduleCalendarProps["employees"];
   individuals: ScheduleCalendarProps["individuals"];
   programs: ScheduleCalendarProps["programs"];
+  directPayTargets?: PlannerDirectPayTargetRow[];
+  showDirectPayTargets?: boolean;
 }
 function SectionHeading({
   title,
@@ -58,6 +63,8 @@ export default function PlanningWorkspace({
   employees,
   individuals,
   programs,
+  directPayTargets = [],
+  showDirectPayTargets = false,
 }: PlanningWorkspaceProps) {
   const calendar = (
     <ScheduleCalendar
@@ -79,6 +86,11 @@ export default function PlanningWorkspace({
         initialId={initialView}
         panels={[
           { id: "calendar", label: "Calendar", content: calendar },
+          {
+            id: "coverage",
+            label: "Budget tracking",
+            content: <BudgetCoveragePanel rows={data.coverage} />,
+          },
           {
             id: "schedules",
             label: "Recurring schedules",
@@ -126,6 +138,11 @@ export default function PlanningWorkspace({
               </section>
             ),
           },
+          ...(showDirectPayTargets ? [{
+            id: "targets",
+            label: "Employee targets",
+            content: <DirectPayTargetsPanel rows={directPayTargets} />,
+          }] : []),
         ]}
       />
     </div>

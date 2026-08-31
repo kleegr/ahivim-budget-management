@@ -120,6 +120,7 @@ export interface PortalAgencyEmployeeSummary {
   month: string;
   payrollGrossThisMonth: string | null;
   payrollNetThisMonth: string | null;
+  checks: PortalPayrollCheckSummary[] | null;
   giveBack: {
     dueThisMonth: string;
     collectedThisMonth: string;
@@ -281,6 +282,7 @@ interface AgencyEmployeeCheckRow {
   person_id: string;
   gross: string | null;
   net: string;
+  checks: unknown;
 }
 
 interface AgencyEmployeeGiveBackRow {
@@ -537,6 +539,43 @@ function programBreakdown(value: unknown): ProgramBreakdownRow[] {
   return Array.isArray(value)
     ? value.filter((item): item is ProgramBreakdownRow => item !== null && typeof item === "object")
     : [];
+}
+
+interface AgencyCheckValue {
+  id?: unknown;
+  checkNumber?: unknown;
+  checkDate?: unknown;
+  periodBegin?: unknown;
+  periodEnd?: unknown;
+  serviceDate?: unknown;
+  actualGross?: unknown;
+  actualNet?: unknown;
+}
+
+function agencyPayrollChecks(value: unknown): PortalPayrollCheckSummary[] {
+  if (typeof value === "string") {
+    try {
+      return agencyPayrollChecks(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object") return [];
+    const check = candidate as AgencyCheckValue;
+    if (typeof check.id !== "string" || typeof check.actualNet !== "string") return [];
+    return [{
+      id: check.id,
+      checkNumber: typeof check.checkNumber === "string" ? check.checkNumber : null,
+      checkDate: typeof check.checkDate === "string" ? check.checkDate : null,
+      periodBegin: typeof check.periodBegin === "string" ? check.periodBegin : null,
+      periodEnd: typeof check.periodEnd === "string" ? check.periodEnd : null,
+      serviceDate: typeof check.serviceDate === "string" ? check.serviceDate : null,
+      actualGross: typeof check.actualGross === "string" ? toMoney(check.actualGross) : null,
+      actualNet: toMoney(check.actualNet),
+    }];
+  });
 }
 
 function programKey(row: ProgramBreakdownRow): string {
@@ -1500,7 +1539,21 @@ async function agencyMemberSummaries(
                     WHEN count(*) FILTER (WHERE checks.actual_gross IS NULL) > 0 THEN NULL
                     ELSE COALESCE(sum(checks.actual_gross), 0)::text
                   END AS gross,
-                  COALESCE(sum(checks.actual_net), 0)::text AS net
+                  COALESCE(sum(checks.actual_net), 0)::text AS net,
+                  jsonb_agg(jsonb_build_object(
+                    'id', checks.id,
+                    'checkNumber', checks.check_number,
+                    'checkDate', to_char(checks.check_date, 'YYYY-MM-DD'),
+                    'periodBegin', to_char(checks.period_begin, 'YYYY-MM-DD'),
+                    'periodEnd', to_char(checks.period_end, 'YYYY-MM-DD'),
+                    'serviceDate', to_char(canonical_service_date(
+                      checks.period_begin, checks.check_date, checks.period_end
+                    ), 'YYYY-MM-DD'),
+                    'actualGross', checks.actual_gross::text,
+                    'actualNet', checks.actual_net::text
+                  ) ORDER BY canonical_service_date(
+                    checks.period_begin, checks.check_date, checks.period_end
+                  ) DESC, checks.id DESC) AS checks
              FROM employee_payroll_checks checks
              JOIN agency_employees membership
                ON membership.employee_id = checks.employee_id
@@ -1645,6 +1698,9 @@ async function agencyMemberSummaries(
         : null,
       payrollNetThisMonth: memberDirectChecks.includes(person.agency_id)
         ? toMoney(checks?.net ?? 0)
+        : null,
+      checks: memberDirectChecks.includes(person.agency_id)
+        ? agencyPayrollChecks(checks?.checks)
         : null,
       giveBack: memberGiveBack.includes(person.agency_id) ? {
         dueThisMonth: toMoney(giveBack?.due_this_month ?? 0),

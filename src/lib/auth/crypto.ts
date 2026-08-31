@@ -109,7 +109,19 @@ export interface SessionPayload {
   userId: string;
   role: string;
   displayName: string;
+  /** Present only while this effective user is being viewed by an owner. */
+  impersonatorUserId?: string;
   /** Unix ms expiry. */
+  exp: number;
+}
+
+/** Separately signed proof that an administrator started a view-as session. */
+export interface ImpersonationPayload {
+  ownerUserId: string;
+  targetUserId: string;
+  /** Returning must never extend the owner's original signed-in session. */
+  ownerSessionExpiresAt: number;
+  /** Unix ms expiry for the shorter view-as session. */
   exp: number;
 }
 
@@ -133,6 +145,60 @@ export function readSession(token: string | undefined | null): SessionPayload | 
     const payload = JSON.parse(Buffer.from(body, "base64url").toString()) as SessionPayload;
     if (typeof payload.exp !== "number" || payload.exp < Date.now()) return null;
     if (!payload.userId || !payload.role) return null;
+    if (
+      payload.impersonatorUserId !== undefined
+      && (
+        typeof payload.impersonatorUserId !== "string"
+        || !payload.impersonatorUserId
+        || payload.impersonatorUserId === payload.userId
+      )
+    ) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+const IMPERSONATION_SIGNATURE_SCOPE = "ahivim-owner-view-as-v1";
+
+/** Sign view-as state in a namespace that regular session tokens cannot use. */
+export function signImpersonation(payload: ImpersonationPayload): string {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const mac = createHmac("sha256", sessionKey())
+    .update(`${IMPERSONATION_SIGNATURE_SCOPE}.${body}`)
+    .digest("base64url");
+  return `${body}.${mac}`;
+}
+
+export function readImpersonation(
+  token: string | undefined | null,
+): ImpersonationPayload | null {
+  if (!token) return null;
+  const dot = token.lastIndexOf(".");
+  if (dot <= 0) return null;
+  const body = token.slice(0, dot);
+  const mac = token.slice(dot + 1);
+  const expected = createHmac("sha256", sessionKey())
+    .update(`${IMPERSONATION_SIGNATURE_SCOPE}.${body}`)
+    .digest("base64url");
+  const a = Buffer.from(mac);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  try {
+    const payload = JSON.parse(
+      Buffer.from(body, "base64url").toString(),
+    ) as ImpersonationPayload;
+    if (
+      typeof payload.ownerUserId !== "string"
+      || typeof payload.targetUserId !== "string"
+      || !payload.ownerUserId
+      || !payload.targetUserId
+      || payload.ownerUserId === payload.targetUserId
+      || typeof payload.ownerSessionExpiresAt !== "number"
+      || typeof payload.exp !== "number"
+      || payload.exp < Date.now()
+      || payload.ownerSessionExpiresAt < payload.exp
+    ) return null;
     return payload;
   } catch {
     return null;

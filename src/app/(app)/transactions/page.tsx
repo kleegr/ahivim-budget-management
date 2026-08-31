@@ -5,8 +5,9 @@ import { withDb } from "@/lib/data/pool";
 import { listTransactionsForGrid, type GridTransaction } from "@/lib/data/transactions-grid";
 import { PageHeader, ErrorPanel, EmptyState, Card, ButtonLink } from "@/components/ui";
 import BilledActivityWorkspace from "@/components/transactions/billed-activity-workspace";
-import type { FilterState } from "@/components/data-grid/types";
 import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
+import { buildInitialFilters } from "@/lib/transactions/initial-filters";
+import { RefreshCw } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Transactions - Ahivim" };
@@ -16,110 +17,6 @@ const one = (v: string | string[] | undefined): string | undefined =>
   Array.isArray(v) ? v[0] : v;
 const many = (v: string | string[] | undefined): string[] =>
   [...new Set((Array.isArray(v) ? v : v ? [v] : []).filter(Boolean))];
-
-/**
- * Turn URL search params into grid filters, so every "open the rows behind this
- * number" link across the app lands here already filtered — and the live totals
- * then equal the figure that was clicked. Ids are resolved to their display
- * value against the loaded ledger so the on-screen chip reads a name, not a UUID.
- */
-function buildInitialFilters(rows: GridTransaction[], sp: SP): { filters: FilterState; label: string | null } {
-  const filters: FilterState = {};
-  const labels: string[] = [];
-
-  const setByIdOrName = (
-    key: string,
-    idParam: string | undefined,
-    nameParam: string | undefined,
-    idOf: (r: GridTransaction) => string | null,
-    nameOf: (r: GridTransaction) => string | null,
-  ) => {
-    if (idParam) {
-      const match = rows.find((r) => idOf(r) === idParam);
-      const name = match ? nameOf(match) : null;
-      if (name) {
-        filters[key] = { selected: [name] };
-        labels.push(name);
-        return;
-      }
-    }
-    if (nameParam) {
-      filters[key] = { selected: [nameParam] };
-      labels.push(nameParam);
-    }
-  };
-
-  setByIdOrName("individual", one(sp.individualId), one(sp.individual), (r) => r.individualId, (r) => r.individual);
-  setByIdOrName("employee", one(sp.employeeId), one(sp.employee), (r) => r.employeeId, (r) => r.employee);
-
-  // Program: accept a display name or a canonical code.
-  const programName = one(sp.program);
-  const programCode = one(sp.programCode);
-  if (programName) {
-    filters.program = { selected: [programName] };
-    labels.push(programName);
-  } else if (programCode) {
-    const match = rows.find((r) => r.programCode === programCode);
-    if (match?.program) {
-      filters.program = { selected: [match.program] };
-      labels.push(match.program);
-    }
-  }
-
-  const payTo = one(sp.payTo);
-  if (payTo) {
-    filters.payTo = { selected: [payTo] };
-    labels.push(`paid to ${payTo}`);
-  } else {
-    const payToKey = one(sp.payToKey)?.trim().toLocaleLowerCase();
-    if (payToKey) {
-      const payeeValues = [...new Set(rows
-        .filter((row) => row.payTo?.trim().toLocaleLowerCase() === payToKey)
-        .map((row) => row.payTo)
-        .filter((value): value is string => Boolean(value)))];
-      if (payeeValues.length > 0) {
-        filters.payTo = { selected: payeeValues };
-        labels.push(`paid to ${payeeValues[0]!.trim()}`);
-      }
-    }
-  }
-
-  const checkNumber = one(sp.checkNumber);
-  if (checkNumber) {
-    filters.checkNumber = { selected: [checkNumber] };
-    labels.push(`check ${checkNumber}`);
-  }
-
-  const checkDateFrom = one(sp.checkDateFrom);
-  const checkDateTo = one(sp.checkDateTo);
-  if (checkDateFrom || checkDateTo) {
-    filters.checkDate = { from: checkDateFrom ?? "", to: checkDateTo ?? "" };
-    if (checkDateFrom && checkDateTo) {
-      labels.push(checkDateFrom === checkDateTo
-        ? `check date ${checkDateFrom}`
-        : `check dates ${checkDateFrom} to ${checkDateTo}`);
-    }
-  }
-
-  // Period-begin window (service period), used by budget drill-throughs so the
-  // grid matches the period-scoped billed figure exactly (the workbook windows on
-  // Period Begin, not on the check date the top period control uses).
-  const pbFrom = one(sp.pbFrom);
-  const pbTo = one(sp.pbTo);
-  if (pbFrom || pbTo) {
-    filters.periodBegin = { from: pbFrom ?? "", to: pbTo ?? "" };
-    if (pbFrom && pbTo) labels.push(`service ${pbFrom} → ${pbTo}`);
-  }
-
-  const recipient = one(sp.recipient);
-  if (recipient) filters.paymentRecipient = { selected: [recipient] };
-
-  const group = one(sp.group);
-  if (group === "1" || group === "true") filters.groupStatus = { selected: ["Group"] };
-  else if (group === "0" || group === "false") filters.groupStatus = { selected: ["Individual"] };
-
-  return { filters, label: labels.length ? labels.join(" · ") : null };
-}
 
 export default async function TransactionsPage({ searchParams }: { searchParams: Promise<SP> }) {
   const user = await requireUser("viewer");
@@ -207,7 +104,14 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         </ErrorPanel>
       ) : rows.length === 0 ? (
         <Card>
-          <EmptyState title="No transactions yet">
+          <EmptyState
+            title="No transactions yet"
+            action={canManage ? (
+              <ButtonLink href="/sync" variant="primary">
+                <RefreshCw aria-hidden className="h-4 w-4" /> Open Google Sheet sync
+              </ButtonLink>
+            ) : undefined}
+          >
             Once a payroll file is imported and committed, every row appears here.
           </EmptyState>
         </Card>

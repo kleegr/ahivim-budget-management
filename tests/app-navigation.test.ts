@@ -52,12 +52,14 @@ describe("role-specific workspaces", () => {
       canSeeSettlements: false,
       canSeeBudgets: true,
       canPlan: true,
+      canSeeEmployees: true,
       canEditDocuments: false,
     };
     const workspaces = getVisibleWorkspaces(access);
 
     expect(workspaces.find((workspace) => workspace.id === "budgets")?.href).toBe("/individuals");
     expect(workspaces.find((workspace) => workspace.id === "activity")?.href).toBe("/schedule");
+    expect(workspaces.find((workspace) => workspace.id === "employees")?.href).toBe("/employees");
     expect(getCommandDestinations(access).some((item) => item.href === "/schedule")).toBe(true);
     expect(getCommandDestinations(access).some((item) => item.href === "/transactions")).toBe(false);
     expect(workspaces.some((workspace) => workspace.id === "payroll")).toBe(false);

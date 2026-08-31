@@ -34,6 +34,8 @@ function authorization(overrides: Partial<ProgramBudgetRecord>): ProgramBudgetRe
     consumedDollars: "1000",
     remainingHours: "60",
     remainingDollars: null,
+    scheduledHours: "0",
+    remainingAfterScheduledHours: "60",
     undatedUsageCount: 0,
     hasUndatedUsage: false,
     revision: 1,
@@ -68,6 +70,8 @@ describe("authorization portfolio summary", () => {
       plans: 2,
       usedHours: 50,
       hoursLeft: 100,
+      scheduledHours: 0,
+      hoursAfterScheduled: 100,
       usedPct: 100 / 3,
       billedAmount: "1190.00",
       elapsedPct: null,
@@ -101,5 +105,37 @@ describe("authorization portfolio summary", () => {
     expect(budget?.hoursLeft).toBe(0);
     expect(budget?.mustUseMonthly).not.toBeNull();
     expect(budget!.mustUseMonthly!).toBeGreaterThan(0);
+  });
+
+  it("subtracts pending schedule from the pace still needing to be planned", () => {
+    const withoutSchedule = summarizeAuthorizationPortfolio([
+      authorization({ scheduledHours: "0", remainingAfterScheduledHours: "60" }),
+    ], new Date("2026-08-30T12:00:00.000Z")).get("person-1")!.budget;
+    const withSchedule = summarizeAuthorizationPortfolio([
+      authorization({ scheduledHours: "20", remainingAfterScheduledHours: "40" }),
+    ], new Date("2026-08-30T12:00:00.000Z")).get("person-1")!.budget;
+
+    expect(withSchedule).toMatchObject({
+      scheduledHours: 20,
+      hoursLeft: 60,
+      hoursAfterScheduled: 40,
+    });
+    expect(withSchedule.mustUseMonthly!).toBeLessThan(withoutSchedule.mustUseMonthly!);
+  });
+
+  it("keeps the latest expired authorization visible and flags a missing renewal", () => {
+    const summary = summarizeAuthorizationPortfolio([
+      authorization({
+        startDate: "2025-01-01",
+        endDate: "2025-12-31",
+        renewalDate: null,
+      }),
+    ], new Date("2026-08-30T12:00:00.000Z")).get("person-1")!.budget;
+
+    expect(summary).toMatchObject({
+      renews: null,
+      missingRenewal: true,
+      expired: true,
+    });
   });
 });

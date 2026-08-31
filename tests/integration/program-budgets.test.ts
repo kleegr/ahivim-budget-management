@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { listProgramBudgets } from "@/lib/data/program-budgets";
+import { listProgramBudgetMonthlyHistory, listProgramBudgets } from "@/lib/data/program-budgets";
 import type { PgLikePool } from "@/lib/import/commit";
 import { createIndividual } from "@/lib/manage/individuals";
 import {
@@ -7,6 +7,7 @@ import {
   createBudgetPeriod,
   cancelAuthorization,
   reviseAuthorization,
+  updateBudgetPeriodRenewal,
 } from "@/lib/manage/authorizations";
 import { createClassBudget, updateClassBudget } from "@/lib/manage/class-invoices";
 import { getProgramRules, updateProgramRules } from "@/lib/manage/program-rules";
@@ -125,9 +126,6 @@ suite("canonical program budgets (real PostgreSQL)", () => {
       individualId: person.id,
       programId: genericProgramId,
       label: "Generic allowance 2026",
-      startDate: "2026-01-01",
-      endDate: "2026-12-31",
-      periodType: "custom",
       renewalDate: "2027-01-01",
       authorizedDollars: "1000",
     }, ACTOR));
@@ -135,6 +133,21 @@ suite("canonical program budgets (real PostgreSQL)", () => {
       authorizedHours: "0.0000",
       authorizedDollars: "1000.0000",
       remainingDollars: "1000.0000",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    unwrap(await updateBudgetPeriodRenewal(
+      pool,
+      budget.budgetPeriodId,
+      "2027-02-01",
+      ACTOR,
+      "Renewal date corrected",
+    ));
+    expect((await listProgramBudgets(pool, { individualId: person.id }))[0]).toMatchObject({
+      startDate: "2026-02-01",
+      endDate: "2027-01-31",
+      renewalDate: "2027-02-01",
+      requiredAuthType: "dollars",
     });
 
     const input = {
@@ -226,13 +239,45 @@ suite("canonical program budgets (real PostgreSQL)", () => {
       [person.id, comHabId],
     );
 
-    expect((await listProgramBudgets(pool, { individualId: person.id }))[0]).toMatchObject({
+    const sessions = await pool.query<{ id: string; duration_hours: string }>(
+      `INSERT INTO scheduled_sessions
+         (program_id, session_date, duration_hours, status)
+       VALUES
+         ($1, '2026-05-10', 12, 'pending'),
+         ($1, '2026-06-10', 9, 'completed'),
+         ($1, '2027-01-10', 8, 'pending')
+       RETURNING id, duration_hours::text AS duration_hours`,
+      [comHabId],
+    );
+    for (const session of sessions.rows) {
+      await pool.query(
+        `INSERT INTO scheduled_allocations
+           (scheduled_session_id, individual_id, allocation_hours)
+         VALUES ($1, $2, $3)`,
+        [session.id, person.id, session.duration_hours],
+      );
+    }
+
+    const current = (await listProgramBudgets(pool, { individualId: person.id }))[0]!;
+    expect(current).toMatchObject({
       consumedHours: "6.0000",
       consumedDollars: "60.0000",
       remainingHours: "94.0000",
+      scheduledHours: "12.0000",
+      remainingAfterScheduledHours: "82.0000",
       undatedUsageCount: 1,
       hasUndatedUsage: true,
     });
+    const history = await listProgramBudgetMonthlyHistory(
+      pool,
+      current.budgetPeriodId,
+      current.programId,
+      new Date("2026-05-15T12:00:00.000Z"),
+    );
+    expect(history.find((month) => month.month === "2026-02")).toMatchObject({ usedHours: "1.0000" });
+    expect(history.find((month) => month.month === "2026-03")).toMatchObject({ usedHours: "2.0000" });
+    expect(history.find((month) => month.month === "2026-04")).toMatchObject({ usedHours: "3.0000" });
+    expect(history.find((month) => month.month === "2026-05")).toMatchObject({ scheduledHours: "12.0000" });
   });
 
   it("uses catalog rate defaults, preserves rate revisions, and enforces the override rule", async () => {

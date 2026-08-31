@@ -62,12 +62,8 @@ export default function ProgramBudgetFields({
       </label>
 
       <Field label="Period label" name="label" placeholder="Annual authorization" />
-      <input type="hidden" name="periodType" value="custom" />
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Starts" name="startDate" type="date" required />
-        <Field label="Ends" name="endDate" type="date" required />
-      </div>
-      <Field label="Renewal date" name="renewalDate" type="date" />
+      <input type="hidden" name="periodType" value="rolling" />
+      <Field label="Renewal date" name="renewalDate" type="date" required />
 
       <div className={`grid gap-3 ${needsHours && needsDollars ? "sm:grid-cols-2" : ""}`}>
         {needsHours ? (

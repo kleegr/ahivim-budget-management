@@ -506,9 +506,12 @@ export interface IndividualBudgetSummary {
   usedPct: number | null; // 0–100, total billed ÷ total authorized (period-scoped)
   elapsedPct: number | null; // 0–100
   renews: string | null; // period end / renewal date
+  missingRenewal: boolean; // at least one represented program has no renewal date
   renewalCount: number; // distinct program renewal dates represented in this row
   usedHours: number; // billed hours inside each program's current budget period
   hoursLeft: number | null; // authorized − billed
+  scheduledHours: number; // pending, unmatched schedule in the same periods
+  hoursAfterScheduled: number | null; // authorized − billed − pending schedule
   plans: number; // programs in the plan
   daysToRenewal: number | null; // renews − today (negative = expired)
   expired: boolean; // the period end is in the past
@@ -785,9 +788,12 @@ export async function listIndividualBudgetBoard(
         usedPct,
         elapsedPct,
         renews: renewal,
+        missingRenewal: false,
         renewalCount: new Set(acc.auths.map((auth) => auth.periodEnd)).size,
         usedHours: totalBilled.toNumber(),
         hoursLeft,
+        scheduledHours: 0,
+        hoursAfterScheduled: hoursLeft,
         plans: acc.auths.length,
         daysToRenewal,
         expired: daysToRenewal !== null && daysToRenewal < 0,

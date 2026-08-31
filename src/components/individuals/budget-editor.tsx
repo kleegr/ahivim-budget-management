@@ -9,12 +9,9 @@ import { isCalendarYearProgram } from "@/lib/business/calculation-strategy";
 import { txLink } from "@/lib/nav/tx-link";
 
 /**
- * The per-individual budget, editable right on the profile — shaped like the
- * paper rollover sheet: Program · Per Hour · Hours · Total, with Used and Left
- * beside it so you always see where the year is up to. Managers type the rate
- * and hours; the total and what's left recompute as they type. Add or remove a
- * program, set the renewal date, and flip the account active/inactive — all
- * without leaving the page.
+ * Editable financial projection inputs. These calculation-strategy lines are
+ * deliberately separate from service authorizations; they price target hours
+ * and cuts but never define the operational Budget balance.
  */
 
 export type BudgetEditorLine = {
@@ -248,7 +245,7 @@ export default function BudgetEditor({
         body: JSON.stringify(patch),
       });
       const j = await res.json();
-      if (!res.ok || j.ok === false) throw new Error(j.error ?? "Could not save the budget.");
+        if (!res.ok || j.ok === false) throw new Error(j.error ?? "Could not save the financial plan.");
 
       if (active !== activeInitial) {
         await fetch(`/api/individuals/${individualId}`, {
@@ -260,7 +257,7 @@ export default function BudgetEditor({
       setEditing(false);
       router.refresh();
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : "Could not save the budget.");
+      setNotice(e instanceof Error ? e.message : "Could not save the financial plan.");
     } finally {
       setBusy(false);
     }
@@ -272,11 +269,12 @@ export default function BudgetEditor({
       <div className="card mb-6">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3">
           <div>
-            <p className="font-semibold text-[var(--color-ink)]">Budget by program</p>
+            <p className="font-semibold text-[var(--color-ink)]">Projection inputs by program</p>
             <p className="text-xs text-[var(--color-ink-faint)]">
-              The plan for this renewal year. Renews {effectiveRenewal ?? "—"}
-              {activeInitial ? "" : " · account inactive (renewal is not auto-rolling)"}.
+              Financial target period ends {effectiveRenewal ?? "—"}
+              {activeInitial ? "" : " · account inactive (projection date is not auto-rolling)"}.
             </p>
+            <p className="mt-1 text-xs text-[var(--color-ink-faint)]">Projection only. Service authorization hours are managed in Budget.</p>
             {rows.length > 0 ? (
               <div className="mt-1.5 flex flex-wrap gap-1.5" title="Counted per program — one program can be over while another is under.">
                 {(["over", "almost", "on_track", "unused"] as BudgetLineStatus[])
@@ -308,13 +306,13 @@ export default function BudgetEditor({
               <span className="text-xs text-[var(--color-ink-faint)]">{activeInitial ? "Active" : "Inactive"}</span>
             )}
             {canEdit ? (
-              <button type="button" onClick={startEdit} className="btn btn-sm btn-secondary">Edit this budget</button>
+              <button type="button" onClick={startEdit} className="btn btn-sm btn-secondary">Edit financial plan</button>
             ) : null}
           </div>
         </div>
         {rows.length === 0 ? (
           <div className="px-5 py-6 text-sm text-[var(--color-ink-soft)]">
-            No programs in the plan yet.{canEdit ? " Click “Edit this budget” to add the first one." : ""}
+            No projection inputs yet.{canEdit ? " Click “Edit financial plan” to add the first one." : ""}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -323,11 +321,11 @@ export default function BudgetEditor({
                 <tr className="text-left text-[var(--color-text-soft)]">
                   <th className="px-5 py-2 font-medium">Program</th>
                   {canSeeMoney ? <th className="px-3 py-2 text-right font-medium">Per hour</th> : null}
-                  <th className="px-3 py-2 text-right font-medium">Hours</th>
+                  <th className="px-3 py-2 text-right font-medium">Target hours</th>
                   {canSeeMoney ? <th className="px-3 py-2 text-right font-medium">Total</th> : null}
-                  <th className="px-3 py-2 text-right font-medium">Used</th>
-                  <th className="px-3 py-2 text-right font-medium">Left</th>
-                  <th className="px-3 py-2 text-right font-medium" title="What's left to bill to finish by this program's renewal — a monthly pace when a month or more remains, otherwise the hours left over the days left">To finish</th>
+                  <th className="px-3 py-2 text-right font-medium">Actual</th>
+                  <th className="px-3 py-2 text-right font-medium">Target left</th>
+                  <th className="px-3 py-2 text-right font-medium" title="Pace needed to reach this financial target by the projection period end">Target pace</th>
                   <th className="px-5 py-2 font-medium">Status</th>
                 </tr>
               </thead>
@@ -383,7 +381,7 @@ export default function BudgetEditor({
             ? "Each program is shown in hours; the total is in dollars because hours aren’t comparable across programs (each bills at a different rate)."
             : "Each program is shown in hours."}
           {canEdit && billedNotInPlan.length > 0
-            ? ` Billed this year but not in the plan: ${billedNotInPlan.map((l) => `${l.programName} (${formatHours(l.usedHours)} h)`).join(", ")}. Edit the budget to add them.`
+            ? ` Billed in this projection period but not in the financial plan: ${billedNotInPlan.map((l) => `${l.programName} (${formatHours(l.usedHours)} h)`).join(", ")}. Edit the financial plan to add them.`
             : ""}
         </p>
       </div>
@@ -394,10 +392,13 @@ export default function BudgetEditor({
   return (
     <div className="card mb-6 border-[var(--color-primary-soft)]">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] bg-[var(--color-primary-tint)] px-5 py-3">
-        <p className="font-semibold text-[var(--color-ink)]">Editing this person&rsquo;s budget</p>
+        <div>
+          <p className="font-semibold text-[var(--color-ink)]">Editing financial projection inputs</p>
+          <p className="text-xs text-[var(--color-ink-faint)]">These values do not change service authorizations.</p>
+        </div>
         <div className="flex gap-2">
           <button type="button" onClick={cancel} disabled={busy} className="btn btn-sm btn-ghost">Cancel</button>
-          <button type="button" onClick={save} disabled={busy} className="btn btn-sm btn-primary">{busy ? "Saving…" : "Save budget"}</button>
+          <button type="button" onClick={save} disabled={busy} className="btn btn-sm btn-primary">{busy ? "Saving…" : "Save financial plan"}</button>
         </div>
       </div>
 
@@ -406,10 +407,10 @@ export default function BudgetEditor({
       {/* Renewal + active */}
       <div className="grid gap-4 border-b border-[var(--color-rule)] px-5 py-4 sm:grid-cols-2">
         <label className="block text-sm">
-          <span className="font-medium">Renewal date</span>
+          <span className="font-medium">Projection period end</span>
           <input type="date" value={renewal} onChange={(e) => setRenewal(e.target.value)} className="input mt-1 w-full" />
           <span className="mt-1 block text-xs text-[var(--color-ink-faint)]">
-            The budget runs the 12 months up to this date. For an active account it auto-rolls to the next year when it passes.
+            This date controls only the financial projection and transaction comparison window. Program authorization periods are managed in Budget.
           </span>
         </label>
         <label className="flex cursor-pointer items-start gap-2 text-sm">
@@ -417,7 +418,7 @@ export default function BudgetEditor({
           <span>
             <span className="font-medium">Account is active</span>
             <span className="mt-1 block text-xs text-[var(--color-ink-faint)]">
-              Active accounts auto-roll their renewal forward each year. Uncheck to make the account inactive and freeze the renewal date where it is.
+              Active accounts auto-roll this projection date forward each year. Uncheck to make the account inactive and freeze the date where it is.
             </span>
           </span>
         </label>
@@ -430,10 +431,10 @@ export default function BudgetEditor({
             <tr className="text-left text-[var(--color-text-soft)]">
               <th className="px-5 py-2 font-medium">Program</th>
               <th className="px-3 py-2 text-right font-medium">Per hour</th>
-              <th className="px-3 py-2 text-right font-medium">Hours</th>
+              <th className="px-3 py-2 text-right font-medium">Target hours</th>
               <th className="px-3 py-2 text-right font-medium">Total</th>
-              <th className="px-3 py-2 text-right font-medium">Used</th>
-              <th className="px-3 py-2 text-right font-medium">Left</th>
+              <th className="px-3 py-2 text-right font-medium">Actual</th>
+              <th className="px-3 py-2 text-right font-medium">Target left</th>
               <th className="px-3 py-2"></th>
             </tr>
           </thead>

@@ -122,7 +122,11 @@ export default async function DashboardPage({
     const activitySelection = normalizeOwnerActivitySelection({
       checkDateFrom: one(params.from) ?? null,
       checkDateTo: one(params.to) ?? null,
-      individualId: one(params.individualId) ?? null,
+      individualIds: Array.isArray(params.individualId)
+        ? params.individualId
+        : params.individualId
+          ? [params.individualId]
+          : [],
       employeeId: one(params.employeeId) ?? null,
       payrollPeriod: one(params.payrollPeriod) ?? null,
     });

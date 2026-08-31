@@ -16,7 +16,7 @@ import { ColumnChooser } from "@/components/data-grid/toolbar";
 import { useGrid } from "@/components/data-grid/use-grid";
 import type { ColumnDef, SortState } from "@/components/data-grid/types";
 import { BUDGET_STATUS_PRESENT, type BudgetLineStatus } from "@/lib/business/budget-status";
-import { isActiveBillingWithoutBudget, isActiveOverAuthorization } from "@/lib/business/budget-board-status";
+import { isActiveOverAuthorization } from "@/lib/business/budget-board-status";
 import { formatHours, formatMoney } from "@/lib/money";
 import { individualBudgetHref } from "@/lib/nav/review-actions";
 import {
@@ -34,9 +34,12 @@ export type IndividualBudget = {
   usedPct: number | null;
   elapsedPct: number | null;
   renews: string | null;
+  missingRenewal: boolean;
   renewalCount: number;
   usedHours: number;
   hoursLeft: number | null;
+  scheduledHours: number;
+  hoursAfterScheduled: number | null;
   plans: number;
   daysToRenewal: number | null;
   expired: boolean;
@@ -54,6 +57,7 @@ export type IndividualRow = {
   archived: boolean;
   programs: string[];
   budget: IndividualBudget | null;
+  hasCanonicalBudget: boolean;
   hasBilling: boolean;
   lastBilledOn: string | null;
   insightsVisible: boolean;
@@ -104,7 +108,11 @@ function isRenewing(row: IndividualRow): boolean {
 }
 
 function hasBillingWithoutBudget(row: IndividualRow): boolean {
-  return row.insightsVisible && isActiveBillingWithoutBudget(row);
+  return row.insightsVisible
+    && row.status === "active"
+    && !row.archived
+    && row.hasBilling
+    && !row.hasCanonicalBudget;
 }
 
 function hasNoActivity(row: IndividualRow): boolean {
@@ -118,6 +126,7 @@ function needsAttention(row: IndividualRow): boolean {
     || isRenewing(row)
     || hasBillingWithoutBudget(row)
     || hasNoActivity(row)
+    || row.budget?.missingRenewal === true
     || row.budget?.expired === true
     || row.budget?.status === "near_exhaustion"
     || row.budget?.status === "fully_used";
@@ -196,6 +205,9 @@ function PaceBar({ budget }: { budget: IndividualBudget }) {
 }
 
 function Renewal({ budget }: { budget: IndividualBudget }) {
+  if (budget.missingRenewal) {
+    return <span className="font-semibold text-[var(--color-danger)]">Renewal missing</span>;
+  }
   if (budget.renews === null) return <span className="text-[var(--color-ink-faint)]">-</span>;
   const days = budget.daysToRenewal;
   const detail = budget.expired && days !== null
@@ -259,6 +271,13 @@ function HealthCell({ row }: { row: IndividualRow }) {
       </Link>
     );
   }
+  if (row.hasCanonicalBudget) {
+    return (
+      <Link href={individualBudgetHref(row.id)} className="text-sm font-medium text-[var(--color-primary)] underline-offset-2 hover:underline">
+        Dollar allowance
+      </Link>
+    );
+  }
   return (
     <Link href={individualBudgetHref(row.id)} className="text-sm text-[var(--color-ink-soft)] underline-offset-2 hover:text-[var(--color-primary)] hover:underline">
       No budget
@@ -311,8 +330,8 @@ export default function IndividualsList({
   const hasPortfolioVisibility = rows.some((row) => row.insightsVisible);
   const counts = useMemo(() => ({
     all: activeRows.length,
-    with_budget: activeRows.filter((row) => row.insightsVisible && row.budget !== null).length,
-    without_budget: activeRows.filter((row) => row.insightsVisible && row.budget === null).length,
+    with_budget: activeRows.filter((row) => row.insightsVisible && row.hasCanonicalBudget).length,
+    without_budget: activeRows.filter((row) => row.insightsVisible && !row.hasCanonicalBudget).length,
     attention: activeRows.filter(needsAttention).length,
     over: activeRows.filter(isOver).length,
     at_limit: activeRows.filter(isAtLimit).length,
@@ -355,9 +374,23 @@ export default function IndividualsList({
       render: (row) => <HealthCell row={row} />,
     },
     {
-      key: "left", label: "Hours remaining", kind: "hours", align: "right", width: 125,
+      key: "left", label: "Remaining now", kind: "hours", align: "right", width: 125,
       accessor: (row) => row.budget?.hoursLeft?.toString() ?? null,
       render: (row) => row.budget ? <span className={`tnum font-medium ${isOver(row) ? "text-[var(--color-danger)]" : ""}`}>{remainingHours(row.budget)}</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
+    },
+    {
+      key: "scheduled", label: "Scheduled", kind: "hours", align: "right", width: 110,
+      accessor: (row) => row.budget?.scheduledHours.toString() ?? null,
+      render: (row) => row.budget ? <span className="tnum font-medium">{formatHours(row.budget.scheduledHours)} h</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
+    },
+    {
+      key: "afterScheduled", label: "After schedule", kind: "hours", align: "right", width: 125,
+      accessor: (row) => row.budget?.hoursAfterScheduled?.toString() ?? null,
+      render: (row) => row.budget ? (
+        <span className={`tnum font-medium ${(row.budget.hoursAfterScheduled ?? 0) < 0 ? "text-[var(--color-danger)]" : ""}`}>
+          {row.budget.hoursAfterScheduled === null ? "-" : `${formatHours(row.budget.hoursAfterScheduled)} h`}
+        </span>
+      ) : <span className="text-[var(--color-ink-faint)]">-</span>,
     },
     {
       key: "monthly", label: "Required / month", kind: "hours", align: "right", width: 135,

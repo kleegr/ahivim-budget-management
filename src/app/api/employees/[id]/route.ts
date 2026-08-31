@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
-import { resolveAccessScope, canViewEmployee, hasDirectEmployeeAccess } from "@/lib/auth/access";
+import { resolveAccessScope, canViewEmployee, hasDirectEmployeeAccess, isPlanningOnlyAccess } from "@/lib/auth/access";
+import { planningEmployeeProfile } from "@/lib/auth/employee-planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import {
   getEmployee,
@@ -26,6 +27,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!canViewEmployee(scope, id)) return jsonError("Not found", 404);
     const record = await getEmployee(pool, id);
     if (!record) return jsonError("Not found", 404);
+    if (isPlanningOnlyAccess(scope)) {
+      return NextResponse.json({ ok: true, data: planningEmployeeProfile(record) });
+    }
     if (scope.canSeeEmployeeDeals && hasDirectEmployeeAccess(scope, id)) {
       return NextResponse.json({ ok: true, data: record });
     }

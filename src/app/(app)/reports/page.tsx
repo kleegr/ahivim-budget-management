@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Reports - Ahivim Budget Management" };
 
 export default async function ReportsPage() {
-  await requireUser("manager");
+  const user = await requireUser("manager");
 
   return (
     <>
@@ -33,12 +33,13 @@ export default async function ReportsPage() {
 
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {group.reports.map((report) => {
-                  if (!REPORTS[report.key]) return null;
+                  if (report.ownerOnly && user.role !== "admin") return null;
+                  if (!report.href && !REPORTS[report.key]) return null;
                   const Icon = report.icon;
                   return (
                     <Link
                       key={report.key}
-                      href={`/reports/${report.key}`}
+                      href={report.href ?? `/reports/${report.key}`}
                       className="card-interactive group flex min-h-44 flex-col rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-4 outline-offset-2 focus-visible:outline-2 focus-visible:outline-[var(--color-primary)]"
                     >
                       <div className="flex items-start gap-3">

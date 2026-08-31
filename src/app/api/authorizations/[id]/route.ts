@@ -1,26 +1,30 @@
 import { NextRequest } from "next/server";
-import { getPool } from "@/lib/db";
-import { apiUser } from "@/lib/auth/session";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import {
   cancelAuthorization,
   reviseAuthorization,
   type AuthorizationInput,
 } from "@/lib/manage/authorizations";
+import {
+  canChangeHourAuthorization,
+  containsFinancialAuthorizationFields,
+  getHourAuthorizationOperator,
+  redactHourAuthorizationResult,
+} from "@/lib/auth/hour-authorization-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
  * Revise an authorization (supersedes the active revision), or cancel it when
- * `body.action` is "cancel". Manager or admin only.
+ * `body.action` is "cancel". Planners are restricted to hours-only programs.
  */
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const origin = sameOriginOrFail(request);
   if (origin) return origin;
 
-  const user = await apiUser("manager");
-  if (!user) return jsonError("Manager role required", 403);
+  const operator = await getHourAuthorizationOperator();
+  if (!operator) return jsonError("Budget authorization access required", 403);
 
   const { id } = await params;
   const body = await readJson(request);
@@ -31,19 +35,43 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 
   try {
-    const pool = getPool();
+    let input = body as unknown as Partial<AuthorizationInput>;
+    if (operator.mode === "hours_only") {
+      if (containsFinancialAuthorizationFields(body)) {
+        return jsonError("Budget planners may change authorized hours only", 403);
+      }
+      if (!await canChangeHourAuthorization(operator.pool, operator.scope, id)) {
+        return jsonError("That hours authorization is not available", 404);
+      }
+      input = {
+        ...(typeof body.authorizedHours === "string" || typeof body.authorizedHours === "number"
+          ? { authorizedHours: body.authorizedHours }
+          : {}),
+        ...(typeof body.notes === "string" ? { notes: body.notes } : {}),
+      };
+    }
     if (action === "cancel") {
-      const result = await cancelAuthorization(pool, id, user.id, reason);
-      return resultResponse(result, 200);
+      const result = await cancelAuthorization(operator.pool, id, operator.user.id, reason);
+      return resultResponse(
+        result.ok && operator.mode === "hours_only"
+          ? { ...result, data: redactHourAuthorizationResult(result.data) }
+          : result,
+        200,
+      );
     }
     const result = await reviseAuthorization(
-      pool,
+      operator.pool,
       id,
-      body as unknown as Partial<AuthorizationInput>,
-      user.id,
+      input,
+      operator.user.id,
       reason,
     );
-    return resultResponse(result, 200);
+    return resultResponse(
+      result.ok && operator.mode === "hours_only"
+        ? { ...result, data: redactHourAuthorizationResult(result.data) }
+        : result,
+      200,
+    );
   } catch (error) {
     return jsonError(redactError(error), 500);
   }

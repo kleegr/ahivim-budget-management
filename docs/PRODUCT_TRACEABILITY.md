@@ -1,101 +1,176 @@
 # Ahivim Product Traceability
 
-This document is the implementation contract for the agency operating system.
-It maps the owner's full product vision to one status, one canonical source of
-truth, and one acceptance test. A feature is not complete because a page exists.
-It is complete only when the intended role can finish the real workflow without
-seeing information that role should not receive.
+This is the implementation and release contract for the Ahivim agency
+operating system. It maps the owner's stated business rules, roles, and daily
+workflows to the current shared code tree as of 2026-08-31.
 
-Status values:
+A page existing is not proof that a workflow is complete. Code status and
+production acceptance are deliberately separate.
 
-- `COMPLETE`: implemented and covered by focused tests.
-- `PARTIAL`: meaningful implementation exists, but the workflow is unfinished.
+## Status Model
+
+- `PRODUCTION VERIFIED`: implemented, deployed with its migrations and
+  configuration, reconciled against representative production records, and
+  accepted while signed in as the intended role on desktop and mobile. The
+  evidence and date must be recorded.
+- `IMPLEMENTED`: the workflow and server-side boundary exist and focused
+  automated tests cover them. Deployment, real-data reconciliation, and
+  signed-in production acceptance remain open.
+- `PARTIAL`: meaningful implementation exists, but a known code, data-model,
+  or UX gap prevents the full promised workflow.
+- `EXTERNAL BLOCKER`: completion depends on production credentials or licensed
+  technology outside this codebase.
 - `MISSING`: the requested workflow does not exist.
-- `WRONG`: the current behavior contradicts the product vision.
+- `WRONG`: current behavior contradicts the business rule.
+
+**Current production verdict:** no row in this document is yet
+`PRODUCTION VERIFIED`. Passing focused tests is implementation evidence, not
+production evidence. Database-backed integration suites that skip without
+`TEST_DATABASE_URL` also do not count as production verification.
 
 ## Canonical Business Truths
 
-| Area | Status | Canonical rule | Remaining acceptance work |
+| Requirement | Status | Implemented contract and evidence | Open production or data gate |
 | --- | --- | --- | --- |
-| Transactions | COMPLETE | Committed payroll transactions are the historical truth for actual dates, checks, people, programs, hours, billed amounts, employee base, and agency spread. | Production smoke-test Sheet filters, selected-person totals, exports, and the new compact check/date/payee drilldowns. |
-| Budget utilization | COMPLETE | Authorized hours are compared with transaction-backed actual hours and unmatched scheduled hours inside the authorization period. Owner summaries, utilization, outliers, renewals, and detail pages all use `program_budget_balances`. | Reconcile the canonical totals against production data after deployment. |
-| Group services | COMPLETE | Physical hours are credited in full to each individual; money is allocated once across the group. | Present recognized group-rate differences as context, not a generic error. |
-| Funder and employee rates | COMPLETE | A funder rate such as $25 and an employee base such as $21 remain separate. Taxes do not explain or change that rate relationship. | Keep rate setup in an advanced section and retain transaction-level explanation links. |
-| Direct employee give-back | COMPLETE | The configured percentage is applied once to the whole verified check NET, never gross, hourly values, or each transaction row. Imported direct checks enter a visible confirmation queue before obligations are created. | Production-test imported mixed-recipient checks and conflicting NET values. |
-| Individual cuts and put-away | COMPLETE | First and second cuts are sequential. The approved final amount is the reserve target; explanatory cuts do not create duplicate obligations. Monthly statements show target, posted amount, corrections, credit, remaining balance, and history without employee identity. | Production-reconcile one renewal boundary and one correction chain. |
-| Agency-routed pay | COMPLETE | Agency-paid employee value and agency spread remain separate from direct-pay give-back. | Production-test mixed routing where the same employee and check period contains separate agency and direct recipients. |
+| Transactions and dates | IMPLEMENTED | Committed `payroll_transactions` are the historical truth for what happened. Actuals use `canonical_service_date(period_begin, check_date, period_end)` while retaining check and pay-period fields. Rule effective dates select the applicable rule; they do not replace the transaction date. Evidence: `src/lib/data/transactions-grid.ts`, `src/lib/data/report-queries.ts`. | Reconcile Sheet totals, checks, dates, selected-person totals, exports, and mixed recipients against production. |
+| Budget use, renewal, and monthly history | IMPLEMENTED | Operational budget screens and reports use `program_budget_balances`. A known renewal derives the prior annual period; expired and missing renewals remain visible. Used hours come from transactions, pending unmatched schedules are separate, and the monthly trend combines payroll, budget events, and pending schedule. Evidence: `src/lib/data/program-budgets.ts`, `src/lib/data/authorization-portfolio.ts`, `src/components/individuals/program-budget-workspace.tsx`. | Reconcile hourly, manual-dollar, expired, missing-renewal, and renewal-boundary examples in production. |
+| Group services | IMPLEMENTED | Each individual receives the full credited service hours while employee physical time and money are counted once per linked service session. Group review and rate differences retain group context instead of appearing as a generic rate error. Evidence: `src/lib/data/report-queries.ts`, `tests/report-activity-truth.test.ts`. | Exact physical hours require `service_session_id`. Legacy unlinked group rows fall back to one physical activity per transaction and require source repair for perfect historical deduplication. |
+| Funder billed, employee base, and agency spread | IMPLEMENTED | Funder rate/amount, employee base rate/amount, and agency spread remain distinct. A $25 funder rate does not become $25 employee pay when the employee base is $21. Taxes do not explain this difference. Evidence: transaction and report read models plus `src/lib/manage/payment-attribution.ts`. | Reconcile representative flat-rate, per-individual-rate, and group-rate cases in production. |
+| Direct employee give-back | IMPLEMENTED | The configured direct-pay rule is applied once to the whole verified check NET, never gross, hourly values, or every transaction row. Taxes are visible as gross minus net and are not an agency cut. Imported checks require confirmation before obligations are created. Evidence: `src/lib/manage/direct-pay-operations.ts`, `src/lib/manage/settlements.ts`. | Test mixed-recipient checks, conflicting repeated NET values, partial collections, and corrections with production checks. |
+| Individual cuts and put-away | IMPLEMENTED | First and second cuts are sequential. The approved final monthly amount is the reserve target; explanatory cuts do not create duplicate obligations. Statements show target, recorded, corrections/reversals, credit, remaining, and history without employee identity. Evidence: `src/lib/business/calculation-strategy.ts`, `src/lib/data/direct-pay-operations.ts`, `src/app/(app)/masser/individuals/[id]/page.tsx`. | Reconcile one normal month, one credit, one correction chain, and one renewal boundary in production. |
+| Agency-routed employee pay | IMPLEMENTED | The agency-routed deal divides employee base, never funder gross. An effective-dated employee-plus-individual compensation rule wins; the employee default is the fallback. Agency spread remains separate, and rule changes invalidate settlement freshness. Evidence: `src/lib/manage/agency-financials.ts`, `src/lib/manage/settlements.ts`, migration `0036_agency_financial_actuals.sql`. | Reconcile specific-rule, fallback-rule, missing-rule, and mixed-routing examples after migration 0036 is deployed. |
 
 ## Role And Portal Matrix
 
-| Preset role | Status | Required home and boundary | Remaining acceptance work |
-| --- | --- | --- | --- |
-| Owner | PARTIAL | Whole-agency dashboard, all reports, all people, all money, all settings, exact drilldowns, and one-step Owner provisioning. | Add multi-person cohorts and saved views; production-reconcile the owner figures and exports. |
-| Budget Planner | COMPLETE | Budget portfolio, assignments, employee availability, and calendar using hours only. No transactions, rates, billed dollars, payroll, taxes, employee financials, or Masser. | Run one signed-in production acceptance after assigning the preset. |
-| Staffing Manager | COMPLETE | Employee directory, availability, assignments, and scheduling without budgets or financial information. | Run one signed-in production acceptance after assigning the preset. |
-| Money Collector | COMPLETE | Masser: direct checks to confirm, amount due, collections, balances/credits, individual put-away, and statements. No budget amounts or budget planning. | Production-reconcile imported checks, one collection, and one individual statement. |
-| Class Billing | COMPLETE | Class allowances, invoices, cover sheets, and saved documents. | Visually compare generated PDFs with the supplied invoice and cover-sheet examples. |
-| Individual / Parent | PARTIAL | Only the linked individual's approved hours, per-program use, selected-month allowed financial aggregates, and privacy-safe statements. No employee identity, employee checks, or taxes. Provisioning is one atomic step. | Add a multi-month trend and downloadable portal statement. |
-| Employee | COMPLETE | Only the linked employee's verified direct checks, give-back, payments, balance, and direct-pay service history. Agency-routed activity is excluded. Provisioning is one atomic step. | Production-test one employee account against a mixed-routing check. |
-| Agency / Provider | PARTIAL | Scoped rollups and program drilldowns for the agency's dated individual and/or employee roster, provisioned in one step. | Add per-member visibility overrides and check-by-check agency employee drilldowns. |
-| Agency Scheduler | COMPLETE | Agency-scoped assignments and schedules using hours only, provisioned in one step. | Run one signed-in production acceptance. |
-| Agency Collector | PARTIAL | Read-only agency financial summary according to explicit visibility, provisioned in one step. | Add check-by-check statement drilldowns; keep it distinct from internal Money Collector. |
+Every row below is implemented in code unless marked `PARTIAL`, but every
+role still needs direct signed-in production acceptance.
+
+| Preset/profile | Status | Home, work, and hard privacy boundary |
+| --- | --- | --- |
+| Owner | PARTIAL | Whole-agency home, multi-person activity cohorts, all reports, all people, all money, all settings, user administration, Sign In As, and exact drilldowns. Saved owner cohort views and the historical financial-report limitation remain open. |
+| Office Manager | IMPLEMENTED | Everyday internal work, reports, budgets, and financials, without user-account administration. |
+| Budget Planner | IMPLEMENTED | Full-roster budget coverage, assignments, employee availability, calendar, and hours-only direct-pay target progress. May create, revise, or cancel active non-Classes hour authorizations. Cannot receive rates, dollars, transactions, payroll, taxes, employee deals, Masser, or manual financial adjustments. Planner mutation payloads and responses are server allowlisted/scrubbed. |
+| Staffing Manager | IMPLEMENTED | Finance-free employee directory/detail, weekly availability, time off, assignments, and schedule. Employee APIs expose only identity/status fields; no budgets, rates, notes, external payroll references, checks, taxes, transactions, deals, or settlements. |
+| Money Collector | IMPLEMENTED | Masser check confirmation, amounts due, collections, balances/credits, individual put-away, corrections, and statements. No budget planning or owner agency-profit report. |
+| Class Billing | IMPLEMENTED | Class allowances, invoices, cover sheets, saved documents, and document editing without unrelated payroll or settlement access. |
+| Individual / Parent | IMPLEMENTED | Only directly linked individuals and explicitly granted categories: approved hours/budgets, selected-month financial aggregates, twelve-month trend, and privacy-safe print/download statement. No employee identity, employee check, gross/net, or tax detail. |
+| Employee | IMPLEMENTED | Only the linked employee's verified direct checks, allowed gross/net/tax fields, give-back, payments, balance, and direct-pay service history. Agency-routed activity is excluded; capability denials remove fields at the read model. |
+| Agency / Provider | IMPLEMENTED | Dated scoped roster, individual/program rollups, granted financial categories, and check-level employee drilldowns. Agency and per-member grants/denials control each category. |
+| Agency Scheduler | IMPLEMENTED | Agency-scoped assignments and schedule using hours only. No money. |
+| Agency Staffing Manager | IMPLEMENTED | Agency-scoped employee roster, assignments, availability, and schedule using hours only. No money. |
+| Agency Collector | IMPLEMENTED | Read-only agency financial, direct-check, agency-paid, and settlement views according to explicit grants/denials. It is separate from the internal Money Collector and cannot use global Masser or budget planning. |
+
+Evidence for role definitions and provisioning lives in
+`src/lib/auth/account-presets.ts`, `src/lib/auth/access-presets.ts`,
+`src/lib/auth/portal-access.ts`, `src/lib/auth/users.ts`, and the
+role-specific read models and API tests.
 
 ## Operational Workspaces
 
-| Workspace | Status | What the user must be able to do | Remaining acceptance work |
+| Workspace or workflow | Status | Implemented contract | Remaining work before production verification |
 | --- | --- | --- | --- |
-| Owner Home | PARTIAL | See what happened, canonical budget position, money position, latest payroll, and compact drilldowns. Actual activity filters by check date, person, employee, and payroll period. | Add multi-select cohorts and saved views. |
-| Transactions | COMPLETE | Filter every field by values, dates, people, checks, and programs; select multiple people; keep totals synchronized; export; switch between rows and checks. | Production performance and one-click interaction test. |
-| People & Budgets | COMPLETE | See all individuals together, billing without a managed budget, renewal date, authorized/used/scheduled/remaining hours, pace, history, configurable columns, and hours-only planner editing. | Production-reconcile representative hourly and group programs. |
-| Schedule | COMPLETE | Plan employee and individual sessions in month/week/day views; compare planned and used hours; manage recurring weekly availability and dated time off; detect assignment, overlap, availability, and over-budget risk again at save time. | Add a retroactive queue when new time off conflicts with sessions that were already saved. |
-| Masser | COMPLETE | Dedicated collector board for employee collections and individual put-away, separate from Financial Setup, with imported-check confirmation, record actions, compact transaction drilldowns, statements, history, credits, and corrections. | Production-reconcile representative direct-pay and renewal-boundary cases. |
-| Financial Setup | COMPLETE | Configure expected annual/monthly values, program lines, sequential cuts, adjustments, and approved final. | Keep it owner/manager only and visually separate from Masser. |
-| Settlement Ledger | COMPLETE | Preserve obligations, payments, reversals, partials, credits, and corrections as an auditable ledger. | Keep this advanced; normal Masser actions should not require using it. |
-| Employees | PARTIAL | See actual people served, programs, hours, transactions, arrangements, and checks according to role. | Add availability and a finance-free staffing view. |
-| Programs | COMPLETE | Create global reusable programs and configure authorization basis, renewal policy, consumption source, routing, standard rates, and individual overrides. | Add a guided basic form with advanced rules collapsed. |
-| Classes | COMPLETE | Track annual per-individual class allowances and atomically issue/void editable monthly invoices with no Saturday service dates. Generated invoices match the supplied 22-day structure and cover sheets retain the full attestation. | Obtain approval on exact brand marks/signature capture and freeze generated PDFs into Documents if required. |
-| Documents | COMPLETE | Upload private PDFs, edit, save immutable versions, restore by appending history, search, archive, and stream only through access-gated routes. Missing Blob configuration fails before reserving unusable records. | Verify the connected production Blob end to end. |
-| Google Sheet | PARTIAL | One button truthfully reports push and pull separately, preserves failed/unmatched Paid-marker changes, pulls new rows, commits valid rows, and refreshes visible data. | Production lacks Google service-account write-back credentials. Configure them and run a real Paid-marker round trip; general cells intentionally remain read-only. |
+| Owner Home | PARTIAL | Calm overview of actual activity, canonical budget position, money position, latest payroll, exact drilldowns, date/pay-period/employee filters, and multi-person cohorts. Evidence: `src/components/dashboard/owner-dashboard.tsx`, `owner-people-multi-select.tsx`. | Add named saved cohort views; reconcile all cards and links against production. |
+| Owner Agency Financials | PARTIAL | Owner-only monthly workspace for actual transaction income, issued class invoices, manual income, approved final monthly set-asides, verified-check taxes/direct employee keeps, agency-routed employee shares, split residual expenses, disclosures, and source drilldowns. Missing gross/base/deal/split values are counted and excluded, never guessed. Evidence: `src/app/(app)/reports/agency-financials/page.tsx`, `src/lib/data/agency-financial-report.ts`, `src/components/reports/agency-financial-workspace.tsx`. | Migration 0036 and browser/data reconciliation are pending. For a historical selected month, approved set-aside currently uses the active strategy's approved `after_all`; strategy revision history cannot yet reconstruct that value as-of the month. |
+| Manual and custom-program income | IMPLEMENTED | Owner can record class income outside invoicing, reimbursements, custom-program income, or other income; split gross into agency and individual amounts; deduplicate source references; and void with an audited budget-event reversal. Custom-program income requires an individual, program, effective split, and active dollar budget, with an explicit over-budget reason. Evidence: `src/lib/manage/agency-financials.ts`, `src/app/api/agency-financials/income/*`. | Deploy migration 0036 and verify create/over-budget/void flows on production records. |
+| Individual-program revenue splits | IMPLEMENTED | Owner can maintain audited, non-overlapping, effective-dated agency-share percentages per individual and program. Issued classes use the effective split; 100% agency is the default only when no custom split history says a split is required. Evidence: `individual_program_revenue_terms`, `/api/agency-financials/program-splits`. | Reconcile before, on, and after an effective-date change in production. |
+| Employee-person pay rules | IMPLEMENTED | Owner can maintain audited, non-overlapping, effective-dated employee shares for a specific employee and individual. The specific rule precedes the employee default for agency-routed base pay and dirties the settlement ledger on change. Evidence: `employee_individual_compensation_terms`, `/api/agency-financials/employee-terms`. | Rebuild and reconcile affected settlements after migration 0036 is deployed. |
+| Transactions | IMPLEMENTED | Spreadsheet-like per-value filters, dates, checks, people, programs, multi-person selection, synchronized totals, row/check modes, drilldowns, and export. | Production performance, URL-length, keyboard, mobile, and first-click acceptance on a large real payroll. |
+| People & Budgets | IMPLEMENTED | All individuals together; renewal as a primary field; configurable columns; with/without-budget and billing-without-budget views; authorized/used/scheduled/after-schedule/remaining hours; pace; monthly history; and safe planner hour edits. Renewal-only entry derives the annual dates. | Reconcile representative hourly, group, manual-dollar, expired, and missing-renewal records. |
+| Schedule | PARTIAL | Month/week/day planning; recurring schedules; employee/individual views; assignment, overlap, availability, time-off, individual clash, and budget checks before save; budget coverage; weekly availability and dated time off. | Add the retroactive conflict queue that lists and resolves already-saved sessions when new time off conflicts with them. |
+| Direct-pay employee targets | IMPLEMENTED | Authorized operators set an employee target gross, cadence, effective dates, and rate; the planner sees only derived target hours, recorded hours, scheduled hours, remaining hours, and status. Evidence: `src/lib/manage/direct-pay-operations.ts`, `src/components/schedule/direct-pay-targets-panel.tsx`. | Production-test weekly, monthly, custom, changed-rate, archived, and already-met targets. |
+| Masser | IMPLEMENTED | Dedicated internal collector board, separate from Financial Setup, with imported-check confirmation, employee collections, individual set-asides, compact transaction drilldowns, statements, credits, corrections, reversals, and history. | Reconcile direct-pay, partial/extra collection, credit, correction, and renewal-boundary cases. |
+| Financial Setup | IMPLEMENTED | Owner/manager configures program lines, yearly/monthly values, sequential cuts, adjustments, and the approved final amount, visually separate from Masser. | Reconcile spreadsheet examples and retain owner/manager-only access. |
+| Settlement Ledger | IMPLEMENTED | Auditable obligations, payments, multi-select completion, partials, extras/credits, corrections, and reversals for both payment directions. | Production-reconcile ledger freshness and correction chains after every deal/rule type. |
+| Employees | IMPLEMENTED | Financial roles see activity, people served, programs, transactions, arrangements, and checks; planning roles receive the separate finance-free directory/detail and availability/assignment workflow. | Verify both variants with representative accounts and inspect server responses for forbidden fields. |
+| Reports | IMPLEMENTED | Decision-oriented reports for canonical budget use, exceptions/renewals, actual versus scheduled, program totals, funder/base/spread, employee pay, reconciliation gaps, group activity, setup audit, aliases, and audit history. Actuals come from transactions; program totals separate credited individual hours from physical employee hours. | Reconcile filters/totals/exports in production and repair legacy group links where exact physical-hour deduplication is required. |
+| Programs | PARTIAL | Reusable global programs support authorization basis, service category, group rules, payment recipient, consumption source, rate scope, renewal policy, standard rates, and individual overrides. | Replace the dense all-rules editor with a guided basic form and collapsed advanced rules, then test the common create-program path with a new user. |
+| Classes | IMPLEMENTED | Per-individual annual dollar allowance; editable monthly invoice draft; default 22 non-Saturday service dates; atomic issue/void; budget consumption/reversal; cover-sheet attestation; and saved output. | Obtain stakeholder approval for exact branding/signature treatment and visually compare supplied examples. |
+| Documents and current PDF editor | IMPLEMENTED | Private PDF library, access-gated streaming, upload, search, archive, immutable save/restore history, drafts, forms, signatures, drawing, page operations, native/OCR text inspection, cover-and-replacement text, imported fonts, and export. Missing Blob configuration fails before reserving unusable records. | Verify production Blob upload/edit/save/reopen/restore/archive and font embedding end to end. |
+| User and agency provisioning | IMPLEMENTED | Simple role/profile chooser, generated temporary password, atomic user plus individual/employee/agency binding, preset access, agency roster dates/responsibility, and agency/per-member capability overrides. Office Manager and custom staff profiles remain available for internal exceptions. | Create every listed preset/profile once in production; verify rollback on invalid bindings and direct login after provisioning. |
+| Sign In As | IMPLEMENTED | An admin can start a server-authorized session as another active user from user administration, sees a persistent banner, can explicitly return, cannot chain previews, and both start/stop are audited. Evidence: `src/app/api/auth/impersonation/*`, `src/components/auth/impersonation-bar.tsx`. | Production-test cookie/security behavior and every preset. Final role acceptance must also include a direct login, not only impersonation. |
+| Portal statements and trends | IMPLEMENTED | Individual/parent portal supports selected-month detail, a twelve-month default trend (bounded to 24), capability-gated categories, printable statement, and CSV download without employee/check/tax/gross/net leakage. Agency and employee portals expose only granted detail. | Verify empty months, renewal boundaries, downloads, print layout, mobile layout, and category denials in production. |
+| Imports, reconciliation, and matching | IMPLEMENTED | Upload/stage/review/commit, duplicate recognition, correction routes, alias decisions, person merges, and payroll-check review exist; actual transaction visibility does not depend on creating a deal for each import. | Re-run the original workbooks, confirm unmatched/invalid rows lead to the exact repair screen, and verify transaction totals after commit. |
+| Actionable errors and first-click UX | PARTIAL | Route loading states, busy/disabled button states, friendly action errors, and exact repair links exist in several high-use flows. | Complete a system-wide audit so every visible problem links to its exact fix, every command acknowledges the first click, entered work survives failure, and navigation never needs repeated clicks. |
+| Google Sheet update button | EXTERNAL BLOCKER | The button reports push and pull separately, preserves failed/unmatched Paid-marker changes, pulls rows, commits valid data, and refreshes visible results. General source cells intentionally remain read-only. | Production write-back credentials are absent. Configure the service account and verify a real Paid marker push, pull, idempotent retry, and failure recovery. |
+| Adobe-class source-text PDF editing | EXTERNAL BLOCKER | The current editor is an overlay/form/document editor, not arbitrary reflow of existing source text in proprietary embedded fonts. | Choose and license a commercial source-text PDF SDK, integrate it, and verify embedded-font fidelity on the supplied PDFs; otherwise narrow the product promise to the implemented overlay editor. |
 
-## PDF Promise
+## External Dependencies And Known Limits
 
-Status: `NOT MET` for Adobe-equivalent source-text editing.
+| Dependency or limitation | Gate |
+| --- | --- |
+| Google Sheet write-back | Service-account credentials and a real production Paid-marker round trip. |
+| Adobe-equivalent source-text editing | Licensed SDK/product decision; the current overlay editor cannot truthfully be called Adobe-equivalent. |
+| Legacy unlinked group history | Repair or backfill session links before historical physical employee hours can be exactly deduplicated. |
+| Production document storage | Connected private Blob configuration and access-control acceptance. |
+| Class PDF identity | Owner approval of exact logo, brand marks, signatures, and final rendered examples. |
+| Historical approved set-asides | A strategy revision/as-of read model before past months can use the approved value that was effective in that month. |
 
-The current editor is a strong PDF overlay and form editor: native/OCR text
-inspection, cover-and-replacement text, imported fonts, forms, signatures,
-drawing, page operations, undo/redo, export, drafts, and version history. It
-does not reflow arbitrary existing source text in proprietary embedded fonts the
-way a licensed Adobe-class SDK does.
+## Remaining Delivery Order
 
-Completion requires one explicit product decision:
+1. Close the known in-repo gaps: historical approved-set-aside reconstruction,
+   retroactive time-off conflict queue, guided Program creation, saved owner
+   cohort views, and the system-wide actionable-error/first-click pass.
+2. Run the full unit/integration/e2e, typecheck, and zero-warning lint suites on
+   one stable commit. Record any database tests skipped for lack of
+   `TEST_DATABASE_URL`.
+3. Deploy that commit and apply/verify migrations 0035 and 0036. Confirm the
+   deployed commit SHA, schema ledger, environment configuration, and server
+   health before testing numbers.
+4. Reconcile representative production truth end to end: one normal and one
+   group transaction, a renewal boundary, billing without budget, direct and
+   agency-routed pay, Masser credit/correction, class invoice, manual income,
+   custom split, employee-person rule, and owner agency result.
+5. Configure Google write-back and private Blob, then run the real Sheet and
+   document round trips. Repair legacy group links needed for exact history.
+6. Create every listed preset/profile account and execute the role acceptance matrix below on
+   desktop and mobile. Store screenshots/exports, inspected API payloads,
+   account used, date, and pass/fail result.
+7. Obtain class PDF visual approval and make the explicit Adobe SDK versus
+   overlay-only product decision.
 
-1. License and integrate a commercial source-text PDF SDK, then verify real
-   existing-text replacement and embedded-font fidelity on the supplied PDFs.
-2. Keep the current overlay editor and narrow the promise in the product copy.
+## Role-By-Role Production Acceptance
 
-Until that decision and implementation are complete, this item remains open.
+| Role/account | Daily workflow that must pass | Privacy and authority proof |
+| --- | --- | --- |
+| Owner | Filter a multi-person cohort; open source transactions; inspect canonical budgets; run/export reports; reconcile Agency Financials; create a user; Sign In As and return. | All agency data is available; owner-only routes reject non-admins. |
+| Office Manager | Complete a normal transaction, budget, schedule, report, Masser, and financial workflow. | User administration and owner-only Agency Financials remain unavailable. |
+| Budget Planner | Create/revise/cancel an hour authorization; inspect renewal/pacing/history; assign staff; enter availability; schedule within coverage; inspect hour targets. | Navigation and every API response contain no rates, dollars, transactions, payroll, checks, taxes, deals, Masser, or settlement fields. Dollar/Classes authorizations and financial mutations are rejected. |
+| Staffing Manager | Find an employee, maintain availability/time off, assign them, and schedule them. | No budget or money route is reachable; employee list/detail response contains only safe identity/status data plus separate planning summaries. |
+| Money Collector | Confirm an imported check; record a collection; handle partial/extra/credit; inspect corrections; produce an individual put-away statement. | No budget planning, rates, agency spread/profit report, or unrelated employee financial detail. |
+| Class Billing | Add/open an allowance; build a 22-day non-Saturday invoice; issue and void it; edit/save/reopen the PDF and cover sheet. | No unrelated transactions, payroll checks, Masser, or settlements. |
+| Individual / Parent | Open the linked person, change month, read 12-month trend, print and download the statement. | Cannot enumerate other people; response/export contains no employee identity, check number, tax, gross, or net fields beyond explicitly allowed aggregates. |
+| Employee | Review every verified direct check in a month, allowed gross/net/tax, direct services, give-back due, payments, and balance. | Only the linked employee appears; denied categories are absent; agency-routed activity is excluded. |
+| Agency / Provider | Review dated roster, program/person rollups, granted financials, and permitted employee check drilldowns; change one member override as owner and recheck. | Out-of-roster dates/people and denied member categories are absent from server responses. |
+| Agency Scheduler | Assign and schedule the agency's in-scope roster and inspect hours. | No money, budgets beyond allowed hour coverage, transactions, or out-of-agency people. |
+| Agency Staffing Manager | Review agency employees, availability, assignments, and schedule. | No money and no employees outside the dated agency roster. |
+| Agency Collector | Review only granted agency direct-check, agency-paid, set-aside, and settlement details. | Read-only; no budget planning, internal global Masser, deal editing, or denied financial category. |
 
-## Active Delivery Order
+For every external or restricted account, use the real preset provisioning flow
+and a direct login. Sign In As is an additional owner preview and debugging tool,
+not a substitute for authentication acceptance.
 
-1. Build, deploy, and apply the availability migration in production.
-2. Reconcile Owner, Budget, Transaction, Masser, and group-hour totals against production data.
-3. Run desktop/mobile first-click, actionable-error, and signed-in route acceptance.
-4. Configure Google service-account write-back and run the real Paid-marker round trip.
-5. Run private Blob upload/edit/save/reopen/restore/archive acceptance.
-6. Add the remaining portal trends, agency check drilldowns, saved owner views,
-   retroactive availability queue, and the chosen Adobe-class PDF SDK strategy.
+## Definition Of Production Verified
 
-## Definition Of Done
+A row may move from `IMPLEMENTED` or `PARTIAL` to
+`PRODUCTION VERIFIED` only when all applicable evidence exists:
 
-For every preset role, acceptance must prove:
-
-- The login can be created and assigned in one flow.
-- The first screen answers that role's daily questions.
-- Every visible total drills into the records that created it.
-- Hidden money or identity fields are absent from server responses, not merely
-  hidden with CSS.
-- Every problem state has one plain-language action leading to the exact fix.
-- Buttons acknowledge the first click and preserve entered work on failure.
-- Desktop and mobile workflows complete without overlap or clipped text.
-- Production data, Sheet sync, storage, and exports are tested with the real
-  integrations before the item is marked complete.
+- The exact commit is deployed and all required migrations/configuration are
+  present.
+- Focused tests and the full required quality suite pass; skipped suites are
+  named and resolved.
+- Representative production totals reconcile to source transactions, budgets,
+  checks, statements, and exports with no guessed values.
+- The intended preset can be provisioned in one flow and directly sign in.
+- The role's first screen answers its daily questions and every total drills to
+  the records that created it.
+- Forbidden money and identity fields are absent from server responses, not
+  merely hidden by CSS.
+- Every problem state provides one plain-language action to the exact fix.
+- Buttons acknowledge the first click, prevent duplicate submission, and keep
+  entered work after a failure.
+- Desktop and mobile workflows complete without overlap, clipping, or
+  inaccessible controls.
+- Real Sheet sync, private storage, PDF rendering, and exports pass where they
+  are part of the workflow.
+- Acceptance records the date, environment, account/preset, evidence links,
+  reconciled examples, result, and approver.

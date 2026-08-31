@@ -695,6 +695,165 @@ export const programBudgetEvents = pgTable(
   ],
 );
 
+/** Effective-dated split for non-payroll revenue assigned to one person/program. */
+export const individualProgramRevenueTerms = pgTable(
+  "individual_program_revenue_terms",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    individualId: uuid("individual_id").notNull().references(() => individuals.id),
+    programId: uuid("program_id").notNull().references(() => programs.id),
+    agencySharePercent: numeric("agency_share_percent", { precision: 9, scale: 6 }).notNull(),
+    effectiveFrom: date("effective_from").notNull(),
+    effectiveTo: date("effective_to"),
+    revision: integer("revision").default(1).notNull(),
+    status: text("status").default("active").notNull(),
+    notes: text("notes"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    archivedByUserId: uuid("archived_by_user_id").references(() => users.id),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("individual_program_revenue_terms_active_key")
+      .on(table.individualId, table.programId, table.effectiveFrom)
+      .where(sql`${table.status} = 'active'`),
+    index("individual_program_revenue_terms_lookup_idx")
+      .on(table.individualId, table.programId, table.effectiveFrom, table.effectiveTo)
+      .where(sql`${table.status} = 'active'`),
+    check(
+      "individual_program_revenue_terms_share_check",
+      sql`${table.agencySharePercent} between 0 and 1`,
+    ),
+    check(
+      "individual_program_revenue_terms_range_check",
+      sql`${table.effectiveTo} is null or ${table.effectiveTo} >= ${table.effectiveFrom}`,
+    ),
+    check("individual_program_revenue_terms_revision_check", sql`${table.revision} > 0`),
+    check(
+      "individual_program_revenue_terms_status_check",
+      sql`${table.status} in ('active', 'archived')`,
+    ),
+    check(
+      "individual_program_revenue_terms_archive_check",
+      sql`(${table.status} = 'archived') = (${table.archivedAt} is not null)`,
+    ),
+  ],
+);
+
+/** Employee share of the internal/base amount for one employee/person pairing. */
+export const employeeIndividualCompensationTerms = pgTable(
+  "employee_individual_compensation_terms",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    employeeId: uuid("employee_id").notNull().references(() => employees.id),
+    individualId: uuid("individual_id").notNull().references(() => individuals.id),
+    employeeSharePercent: numeric("employee_share_percent", { precision: 9, scale: 6 }).notNull(),
+    effectiveFrom: date("effective_from").notNull(),
+    effectiveTo: date("effective_to"),
+    revision: integer("revision").default(1).notNull(),
+    status: text("status").default("active").notNull(),
+    notes: text("notes"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
+    archivedByUserId: uuid("archived_by_user_id").references(() => users.id),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("employee_individual_compensation_terms_active_key")
+      .on(table.employeeId, table.individualId, table.effectiveFrom)
+      .where(sql`${table.status} = 'active'`),
+    index("employee_individual_compensation_terms_lookup_idx")
+      .on(table.employeeId, table.individualId, table.effectiveFrom, table.effectiveTo)
+      .where(sql`${table.status} = 'active'`),
+    check(
+      "employee_individual_compensation_terms_share_check",
+      sql`${table.employeeSharePercent} between 0 and 1`,
+    ),
+    check(
+      "employee_individual_compensation_terms_range_check",
+      sql`${table.effectiveTo} is null or ${table.effectiveTo} >= ${table.effectiveFrom}`,
+    ),
+    check("employee_individual_compensation_terms_revision_check", sql`${table.revision} > 0`),
+    check(
+      "employee_individual_compensation_terms_status_check",
+      sql`${table.status} in ('active', 'archived')`,
+    ),
+    check(
+      "employee_individual_compensation_terms_archive_check",
+      sql`(${table.status} = 'archived') = (${table.archivedAt} is not null)`,
+    ),
+  ],
+);
+
+/** Owner-recorded income not present in the Google Sheet transaction ledger. */
+export const agencyManualIncomeEntries = pgTable(
+  "agency_manual_income_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    serviceDate: date("service_date").notNull(),
+    sourceType: text("source_type").notNull(),
+    individualId: uuid("individual_id").references(() => individuals.id),
+    programId: uuid("program_id").references(() => programs.id),
+    grossAmount: numeric("gross_amount", { precision: 14, scale: 4 }).notNull(),
+    agencySharePercent: numeric("agency_share_percent", { precision: 9, scale: 6 }).notNull(),
+    agencyAmount: numeric("agency_amount", { precision: 14, scale: 4 }).notNull(),
+    individualAmount: numeric("individual_amount", { precision: 14, scale: 4 }).notNull(),
+    sourceRef: text("source_ref"),
+    notes: text("notes"),
+    programBudgetEventId: uuid("program_budget_event_id").references(() => programBudgetEvents.id),
+    programBudgetReversalEventId: uuid("program_budget_reversal_event_id").references(() => programBudgetEvents.id),
+    status: text("status").default("active").notNull(),
+    voidReason: text("void_reason"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id),
+    voidedByUserId: uuid("voided_by_user_id").references(() => users.id),
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("agency_manual_income_entries_source_ref_key")
+      .on(table.sourceType, sql`lower(btrim(${table.sourceRef}))`)
+      .where(sql`nullif(btrim(${table.sourceRef}), '') is not null`),
+    index("agency_manual_income_entries_date_idx").on(table.serviceDate, table.status),
+    index("agency_manual_income_entries_person_program_idx")
+      .on(table.individualId, table.programId, table.serviceDate),
+    check(
+      "agency_manual_income_entries_type_check",
+      sql`${table.sourceType} in ('class', 'reimbursement', 'custom_program', 'other')`,
+    ),
+    check("agency_manual_income_entries_gross_check", sql`${table.grossAmount} > 0`),
+    check(
+      "agency_manual_income_entries_share_check",
+      sql`${table.agencySharePercent} between 0 and 1`,
+    ),
+    check(
+      "agency_manual_income_entries_amounts_check",
+      sql`${table.agencyAmount} >= 0 and ${table.individualAmount} >= 0
+        and ${table.agencyAmount} + ${table.individualAmount} = ${table.grossAmount}`,
+    ),
+    check(
+      "agency_manual_income_entries_custom_program_check",
+      sql`${table.sourceType} <> 'custom_program'
+        or (${table.individualId} is not null and ${table.programId} is not null)`,
+    ),
+    check(
+      "agency_manual_income_entries_status_check",
+      sql`${table.status} in ('active', 'void')`,
+    ),
+    check(
+      "agency_manual_income_entries_void_check",
+      sql`(${table.status} = 'active' and ${table.voidedAt} is null
+          and ${table.voidedByUserId} is null and ${table.voidReason} is null)
+        or (${table.status} = 'void' and ${table.voidedAt} is not null
+          and ${table.voidedByUserId} is not null and length(btrim(${table.voidReason})) >= 5)`,
+    ),
+  ],
+);
+
 /** Per-individual cut configuration (percentages as decimal fractions). */
 export const accountConfigurations = pgTable(
   "account_configurations",

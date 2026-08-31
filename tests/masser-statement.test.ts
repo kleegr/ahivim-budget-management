@@ -18,12 +18,13 @@ describe("individual Masser statement", () => {
           approved_reserve: "1200",
           recorded_reserve: "350",
           remaining_reserve: "850",
+          available_credit: "25",
         }] };
       }
       if (sql.includes("FROM settlement_events event")) {
         return { rows: [
-          { month: "2026-08", set_aside: "250", reversals: "50" },
-          { month: "2026-07", set_aside: "100", reversals: "0" },
+          { month: "2026-08", set_aside: "250", corrections: "75", reversals: "50" },
+          { month: "2026-07", set_aside: "100", corrections: "0", reversals: "0" },
         ] };
       }
       return { rows: [] };
@@ -43,9 +44,10 @@ describe("individual Masser statement", () => {
       approvedReserve: "1200.0000",
       recordedReserve: "350.0000",
       remainingReserve: "850.0000",
+      availableCredit: "25.0000",
       history: [
-        { month: "2026-08", setAside: "250.0000", reversals: "50.0000" },
-        { month: "2026-07", setAside: "100.0000", reversals: "0.0000" },
+        { month: "2026-08", setAside: "250.0000", corrections: "75.0000", reversals: "50.0000" },
+        { month: "2026-07", setAside: "100.0000", corrections: "0.0000", reversals: "0.0000" },
       ],
     });
 

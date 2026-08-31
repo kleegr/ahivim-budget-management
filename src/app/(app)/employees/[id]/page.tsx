@@ -35,6 +35,7 @@ import TransactionsGrid from "@/components/transactions/transactions-grid";
 import EmployeeMerge from "@/components/employees/employee-merge";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
+import { planningEmployeeProfile } from "@/lib/auth/employee-planning-access";
 import { agencyDate } from "@/lib/business/agency-time";
 
 export const dynamic = "force-dynamic";
@@ -136,7 +137,8 @@ export default async function EmployeeDetailPage({
       .filter((a) => a.status === "active")
       .filter((a) => canViewIndividual(scope, a.individualId));
     return {
-      employee, report, assignments: activeAssignments, recent, payment,
+      employee: planningOnly ? planningEmployeeProfile(employee) : employee,
+      report, assignments: activeAssignments, recent, payment,
       individualsServed, usageByProgram, monthly, schedule, withholding,
       gridRows, deals, settlement, planningSummary, planningOnly,
       canSeeTransactions: scope.canSeeTransactions,
@@ -171,6 +173,9 @@ export default async function EmployeeDetailPage({
     canSeeEmployeeAmounts, canSeeAgencySpread, canSeeCheckNet, canSeeTaxes,
     canSeeBudgets, canSeeEmployeeDeals, canSeeSettlements, transactionVisibility,
   } = result.data;
+  const employeeNotes = "notes" in employee && typeof employee.notes === "string"
+    ? employee.notes
+    : null;
   const attributionAvailable = payment.transactionCount === 0 || payment.attributedCount > 0;
   const hasWithholding = dec(withholding.withheld).greaterThan(0);
 
@@ -193,7 +198,7 @@ export default async function EmployeeDetailPage({
         fields={
           <>
             <Field label="Display name" name="displayName" defaultValue={employee.displayName} required />
-            <TextAreaField label="Notes" name="notes" defaultValue={employee.notes} />
+            <TextAreaField label="Notes" name="notes" defaultValue={employeeNotes} />
           </>
         }
       />
@@ -215,7 +220,7 @@ export default async function EmployeeDetailPage({
               required
             />
             <Field label="Direct give-back %" name="directPercent" type="number" defaultValue={directPercent} placeholder="e.g. 10" help="Used only for the percentage option. It is applied to the whole check net, never gross or taxes." />
-            <Field label="Agency cut of base %" name="agencyCutPercent" type="number" defaultValue={agencyPercent} placeholder="e.g. 20" help="When the agency receives the funder payment, the employee gets the remaining base amount. The billed spread stays with the agency first." />
+            <Field label="Default agency cut of base %" name="agencyCutPercent" type="number" defaultValue={agencyPercent} placeholder="e.g. 20" help="Used when this employee has no person-specific pay rule. The billed spread always stays with the agency." />
             <Field label="Starts on" name="effectiveFrom" type="date" defaultValue={currentDeal?.effectiveFrom ?? today} required />
             <Field label="Ends on (optional)" name="effectiveTo" type="date" defaultValue={currentDeal?.effectiveTo ?? ""} />
             <Field label="Reason for change" name="reason" placeholder="New agreement, correction, annual review…" required />
@@ -405,8 +410,8 @@ export default async function EmployeeDetailPage({
                     </div>
                     <div className="border-l-4 border-[var(--color-success)] pl-3">
                       <p className="text-sm font-semibold">Agency receives the funder payment</p>
-                      <p className="mt-1 text-sm text-[var(--color-ink-soft)]">The agency keeps {agencyPercent}% of the employee base and pays the remaining {dec(1).minus(currentDeal.agencyCutPercent).times(100).toDecimalPlaces(2).toString()}%.</p>
-                      <p className="mt-1 text-xs text-[var(--color-ink-faint)]">Agency spread remains outside the deal.</p>
+                      <p className="mt-1 text-sm text-[var(--color-ink-soft)]">By default, the agency keeps {agencyPercent}% of the employee base and pays the remaining {dec(1).minus(currentDeal.agencyCutPercent).times(100).toDecimalPlaces(2).toString()}%.</p>
+                      <p className="mt-1 text-xs text-[var(--color-ink-faint)]">A person-specific pay rule takes priority. Agency spread remains outside every deal.</p>
                     </div>
                   </div>
                 ) : canSeeEmployeeDeals ? (
@@ -428,7 +433,7 @@ export default async function EmployeeDetailPage({
                         <Tr key={deal.id}>
                           <Td><span className="tnum">{deal.effectiveFrom}</span>{deal.effectiveTo ? <span className="tnum text-[var(--color-ink-faint)]"> to {deal.effectiveTo}</span> : null}</Td>
                           <Td>{deal.directRule === "keep_all" ? "Keep net" : deal.directRule === "giveback_all" ? "Give all net" : `${dec(deal.directPercent).times(100).toDecimalPlaces(2).toString()}% of net`}</Td>
-                          <Td>{dec(deal.agencyCutPercent).times(100).toDecimalPlaces(2).toString()}% of employee base</Td>
+                          <Td>{dec(deal.agencyCutPercent).times(100).toDecimalPlaces(2).toString()}% of employee base (default)</Td>
                           <Td numeric className="tnum">{deal.revision}</Td>
                         </Tr>
                       ))}
@@ -511,10 +516,10 @@ export default async function EmployeeDetailPage({
                     Physical hours: <span className="tnum font-medium text-[var(--color-ink)]">{formatHours(report.physicalHours)}</span>. Billed hours: <span className="tnum font-medium text-[var(--color-ink)]">{formatHours(report.allocationHours)}</span>. Group sessions credit each participant with the full session while dividing the money.
                   </p>
                 ) : null}
-                {employee.notes ? (
+                {!planningOnly && employeeNotes ? (
                   <div className="mt-5 border-t border-[var(--color-rule)] pt-4">
                     <p className="eyebrow mb-2">Notes</p>
-                    <p className="whitespace-pre-wrap text-sm">{employee.notes}</p>
+                    <p className="whitespace-pre-wrap text-sm">{employeeNotes}</p>
                   </div>
                 ) : null}
               </section>

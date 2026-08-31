@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { MoveHorizontal, PanelRightOpen, X } from "lucide-react";
 import { formatMoney, formatHours } from "@/lib/money";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
+import { individualBudgetHref } from "@/lib/nav/review-actions";
 import { computeGridTotals, type GridTotals } from "@/lib/business/transaction-totals";
 import { useGrid } from "@/components/data-grid/use-grid";
 import { Toolbar } from "@/components/data-grid/toolbar";
@@ -83,7 +84,7 @@ const COLUMNS: ColumnDef<GridTransaction>[] = [
   { key: "periodBegin", label: "Period begin", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodBegin },
   { key: "periodEnd", label: "Period end", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodEnd },
   { key: "paymentRecipient", label: "Paid to", kind: "badge", width: 150, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => r.paymentRecipient },
-  { key: "matchStatus", label: "Match status", kind: "badge", width: 120, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => r.matchStatus },
+  { key: "matchStatus", label: "Duplicate review", kind: "badge", width: 120, hidden: true, accessor: (r) => r.matchStatus },
   { key: "groupStatus", label: "Group status", kind: "badge", width: 120, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => (r.isGroup ? "Group" : "Individual") },
 ];
 
@@ -627,14 +628,14 @@ function DetailDrawer({
         {line("Source paid marker", row.isPaid ? `Marked${row.paidAt ? ` on ${row.paidAt}` : ""}` : "Not marked")}
         {line("Period", `${row.periodBegin ?? "—"} → ${row.periodEnd ?? "—"}`)}
         {line("Paid to", RECIPIENT_LABEL[row.paymentRecipient ?? ""] ?? row.paymentRecipient ?? "—")}
-        {line("Match status", row.matchStatus ?? "—")}
+        {line("Duplicate review", row.matchStatus ?? "—")}
         {line("Group", row.isGroup ? "Group service" : "Individual")}
 
         <div className="mt-4 space-y-1.5 border-t border-[var(--color-rule)] pt-3">
           <div className="eyebrow text-[var(--color-text-soft)]">Open</div>
           {row.individualId && <Link href={`/individuals/${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Individual profile →</Link>}
           {row.employeeId && <Link href={`/employees/${row.employeeId}`} className="block text-[var(--color-primary)] hover:underline">Employee: {row.employee} →</Link>}
-          {canSeeBudgets && row.individualId && <Link href={`/calculations?individualId=${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Budget plan →</Link>}
+          {canSeeBudgets && row.individualId && <Link href={individualBudgetHref(row.individualId)} className="block text-[var(--color-primary)] hover:underline">Budget →</Link>}
           {row.checkNumber && <button type="button" onClick={() => onFilterCheck(row.checkNumber as string)} className="block text-left text-[var(--color-primary)] hover:underline">Show all rows on check {row.checkNumber} →</button>}
           {row.sourceFileId && <Link href={`/imports/${row.sourceFileId}`} className="block text-[var(--color-primary)] hover:underline">Import batch →</Link>}
           {row.serviceSessionId && <Link href={`/reconciliation`} className="block text-[var(--color-primary)] hover:underline">Reconciliation record →</Link>}

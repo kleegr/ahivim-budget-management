@@ -196,7 +196,7 @@ describe("protected API route inventory", () => {
       "sync/bootstrap/route.ts",
       "sync/cron/route.ts",
     ]);
-    const serverGuard = /(?:apiUser|currentUser|apiPortalUser|apiPlanningUser|apiClassFinancialUser|apiDocumentEditorUser|getSettlementOperator|accessibleClassInvoice|accessibleDocument)\s*\(/;
+    const serverGuard = /(?:apiUser|currentUser|currentSession|apiPortalUser|apiPlanningUser|apiClassFinancialUser|apiDocumentEditorUser|getSettlementOperator|getHourAuthorizationOperator|accessibleClassInvoice|accessibleDocument)\s*\(/;
     const files = routeFiles(apiRoot);
 
     expect(files.length).toBeGreaterThan(50);

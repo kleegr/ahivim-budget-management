@@ -101,6 +101,7 @@ export function settlementRefreshDiagnostic(
 interface EmployeeTransactionRow {
   id: string;
   employee_id: string;
+  individual_id: string | null;
   employee_name: string;
   check_number: string | null;
   check_date: string | null;
@@ -120,6 +121,9 @@ interface EmployeeTransactionRow {
   direct_rule: "keep_all" | "giveback_percent" | "giveback_all" | null;
   direct_percent: string | null;
   agency_cut_percent: string | null;
+  compensation_term_id: string | null;
+  compensation_term_revision: number | null;
+  employee_share_percent: string | null;
 }
 
 interface ObligationCandidate {
@@ -296,7 +300,7 @@ async function loadEmployeeTransactions(
   const params: unknown[] = [];
   const employeeClause = employeeId ? `AND t.employee_id = $${params.push(employeeId)}` : "";
   const { rows } = await pool.query<EmployeeTransactionRow>(
-    `SELECT t.id, t.employee_id,
+    `SELECT t.id, t.employee_id, t.individual_id,
             COALESCE(e.display_name, e.normalized_name) AS employee_name,
             COALESCE(pc.check_number, t.check_number) AS check_number,
             to_char(COALESCE(pc.check_date, t.check_date), 'YYYY-MM-DD') AS check_date,
@@ -319,7 +323,13 @@ async function loadEmployeeTransactions(
             pc.tax_withheld::text AS payroll_tax_withheld,
             pc.verification_status AS payroll_verification_status,
             d.id AS deal_id, d.revision AS deal_revision, d.direct_rule,
-            d.direct_percent::text, d.agency_cut_percent::text
+            d.direct_percent::text,
+            CASE WHEN compensation.id IS NOT NULL
+                   THEN (1 - compensation.employee_share_percent)::text
+                 ELSE d.agency_cut_percent::text END AS agency_cut_percent,
+            compensation.id AS compensation_term_id,
+            compensation.revision AS compensation_term_revision,
+            compensation.employee_share_percent::text
        FROM payroll_transactions t
        JOIN employees e ON e.id = t.employee_id
        LEFT JOIN programs p ON p.id = t.program_id
@@ -344,6 +354,25 @@ async function loadEmployeeTransactions(
           ORDER BY ed.effective_from DESC
           LIMIT 1
        ) d ON true
+       LEFT JOIN LATERAL (
+         SELECT term.id, term.revision, term.employee_share_percent
+           FROM employee_individual_compensation_terms term
+          WHERE term.employee_id = t.employee_id
+            AND term.individual_id = t.individual_id
+            AND term.status = 'active'
+            AND term.effective_from <= canonical_service_date(
+              COALESCE(pc.period_begin, t.period_begin),
+              COALESCE(pc.check_date, t.check_date),
+              COALESCE(pc.period_end, t.period_end)
+            )
+            AND (term.effective_to IS NULL OR term.effective_to >= canonical_service_date(
+              COALESCE(pc.period_begin, t.period_begin),
+              COALESCE(pc.check_date, t.check_date),
+              COALESCE(pc.period_end, t.period_end)
+            ))
+          ORDER BY term.effective_from DESC
+          LIMIT 1
+       ) compensation ON true
       WHERE t.employee_id IS NOT NULL
         AND (
           effective_payment_recipient(t.payment_recipient, p.payment_recipient) = 'excellent_staffing'
@@ -466,7 +495,10 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
   }
 
   for (const row of rows) {
-    if (!row.deal_id) {
+    const hasApplicableDeal = row.payment_recipient === "employee"
+      ? row.deal_id != null
+      : row.deal_id != null || row.compensation_term_id != null;
+    if (!hasApplicableDeal) {
       skippedNoDeal++;
       // A temporarily missing deal must never retire an obligation produced
       // from this source by a prior valid refresh.
@@ -514,6 +546,7 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
     const common = {
       sourceKey,
       employeeId: first.employee_id,
+      individualId: first.payment_recipient === "excellent_staffing" ? first.individual_id : null,
       employeeDealId: first.deal_id,
       checkNumber: first.check_number,
       checkDate: first.check_date ?? inferredCheckDates.get(first.id) ?? null,
@@ -645,6 +678,12 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
           flow: "agency_routed",
           employeeName: first.employee_name,
           dealRevision: first.deal_revision,
+          compensationTermId: first.compensation_term_id,
+          compensationTermRevision: first.compensation_term_revision,
+          employeeSharePercent: first.employee_share_percent
+            ?? (first.agency_cut_percent === null
+              ? null
+              : dec(1).minus(first.agency_cut_percent).toDecimalPlaces(6).toString()),
           agencyCutPercent: first.agency_cut_percent,
           billedAmount: toMoney(billed),
           baseAmount: toMoney(base),

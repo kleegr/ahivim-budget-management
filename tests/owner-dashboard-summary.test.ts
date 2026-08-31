@@ -82,6 +82,8 @@ function programBudget(overrides: Partial<ProgramBudgetRecord>): ProgramBudgetRe
     consumedDollars: "5000",
     remainingHours: "300",
     remainingDollars: null,
+    scheduledHours: "0",
+    remainingAfterScheduledHours: "300",
     undatedUsageCount: 0,
     hasUndatedUsage: false,
     revision: 1,
@@ -241,9 +243,12 @@ describe("buildOwnerDashboardSummary", () => {
             usedPct: 40,
             elapsedPct: 35,
             renews: "2026-12-31",
+            missingRenewal: false,
             renewalCount: 1,
             usedHours: 200,
             hoursLeft: 300,
+            scheduledHours: 0,
+            hoursAfterScheduled: 300,
             plans: 2,
             daysToRenewal: 120,
             expired: false,
@@ -285,9 +290,12 @@ describe("buildOwnerDashboardSummary", () => {
             usedPct: 25,
             elapsedPct: 25,
             renews: "2027-01-01",
+            missingRenewal: false,
             renewalCount: 1,
             usedHours: 25,
             hoursLeft: 75,
+            scheduledHours: 0,
+            hoursAfterScheduled: 75,
             plans: 1,
             daysToRenewal: 120,
             expired: false,
@@ -359,6 +367,36 @@ describe("buildOwnerDashboardSummary", () => {
     expect(summary.transactions.contextHref).not.toContain("transactionId");
     expect(summary.transactions.recentChecks[0]?.href).toContain(`individualId=${alexId}`);
     expect(summary.transactions.recentChecks[0]?.href).toContain("pbFrom=2026-08-01");
+  });
+
+  it("totals several selected people and preserves the cohort in transaction drilldowns", () => {
+    const alexId = "20000000-0000-4000-8000-000000000001";
+    const blairId = "20000000-0000-4000-8000-000000000002";
+    const summary = buildOwnerDashboardSummary({
+      transactions: [
+        transaction({ id: ids.older, individualId: alexId, individual: "Alex One", gross: "300" }),
+        transaction({ id: ids.latest1, individualId: blairId, individual: "Blair Two", gross: "500" }),
+        transaction({
+          id: ids.latest2,
+          individualId: "20000000-0000-4000-8000-000000000003",
+          individual: "Casey Three",
+          gross: "900",
+        }),
+      ],
+      programBudgets: [],
+      budgetBoard: [],
+      strategies: [],
+      activitySelection: { individualIds: [alexId, blairId] },
+    });
+
+    expect(summary.transactions.contextTotals.transactions).toBe(2);
+    expect(summary.transactions.contextTotals.gross).toBe("800.00");
+    expect(summary.transactions.contextHref).toContain(`individualId=${alexId}`);
+    expect(summary.transactions.contextHref).toContain(`individualId=${blairId}`);
+    expect(summary.transactions.recentChecks.every((check) => (
+      check.href.includes(`individualId=${alexId}`)
+        && check.href.includes(`individualId=${blairId}`)
+    ))).toBe(true);
   });
 
   it("builds sorted owner filter options and normalizes a reversed date range", () => {

@@ -1,4 +1,5 @@
 import {
+  canAccessPlanning,
   employeeScopeClause,
   hasDirectEmployeeAccess,
   transactionScopeClause,
@@ -23,6 +24,112 @@ export interface EmployeeDirectoryRow {
   dealReadiness: EmployeeDealReadiness | null;
   missingDealTransactions: number | null;
   openSettlementItems: number | null;
+}
+
+export interface PlanningEmployeeDirectoryRow {
+  id: string;
+  displayName: string;
+  status: string;
+  archivedAt: string | null;
+  activeAssignments: number;
+  assignedIndividuals: number;
+  pendingSessions: number;
+  pendingHours: string;
+  nextSessionDate: string | null;
+  weeklyAvailabilityWindows: number;
+  upcomingTimeOff: number;
+}
+
+interface PlanningEmployeeRow {
+  id: string;
+  display_name: string;
+  status: string;
+  archived_at: string | null;
+  active_assignments: string;
+  assigned_individuals: string;
+  pending_sessions: string;
+  pending_hours: string;
+  next_session_date: string | null;
+  weekly_availability_windows: string;
+  upcoming_time_off: string;
+}
+
+/**
+ * Finance-free staff roster for internal planners. This query intentionally
+ * reads only employee identity, assignments, schedules, and availability.
+ */
+export async function listPlanningEmployeeDirectory(
+  pool: PgLikePool,
+  scope: AccessScope,
+): Promise<PlanningEmployeeDirectoryRow[]> {
+  if (!canAccessPlanning(scope)) return [];
+
+  const params: unknown[] = [];
+  const scopeClause = employeeScopeClause(scope, "employee.id", params);
+  const { rows } = await pool.query<PlanningEmployeeRow>(
+    `SELECT employee.id, employee.display_name, employee.status,
+            employee.archived_at::text AS archived_at,
+            COALESCE(assignment.active_assignments, 0)::text AS active_assignments,
+            COALESCE(assignment.assigned_individuals, 0)::text AS assigned_individuals,
+            COALESCE(schedule.pending_sessions, 0)::text AS pending_sessions,
+            COALESCE(schedule.pending_hours, 0)::text AS pending_hours,
+            schedule.next_session_date,
+            COALESCE(availability.weekly_windows, 0)::text AS weekly_availability_windows,
+            COALESCE(time_off.upcoming_windows, 0)::text AS upcoming_time_off
+       FROM employees employee
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS active_assignments,
+                count(DISTINCT assigned.individual_id) AS assigned_individuals
+           FROM assignments assigned
+          WHERE assigned.employee_id = employee.id
+            AND assigned.status = 'active'
+            AND assigned.archived_at IS NULL
+            AND (assigned.start_date IS NULL OR assigned.start_date <= CURRENT_DATE)
+            AND (assigned.end_date IS NULL OR assigned.end_date >= CURRENT_DATE)
+       ) assignment ON true
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS pending_sessions,
+                COALESCE(sum(session.duration_hours), 0) AS pending_hours,
+                to_char(min(session.session_date), 'YYYY-MM-DD') AS next_session_date
+           FROM scheduled_sessions session
+          WHERE session.employee_id = employee.id
+            AND session.status = 'pending'
+            AND session.archived_at IS NULL
+            AND session.session_date >= CURRENT_DATE
+       ) schedule ON true
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS weekly_windows
+           FROM employee_weekly_availability weekly
+          WHERE weekly.employee_id = employee.id
+            AND weekly.archived_at IS NULL
+            AND weekly.effective_from <= CURRENT_DATE
+            AND (weekly.effective_to IS NULL OR weekly.effective_to >= CURRENT_DATE)
+       ) availability ON true
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS upcoming_windows
+           FROM employee_unavailability unavailable
+          WHERE unavailable.employee_id = employee.id
+            AND unavailable.archived_at IS NULL
+            AND unavailable.end_date >= CURRENT_DATE
+       ) time_off ON true
+      WHERE TRUE${scopeClause}
+      ORDER BY (employee.status = 'archived'), lower(employee.display_name), employee.id`,
+    params,
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    displayName: row.display_name,
+    status: row.status,
+    archivedAt: row.archived_at,
+    activeAssignments: Number(row.active_assignments),
+    assignedIndividuals: Number(row.assigned_individuals),
+    pendingSessions: Number(row.pending_sessions),
+    pendingHours: toHours(row.pending_hours),
+    nextSessionDate: row.next_session_date,
+    weeklyAvailabilityWindows: Number(row.weekly_availability_windows),
+    upcomingTimeOff: Number(row.upcoming_time_off),
+  }));
 }
 
 interface EmployeeBaseRow {

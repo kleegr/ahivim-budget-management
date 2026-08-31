@@ -113,9 +113,11 @@ export interface IndividualMasserStatementData {
   approvedReserve: string;
   recordedReserve: string;
   remainingReserve: string;
+  availableCredit: string;
   history: Array<{
     month: string;
     setAside: string;
+    corrections: string;
     reversals: string;
   }>;
 }
@@ -613,7 +615,7 @@ export async function getIndividualMasserStatement(
   const [planResult, historyResult] = await Promise.all([
     pool.query<{
       period_start: string | null; period_end: string | null;
-      approved_reserve: string; recorded_reserve: string; remaining_reserve: string;
+      approved_reserve: string; recorded_reserve: string; remaining_reserve: string; available_credit: string;
     }>(
       `WITH requested AS (
          SELECT (month_start + interval '1 month' - interval '1 day')::date AS month_end
@@ -692,11 +694,16 @@ export async function getIndividualMasserStatement(
                 SELECT sum(GREATEST(balance.signed_balance, 0))
                   FROM current_balances balance
                  WHERE balance.current_direction = 'reserve'
-              ), 0)::text AS remaining_reserve
+              ), 0)::text AS remaining_reserve,
+              COALESCE((
+                SELECT sum(GREATEST(-balance.signed_balance, 0))
+                  FROM current_balances balance
+                 WHERE balance.current_direction = 'reserve'
+              ), 0)::text AS available_credit
          FROM roots root`,
       [individualId, month],
     ),
-    pool.query<{ month: string; set_aside: string; reversals: string }>(
+    pool.query<{ month: string; set_aside: string; corrections: string; reversals: string }>(
       `WITH requested AS (
          SELECT (month_start + interval '1 month' - interval '1 day')::date AS month_end
            FROM (
@@ -735,6 +742,10 @@ export async function getIndividualMasserStatement(
                 WHEN obligation.direction = 'reserve' THEN event.amount
                 ELSE -event.amount
               END), 0)::text AS set_aside,
+              COALESCE(sum(abs(event.amount)) FILTER (
+                WHERE event.event_type IN ('credit', 'adjustment', 'reversal')
+                   OR obligation.calculation_metadata ? 'adjustmentForObligationId'
+              ), 0)::text AS corrections,
               COALESCE(sum(abs(event.amount)) FILTER (WHERE event.event_type = 'reversal'), 0)::text AS reversals
          FROM settlement_events event
          JOIN settlement_obligations obligation ON obligation.id = event.settlement_obligation_id
@@ -754,9 +765,11 @@ export async function getIndividualMasserStatement(
     approvedReserve: toMoney(plan?.approved_reserve ?? 0),
     recordedReserve: toMoney(plan?.recorded_reserve ?? 0),
     remainingReserve: toMoney(plan?.remaining_reserve ?? 0),
+    availableCredit: toMoney(plan?.available_credit ?? 0),
     history: historyResult.rows.map((row) => ({
       month: row.month,
       setAside: toMoney(row.set_aside),
+      corrections: toMoney(row.corrections),
       reversals: toMoney(row.reversals),
     })),
   };

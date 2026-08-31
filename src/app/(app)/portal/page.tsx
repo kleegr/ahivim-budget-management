@@ -1,6 +1,7 @@
 import { requireUser } from "@/lib/auth/session";
 import { resolvePortalAccess } from "@/lib/auth/portal-access";
 import { getPortalHomeReadModel, normalizePortalMonth } from "@/lib/data/portal-read-model";
+import { getPortalIndividualStatement } from "@/lib/data/portal-individual-statement";
 import { withDb } from "@/lib/data/pool";
 import PortalHome from "@/components/portal/portal-home";
 import { ErrorPanel, PageHeader } from "@/components/ui";
@@ -17,7 +18,12 @@ export default async function PortalPage({
   const user = await requireUser("viewer");
   const result = await withDb(async (pool) => {
     const access = await resolvePortalAccess(pool, user);
-    return getPortalHomeReadModel(pool, access, month);
+    const model = await getPortalHomeReadModel(pool, access, month);
+    const statements = (await Promise.all(
+      model.individuals.map((individual) =>
+        getPortalIndividualStatement(pool, access, individual.id, month)),
+    )).filter((statement) => statement !== null);
+    return { model, statements };
   });
 
   if (!result.ok) {
@@ -28,5 +34,11 @@ export default async function PortalPage({
       </>
     );
   }
-  return <PortalHome displayName={user.displayName} model={result.data} />;
+  return (
+    <PortalHome
+      displayName={user.displayName}
+      model={result.data.model}
+      individualStatements={result.data.statements}
+    />
+  );
 }

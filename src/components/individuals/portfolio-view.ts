@@ -46,10 +46,11 @@ export function isDetailedPortfolioView(view: PortfolioView): view is DetailedPo
 }
 
 export function matchesSimplePortfolioView(
-  row: { insightsVisible: boolean; budget: unknown | null },
+  row: { insightsVisible: boolean; budget: unknown | null; hasCanonicalBudget?: boolean },
   view: SimplePortfolioView,
 ): boolean {
-  if (view === "with_budget") return row.insightsVisible && row.budget !== null;
-  if (view === "without_budget") return row.insightsVisible && row.budget === null;
+  const hasBudget = row.hasCanonicalBudget ?? row.budget !== null;
+  if (view === "with_budget") return row.insightsVisible && hasBudget;
+  if (view === "without_budget") return row.insightsVisible && !hasBudget;
   return true;
 }

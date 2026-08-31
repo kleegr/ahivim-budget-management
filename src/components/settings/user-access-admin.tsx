@@ -3,7 +3,7 @@
 import { useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { CalendarClock, Check, Copy, Eye, EyeOff, GraduationCap, Plus, UsersRound, WalletCards, X } from "lucide-react";
+import { CalendarClock, Check, Copy, Eye, EyeOff, GraduationCap, LogIn, Plus, UsersRound, WalletCards, X } from "lucide-react";
 import {
   BUDGET_PLANNER_ACCESS,
   CLASS_BILLING_ACCESS,
@@ -610,6 +610,7 @@ export default function UserAccessAdmin({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [impersonatingId, setImpersonatingId] = useState<string | null>(null);
 
   // Add-user form.
   const [addOpen, setAddOpen] = useState(false);
@@ -1051,7 +1052,22 @@ export default function UserAccessAdmin({
                 {self ? (
                   <span className="text-xs text-[var(--color-ink-faint)]">This is you</span>
                 ) : (
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap justify-end gap-2">
+                    {u.isActive ? (
+                      <form method="post" action="/api/auth/impersonation/start" onSubmit={() => setImpersonatingId(u.id)}>
+                        <input type="hidden" name="targetUserId" value={u.id} />
+                        <button
+                          type="submit"
+                          disabled={impersonatingId !== null}
+                          aria-busy={impersonatingId === u.id}
+                          className="btn btn-sm btn-ghost"
+                          title={`Sign in as ${u.displayName}`}
+                        >
+                          <LogIn aria-hidden className="h-4 w-4" />
+                          {impersonatingId === u.id ? "Opening..." : "Sign in as"}
+                        </button>
+                      </form>
+                    ) : null}
                     <button type="button" disabled={busy} onClick={() => patch(u.id, { isActive: !u.isActive })} className="btn btn-sm btn-ghost">
                       {u.isActive ? "Disable" : "Enable"}
                     </button>

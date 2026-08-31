@@ -1417,7 +1417,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
     key: "program-totals",
     title: "Program totals",
     description:
-      "Individuals served, employees, credited individual hours, physical employee hours, Funder billed, Employee base, Agency spread, and group sessions for every program.",
+      "Credited hours repeat for each individual served. Physical hours count a linked employee session once; historical group rows without a session link remain separate transaction entries.",
     filters: DATE_FILTERS,
     async run(pool, filters) {
       const rows = await programTotalsReport(pool, { from: filters.from, to: filters.to });

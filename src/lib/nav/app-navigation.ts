@@ -1,4 +1,4 @@
-export type NavigationGate = "manager" | "owner-transactions" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents" | "portal" | "agencies";
+export type NavigationGate = "manager" | "owner" | "owner-transactions" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents" | "portal" | "agencies";
 
 export interface NavigationAccess {
   role: string;
@@ -137,15 +137,15 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
   {
     id: "employees",
     label: "Employees",
-    hint: "Employees, assignments, and pay arrangements",
+    hint: "Employees, assignments, and availability",
     activePrefixes: ["/employees"],
     destinations: [
       {
         id: "employees",
         label: "Employees",
         href: "/employees",
-        hint: "Employees, assignments, and pay arrangements",
-        keywords: "staff workers assignments deals checks",
+        hint: "Employees, assignments, and availability",
+        keywords: "staff workers assignments schedules availability",
         gate: "employees",
       },
     ],
@@ -271,6 +271,14 @@ const ADVANCED_COMMANDS: readonly NavigationDestination[] = [
 
 const REPORT_COMMANDS: readonly NavigationDestination[] = [
   {
+    id: "report-agency-financials",
+    label: "Report: Agency financials",
+    href: "/reports/agency-financials",
+    hint: "Actual income, expenses, and agency result",
+    keywords: "owner actual income expenses profit taxes payroll classes",
+    gate: "owner",
+  },
+  {
     id: "report-budget-utilization",
     label: "Report: Budget utilization",
     href: "/reports/budget-utilization",
@@ -315,6 +323,7 @@ const REPORT_COMMANDS: readonly NavigationDestination[] = [
 function allowed(gate: NavigationGate | undefined, access: NavigationAccess): boolean {
   if (!gate) return true;
   if (!access.accessResolved) return false;
+  if (gate === "owner") return access.role === "admin";
   if (gate === "manager") return access.role === "manager" || access.role === "admin";
   if (gate === "owner-transactions") return access.role === "admin" && access.canSeeTransactions;
   if (gate === "transactions") return access.canSeeTransactions;

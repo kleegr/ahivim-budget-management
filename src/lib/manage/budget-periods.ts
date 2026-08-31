@@ -25,6 +25,38 @@ export const PERIOD_TYPE_LABELS: Record<PeriodType, string> = {
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function validIsoDate(value: string): boolean {
+  if (!ISO_DATE.test(value)) return false;
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  return year >= 2 && year <= 9999
+    && month >= 1 && month <= 12
+    && day >= 1 && day <= daysInMonth(year, month);
+}
+
+/** A known renewal opens the next year; derive the prior 12-month service period. */
+export function deriveAnnualPeriodFromRenewal(
+  renewalDate: string,
+): { startDate: string; endDate: string } {
+  if (!validIsoDate(renewalDate)) {
+    throw new RangeError("The renewal date must be a real date (YYYY-MM-DD).");
+  }
+  const year = Number(renewalDate.slice(0, 4));
+  const month = Number(renewalDate.slice(5, 7));
+  const day = Number(renewalDate.slice(8, 10));
+  const priorDay = Math.min(day, daysInMonth(year - 1, month));
+  const renewalInstant = Date.parse(`${renewalDate}T00:00:00.000Z`);
+  return {
+    startDate: `${pad4(year - 1)}-${String(month).padStart(2, "0")}-${String(priorDay).padStart(2, "0")}`,
+    endDate: new Date(renewalInstant - 86_400_000).toISOString().slice(0, 10),
+  };
+}
+
 function pad4(year: number): string {
   return String(year).padStart(4, "0");
 }

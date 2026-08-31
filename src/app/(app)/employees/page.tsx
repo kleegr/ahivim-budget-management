@@ -1,11 +1,11 @@
 import { requireUser } from "@/lib/auth/session";
-import { redirect } from "next/navigation";
 import { isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
-import { listEmployeeDirectory } from "@/lib/data/employee-directory";
+import { listEmployeeDirectory, listPlanningEmployeeDirectory } from "@/lib/data/employee-directory";
 import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
 import EmployeesList, { type EmployeeRow } from "@/components/employees/employees-list";
+import PlanningEmployeesList from "@/components/employees/planning-employees-list";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Employees — Ahivim Budget Management" };
@@ -27,17 +27,28 @@ export default async function EmployeesPage() {
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
-    if (isPlanningOnlyAccess(scope)) return { planningOnly: true as const, rows: [] };
-    return { planningOnly: false as const, rows: await listEmployeeDirectory(pool, scope) };
+    if (isPlanningOnlyAccess(scope)) {
+      return {
+        planningOnly: true as const,
+        rows: [],
+        planningRows: await listPlanningEmployeeDirectory(pool, scope),
+      };
+    }
+    return {
+      planningOnly: false as const,
+      rows: await listEmployeeDirectory(pool, scope),
+      planningRows: [],
+    };
   });
-  if (result.ok && result.data.planningOnly) redirect("/schedule");
 
   return (
     <>
       <PageHeader
         eyebrow="People"
         title="Employees"
-        description="Find employees, see recent activity, and open a profile."
+        description={result.ok && result.data.planningOnly
+          ? "Review assignments, upcoming schedules, and employee availability."
+          : "Find employees, see recent activity, and open a profile."}
         action={
           canEdit ? (
             <CreateButton label="New employee" title="New employee" endpoint="/api/employees" fields={employeeFields()} />
@@ -47,6 +58,16 @@ export default async function EmployeesPage() {
 
       {!result.ok ? (
         <ErrorPanel title="Could not load employees">{result.error}</ErrorPanel>
+      ) : result.data.planningOnly ? (
+        result.data.planningRows.length === 0 ? (
+          <Card>
+            <EmptyState title="No employees yet">
+              <p>Employees will appear here when they are added to the staff roster.</p>
+            </EmptyState>
+          </Card>
+        ) : (
+          <PlanningEmployeesList rows={result.data.planningRows} />
+        )
       ) : result.data.rows.length === 0 ? (
         <Card>
           <EmptyState title="No employees yet">

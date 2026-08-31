@@ -83,6 +83,50 @@ export async function mergeIndividuals(
         "Resolve overlapping active program authorizations before merging these individuals.",
       );
     }
+
+    const overlappingRevenueTerms = await client.query<{ id: string }>(
+      `SELECT source.id
+         FROM individual_program_revenue_terms source
+         JOIN individual_program_revenue_terms target
+           ON target.individual_id = $1
+          AND target.program_id = source.program_id
+          AND target.status = 'active'
+          AND daterange(target.effective_from, COALESCE(target.effective_to, 'infinity'::date), '[]')
+              && daterange(source.effective_from, COALESCE(source.effective_to, 'infinity'::date), '[]')
+        WHERE source.individual_id = $2
+          AND source.status = 'active'
+        LIMIT 1`,
+      [keepId, mergeId],
+    );
+    if (overlappingRevenueTerms.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail(
+        "conflict",
+        "Resolve overlapping program income split history before merging these individuals.",
+      );
+    }
+
+    const overlappingEmployeeTerms = await client.query<{ id: string }>(
+      `SELECT source.id
+         FROM employee_individual_compensation_terms source
+         JOIN employee_individual_compensation_terms target
+           ON target.individual_id = $1
+          AND target.employee_id = source.employee_id
+          AND target.status = 'active'
+          AND daterange(target.effective_from, COALESCE(target.effective_to, 'infinity'::date), '[]')
+              && daterange(source.effective_from, COALESCE(source.effective_to, 'infinity'::date), '[]')
+        WHERE source.individual_id = $2
+          AND source.status = 'active'
+        LIMIT 1`,
+      [keepId, mergeId],
+    );
+    if (overlappingEmployeeTerms.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail(
+        "conflict",
+        "Resolve overlapping employee pay-rule history before merging these individuals.",
+      );
+    }
     const repointed: Record<string, number> = await repointSettlementPerson(client, "individual", keepId, mergeId);
 
     const movedLegacyAccess = await client.query(

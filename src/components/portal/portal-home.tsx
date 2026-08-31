@@ -5,7 +5,9 @@ import {
   CalendarDays,
   ChevronDown,
   Clock3,
+  Download,
   Landmark,
+  Printer,
   ReceiptText,
   Settings2,
   ShieldCheck,
@@ -25,6 +27,7 @@ import type {
   PortalIndividualSummary,
   PortalUsageSummary,
 } from "@/lib/data/portal-read-model";
+import type { PortalIndividualStatement } from "@/lib/data/portal-individual-statement";
 
 function includes(agency: PortalAgencySummary, capability: PortalAgencySummary["capabilities"][number]) {
   return agency.capabilities.includes(capability);
@@ -230,6 +233,20 @@ function AgencyEmployeeMember({
             ? { label: "Give-back remaining", value: <Money value={employee.giveBack.remaining} /> }
             : null,
         ].filter(present)} />
+        {canReadChecks && employee.checks !== null ? employee.checks.length === 0 ? (
+          <EmptyState compact title={`No verified direct-pay checks for ${selectedMonth}`} icon={<ReceiptText aria-hidden className="h-5 w-5" />} />
+        ) : (
+          <Table head={<><Th>Check</Th><Th>Service date</Th><Th numeric>Gross</Th><Th numeric>Net</Th></>}>
+            {employee.checks.map((check) => (
+              <Tr key={check.id}>
+                <Td><Plain value={check.checkNumber} /></Td>
+                <Td><Plain value={check.serviceDate} /></Td>
+                <Td numeric>{check.actualGross === null ? <Plain value="Unknown" /> : <Money value={check.actualGross} />}</Td>
+                <Td numeric><Money value={check.actualNet} /></Td>
+              </Tr>
+            ))}
+          </Table>
+        ) : null}
       </div>
     </details>
   );
@@ -359,7 +376,86 @@ function AgencyAccess({ agency }: { agency: PortalAgencySummary }) {
   );
 }
 
-function IndividualAccess({ individual }: { individual: PortalIndividualSummary }) {
+function statementHref(
+  statement: PortalIndividualStatement,
+  scope: "month" | "trend",
+  format: "csv" | "html",
+): string {
+  const params = new URLSearchParams({
+    individualId: statement.individualId,
+    month: statement.throughMonth,
+    scope,
+    format,
+  });
+  return `/api/portal/individual-statements?${params.toString()}`;
+}
+
+function IndividualTrend({ statement }: { statement: PortalIndividualStatement }) {
+  const visible = statement.visibility;
+  if (!Object.values(visible).some(Boolean)) return null;
+  return (
+    <div className="border-t border-[var(--color-rule)]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-rule)] px-5 py-3">
+        <div>
+          <p className="text-sm font-semibold">{statement.months.length}-month history</p>
+          <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">Monthly totals through {monthLabel(statement.throughMonth)}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            href={statementHref(statement, "month", "html")}
+            target="_blank"
+            rel="noreferrer"
+            className="btn btn-secondary btn-sm inline-flex items-center gap-1.5"
+          >
+            <Printer aria-hidden className="h-3.5 w-3.5" />
+            Print month
+          </Link>
+          <Link
+            href={statementHref(statement, "trend", "html")}
+            target="_blank"
+            rel="noreferrer"
+            className="btn btn-secondary btn-sm inline-flex items-center gap-1.5"
+          >
+            <Printer aria-hidden className="h-3.5 w-3.5" />
+            Print history
+          </Link>
+          <Link
+            href={statementHref(statement, "trend", "csv")}
+            className="btn btn-secondary btn-sm inline-flex items-center gap-1.5"
+          >
+            <Download aria-hidden className="h-3.5 w-3.5" />
+            Download
+          </Link>
+        </div>
+      </div>
+      <Table head={<>
+        <Th>Month</Th>
+        {visible.billed ? <Th numeric>Billed</Th> : null}
+        {visible.setAside ? <Th numeric>Set aside</Th> : null}
+        {visible.direct ? <Th numeric>Direct-paid</Th> : null}
+        {visible.agencyPaid ? <Th numeric>Agency-paid</Th> : null}
+      </>}>
+        {[...statement.months].reverse().map((row) => (
+          <Tr key={row.month}>
+            <Td>{monthLabel(row.month)}</Td>
+            {visible.billed ? <Td numeric><Money value={row.billed} /></Td> : null}
+            {visible.setAside ? <Td numeric><Money value={row.setAside} /></Td> : null}
+            {visible.direct ? <Td numeric><Money value={row.direct} /></Td> : null}
+            {visible.agencyPaid ? <Td numeric><Money value={row.agencyPaid} /></Td> : null}
+          </Tr>
+        ))}
+      </Table>
+    </div>
+  );
+}
+
+function IndividualAccess({
+  individual,
+  statement,
+}: {
+  individual: PortalIndividualSummary;
+  statement?: PortalIndividualStatement;
+}) {
   const selectedMonth = monthLabel(individual.month);
   return (
     <Card className="h-full">
@@ -378,6 +474,7 @@ function IndividualAccess({ individual }: { individual: PortalIndividualSummary 
         individual.agencyPaidThisMonth !== null ? { label: `Agency-paid (${selectedMonth})`, value: <Money value={individual.agencyPaidThisMonth} /> } : null,
       ].filter(present)} />
       <ProgramBreakdown programs={individual.programs} month={individual.month} />
+      {statement ? <IndividualTrend statement={statement} /> : null}
     </Card>
   );
 }
@@ -458,9 +555,11 @@ function EmployeeAccess({ employee }: { employee: PortalEmployeeSummary }) {
 export default function PortalHome({
   displayName,
   model,
+  individualStatements = [],
 }: {
   displayName: string;
   model: PortalHomeReadModel;
+  individualStatements?: PortalIndividualStatement[];
 }) {
   const owner = model.globalRoles.some((role) => role.key === "owner");
   const hasPortalIdentity = model.globalRoles.length > 0 || model.agencies.length > 0;
@@ -536,7 +635,13 @@ export default function PortalHome({
                 <h2 id="portal-individuals-heading" className="display text-base font-semibold">Individual budgets</h2>
               </div>
               <div className="grid gap-4 lg:grid-cols-2">
-                {model.individuals.map((individual) => <IndividualAccess key={individual.id} individual={individual} />)}
+                {model.individuals.map((individual) => (
+                  <IndividualAccess
+                    key={individual.id}
+                    individual={individual}
+                    statement={individualStatements.find((item) => item.individualId === individual.id)}
+                  />
+                ))}
               </div>
             </section>
           ) : null}

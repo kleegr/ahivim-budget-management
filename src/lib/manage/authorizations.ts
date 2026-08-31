@@ -2,7 +2,12 @@ import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { recordChange } from "./audit";
 import { ok, fail, type Result } from "./errors";
 import { toMoney, toHours, tryDec } from "@/lib/money";
-import { derivePeriodDates, PERIOD_TYPES, type PeriodType } from "./budget-periods";
+import {
+  deriveAnnualPeriodFromRenewal,
+  derivePeriodDates,
+  PERIOD_TYPES,
+  type PeriodType,
+} from "./budget-periods";
 
 /**
  * Authorizations, with full revision history.
@@ -53,7 +58,7 @@ export async function createBudgetPeriod(
 ): Promise<Result<BudgetPeriodRecord>> {
   if (!isUuid(input.individualId)) return fail("validation", "Choose an individual.");
 
-  const periodType: PeriodType = PERIOD_TYPES.includes(input.periodType as PeriodType)
+  let periodType: PeriodType = PERIOD_TYPES.includes(input.periodType as PeriodType)
     ? (input.periodType as PeriodType)
     : "custom";
 
@@ -68,11 +73,31 @@ export async function createBudgetPeriod(
     return fail("validation", "Enter a valid four-digit year.");
   }
 
-  // Calendar periods can be created from a year alone; rolling and custom need a
-  // start date. Custom keeps its explicit end date; the others derive one.
+  const renewalDate = input.renewalDate?.trim() || null;
+  if (renewalDate !== null && !ISO_DATE.test(renewalDate)) {
+    return fail("validation", "The renewal date must be a date (YYYY-MM-DD).");
+  }
+
+  // A known renewal is authoritative: it opens the next annual period, so the
+  // service range ends the day before. Explicit dates may only confirm it.
   let startDate: string;
   let endDate: string;
-  if (periodType === "calendar") {
+  if (renewalDate !== null) {
+    let derived: { startDate: string; endDate: string };
+    try {
+      derived = deriveAnnualPeriodFromRenewal(renewalDate);
+    } catch (error) {
+      return fail("validation", error instanceof Error ? error.message : "Could not derive the annual period.");
+    }
+    if (rawStart && rawStart !== derived.startDate) {
+      return fail("validation", `This renewal defines a period starting ${derived.startDate}. Remove the conflicting start date.`);
+    }
+    if (rawEnd && rawEnd !== derived.endDate) {
+      return fail("validation", `This renewal defines a period ending ${derived.endDate}. Remove the conflicting end date.`);
+    }
+    ({ startDate, endDate } = derived);
+    periodType = "rolling";
+  } else if (periodType === "calendar") {
     if (year === null && !ISO_DATE.test(rawStart)) {
       return fail("validation", "Give a year or a start date for the calendar period.");
     }
@@ -93,11 +118,6 @@ export async function createBudgetPeriod(
   }
 
   if (endDate < startDate) return fail("validation", "The end date is before the start date.");
-
-  const renewalDate = input.renewalDate?.trim() || null;
-  if (renewalDate !== null && !ISO_DATE.test(renewalDate)) {
-    return fail("validation", "The renewal date must be a date (YYYY-MM-DD).");
-  }
 
   const label = input.label?.trim() || `${startDate} to ${endDate}`;
 
@@ -236,6 +256,114 @@ export interface AuthorizationInput {
   rateBasis?: string | null;
   notes?: string | null;
   source?: string | null;
+}
+
+/** Set the canonical annual renewal and derive its complete period atomically. */
+export async function updateBudgetPeriodRenewal(
+  pool: PgLikePool,
+  id: string,
+  renewalDate: string,
+  actorId: string | null,
+  reason?: string | null,
+): Promise<Result<BudgetPeriodRecord>> {
+  if (!isUuid(id)) return fail("not_found", "That budget period no longer exists.");
+  let dates: { startDate: string; endDate: string };
+  try {
+    dates = deriveAnnualPeriodFromRenewal(renewalDate.trim());
+  } catch (error) {
+    return fail("validation", error instanceof Error ? error.message : "Enter a valid renewal date.");
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const locked = await client.query<{ id: string }>(
+      `SELECT id FROM budget_periods WHERE id = $1 AND archived_at IS NULL FOR UPDATE`,
+      [id],
+    );
+    if (!locked.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail("not_found", "That budget period no longer exists.");
+    }
+    const before = await getBudgetPeriod(client, id);
+    if (!before) {
+      await client.query("ROLLBACK");
+      return fail("not_found", "That budget period no longer exists.");
+    }
+    if (before.status !== "active") {
+      await client.query("ROLLBACK");
+      return fail("conflict", "Only an active budget period can change its renewal.");
+    }
+
+    const programs = await client.query<{ has_classes: boolean }>(
+      `SELECT COALESCE(bool_or(program.code = 'CLASSES'), false) AS has_classes
+         FROM budget_authorizations authorization
+         JOIN programs program ON program.id = authorization.program_id
+        WHERE authorization.budget_period_id = $1
+          AND authorization.status = 'active'
+          AND authorization.archived_at IS NULL`,
+      [id],
+    );
+    if (programs.rows[0]?.has_classes) {
+      await client.query("ROLLBACK");
+      return fail("conflict", "Class allowance dates must be changed from the Classes workspace.");
+    }
+
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      [`budget_period:${before.individualId}`],
+    );
+    const overlap = await client.query(
+      `SELECT 1
+         FROM budget_authorizations current_authorization
+         JOIN budget_authorizations other_authorization
+           ON other_authorization.individual_id = current_authorization.individual_id
+          AND other_authorization.program_id = current_authorization.program_id
+          AND other_authorization.status = 'active'
+          AND other_authorization.archived_at IS NULL
+          AND other_authorization.budget_period_id <> current_authorization.budget_period_id
+         JOIN budget_periods other_period
+           ON other_period.id = other_authorization.budget_period_id
+          AND other_period.status = 'active'
+          AND other_period.archived_at IS NULL
+        WHERE current_authorization.budget_period_id = $1
+          AND current_authorization.status = 'active'
+          AND current_authorization.archived_at IS NULL
+          AND daterange(other_period.start_date, other_period.end_date, '[]')
+              && daterange($2::date, $3::date, '[]')
+        LIMIT 1`,
+      [id, dates.startDate, dates.endDate],
+    );
+    if (overlap.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail("conflict", "This renewal would overlap another active authorization for the same program.");
+    }
+
+    await client.query(
+      `UPDATE budget_periods
+          SET start_date = $2, end_date = $3, renewal_date = $4,
+              period_type = 'rolling', updated_at = now()
+        WHERE id = $1`,
+      [id, dates.startDate, dates.endDate, renewalDate.trim()],
+    );
+    const updated = await getBudgetPeriod(client, id);
+    await recordChange(client, {
+      actorId,
+      action: "budget_period_renewal_updated",
+      entityType: "budget_period",
+      entityId: id,
+      previous: before,
+      next: updated,
+      reason,
+    });
+    await client.query("COMMIT");
+    return ok(updated!);
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 interface AuthorizationProgramRules {

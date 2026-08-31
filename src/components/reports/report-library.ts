@@ -4,6 +4,7 @@ import {
   Calculator,
   CalendarClock,
   CalendarX2,
+  CircleDollarSign,
   Gauge,
   HandCoins,
   History,
@@ -25,6 +26,8 @@ export interface ReportPresentation {
   note?: string;
   columnLabels?: Record<string, string>;
   icon: LucideIcon;
+  href?: string;
+  ownerOnly?: boolean;
 }
 
 export interface ReportLibraryGroup {
@@ -85,6 +88,17 @@ export const REPORT_LIBRARY: ReportLibraryGroup[] = [
     heading: "Money and planning",
     description: "Keep Funder billed, Employee base, Agency spread, and budget calculations distinct.",
     reports: [
+      {
+        key: "agency-financials",
+        title: "Agency financials",
+        question: "What actual income came in, what actual expenses apply, and what remains for the agency?",
+        description: "Reconciles transaction income, issued class invoices, other income, approved monthly set-asides, taxes, employee shares, and individual shares.",
+        timeBasis: "Selected month, using recorded actuals",
+        note: "Owner only. Transaction income comes from imported actuals; projections never count as income.",
+        icon: CircleDollarSign,
+        href: "/reports/agency-financials",
+        ownerOnly: true,
+      },
       {
         key: "agency-earnings",
         title: "Billing spread by program",

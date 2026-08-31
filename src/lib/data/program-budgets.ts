@@ -1,5 +1,6 @@
 import type { PgLikePool } from "@/lib/import/commit";
-import { toHours, toMoney } from "@/lib/money";
+import { agencyDate } from "@/lib/business/agency-time";
+import { dec, toHours, toMoney } from "@/lib/money";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -36,6 +37,10 @@ export interface ProgramBudgetRecord {
   consumedDollars: string;
   remainingHours: string;
   remainingDollars: string | null;
+  /** Pending, unmatched schedule inside this authorization period. */
+  scheduledHours: string;
+  /** Authorized hours less committed transactions and pending schedule. */
+  remainingAfterScheduledHours: string;
   /** Payroll rows for this individual/program with no usable service date. */
   undatedUsageCount: number;
   hasUndatedUsage: boolean;
@@ -73,33 +78,56 @@ interface ProgramBudgetRow {
   consumed_dollars: string;
   remaining_hours: string;
   remaining_dollars: string | null;
+  scheduled_hours: string;
+  remaining_after_scheduled_hours: string;
   undated_usage_count: number | string;
   has_undated_usage: boolean;
   revision: number;
 }
 
 const PROGRAM_BUDGET_SELECT = `
-  SELECT authorization_id, budget_period_id, individual_id, individual_name,
-         program_id, program_code, program_name, period_label,
-         start_date::text AS start_date, end_date::text AS end_date,
-         renewal_date::text AS renewal_date, period_type, period_status,
-         required_auth_type, service_category, payment_recipient,
-         consumption_source, rate_scope, renewal_policy,
-         allow_individual_rate_override,
-         authorized_hours::text AS authorized_hours,
-         authorized_dollars::text AS authorized_dollars,
-         internal_rate::text AS internal_rate,
-         agency_rate::text AS agency_rate,
-         individual_rate_override::text AS individual_rate_override,
-         notes,
-         consumed_hours::text AS consumed_hours,
-         consumed_dollars::text AS consumed_dollars,
-         remaining_hours::text AS remaining_hours,
-         remaining_dollars::text AS remaining_dollars,
-         undated_usage_count,
-         has_undated_usage,
-         revision
-    FROM program_budget_balances`;
+  SELECT balance.authorization_id, balance.budget_period_id,
+         balance.individual_id, balance.individual_name,
+         balance.program_id, balance.program_code, balance.program_name,
+         balance.period_label,
+         balance.start_date::text AS start_date,
+         balance.end_date::text AS end_date,
+         balance.renewal_date::text AS renewal_date,
+         balance.period_type, balance.period_status,
+         balance.required_auth_type, balance.service_category,
+         balance.payment_recipient, balance.consumption_source,
+         balance.rate_scope, balance.renewal_policy,
+         balance.allow_individual_rate_override,
+         balance.authorized_hours::text AS authorized_hours,
+         balance.authorized_dollars::text AS authorized_dollars,
+         balance.internal_rate::text AS internal_rate,
+         balance.agency_rate::text AS agency_rate,
+         balance.individual_rate_override::text AS individual_rate_override,
+         balance.notes,
+         balance.consumed_hours::text AS consumed_hours,
+         balance.consumed_dollars::text AS consumed_dollars,
+         balance.remaining_hours::text AS remaining_hours,
+         balance.remaining_dollars::text AS remaining_dollars,
+         CASE WHEN balance.required_auth_type = 'dollars' THEN 0
+              ELSE schedule.scheduled_hours END::text AS scheduled_hours,
+         CASE WHEN balance.required_auth_type = 'dollars' THEN balance.remaining_hours
+              ELSE balance.remaining_hours - schedule.scheduled_hours END::text
+           AS remaining_after_scheduled_hours,
+         balance.undated_usage_count,
+         balance.has_undated_usage,
+         balance.revision
+    FROM program_budget_balances balance
+    CROSS JOIN LATERAL (
+      SELECT COALESCE(sum(allocation.allocation_hours), 0) AS scheduled_hours
+        FROM scheduled_allocations allocation
+        JOIN scheduled_sessions scheduled_session
+          ON scheduled_session.id = allocation.scheduled_session_id
+       WHERE allocation.individual_id = balance.individual_id
+         AND scheduled_session.program_id = balance.program_id
+         AND scheduled_session.status = 'pending'
+         AND scheduled_session.matched_transaction_id IS NULL
+         AND scheduled_session.session_date BETWEEN balance.start_date AND balance.end_date
+    ) schedule`;
 
 function toProgramBudget(row: ProgramBudgetRow): ProgramBudgetRecord {
   return {
@@ -135,6 +163,8 @@ function toProgramBudget(row: ProgramBudgetRow): ProgramBudgetRecord {
     consumedDollars: toMoney(row.consumed_dollars),
     remainingHours: toHours(row.remaining_hours),
     remainingDollars: row.remaining_dollars === null ? null : toMoney(row.remaining_dollars),
+    scheduledHours: toHours(row.scheduled_hours),
+    remainingAfterScheduledHours: toHours(row.remaining_after_scheduled_hours),
     undatedUsageCount: Number(row.undated_usage_count),
     hasUndatedUsage: row.has_undated_usage,
     revision: row.revision,
@@ -157,26 +187,27 @@ export async function listProgramBudgets(
   if (filters.individualId) {
     if (!UUID.test(filters.individualId)) return [];
     params.push(filters.individualId);
-    where.push(`individual_id = $${params.length}`);
+    where.push(`balance.individual_id = $${params.length}`);
   }
   if (filters.programId) {
     if (!UUID.test(filters.programId)) return [];
     params.push(filters.programId);
-    where.push(`program_id = $${params.length}`);
+    where.push(`balance.program_id = $${params.length}`);
   }
   if (filters.status) {
     params.push(filters.status);
-    where.push(`period_status = $${params.length}`);
+    where.push(`balance.period_status = $${params.length}`);
   }
   if (filters.asOf && /^\d{4}-\d{2}-\d{2}$/.test(filters.asOf)) {
     params.push(filters.asOf);
-    where.push(`$${params.length}::date BETWEEN start_date AND end_date`);
+    where.push(`$${params.length}::date BETWEEN balance.start_date AND balance.end_date`);
   }
 
   const { rows } = await pool.query<ProgramBudgetRow>(
     `${PROGRAM_BUDGET_SELECT}
       WHERE ${where.join(" AND ")}
-      ORDER BY end_date, individual_name, program_name, budget_period_id`,
+      ORDER BY balance.end_date, balance.individual_name, balance.program_name,
+               balance.budget_period_id`,
     params,
   );
   return rows.map(toProgramBudget);
@@ -190,10 +221,153 @@ export async function getProgramBudget(
   if (!UUID.test(budgetPeriodId) || !UUID.test(programId)) return null;
   const { rows } = await pool.query<ProgramBudgetRow>(
     `${PROGRAM_BUDGET_SELECT}
-      WHERE budget_period_id = $1 AND program_id = $2`,
+      WHERE balance.budget_period_id = $1 AND balance.program_id = $2`,
     [budgetPeriodId, programId],
   );
   return rows[0] ? toProgramBudget(rows[0]) : null;
+}
+
+export interface ProgramBudgetMonthRecord {
+  month: string;
+  usedHours: string;
+  scheduledHours: string;
+  cumulativeUsedHours: string;
+  cumulativeScheduledHours: string;
+  remainingHours: string;
+  remainingAfterScheduledHours: string;
+  expectedUsedHours: string | null;
+  paceVarianceHours: string | null;
+}
+
+interface ProgramBudgetMonthRow {
+  month_start: string;
+  effective_start: string;
+  effective_end: string;
+  authorized_hours: string;
+  used_hours: string;
+  scheduled_hours: string;
+}
+
+function inclusiveDays(from: string, to: string): number {
+  return Math.floor(
+    (Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`)) / 86_400_000,
+  ) + 1;
+}
+
+/** Canonical month-by-month transaction usage and unmatched schedule forecast. */
+export async function listProgramBudgetMonthlyHistory(
+  pool: PgLikePool,
+  budgetPeriodId: string,
+  programId: string,
+  asOf: Date = new Date(),
+): Promise<ProgramBudgetMonthRecord[]> {
+  if (!UUID.test(budgetPeriodId) || !UUID.test(programId)) return [];
+  const { rows } = await pool.query<ProgramBudgetMonthRow>(
+    `WITH account AS (
+       SELECT balance.budget_period_id, balance.individual_id, balance.program_id,
+              balance.start_date, balance.end_date, balance.authorized_hours,
+              balance.internal_rate, balance.consumption_source, balance.rate_scope
+         FROM program_budget_balances balance
+        WHERE balance.budget_period_id = $1 AND balance.program_id = $2
+     ), months AS (
+       SELECT month_start::date AS month_start,
+              greatest(month_start::date, account.start_date) AS effective_start,
+              least((month_start + interval '1 month - 1 day')::date, account.end_date) AS effective_end
+         FROM account
+         CROSS JOIN LATERAL generate_series(
+           date_trunc('month', account.start_date)::date,
+           date_trunc('month', account.end_date)::date,
+           interval '1 month'
+         ) AS generated(month_start)
+     ), payroll AS (
+       SELECT date_trunc('month', canonical_service_date(
+                payroll_row.period_begin, payroll_row.check_date, payroll_row.period_end
+              ))::date AS month_start,
+              COALESCE(sum(
+                CASE
+                  WHEN account.rate_scope = 'per_group' AND COALESCE(account.internal_rate, 0) > 0
+                    THEN COALESCE(
+                           payroll_row.calculated_internal_amount,
+                           payroll_row.spreadsheet_internal_amount,
+                           payroll_row.internal_rate_applied * payroll_row.imported_hours,
+                           0
+                         ) / account.internal_rate
+                  ELSE COALESCE(payroll_row.imported_hours, 0)
+                END
+              ), 0) AS used_hours
+         FROM account
+         JOIN payroll_transactions payroll_row
+           ON account.consumption_source IN ('payroll', 'mixed')
+          AND payroll_row.individual_id = account.individual_id
+          AND payroll_row.program_id = account.program_id
+          AND canonical_service_date(
+                payroll_row.period_begin, payroll_row.check_date, payroll_row.period_end
+              ) BETWEEN account.start_date AND account.end_date
+        GROUP BY 1
+     ), events AS (
+       SELECT date_trunc('month', event.service_date)::date AS month_start,
+              COALESCE(sum(event.hours), 0) AS used_hours
+         FROM account
+         JOIN program_budget_events event
+           ON event.budget_period_id = account.budget_period_id
+          AND event.program_id = account.program_id
+        GROUP BY 1
+     ), schedule AS (
+       SELECT date_trunc('month', scheduled_session.session_date)::date AS month_start,
+              COALESCE(sum(allocation.allocation_hours), 0) AS scheduled_hours
+         FROM account
+         JOIN scheduled_allocations allocation
+           ON allocation.individual_id = account.individual_id
+         JOIN scheduled_sessions scheduled_session
+           ON scheduled_session.id = allocation.scheduled_session_id
+          AND scheduled_session.program_id = account.program_id
+          AND scheduled_session.status = 'pending'
+          AND scheduled_session.matched_transaction_id IS NULL
+          AND scheduled_session.session_date BETWEEN account.start_date AND account.end_date
+        GROUP BY 1
+     )
+     SELECT months.month_start::text AS month_start,
+            months.effective_start::text AS effective_start,
+            months.effective_end::text AS effective_end,
+            account.authorized_hours::text AS authorized_hours,
+            (COALESCE(payroll.used_hours, 0) + COALESCE(events.used_hours, 0))::text AS used_hours,
+            COALESCE(schedule.scheduled_hours, 0)::text AS scheduled_hours
+       FROM account
+       JOIN months ON true
+       LEFT JOIN payroll ON payroll.month_start = months.month_start
+       LEFT JOIN events ON events.month_start = months.month_start
+       LEFT JOIN schedule ON schedule.month_start = months.month_start
+      ORDER BY months.month_start`,
+    [budgetPeriodId, programId],
+  );
+
+  const today = agencyDate(asOf);
+  let cumulativeUsed = dec(0);
+  let cumulativeScheduled = dec(0);
+  return rows.map((row) => {
+    const authorized = dec(row.authorized_hours);
+    cumulativeUsed = cumulativeUsed.plus(row.used_hours);
+    cumulativeScheduled = cumulativeScheduled.plus(row.scheduled_hours);
+    const remaining = authorized.minus(cumulativeUsed);
+    const remainingAfterScheduled = remaining.minus(cumulativeScheduled);
+    const periodStart = rows[0]?.effective_start ?? row.effective_start;
+    const periodEnd = rows.at(-1)?.effective_end ?? row.effective_end;
+    const cutoff = today < row.effective_end ? today : row.effective_end;
+    const expected = cutoff < row.effective_start
+      ? null
+      : authorized.times(inclusiveDays(periodStart, cutoff)).dividedBy(inclusiveDays(periodStart, periodEnd));
+    return {
+      month: row.month_start.slice(0, 7),
+      usedHours: toHours(row.used_hours),
+      scheduledHours: toHours(row.scheduled_hours),
+      cumulativeUsedHours: toHours(cumulativeUsed),
+      cumulativeScheduledHours: toHours(cumulativeScheduled),
+      remainingHours: toHours(remaining),
+      remainingAfterScheduledHours: toHours(remainingAfterScheduled),
+      expectedUsedHours: expected === null ? null : toHours(expected),
+      paceVarianceHours: expected === null ? null : toHours(cumulativeUsed.minus(expected)),
+    };
+  });
 }
 
 export interface ProgramBudgetEventRecord {

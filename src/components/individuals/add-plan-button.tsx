@@ -36,9 +36,9 @@ export default function AddPlanButton({ individualId, nextLabel }: { individualI
   return (
     <div className="flex items-center gap-3">
       <button type="button" onClick={add} disabled={busy} className="btn btn-sm btn-secondary">
-        {busy ? "Adding…" : "+ Add another plan"}
+        {busy ? "Adding…" : "+ Add another financial plan"}
       </button>
-      <span className="text-xs text-[var(--color-ink-faint)]">for an individual who needs a second plan (different programs / different cuts)</span>
+      <span className="text-xs text-[var(--color-ink-faint)]">Use a second projection for different programs or cuts.</span>
       {error ? <span className="text-xs text-[var(--color-danger)]">{error}</span> : null}
     </div>
   );

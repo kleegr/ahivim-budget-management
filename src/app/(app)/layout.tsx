@@ -1,8 +1,9 @@
-import { requireUser } from "@/lib/auth/session";
+import { currentImpersonation, requireUser } from "@/lib/auth/session";
 import { canAccessPlanning, isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
 import AppNav from "@/components/app-nav";
 import { withDb } from "@/lib/data/pool";
 import { agencyIdsWithPlanningAccess, hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
+import ImpersonationBar from "@/components/auth/impersonation-bar";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,7 @@ export const dynamic = "force-dynamic";
  */
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser("viewer");
+  const impersonation = await currentImpersonation();
   let accessResolved = false;
   let canSeeTransactions = false;
   let canSeeSettlements = false;
@@ -41,8 +43,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       canPlan: internalPlanning || agencyPlanning,
       canSeeClassFinancials: scope.canSeeClassFinancials,
       canSeeEmployees:
-        !isPlanningOnlyAccess(scope)
-        && (scope.full || scope.allEmployees || scope.employeeIds.length > 0),
+        internalPlanning
+        || (!isPlanningOnlyAccess(scope)
+          && (scope.full || scope.allEmployees || scope.employeeIds.length > 0)),
       canEditDocuments: scope.canEditDocuments,
       canUsePortal:
         portal.globalRoles.length > 0
@@ -66,27 +69,30 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="min-h-screen bg-[var(--color-paper)] md:flex">
-      <AppNav
-        user={user}
-        accessResolved={accessResolved}
-        canSeeTransactions={canSeeTransactions}
-        canSeeSettlements={canSeeSettlements}
-        canSeeBudgets={canSeeBudgets}
-        canPlan={canPlan}
-        canSeeClassFinancials={canSeeClassFinancials}
-        canSeeEmployees={canSeeEmployees}
-        canEditDocuments={canEditDocuments}
-        canUsePortal={canUsePortal}
-        canManageAgencies={canManageAgencies}
-      />
-      <div className="flex min-h-screen min-w-0 flex-1 flex-col">
-        <main id="main" className="mx-auto w-full max-w-[100rem] flex-1 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
-          {children}
-        </main>
-        <footer className="mx-auto w-full max-w-[100rem] px-4 pb-8 text-xs text-[var(--color-ink-faint)] sm:px-6 lg:px-8">
-          Ahivim Budget Management
-        </footer>
+    <div className={`${impersonation ? "[--impersonation-bar-height:2.5rem]" : "[--impersonation-bar-height:0px]"} [--shell-header-height:calc(var(--impersonation-bar-height)+4rem)] md:[--shell-header-height:var(--impersonation-bar-height)]`}>
+      {impersonation ? <ImpersonationBar impersonation={impersonation} /> : null}
+      <div className="min-h-[calc(100vh-var(--impersonation-bar-height))] bg-[var(--color-paper)] md:flex">
+        <AppNav
+          user={user}
+          accessResolved={accessResolved}
+          canSeeTransactions={canSeeTransactions}
+          canSeeSettlements={canSeeSettlements}
+          canSeeBudgets={canSeeBudgets}
+          canPlan={canPlan}
+          canSeeClassFinancials={canSeeClassFinancials}
+          canSeeEmployees={canSeeEmployees}
+          canEditDocuments={canEditDocuments}
+          canUsePortal={canUsePortal}
+          canManageAgencies={canManageAgencies}
+        />
+        <div className="flex min-h-[calc(100vh-var(--impersonation-bar-height))] min-w-0 flex-1 flex-col">
+          <main id="main" className="mx-auto w-full max-w-[100rem] flex-1 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+            {children}
+          </main>
+          <footer className="mx-auto w-full max-w-[100rem] px-4 pb-8 text-xs text-[var(--color-ink-faint)] sm:px-6 lg:px-8">
+            Ahivim Budget Management
+          </footer>
+        </div>
       </div>
     </div>
   );

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import GoogleSheetSyncButton from "@/components/sync/google-sheet-sync-button";
+import OwnerPeopleMultiSelect from "@/components/dashboard/owner-people-multi-select";
 import { ButtonLink, PageHeader } from "@/components/ui";
 import type {
   OwnerActivityFilterOptions,
@@ -114,7 +115,7 @@ function ActivityFilters({
   const active = Boolean(
     selection.checkDateFrom
       || selection.checkDateTo
-      || selection.individualId
+      || selection.individualIds.length > 0
       || selection.employeeId
       || selection.payrollPeriod,
   );
@@ -136,15 +137,7 @@ function ActivityFilters({
           Check date to
           <input className={fieldClass} type="date" name="to" defaultValue={selection.checkDateTo ?? ""} />
         </label>
-        <label className="min-w-0 text-xs font-semibold text-[var(--color-ink-soft)]">
-          Person
-          <select className={fieldClass} name="individualId" defaultValue={selection.individualId ?? ""}>
-            <option value="">All people</option>
-            {options.individuals.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
-        </label>
+        <OwnerPeopleMultiSelect options={options.individuals} selected={selection.individualIds} />
         <label className="min-w-0 text-xs font-semibold text-[var(--color-ink-soft)]">
           Employee
           <select className={fieldClass} name="employeeId" defaultValue={selection.employeeId ?? ""}>
