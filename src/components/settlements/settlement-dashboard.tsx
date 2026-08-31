@@ -1002,7 +1002,7 @@ function SettleModal({ rows, onClose, onDone }: { rows: SettlementRow[]; onClose
       ? { title: "Record agency payments", button: `Record ${rows.length} payments`, done: "agency payments" }
       : directions.has("receivable")
         ? { title: "Record amounts received", button: `Record ${rows.length} receipts`, done: "amounts received" }
-        : { title: "Record annual set-asides", button: `Record ${rows.length} set-asides`, done: "set-asides" };
+        : { title: "Record annual reserves", button: `Record ${rows.length} reserves`, done: "reserves" };
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();

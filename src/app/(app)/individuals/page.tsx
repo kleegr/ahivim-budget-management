@@ -2,6 +2,8 @@ import { requireUser } from "@/lib/auth/session";
 import { hasDirectIndividualAccess, resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listIndividualBudgetBoard } from "@/lib/data/queries";
+import { listProgramBudgets } from "@/lib/data/program-budgets";
+import { summarizeAuthorizationPortfolio } from "@/lib/data/authorization-portfolio";
 import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
 import IndividualsList from "@/components/individuals/individuals-list";
@@ -16,7 +18,6 @@ function individualFields() {
   return (
     <>
       <Field label="Name" name="displayName" required help="How this person is shown throughout Ahivim." />
-      <Field label="Renewal date" name="renewalDate" type="date" help="The budget's yearly renewal. It auto-rolls forward each year while the account is active. You can add programs and hours on the profile next." />
       <Field label="Legal name" name="legalName" help="Defaults to the display name if left blank." />
       <Field label="Preferred name" name="preferredName" />
       <Field label="External reference" name="externalRef" help="An agency or case number, if there is one." />
@@ -39,16 +40,41 @@ export default async function IndividualsPage({
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
-    const rows = await listIndividualBudgetBoard(pool, new Date(`${agencyDate()}T12:00:00Z`), scope);
+    const today = agencyDate();
+    const asOf = new Date(`${today}T12:00:00Z`);
+    const [rows, authorizationRows] = await Promise.all([
+      listIndividualBudgetBoard(pool, asOf, scope),
+      scope.canSeeBudgets
+        ? listProgramBudgets(pool, { status: "active", asOf: today })
+        : Promise.resolve([]),
+    ]);
+    const visibleIds = new Set(rows.map((row) => row.id));
+    const authorizationPortfolio = summarizeAuthorizationPortfolio(
+      authorizationRows.filter((row) => visibleIds.has(row.individualId)),
+      asOf,
+    );
     return rows.map((row) => (
       scope.canSeeBudgets && scope.canSeeHours && hasDirectIndividualAccess(scope, row.id)
         ? {
             ...row,
-            budget: row.budget ? {
-              ...row.budget,
-              transactionCount: scope.canSeeTransactions ? row.budget.transactionCount : null,
-              billedAmount: scope.canSeeBilledAmounts ? row.budget.billedAmount : null,
-            } : null,
+            programs: [...new Set([
+              ...row.programs,
+              ...(authorizationPortfolio.get(row.id)?.programs ?? []),
+            ])].sort(),
+            budget: (() => {
+              const canonical = authorizationPortfolio.get(row.id)?.budget;
+              const budget = canonical
+                ? {
+                    ...canonical,
+                    transactionCount: row.budget?.transactionCount ?? 0,
+                  }
+                : row.budget;
+              return budget ? {
+                ...budget,
+                transactionCount: scope.canSeeTransactions ? budget.transactionCount : null,
+                billedAmount: scope.canSeeBilledAmounts ? budget.billedAmount : null,
+              } : null;
+            })(),
             insightsVisible: true,
           }
         : { ...row, programs: [], budget: null, hasBilling: false, lastBilledOn: null, insightsVisible: false }

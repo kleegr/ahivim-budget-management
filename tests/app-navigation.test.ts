@@ -26,6 +26,7 @@ describe("role-specific workspaces", () => {
 
     expect(workspaces.map((workspace) => workspace.label)).toContain("Money");
     expect(workspaces.map((workspace) => workspace.label)).not.toContain("People & budgets");
+    expect(workspaces.map((workspace) => workspace.label)).not.toContain("Transactions");
     expect(workspaces.find((workspace) => workspace.id === "payroll")?.href).toBe("/collections");
     expect(getCommandDestinations(access).some((item) => item.href === "/individuals")).toBe(false);
   });
@@ -60,6 +61,21 @@ describe("role-specific workspaces", () => {
     expect(getCommandDestinations(access).some((item) => item.href === "/schedule")).toBe(true);
     expect(getCommandDestinations(access).some((item) => item.href === "/transactions")).toBe(false);
     expect(workspaces.some((workspace) => workspace.id === "payroll")).toBe(false);
+  });
+
+  it("keeps Transactions out of the primary workspace list for non-owner managers", () => {
+    const access = {
+      role: "manager",
+      accessResolved: true,
+      canSeeTransactions: true,
+      canSeeSettlements: true,
+      canSeeBudgets: true,
+      canPlan: true,
+      canEditDocuments: true,
+    };
+
+    expect(getVisibleWorkspaces(access).some((workspace) => workspace.id === "transactions")).toBe(false);
+    expect(getCommandDestinations(access).find((item) => item.href === "/transactions")?.label).toBe("Transactions");
   });
 
   it("gives a class-billing operator Classes and documents without employee money", () => {
@@ -114,6 +130,7 @@ describe("role-specific workspaces", () => {
     const workspaces = getVisibleWorkspaces(resolved);
     expect(workspaces.map((workspace) => workspace.id)).toEqual([
       "overview",
+      "transactions",
       "budgets",
       "activity",
       "payroll",
@@ -123,6 +140,7 @@ describe("role-specific workspaces", () => {
     ]);
     const hrefs = getCommandDestinations(resolved).map((item) => item.href);
     expect(hrefs).toContain("/transactions");
+    expect(workspaces.find((workspace) => workspace.id === "transactions")?.href).toBe("/transactions");
     expect(hrefs).toContain("/schedule");
     expect(hrefs).toContain("/individuals");
     expect(hrefs).toContain("/employees");

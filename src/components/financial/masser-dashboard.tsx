@@ -24,13 +24,9 @@ import { isNumericKind, type ColumnDef } from "@/components/data-grid/types";
 import { Modal } from "@/components/manage/client";
 
 /**
- * The Masser board — the cuts / calculation sheet, rebuilt on the shared grid
- * engine. One row per plan: the two cut %s, clock and other adjustments, the
- * authorized hours per program (the budget), the computed yearly → monthly →
- * gross-net → net, and Masser (the "After All" set-aside). Cuts, hours and Masser
- * edit inline against the plan; account (a dropdown), phone and notes edit
- * against the person. Columns show/hide/reorder from the Columns menu; the footer
- * totals every money column (the Masser total is the workbook's "Gross").
+ * Annual reserve overview plus the workbook-accurate financial setup matrix.
+ * The matrix keeps cuts and adjustments visible as explanation and treats the
+ * entered final as a monthly amount; the overview rolls it up by plan divisor.
  */
 
 type Totals = { yearlyGross: string; monthlyGross: string; grossNet: string; net: string; masser: string };
@@ -71,7 +67,7 @@ type PersonPlanSummary = {
   hours: string;
   yearlyGross: string;
   net: string;
-  plannedMasser: string;
+  plannedAnnualTarget: string;
 };
 
 function summarizePlans(rows: MasserSheetRow[]): PersonPlanSummary[] {
@@ -91,7 +87,9 @@ function summarizePlans(rows: MasserSheetRow[]): PersonPlanSummary[] {
       hours: dec(current?.hours ?? 0).plus(dec(totalHours(row))).toFixed(2),
       yearlyGross: dec(current?.yearlyGross ?? 0).plus(dec(row.yearlyGross || 0)).toFixed(2),
       net: dec(current?.net ?? 0).plus(dec(row.net || 0)).toFixed(2),
-      plannedMasser: dec(current?.plannedMasser ?? 0).plus(dec(row.masser || 0)).toFixed(2),
+      plannedAnnualTarget: dec(current?.plannedAnnualTarget ?? 0)
+        .plus(dec(row.masser || 0).times(dec(row.monthDivisor || 12)))
+        .toFixed(2),
     });
   }
   return [...people.values()];
@@ -107,7 +105,7 @@ function planHealth(row: PersonPlanSummary, funding?: AnnualFundingProgress): Pl
   const days = Math.ceil((renewal.getTime() - today.getTime()) / 86_400_000);
   if (days < 0) return { label: "Renewal overdue", tone: "danger", rank: 0 };
   if (days <= 60) return { label: `Renews in ${days}d`, tone: "warn", rank: 1 };
-  if (dec(row.plannedMasser || 0).lessThanOrEqualTo(0)) return { label: "Set-aside target needed", tone: "warn", rank: 2 };
+  if (dec(row.plannedAnnualTarget || 0).lessThanOrEqualTo(0)) return { label: "Approved final needed", tone: "warn", rank: 2 };
   if (!funding) return { label: "Funding not calculated", tone: "warn", rank: 3 };
   if (dec(funding.remaining).lessThanOrEqualTo(0)) return { label: "Fully set aside", tone: "good", rank: 6 };
   if (dec(funding.variance).isNegative()) return { label: "Behind annual pace", tone: "danger", rank: 2 };
@@ -145,9 +143,9 @@ function PlanOverview({
     for (const row of people) {
       if (!row.active) continue;
       const progress = funding[row.individualId];
-      target = target.plus(dec(progress?.target ?? row.plannedMasser));
+      target = target.plus(dec(progress?.target ?? row.plannedAnnualTarget));
       actual = actual.plus(dec(progress?.actualSetAside ?? 0));
-      remaining = remaining.plus(dec(progress?.remaining ?? row.plannedMasser));
+      remaining = remaining.plus(dec(progress?.remaining ?? row.plannedAnnualTarget));
       if (planHealth(row, progress).rank <= 3) needsAttention += 1;
     }
     return { target, actual, remaining, needsAttention, people: people.filter((row) => row.active).length };
@@ -232,7 +230,7 @@ function PlanOverview({
               {rows.map((row) => {
                 const progress = funding[row.individualId];
                 const health = planHealth(row, progress);
-                const target = progress?.target ?? row.plannedMasser;
+                const target = progress?.target ?? row.plannedAnnualTarget;
                 return (
                   <tr key={row.individualId} className="border-b border-[var(--color-rule)] last:border-0 hover:bg-[var(--color-surface-muted)]">
                     <td className="px-4 py-3">
@@ -326,7 +324,7 @@ function MasserMatrix({ data, canManage }: { data: MasserSheet; canManage: boole
   const mark = (id: string, k: string, on: boolean) =>
     setSaving((p) => { const n = new Set(p); const key = id + ":" + k; if (on) n.add(key); else n.delete(key); return n; });
 
-  // Edit a plan field (cut %, adjustment, program hours, Masser). Grosses are
+  // Edit a plan field (cut %, adjustment, program hours, approved final). Grosses are
   // server-computed, so a successful save refreshes to pull the new numbers.
   const editStrategy = useCallback(async (row: MasserSheetRow, colKey: string, body: Record<string, unknown>) => {
     mark(row.strategyId, colKey, true);
@@ -435,7 +433,7 @@ function MasserMatrix({ data, canManage }: { data: MasserSheet; canManage: boole
       { key: "grossNet", label: "After deductions", kind: "computed", width: BASE_WIDTHS.grossNet, accessor: (r) => r.grossNet, render: (r) => <span className="block px-2 py-1">{formatMoney(r.grossNet)}</span> },
       { key: "net", label: "Net plan amount", kind: "computed", width: BASE_WIDTHS.net, accessor: (r) => r.net, render: (r) => <span className="block px-2 py-1 font-medium">{formatMoney(r.net)}</span> },
       {
-        key: "masser", label: "Annual set-aside", kind: "money", width: BASE_WIDTHS.masser, accessor: (r) => r.masser,
+        key: "masser", label: "Approved final / month", kind: "money", width: BASE_WIDTHS.masser, accessor: (r) => r.masser,
         render: (r) => <NumCell text={r.masser ? formatMoney(r.masser) : ""} strong warn canManage={canManage} saving={busyKey(r.strategyId, "masser")} initial={r.masser ? dec(r.masser).toString() : ""} onSave={(v) => editStrategy(r, "masser", { afterAll: v === "" ? null : v })} />,
       },
       {

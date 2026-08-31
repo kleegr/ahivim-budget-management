@@ -21,21 +21,25 @@ export interface CheckSummary {
   agencySpread: string;
   netPay: string | null;
   rows: number;
+  transactionIds: string[];
 }
 
 export function checkGroupIdentity(row: Pick<
   GridTransaction,
-  "id" | "employeeId" | "employee" | "checkNumber" | "checkDate" | "periodBegin" | "periodEnd"
+  "id" | "payTo" | "employeeId" | "employee" | "checkNumber" | "checkDate" | "periodBegin" | "periodEnd"
 >): string {
-  const employeeKey = row.employeeId ?? row.employee ?? "unknown-employee";
+  const payeeKey = row.payTo?.trim().toLocaleLowerCase()
+    || row.employeeId
+    || row.employee?.trim().toLocaleLowerCase()
+    || "unknown-payee";
   const checkNumber = row.checkNumber?.trim() || null;
-  if (!checkNumber) return `${employeeKey}:row:${row.id}`;
+  if (!checkNumber) return `${payeeKey}:row:${row.id}`;
   const timing = row.checkDate
     ? `date:${row.checkDate}`
     : row.periodBegin || row.periodEnd
       ? `period:${row.periodBegin ?? ""}:${row.periodEnd ?? ""}`
       : "undated";
-  return `${employeeKey}:check:${checkNumber}:${timing}`;
+  return `${payeeKey}:check:${checkNumber}:${timing}`;
 }
 
 export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
@@ -56,6 +60,7 @@ export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
     const individuals = new Set<string>();
     const programs = new Set<string>();
     const recipients = new Set(group.map((row) => row.paymentRecipient).filter(Boolean));
+    const employees = new Map<string, { id: string | null; name: string }>();
     const begins = group.map((row) => row.periodBegin).filter((value): value is string => Boolean(value)).sort();
     const ends = group.map((row) => row.periodEnd).filter((value): value is string => Boolean(value)).sort();
 
@@ -66,6 +71,7 @@ export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
       if (row.agencyAdditional) agencySpread = agencySpread.plus(row.agencyAdditional);
       if (row.individual) individuals.add(row.individual);
       if (row.program) programs.add(row.program);
+      if (row.employee) employees.set(row.employeeId ?? row.employee, { id: row.employeeId, name: row.employee });
     }
 
     const routing: CheckRouting = recipients.size === 1 && recipients.has("employee")
@@ -78,8 +84,8 @@ export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
       key,
       checkNumber: first.checkNumber?.trim() || null,
       checkDate: first.checkDate,
-      employee: first.employee,
-      employeeId: first.employeeId,
+      employee: employees.size > 1 ? "Multiple employees" : first.employee,
+      employeeId: employees.size > 1 ? null : first.employeeId,
       payTo: first.payTo,
       routing,
       periodBegin: begins[0] ?? null,
@@ -92,6 +98,7 @@ export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
       agencySpread: agencySpread.toFixed(2),
       netPay: routing === "direct" ? first.totalNetPay : null,
       rows: group.length,
+      transactionIds: group.map((row) => row.id),
     };
   }).sort((a, b) => (b.checkDate ?? "").localeCompare(a.checkDate ?? "") || (a.employee ?? "").localeCompare(b.employee ?? ""));
 }

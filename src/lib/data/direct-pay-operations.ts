@@ -380,19 +380,24 @@ export async function getCollectionsWorkspace(
       individual_id: string; individual_name: string; planned_this_month: string;
       set_aside_this_month: string; remaining_set_aside: string; active_plans: string;
     }>(
-      `WITH roots AS (
+      `WITH requested AS (
+         SELECT make_date(split_part($1, '-', 1)::int, split_part($1, '-', 2)::int, 1) AS month_start
+       ), roots AS (
          SELECT o.*,
                 COALESCE(latest.calculation_metadata, o.calculation_metadata) AS current_metadata,
-                COALESCE(latest.calculation_metadata->>'recalculatedDirection', o.direction) AS current_direction
+                COALESCE(latest.calculation_metadata->>'recalculatedDirection', o.direction) AS current_direction,
+                COALESCE(NULLIF(latest.calculation_metadata->>'recalculatedOriginalAmount', '')::numeric, o.original_amount) AS current_target
            FROM settlement_obligations o
            LEFT JOIN LATERAL (
              SELECT correction.calculation_metadata
                FROM settlement_obligations correction
               WHERE correction.calculation_metadata->>'adjustmentForObligationId' = o.id::text
+                AND correction.status = 'active'
               ORDER BY correction.created_at DESC, correction.id DESC
               LIMIT 1
            ) latest ON true
           WHERE o.individual_id IS NOT NULL
+            AND o.status = 'active'
             AND o.calculation_metadata->>'flow' = 'individual_plan'
             AND NOT (o.calculation_metadata ? 'adjustmentForObligationId')
        ), event_totals AS (
@@ -405,36 +410,73 @@ export async function getCollectionsWorkspace(
            JOIN settlement_obligations obligation ON obligation.id = se.settlement_obligation_id
           WHERE se.individual_id IS NOT NULL
           GROUP BY se.individual_id
-       ), balances AS (
-         SELECT o.individual_id,
-                COALESCE(sum(GREATEST(o.original_amount - COALESCE(events.applied, 0), 0))
-                  FILTER (WHERE o.status = 'active' AND o.direction = 'reserve'), 0) AS remaining
+       ), obligation_balances AS (
+         SELECT COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) AS root_key,
+                o.direction,
+                o.original_amount - COALESCE(sum(se.amount), 0) AS balance
            FROM settlement_obligations o
-           LEFT JOIN LATERAL (
-             SELECT COALESCE(sum(se.amount), 0) AS applied
-               FROM settlement_events se WHERE se.settlement_obligation_id = o.id
-           ) events ON true
+           LEFT JOIN settlement_events se ON se.settlement_obligation_id = o.id
           WHERE o.individual_id IS NOT NULL
-          GROUP BY o.individual_id
+            AND o.status = 'active'
+            AND o.calculation_metadata->>'flow' = 'individual_plan'
+          GROUP BY o.id
+       ), current_balances AS (
+         SELECT r.individual_id, r.id,
+                r.current_direction,
+                sum(CASE WHEN entry.direction = 'receivable' THEN -entry.balance ELSE entry.balance END) AS signed_balance
+           FROM roots r
+           JOIN obligation_balances entry ON entry.root_key = r.id::text
+          GROUP BY r.individual_id, r.id, r.current_direction
+       ), balances AS (
+         SELECT individual_id,
+                COALESCE(sum(GREATEST(signed_balance, 0))
+                  FILTER (WHERE current_direction = 'reserve'), 0) AS remaining
+           FROM current_balances
+          GROUP BY individual_id
+       ), planned AS (
+         SELECT r.id,
+                /* Short divisors represent late-year service: allocate backward from renewal. */
+                CASE
+                  WHEN r.current_direction = 'reserve'
+                    AND r.current_target > 0
+                    AND NULLIF(r.current_metadata->>'monthlyAmount', '')::numeric > 0
+                    AND requested.month_start >= date_trunc('month', r.period_begin)::date
+                    AND requested.month_start <= date_trunc('month', r.period_end - interval '1 day')::date
+                  THEN LEAST(
+                    NULLIF(r.current_metadata->>'monthlyAmount', '')::numeric,
+                    GREATEST(
+                      r.current_target
+                        - NULLIF(r.current_metadata->>'monthlyAmount', '')::numeric
+                          * GREATEST(
+                              (
+                                (date_part('year', r.period_end - interval '1 day')::int
+                                  - date_part('year', requested.month_start)::int) * 12
+                                + date_part('month', r.period_end - interval '1 day')::int
+                                  - date_part('month', requested.month_start)::int
+                              ),
+                              0
+                            )::numeric,
+                      0
+                    )
+                  )
+                  ELSE 0
+                END AS amount
+           FROM roots r
+           CROSS JOIN requested
        )
        SELECT r.individual_id, i.display_name AS individual_name,
-              COALESCE(sum(NULLIF(r.current_metadata->>'monthlyAmount', '')::numeric)
-                FILTER (
-                  WHERE r.current_direction = 'reserve'
-                    AND make_date(split_part($1, '-', 1)::int, split_part($1, '-', 2)::int, 1)
-                        BETWEEN date_trunc('month', r.period_begin)::date
-                            AND date_trunc('month', r.period_end)::date
-                ), 0)::text AS planned_this_month,
+              COALESCE(sum(planned.amount), 0)::text AS planned_this_month,
               COALESCE(max(ev.set_aside_month), 0)::text AS set_aside_this_month,
               COALESCE(max(b.remaining), 0)::text AS remaining_set_aside,
               count(DISTINCT r.calculation_strategy_id)::text AS active_plans
          FROM roots r
          JOIN individuals i ON i.id = r.individual_id
+         JOIN planned ON planned.id = r.id
          LEFT JOIN event_totals ev ON ev.individual_id = r.individual_id
          LEFT JOIN balances b ON b.individual_id = r.individual_id
         WHERE TRUE${individualScope}
         GROUP BY r.individual_id, i.display_name
-       HAVING COALESCE(sum(NULLIF(r.current_metadata->>'monthlyAmount', '')::numeric), 0) <> 0
+       HAVING COALESCE(sum(planned.amount), 0) <> 0
            OR COALESCE(max(ev.set_aside_month), 0) <> 0
            OR COALESCE(max(b.remaining), 0) <> 0
         ORDER BY i.display_name`,

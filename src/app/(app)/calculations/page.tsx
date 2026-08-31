@@ -7,16 +7,14 @@ import { PageHeader, ErrorPanel } from "@/components/ui";
 import CalculationsGrid from "@/components/calculations/calculations-grid";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Annual financial plans - Ahivim" };
+export const metadata = { title: "Financial setup - Ahivim" };
 
 /**
- * Financial (the Calculations workbook). This is the money side — internal
- * rates, the two sequential cuts, adjustments and the net "after all" figure per
- * account — kept deliberately distinct from Budget (authorized hours vs billed),
- * which lives on each individual. The grid opens on a risk-first "Glance" view
- * and a "Full sheet" toggle for the complete editable grid.
+ * Financial setup (the Calculations workbook). This is the standing money setup:
+ * internal rates, two sequential cuts, adjustments, and the approved monthly
+ * final per account. Actual transactions and budget utilization live elsewhere.
  */
-export default async function ProjectionsPage({ searchParams }: { searchParams: Promise<{ individualId?: string }> }) {
+export default async function FinancialSetupPage({ searchParams }: { searchParams: Promise<{ individualId?: string }> }) {
   const user = await requireUser("manager");
   const canManage = user.role !== "viewer";
   const { individualId } = await searchParams;
@@ -41,13 +39,13 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
   return (
     <>
       <PageHeader
-        eyebrow="Advanced"
-        title="Annual financial plans"
-        description="Set annual deductions, adjustments, and projected amounts for an individual."
+        eyebrow="Financial"
+        title="Financial setup"
+        description="Review each account's expected monthly amount, sequential cuts, and approved final."
       />
 
       {!result.ok ? (
-        <ErrorPanel title="Could not load budget planning">{result.error}</ErrorPanel>
+        <ErrorPanel title="Could not load financial setup">{result.error}</ErrorPanel>
       ) : (
         <>
           {individualId ? (

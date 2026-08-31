@@ -12,10 +12,15 @@ import {
 import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
 import { listIndividualBudgetBoard } from "@/lib/data/queries";
+import { listProgramBudgets } from "@/lib/data/program-budgets";
+import { listTransactionsForGrid } from "@/lib/data/transactions-grid";
+import { listStrategies } from "@/lib/manage/calculation-strategies";
+import { buildOwnerDashboardSummary } from "@/lib/dashboard/owner-summary";
 import { agencyDate } from "@/lib/business/agency-time";
 import { dec, formatHours } from "@/lib/money";
 import { ErrorPanel, PageHeader } from "@/components/ui";
 import GoogleSheetSyncButton from "@/components/sync/google-sheet-sync-button";
+import OwnerDashboard from "@/components/dashboard/owner-dashboard";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Home - Ahivim" };
@@ -103,9 +108,39 @@ export default async function DashboardPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireUser("manager");
+  const user = await requireUser("manager");
   const denied = (await searchParams).denied;
   const today = agencyDate();
+
+  if (user.role === "admin") {
+    const ownerResult = await withDb(async (pool) => {
+      const [transactions, programBudgets, budgetBoard, strategyResult] = await Promise.all([
+        listTransactionsForGrid(pool),
+        listProgramBudgets(pool, { status: "active", asOf: today }),
+        listIndividualBudgetBoard(pool, new Date(`${today}T12:00:00Z`)),
+        listStrategies(pool),
+      ]);
+      return buildOwnerDashboardSummary({
+        transactions,
+        programBudgets,
+        budgetBoard,
+        strategies: strategyResult.rows,
+      });
+    });
+
+    if (!ownerResult.ok) {
+      return (
+        <>
+          <PageHeader eyebrow="Ahivim" title="Owner overview" action={<GoogleSheetSyncButton />} />
+          <ErrorPanel title="Owner overview could not load">
+            Refresh the page and try again.
+          </ErrorPanel>
+        </>
+      );
+    }
+
+    return <OwnerDashboard summary={ownerResult.data} denied={Boolean(denied)} />;
+  }
 
   const result = await withDb(async (pool) => {
     const [budgets, openMoneyResult] = await Promise.all([

@@ -76,4 +76,19 @@ describe("billed activity check grouping", () => {
     expect(checkGroupIdentity(first)).toBe(checkGroupIdentity(second));
     expect(groupChecks([first, second])).toMatchObject([{ checkNumber: "CHK-100", rows: 2 }]);
   });
+
+  it("groups an agency payment by its payee across multiple employees", () => {
+    const checks = groupChecks([
+      transaction({ id: "row-1", payTo: "Excellent Staffing", employee: "First Employee", employeeId: "employee-1" }),
+      transaction({ id: "row-2", payTo: "Excellent Staffing", employee: "Second Employee", employeeId: "employee-2" }),
+    ]);
+
+    expect(checks).toMatchObject([{
+      rows: 2,
+      payTo: "Excellent Staffing",
+      employee: "Multiple employees",
+      employeeId: null,
+      transactionIds: ["row-1", "row-2"],
+    }]);
+  });
 });

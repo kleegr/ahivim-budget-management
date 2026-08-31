@@ -8,7 +8,7 @@ import type { BudgetCandidate } from "@/lib/data/financial-dashboard";
  * (calculation strategy), exactly the shape of the workbook's summary tab: the
  * two cut percentages, the clock and other adjustments, the authorized hours per
  * program (the budget), then the computed yearly gross → monthly gross → gross
- * net → net, and finally Masser (the "After All" set-aside). It reuses the
+ * net → net, and finally the entered approved monthly final. It reuses the
  * canonical strategy calculator, so every figure matches the Financial sheet and
  * each individual's own plan. Per-person side info (a phone, an account tag and
  * notes) rides along on each row, editable inline.
@@ -34,6 +34,7 @@ export interface MasserSheetRow {
   phone: string | null;
   notes: string | null;
   renewalDate: string | null;
+  monthDivisor: string;
   cut1Percent: string; // stored fraction (0.24)
   cut2Percent: string;
   clockAdjustment: string;
@@ -137,6 +138,7 @@ export async function getMasserSheet(pool: PgLikePool): Promise<MasserSheet> {
       phone: info?.phone ?? null,
       notes: info?.notes ?? null,
       renewalDate: s.renewalDate,
+      monthDivisor: s.monthDivisor,
       cut1Percent: s.cut1Percent,
       cut2Percent: s.cut2Percent,
       clockAdjustment: s.clockAdjustment,

@@ -127,7 +127,7 @@ export function computeStrategy(input: StrategyInput): StrategyResult {
     { key: "cut2", label: "Second cut", formula: `${formatMoney(afterCut1)} × ${pct(cut2)}`, value: toMoney(cut2Amount) },
     { key: "gross_net", label: "Gross net (after both cuts)", formula: `${formatMoney(afterCut1)} − ${formatMoney(cut2Amount)}`, value: toMoney(grossNet) },
     { key: "net", label: "Net (after adjustments)", formula: `${formatMoney(grossNet)} + ${formatMoney(clock)} clock + ${formatMoney(other)} adj`, value: toMoney(net) },
-    { key: "after_all", label: "Masser (set-aside, entered)", formula: afterAll == null ? "not set" : "the fixed set-aside", value: afterAll == null ? "" : toMoney(afterAll) },
+    { key: "after_all", label: "Approved final (entered)", formula: afterAll == null ? "not set" : "the approved monthly final", value: afterAll == null ? "" : toMoney(afterAll) },
   ];
 
   return {

@@ -9,7 +9,11 @@ function row(p: Partial<TotalsInput>): TotalsInput {
     agencyAdditional: p.agencyAdditional ?? null,
     hours: p.hours ?? null,
     totalNetPay: p.totalNetPay ?? null,
+    payTo: p.payTo ?? null,
     checkNumber: p.checkNumber ?? null,
+    checkDate: p.checkDate ?? null,
+    periodBegin: p.periodBegin ?? null,
+    periodEnd: p.periodEnd ?? null,
     individualId: p.individualId ?? null,
     individual: p.individual ?? null,
     employeeId: p.employeeId ?? null,
@@ -30,7 +34,7 @@ describe("computeGridTotals — Excel-SUBTOTAL parity", () => {
     expect(t.transactions).toBe(2);
   });
 
-  it("counts Total Net Pay ONCE per check number (workbook column-S rule)", () => {
+  it("counts Total Net Pay once per payment identity", () => {
     // Two rows of the SAME check both carry the check's full net pay (10538.05).
     const t = computeGridTotals([
       row({ id: "a", checkNumber: "24665", totalNetPay: "10538.05", gross: "336.75" }),
@@ -41,6 +45,42 @@ describe("computeGridTotals — Excel-SUBTOTAL parity", () => {
     expect(t.netPerCheck).toBe("15538.05");
     expect(t.checks).toBe(2);
     expect(t.gross).toBe("689.00"); // gross is still summed per row
+  });
+
+  it("keeps a reused check number separate across dates and employees", () => {
+    const t = computeGridTotals([
+      row({ id: "a", employeeId: "e1", checkNumber: " 700 ", checkDate: "2026-08-01", totalNetPay: "100" }),
+      row({ id: "b", employeeId: "e1", checkNumber: "700", checkDate: "2026-08-01", totalNetPay: "100" }),
+      row({ id: "c", employeeId: "e1", checkNumber: "700", checkDate: "2026-08-15", totalNetPay: "200" }),
+      row({ id: "d", employeeId: "e2", checkNumber: "700", checkDate: "2026-08-15", totalNetPay: "300" }),
+    ]);
+
+    expect(t.netPerCheck).toBe("600.00");
+    expect(t.checks).toBe(3);
+  });
+
+  it("counts one agency payment once when it covers multiple employees", () => {
+    const t = computeGridTotals([
+      row({ id: "a", payTo: "Excellent Staffing", employeeId: "e1", checkNumber: "900", checkDate: "2026-08-15", totalNetPay: "800" }),
+      row({ id: "b", payTo: " Excellent Staffing ", employeeId: "e2", checkNumber: "900", checkDate: "2026-08-15", totalNetPay: "800" }),
+    ]);
+
+    expect(t.netPerCheck).toBe("800.00");
+    expect(t.checks).toBe(1);
+  });
+
+  it("uses the pay period when a check date is missing and keeps unnumbered rows separate", () => {
+    const t = computeGridTotals([
+      row({ id: "a", employee: "First Payee", checkNumber: "88", periodBegin: "2026-07-01", periodEnd: "2026-07-15", totalNetPay: "125" }),
+      row({ id: "b", employee: "First Payee", checkNumber: "88", periodBegin: "2026-07-01", periodEnd: "2026-07-15", totalNetPay: "125" }),
+      row({ id: "c", employee: "First Payee", checkNumber: "88", periodBegin: "2026-07-16", periodEnd: "2026-07-31", totalNetPay: "150" }),
+      row({ id: "d", employee: "Second Payee", checkNumber: "88", periodBegin: "2026-07-16", periodEnd: "2026-07-31", totalNetPay: "175" }),
+      row({ id: "e", employee: "First Payee", totalNetPay: "25" }),
+      row({ id: "f", employee: "First Payee", totalNetPay: "30" }),
+    ]);
+
+    expect(t.netPerCheck).toBe("505.00");
+    expect(t.checks).toBe(5);
   });
 
   it("counts distinct individuals and employees (by id, falling back to name)", () => {

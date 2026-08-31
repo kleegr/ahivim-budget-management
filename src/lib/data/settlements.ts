@@ -144,7 +144,7 @@ const KIND_LABELS: Record<string, string> = {
   individual_cut_2: "Second cut set-aside",
   individual_clock: "Clock adjustment",
   individual_other: "Other adjustment",
-  individual_masser: "Masser set-aside",
+  individual_masser: "Approved final reserve",
 };
 
 function kindLabel(kind: string): string {
@@ -771,22 +771,64 @@ export async function getPersonSettlementBalance(
     return { payable: toMoney(0), receivable: toMoney(0), reserve: toMoney(0), credit: toMoney(0), openItems: 0 };
   }
   const column = person.employeeId ? "employee_id" : "individual_id";
-  const { rows } = await pool.query<{ direction: SettlementDirection; balance: string }>(
-    `SELECT o.direction, (o.original_amount - COALESCE(sum(e.amount), 0))::text AS balance
-       FROM settlement_obligations o
-       LEFT JOIN settlement_events e ON e.settlement_obligation_id = o.id
-      WHERE o.${column} = $1 AND o.status = 'active'
-      GROUP BY o.id`,
+  const { rows } = await pool.query<{ current_direction: SettlementDirection; signed_balance: string }>(
+    `WITH entries AS (
+       SELECT COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) AS root_key,
+              o.direction,
+              o.original_amount - COALESCE(sum(e.amount), 0) AS balance
+         FROM settlement_obligations o
+         LEFT JOIN settlement_events e ON e.settlement_obligation_id = o.id
+        WHERE o.${column} = $1 AND o.status = 'active'
+        GROUP BY o.id
+     ), roots AS (
+       SELECT root.id::text AS root_key,
+              CASE
+                WHEN latest.calculation_metadata->>'recalculatedDirection' IN ('payable', 'receivable', 'reserve')
+                  THEN latest.calculation_metadata->>'recalculatedDirection'
+                ELSE root.direction
+              END AS current_direction
+         FROM settlement_obligations root
+         LEFT JOIN LATERAL (
+           SELECT correction.calculation_metadata
+             FROM settlement_obligations correction
+            WHERE correction.status = 'active'
+              AND correction.calculation_metadata->>'adjustmentForObligationId' = root.id::text
+            ORDER BY correction.created_at DESC, correction.id DESC
+            LIMIT 1
+         ) latest ON true
+        WHERE root.${column} = $1
+          AND root.status = 'active'
+          AND NOT (root.calculation_metadata ? 'adjustmentForObligationId')
+     )
+     SELECT roots.current_direction,
+            sum(CASE WHEN entries.direction = 'receivable' THEN -entries.balance ELSE entries.balance END)::text AS signed_balance
+       FROM roots
+       JOIN entries ON entries.root_key = roots.root_key
+      GROUP BY roots.root_key, roots.current_direction`,
     [id],
   );
-  const positive = (direction: SettlementDirection) => rows
-    .filter((row) => row.direction === direction && dec(row.balance).greaterThan(0))
-    .reduce((sum, row) => sum.plus(row.balance), dec(0));
+  let payable = dec(0);
+  let receivable = dec(0);
+  let reserve = dec(0);
+  let credit = dec(0);
+  let openItems = 0;
+  for (const row of rows) {
+    const signed = dec(row.signed_balance);
+    const outstanding = row.current_direction === "receivable" ? signed.negated() : signed;
+    if (outstanding.greaterThan(0)) {
+      if (row.current_direction === "payable") payable = payable.plus(outstanding);
+      else if (row.current_direction === "reserve") reserve = reserve.plus(outstanding);
+      else receivable = receivable.plus(outstanding);
+      openItems++;
+    } else if (outstanding.isNegative()) {
+      credit = credit.plus(outstanding.abs());
+    }
+  }
   return {
-    payable: toMoney(positive("payable")),
-    receivable: toMoney(positive("receivable")),
-    reserve: toMoney(positive("reserve")),
-    credit: toMoney(rows.filter((row) => dec(row.balance).isNegative()).reduce((sum, row) => sum.plus(dec(row.balance).abs()), dec(0))),
-    openItems: rows.filter((row) => dec(row.balance).greaterThan(0)).length,
+    payable: toMoney(payable),
+    receivable: toMoney(receivable),
+    reserve: toMoney(reserve),
+    credit: toMoney(credit),
+    openItems,
   };
 }

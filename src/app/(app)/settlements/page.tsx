@@ -69,7 +69,7 @@ export default async function SettlementsPage({
       <PageHeader
         eyebrow="Finance"
         title="Money operations"
-        description="Employee payments, collections, annual set-asides, credits, and remaining balances."
+        description="Employee payments, collections, approved reserves, credits, and remaining balances."
       />
 
       {!result.ok ? (

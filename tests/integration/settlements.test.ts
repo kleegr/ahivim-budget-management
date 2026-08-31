@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PgLikePool } from "@/lib/import/commit";
-import { getSettlementDashboard } from "@/lib/data/settlements";
+import { getPersonSettlementBalance, getSettlementDashboard } from "@/lib/data/settlements";
 import { getFinancialDashboard } from "@/lib/data/financial-dashboard";
+import { getCollectionsWorkspace } from "@/lib/data/direct-pay-operations";
+import { fullAccess } from "@/lib/auth/access";
 import { createEmployee } from "@/lib/manage/employees";
 import { mergeEmployees } from "@/lib/manage/employee-merge";
 import { createIndividual } from "@/lib/manage/individuals";
@@ -189,6 +191,99 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     const rerun = unwrap(await refreshSettlementObligations(pool, {}, ACTOR));
     expect(rerun.created).toBe(0);
     expect((await getSettlementDashboard(pool)).rows).toHaveLength(2);
+  });
+
+  it("nets append-only corrections into the current individual reserve balance", async () => {
+    const individual = unwrap(await createIndividual(pool, { displayName: "Corrected Reserve Person" }, ACTOR));
+    const strategy = unwrap(await createStrategy(pool, { individualId: individual.id }, ACTOR));
+    const roots = await pool.query<{ id: string; source_key: string }>(
+      `INSERT INTO settlement_obligations
+         (source_key, kind, direction, individual_id, calculation_strategy_id,
+          original_amount, period_begin, period_end, calculation_metadata, created_by_user_id)
+       VALUES
+         ('corrected-reserve-root', 'individual_masser', 'reserve', $1, $2,
+          1000, '2026-01-01', '2027-01-01',
+          '{"flow":"individual_plan","monthlyAmount":"100"}'::jsonb, $3),
+         ('retired-cut-root', 'individual_cut_1', 'reserve', $1, $2,
+          300, '2026-01-01', '2027-01-01',
+          '{"flow":"individual_plan","monthlyAmount":"30"}'::jsonb, $3)
+       RETURNING id, source_key`,
+      [individual.id, strategy.id, ACTOR],
+    );
+    const reserveRoot = roots.rows.find((row) => row.source_key === "corrected-reserve-root")!;
+    const retiredRoot = roots.rows.find((row) => row.source_key === "retired-cut-root")!;
+
+    await pool.query(
+      `INSERT INTO settlement_obligations
+         (source_key, kind, direction, individual_id, calculation_strategy_id,
+          original_amount, period_begin, period_end, calculation_metadata, created_by_user_id)
+       VALUES
+         ('corrected-reserve-delta', 'individual_masser_correction', 'receivable', $1, $2,
+          200, '2026-01-01', '2027-01-01',
+          jsonb_build_object(
+            'flow', 'individual_plan',
+            'monthlyAmount', '80',
+            'adjustmentForObligationId', $3::text,
+            'recalculatedOriginalAmount', '800.0000',
+            'recalculatedDirection', 'reserve'
+          ), $5),
+         ('retired-cut-delta', 'individual_cut_1_correction', 'receivable', $1, $2,
+          300, '2026-01-01', '2027-01-01',
+          jsonb_build_object(
+            'flow', 'individual_plan',
+            'monthlyAmount', '30',
+            'adjustmentForObligationId', $4::text,
+            'recalculatedOriginalAmount', '0.0000',
+            'recalculatedDirection', 'reserve'
+          ), $5)`,
+      [individual.id, strategy.id, reserveRoot.id, retiredRoot.id, ACTOR],
+    );
+    await pool.query(
+      `INSERT INTO settlement_events
+         (settlement_obligation_id, individual_id, event_type, amount, occurred_on, created_by_user_id)
+       VALUES
+         ($1, $3, 'set_aside', 400, '2026-08-10', $4),
+         ($2, $3, 'set_aside', 100, '2026-08-10', $4)`,
+      [reserveRoot.id, retiredRoot.id, individual.id, ACTOR],
+    );
+
+    expect(await getPersonSettlementBalance(pool, { individualId: individual.id })).toEqual({
+      payable: "0.0000",
+      receivable: "0.0000",
+      reserve: "400.0000",
+      credit: "100.0000",
+      openItems: 1,
+    });
+
+    const collections = await getCollectionsWorkspace(pool, fullAccess(ACTOR, "admin"), "2026-08");
+    expect(collections.individualSetAsides.find((row) => row.individualId === individual.id)).toMatchObject({
+      plannedThisMonth: "80.0000",
+      setAsideThisMonth: "500.0000",
+      remainingSetAside: "400.0000",
+    });
+  });
+
+  it("places a short-divisor reserve in the final months before renewal", async () => {
+    const individual = unwrap(await createIndividual(pool, { displayName: "Late Start Reserve" }, ACTOR));
+    const strategy = unwrap(await createStrategy(pool, { individualId: individual.id }, ACTOR));
+    await pool.query(
+      `INSERT INTO settlement_obligations
+         (source_key, kind, direction, individual_id, calculation_strategy_id,
+          original_amount, period_begin, period_end, calculation_metadata, created_by_user_id)
+       VALUES
+         ('late-start-reserve', 'individual_masser', 'reserve', $1, $2,
+          560, '2026-01-01', '2027-01-01',
+          '{"flow":"individual_plan","monthlyAmount":"80","monthDivisor":"7"}'::jsonb, $3)`,
+      [individual.id, strategy.id, ACTOR],
+    );
+
+    const may = await getCollectionsWorkspace(pool, fullAccess(ACTOR, "admin"), "2026-05");
+    const june = await getCollectionsWorkspace(pool, fullAccess(ACTOR, "admin"), "2026-06");
+    const december = await getCollectionsWorkspace(pool, fullAccess(ACTOR, "admin"), "2026-12");
+
+    expect(may.individualSetAsides.find((row) => row.individualId === individual.id)?.plannedThisMonth).toBe("0.0000");
+    expect(june.individualSetAsides.find((row) => row.individualId === individual.id)?.plannedThisMonth).toBe("80.0000");
+    expect(december.individualSetAsides.find((row) => row.individualId === individual.id)?.plannedThisMonth).toBe("80.0000");
   });
 
   it("links an exact missing-identity row without capturing a reused check number", async () => {

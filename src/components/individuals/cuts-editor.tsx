@@ -131,7 +131,7 @@ export default function CutsEditor({
         {src.clk.isZero() ? null : <Line label="Clock adjustment" value={`${src.clk.isNegative() ? "−" : "+"} ${money(src.clk.abs())} /mo`} />}
         {src.oth.isZero() ? null : <Line label="Other adjustment" value={`${src.oth.isNegative() ? "−" : "+"} ${money(src.oth.abs())} /mo`} />}
         <Line label="Net per month" value={money(net)} strong />
-        {afterAll ? <Line label="Masser" value={money(dec(afterAll))} sub="the fixed amount set aside (was “after all”)" strong /> : null}
+        {afterAll ? <Line label="Approved final / month" value={money(dec(afterAll))} sub="the entered final after the calculation" strong /> : null}
         {notice ? <p className="mt-2 text-sm text-[var(--color-danger)]">{notice}</p> : null}
       </div>
     );
@@ -158,7 +158,7 @@ export default function CutsEditor({
           <input type="number" step="any" value={clock} onChange={(e) => setClock(e.target.value)} className="input mt-1 w-full text-right tabular-nums" /></label>
         <label className="block text-sm"><span className="text-xs text-[var(--color-ink-soft)]">Other adj $/mo</span>
           <input type="number" step="any" value={other} onChange={(e) => setOther(e.target.value)} className="input mt-1 w-full text-right tabular-nums" /></label>
-        <label className="block text-sm"><span className="text-xs text-[var(--color-ink-soft)]">Masser $ (optional)</span>
+        <label className="block text-sm"><span className="text-xs text-[var(--color-ink-soft)]">Approved final / month (optional)</span>
           <input type="number" step="any" value={after} onChange={(e) => setAfter(e.target.value)} placeholder="—" className="input mt-1 w-full text-right tabular-nums" /></label>
       </div>
       <div className="mt-3 rounded bg-[var(--color-surface-muted)] px-3 py-2 text-sm">

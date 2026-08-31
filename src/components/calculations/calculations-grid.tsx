@@ -11,7 +11,6 @@ import { formatCell, rawValue } from "@/components/data-grid/engine";
 import { useGrid } from "@/components/data-grid/use-grid";
 import { Toolbar } from "@/components/data-grid/toolbar";
 import { FilterBar, HeaderFilter } from "@/components/data-grid/filter-bar";
-import { UtilizationBadge, utilizationColor, type UtilizationStatus } from "@/components/ui-viz";
 
 /**
  * The Calculations workspace on top of the shared data-grid engine. The engine
@@ -28,7 +27,7 @@ interface CalcTotals {
   yearly: string;
   monthly: string;
   net: string;
-  after: string;
+  approved: string;
   strategies: number;
   individuals: number;
 }
@@ -72,203 +71,204 @@ function pct100(frac: string | null | undefined): string | null {
   }
 }
 
-/* ------------------------------------------------------------ glance view */
+/* --------------------------------------------------------- financial view */
 
-// Risk ordering: the rows that need action float to the top of the glance view.
-const SEVERITY: Record<UtilizationStatus, number> = {
-  over_authorization: 0,
-  fully_used: 1,
-  near_exhaustion: 2,
-  behind_pace: 3,
-  ahead_of_pace: 4,
-  on_pace: 5,
-  not_started: 6,
-};
+type FinancialSortKey =
+  | "name"
+  | "account"
+  | "renews"
+  | "yearly"
+  | "monthly"
+  | "cut1"
+  | "cut2"
+  | "calculated"
+  | "approved"
+  | "difference";
 
-type GlanceSortKey = "status" | "name" | "plan" | "renews" | "used" | "left";
-
-function statusOf(r: StrategyGridRow): UtilizationStatus {
-  return r.analytics?.status ?? "not_started";
-}
-function usedPct(r: StrategyGridRow): number {
-  const u = r.analytics?.utilizationPercent;
-  return u ? dec(u).times(100).toNumber() : 0;
-}
-function elapsedPct(r: StrategyGridRow): number | null {
-  const t = r.analytics?.timeElapsedPercent;
-  return t ? dec(t).times(100).toNumber() : null;
-}
-function hrsLeft(r: StrategyGridRow): number | null {
-  const h = r.analytics?.remainingHours;
-  return h === undefined ? null : dec(h).toNumber();
+function percentLabel(fraction: string | null): string {
+  if (fraction === null || fraction === "") return "Not set";
+  return `${dec(fraction).times(100).toDecimalPlaces(2).toString()}%`;
 }
 
-/** The compact signature meter: fill = hours used, notch = period elapsed. */
-function GlancePace({ row }: { row: StrategyGridRow }) {
-  const status = statusOf(row);
-  const used = Math.max(0, Math.min(100, usedPct(row)));
-  const elapsed = elapsedPct(row);
-  const color = utilizationColor(status);
-  return (
-    <div
-      className="pace-track"
-      role="img"
-      aria-label={`${Math.round(used)}% used${elapsed !== null ? `, ${Math.round(elapsed)}% of the period elapsed` : ""}`}
-      title={
-        elapsed !== null
-          ? `${Math.round(used)}% of hours used · ${Math.round(elapsed)}% of the budget period elapsed. Fill past the notch = spending faster than time; short of it = slower.`
-          : `${Math.round(used)}% of hours used`
-      }
-    >
-      <div className="pace-fill" style={{ width: `${used}%`, background: color }} />
-      {elapsed !== null ? <div className="pace-notch" style={{ left: `${Math.max(0, Math.min(100, elapsed))}%` }} /> : null}
-    </div>
-  );
+function overrideDifference(row: StrategyGridRow) {
+  return row.afterAll === null ? null : dec(row.afterAll).minus(dec(row.net));
 }
 
-function GlanceTile({ label, value, color }: { label: string; value: number; color?: string }) {
+function FinancialTotal({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
     <div className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2">
       <div className="eyebrow text-[var(--color-text-soft)]">{label}</div>
-      <div className="tnum text-xl font-semibold leading-tight" style={color ? { color } : undefined}>
-        {value.toLocaleString()}
-      </div>
+      <div className="tnum text-xl font-semibold leading-tight">{formatMoney(value)}</div>
+      <div className="mt-0.5 text-xs text-[var(--color-text-soft)]">{detail}</div>
     </div>
   );
 }
 
-/**
- * The default "glance" over the projection portfolio. One row answers the whole
- * question — person, plan, renewal, a pace bar, % used, hours left and a status
- * badge — with the rows that need action sorted to the top. Click any row to
- * open the same step-by-step Explain drawer as the full sheet. Every figure the
- * grid can show still lives one click away under "Full sheet".
- */
-function GlanceView({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: (id: string) => void }) {
-  const [q, setQ] = useState("");
-  const [sort, setSort] = useState<{ key: GlanceSortKey; dir: "asc" | "desc" }>({ key: "status", dir: "asc" });
+function FinancialSortHead({
+  sortKey,
+  activeKey,
+  direction,
+  onSort,
+  children,
+  align = "left",
+}: {
+  sortKey: FinancialSortKey;
+  activeKey: FinancialSortKey;
+  direction: "asc" | "desc";
+  onSort: (key: FinancialSortKey) => void;
+  children: React.ReactNode;
+  align?: "left" | "right";
+}) {
+  return (
+    <th className={`whitespace-nowrap border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 font-semibold ${align === "right" ? "text-right" : "text-left"}`}>
+      <button type="button" onClick={() => onSort(sortKey)} className={`inline-flex items-center gap-1 hover:underline ${align === "right" ? "flex-row-reverse" : ""}`} title="Sort">
+        {children}
+        <span className="text-[10px] text-[var(--color-primary)]">{activeKey === sortKey ? (direction === "asc" ? "▲" : "▼") : "⇅"}</span>
+      </button>
+    </th>
+  );
+}
 
-  const counts = useMemo(() => {
-    const c = { total: rows.length, on_pace: 0, behind: 0, ahead: 0, over: 0, not_started: 0 };
-    for (const r of rows) {
-      const s = statusOf(r);
-      if (s === "on_pace") c.on_pace++;
-      else if (s === "behind_pace") c.behind++;
-      else if (s === "ahead_of_pace") c.ahead++;
-      else if (s === "not_started") c.not_started++;
-      else c.over++; // near_exhaustion, fully_used, over_authorization
-    }
-    return c;
-  }, [rows]);
+/** The workbook's standing setup, without actuals or budget-utilization data. */
+function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: (id: string) => void }) {
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<{ key: FinancialSortKey; dir: "asc" | "desc" }>({ key: "name", dir: "asc" });
 
   const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const filtered = needle
-      ? rows.filter((r) => r.individualName.toLowerCase().includes(needle) || r.label.toLowerCase().includes(needle))
+      ? rows.filter((row) =>
+          [row.individualName, row.account, row.label].some((value) => value?.toLowerCase().includes(needle)),
+        )
       : rows.slice();
-    const cmp = (a: StrategyGridRow, b: StrategyGridRow): number => {
-      let d = 0;
+    const text = (value: string | null) => value ?? "";
+    const money = (value: string | null) => dec(value ?? 0);
+    const compare = (a: StrategyGridRow, b: StrategyGridRow): number => {
+      let result = 0;
       switch (sort.key) {
-        case "status":
-          d = SEVERITY[statusOf(a)] - SEVERITY[statusOf(b)];
-          break;
-        case "name":
-          d = a.individualName.localeCompare(b.individualName);
-          break;
-        case "plan":
-          d = a.label.localeCompare(b.label);
-          break;
-        case "renews":
-          d = (a.renewalDate ?? "9999").localeCompare(b.renewalDate ?? "9999");
-          break;
-        case "used":
-          d = usedPct(a) - usedPct(b);
-          break;
-        case "left":
-          d = (hrsLeft(a) ?? Infinity) - (hrsLeft(b) ?? Infinity);
-          break;
+        case "name": result = a.individualName.localeCompare(b.individualName); break;
+        case "account": result = text(a.account ?? a.label).localeCompare(text(b.account ?? b.label)); break;
+        case "renews": result = text(a.renewalDate ?? "9999").localeCompare(text(b.renewalDate ?? "9999")); break;
+        case "yearly": result = money(a.yearlyGross).comparedTo(money(b.yearlyGross)); break;
+        case "monthly": result = money(a.monthlyGross).comparedTo(money(b.monthlyGross)); break;
+        case "cut1": result = money(a.cut1Percent).comparedTo(money(b.cut1Percent)); break;
+        case "cut2": result = money(a.cut2Percent).comparedTo(money(b.cut2Percent)); break;
+        case "calculated": result = money(a.net).comparedTo(money(b.net)); break;
+        case "approved": result = money(a.afterAll).comparedTo(money(b.afterAll)); break;
+        case "difference": result = money(overrideDifference(a)?.toString() ?? null).comparedTo(money(overrideDifference(b)?.toString() ?? null)); break;
       }
-      if (d === 0) d = a.individualName.localeCompare(b.individualName);
-      return sort.dir === "asc" ? d : -d;
+      if (result === 0) result = a.individualName.localeCompare(b.individualName);
+      return sort.dir === "asc" ? result : -result;
     };
-    return filtered.sort(cmp);
-  }, [rows, q, sort]);
+    return filtered.sort(compare);
+  }, [q, rows, sort]);
 
-  const toggle = (key: GlanceSortKey) =>
-    setSort((p) => (p.key === key ? { key, dir: p.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "status" || key === "name" || key === "plan" || key === "renews" ? "asc" : "desc" }));
+  const totals = useMemo(() => {
+    let yearly = dec(0);
+    let monthly = dec(0);
+    let calculated = dec(0);
+    let approved = dec(0);
+    let approvedCount = 0;
+    for (const row of visible) {
+      yearly = yearly.plus(dec(row.yearlyGross));
+      monthly = monthly.plus(dec(row.monthlyGross));
+      calculated = calculated.plus(dec(row.net));
+      if (row.afterAll !== null) {
+        approved = approved.plus(dec(row.afterAll));
+        approvedCount++;
+      }
+    }
+    return {
+      yearly: yearly.toFixed(2),
+      monthly: monthly.toFixed(2),
+      calculated: calculated.toFixed(2),
+      approved: approved.toFixed(2),
+      approvedCount,
+    };
+  }, [visible]);
 
-  const SortHead = ({ k, children, align = "left" }: { k: GlanceSortKey; children: React.ReactNode; align?: "left" | "right" }) => (
-    <th className={`whitespace-nowrap border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 font-semibold ${align === "right" ? "text-right" : "text-left"}`}>
-      <button type="button" onClick={() => toggle(k)} className={`inline-flex items-center gap-1 hover:underline ${align === "right" ? "flex-row-reverse" : ""}`} title="Sort">
-        {children}
-        <span className="text-[10px] text-[var(--color-primary)]">{sort.key === k ? (sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
-      </button>
-    </th>
-  );
+  const toggle = (key: FinancialSortKey) => {
+    setSort((current) =>
+      current.key === key
+        ? { key, dir: current.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: key === "name" || key === "account" || key === "renews" ? "asc" : "desc" },
+    );
+  };
+
+  const totalDetail = q.trim() ? `${visible.length} matching setups` : `${rows.length} active setups`;
+  const sortProps = { activeKey: sort.key, direction: sort.dir, onSort: toggle };
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-        <GlanceTile label="Active budgets" value={counts.total} />
-        <GlanceTile label="On pace" value={counts.on_pace} color="var(--color-pace-on)" />
-        <GlanceTile label="Behind" value={counts.behind} color="var(--color-pace-behind)" />
-        <GlanceTile label="Ahead" value={counts.ahead} color="var(--color-pace-ahead)" />
-        <GlanceTile label="Over / exhausting" value={counts.over} color="var(--color-pace-over)" />
-        <GlanceTile label="Not started" value={counts.not_started} color="var(--color-pace-idle)" />
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <FinancialTotal label="Yearly gross" value={totals.yearly} detail={totalDetail} />
+        <FinancialTotal label="Monthly gross" value={totals.monthly} detail="Divided by each setup's month divisor" />
+        <FinancialTotal label="Calculated net" value={totals.calculated} detail="After sequential cuts and adjustments" />
+        <FinancialTotal label="Approved final" value={totals.approved} detail={`${totals.approvedCount} monthly approved amounts`} />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <input
           value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search a person or plan…"
-          className="input w-64 max-w-full"
-          aria-label="Search projections"
+          onChange={(event) => setQ(event.target.value)}
+          placeholder="Search individual or account"
+          className="input w-72 max-w-full"
+          aria-label="Search financial setup"
         />
         <span className="text-sm text-[var(--color-text-soft)]">
-          Showing <span className="tnum font-semibold text-[var(--color-ink)]">{visible.length}</span> of{" "}
-          <span className="tnum">{rows.length}</span>
+          Showing <span className="tnum font-semibold text-[var(--color-ink)]">{visible.length}</span> of <span className="tnum">{rows.length}</span>
         </span>
-        <span className="ml-auto text-xs text-[var(--color-text-soft)]">Sorted so the budgets that need action rise to the top. Click a name to open the profile, or “Explain” for the full calculation.</span>
       </div>
 
       <div className="scroll-thin max-h-[64vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
         <table className="w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10">
             <tr>
-              <SortHead k="name">Person</SortHead>
-              <SortHead k="plan">Plan</SortHead>
-              <SortHead k="renews">Renews</SortHead>
-              <th className="whitespace-nowrap border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 text-left font-semibold" style={{ minWidth: 150 }}>
-                Pace <span className="font-normal text-[var(--color-text-soft)]">(used vs. time)</span>
-              </th>
-              <SortHead k="used" align="right">% used</SortHead>
-              <SortHead k="left" align="right">Hrs left</SortHead>
-              <SortHead k="status">Status</SortHead>
+              <FinancialSortHead sortKey="name" {...sortProps}>Individual</FinancialSortHead>
+              <FinancialSortHead sortKey="account" {...sortProps}>Account / type</FinancialSortHead>
+              <FinancialSortHead sortKey="renews" {...sortProps}>Renewal date</FinancialSortHead>
+              <FinancialSortHead sortKey="yearly" align="right" {...sortProps}>Yearly gross</FinancialSortHead>
+              <FinancialSortHead sortKey="monthly" align="right" {...sortProps}>Monthly basis</FinancialSortHead>
+              <FinancialSortHead sortKey="cut1" align="right" {...sortProps}>First cut</FinancialSortHead>
+              <FinancialSortHead sortKey="cut2" align="right" {...sortProps}>Second cut</FinancialSortHead>
+              <FinancialSortHead sortKey="calculated" align="right" {...sortProps}>Calculated net</FinancialSortHead>
+              <FinancialSortHead sortKey="approved" align="right" {...sortProps}>Approved final</FinancialSortHead>
+              <FinancialSortHead sortKey="difference" align="right" {...sortProps}>Override difference</FinancialSortHead>
               <th className="whitespace-nowrap border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 text-left font-semibold">Open</th>
             </tr>
           </thead>
           <tbody>
-            {visible.map((r) => {
-              const left = hrsLeft(r);
+            {visible.map((row) => {
+              const difference = overrideDifference(row);
               return (
-                <tr
-                  key={r.id}
-                  className="border-b border-[var(--color-rule)] hover:bg-black/[0.02]"
-                >
+                <tr key={row.id} className="border-b border-[var(--color-rule)] hover:bg-black/[0.02]">
                   <td className="px-3 py-2 font-medium">
-                    <Link href={`/individuals/${r.individualId}`} className="text-[var(--color-primary)] hover:underline" title={`Open ${r.individualName}'s profile`}>
-                      {r.individualName}
+                    <Link href={`/individuals/${row.individualId}`} className="text-[var(--color-primary)] hover:underline" title={`Open ${row.individualName}'s profile`}>
+                      {row.individualName}
                     </Link>
                   </td>
-                  <td className="px-3 py-2 text-[var(--color-ink-soft)]">{r.label}</td>
-                  <td className="tnum px-3 py-2 text-[var(--color-ink-soft)]">{r.renewalDate ?? "—"}</td>
-                  <td className="px-3 py-2"><GlancePace row={r} /></td>
-                  <td className="tnum px-3 py-2 text-right">{r.analytics?.utilizationPercent != null ? `${Math.round(usedPct(r))}%` : "—"}</td>
-                  <td className="tnum px-3 py-2 text-right">{left === null ? "—" : formatHours(r.analytics!.remainingHours)}</td>
-                  <td className="px-3 py-2"><UtilizationBadge status={statusOf(r)} /></td>
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-[var(--color-ink)]">{row.account ?? row.label}</div>
+                    {row.account ? <div className="text-xs text-[var(--color-text-soft)]">{row.label}</div> : <div className="text-xs text-[var(--color-text-soft)]">Account not set</div>}
+                  </td>
+                  <td className="tnum px-3 py-2 text-[var(--color-ink-soft)]">{row.renewalDate ?? "Not set"}</td>
+                  <td className="tnum px-3 py-2 text-right">{formatMoney(row.yearlyGross)}</td>
+                  <td className="tnum px-3 py-2 text-right">
+                    <div className="font-medium">{formatMoney(row.monthlyGross)}</div>
+                    <div className="text-xs text-[var(--color-text-soft)]">÷ {dec(row.monthDivisor).toString()} months</div>
+                  </td>
+                  <td className="tnum px-3 py-2 text-right">{percentLabel(row.cut1Percent)}</td>
+                  <td className="tnum px-3 py-2 text-right">
+                    <div>{percentLabel(row.cut2Percent)}</div>
+                    <div className="text-xs text-[var(--color-text-soft)]">after first cut</div>
+                  </td>
+                  <td className="tnum px-3 py-2 text-right font-medium">{formatMoney(row.net)}</td>
+                  <td className="tnum px-3 py-2 text-right font-medium">{row.afterAll === null ? <span className="font-normal text-[var(--color-text-soft)]">Not set</span> : formatMoney(row.afterAll)}</td>
+                  <td className="tnum px-3 py-2 text-right text-[var(--color-ink-soft)]" title="Approved final minus calculated net">
+                    {difference === null ? "-" : `${difference.isPositive() ? "+" : ""}${formatMoney(difference)}`}
+                  </td>
                   <td className="whitespace-nowrap px-3 py-2 text-xs">
-                    <button type="button" onClick={() => onOpen(r.id)} className="text-[var(--color-primary)] hover:underline" title="Open the step-by-step calculation">
+                    <button type="button" onClick={() => onOpen(row.id)} className="text-[var(--color-primary)] hover:underline" title="Open the step-by-step calculation">
                       Explain
                     </button>
                   </td>
@@ -277,8 +277,8 @@ function GlanceView({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: (id: st
             })}
             {visible.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
-                  {rows.length === 0 ? "No projections yet." : "No one matches your search."}
+                <td colSpan={11} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
+                  {rows.length === 0 ? "No financial setups yet." : "No financial setup matches your search."}
                 </td>
               </tr>
             ) : null}
@@ -303,7 +303,7 @@ export default function CalculationsGrid({
   canManage: boolean;
 }) {
   const router = useRouter();
-  const [view, setView] = useState<"glance" | "full">("glance");
+  const [view, setView] = useState<"overview" | "full">("overview");
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [editing, setEditing] = useState<{ rowId: string; colKey: string } | null>(null);
   const [active, setActive] = useState<{ row: number; col: number } | null>(null);
@@ -383,10 +383,12 @@ export default function CalculationsGrid({
           </Link>
         ),
       },
-      editable({ key: "label", label: "Plan", kind: "text", accessor: (r) => r.label, patch: (v) => ({ label: v }) }),
+      editable({ key: "label", label: "Setup name", kind: "text", accessor: (r) => r.label, patch: (v) => ({ label: v }) }),
+      editable({ key: "account", label: "Account / type", kind: "text", accessor: (r) => r.account, patch: (v) => ({ account: v || null }) }),
       editable({ key: "renewalDate", label: "Renewal date", kind: "date", frozen: true, accessor: (r) => r.renewalDate, patch: (v) => ({ renewalDate: v || null }) }),
-      editable({ key: "cut1Percent", label: "Deduction 1 %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut1Percent), patch: (v) => ({ cut1Percent: v }) }),
-      editable({ key: "cut2Percent", label: "Deduction 2 %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut2Percent), patch: (v) => ({ cut2Percent: v }) }),
+      editable({ key: "monthDivisor", label: "Monthly divisor", kind: "int", accessor: (r) => r.monthDivisor, patch: (v) => ({ monthDivisor: v }) }),
+      editable({ key: "cut1Percent", label: "First cut %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut1Percent), patch: (v) => ({ cut1Percent: v }) }),
+      editable({ key: "cut2Percent", label: "Second cut %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut2Percent), patch: (v) => ({ cut2Percent: v }) }),
       editable({ key: "clockAdjustment", label: "Clock", kind: "money", accessor: (r) => r.clockAdjustment, patch: (v) => ({ clockAdjustment: v }) }),
       editable({ key: "otherAdjustment", label: "Other adj.", kind: "money", accessor: (r) => r.otherAdjustment, patch: (v) => ({ otherAdjustment: v }) }),
     ];
@@ -404,11 +406,10 @@ export default function CalculationsGrid({
 
     const computed: ColumnDef<StrategyGridRow>[] = [
       { key: "yearlyGross", label: "Yearly gross", kind: "computed", accessor: (r) => r.yearlyGross },
-      { key: "monthlyGross", label: "Monthly gross", kind: "computed", accessor: (r) => r.monthlyGross },
-      { key: "grossNet", label: "After deductions", kind: "computed", accessor: (r) => r.grossNet },
-      { key: "net", label: "Net", kind: "computed", accessor: (r) => r.net },
-      editable({ key: "afterAll", label: "Annual set-aside", kind: "money", accessor: (r) => r.afterAll, patch: (v) => ({ afterAll: v === "" ? null : v }) }),
-      editable({ key: "account", label: "Account", kind: "text", accessor: (r) => r.account, patch: (v) => ({ account: v || null }) }),
+      { key: "monthlyGross", label: "Monthly basis", kind: "computed", accessor: (r) => r.monthlyGross },
+      { key: "grossNet", label: "After sequential cuts", kind: "computed", accessor: (r) => r.grossNet },
+      { key: "net", label: "Calculated net", kind: "computed", accessor: (r) => r.net },
+      editable({ key: "afterAll", label: "Approved final / month", kind: "money", accessor: (r) => r.afterAll, patch: (v) => ({ afterAll: v === "" ? null : v }) }),
     ];
 
     // Optional read-only analysis columns: actual-vs-plan, forecast, and the
@@ -442,20 +443,20 @@ export default function CalculationsGrid({
       let yearly = dec(0),
         monthly = dec(0),
         net = dec(0),
-        after = dec(0);
+        approved = dec(0);
       const inds = new Set<string>();
       for (const r of filtered) {
         yearly = yearly.plus(dec(r.yearlyGross || 0));
         monthly = monthly.plus(dec(r.monthlyGross || 0));
         net = net.plus(dec(r.net || 0));
-        if (r.afterAll) after = after.plus(dec(r.afterAll));
+        if (r.afterAll) approved = approved.plus(dec(r.afterAll));
         inds.add(r.individualId);
       }
       return {
         yearly: yearly.toFixed(2),
         monthly: monthly.toFixed(2),
         net: net.toFixed(2),
-        after: after.toFixed(2),
+        approved: approved.toFixed(2),
         strategies: filtered.length,
         individuals: inds.size,
       };
@@ -653,14 +654,14 @@ export default function CalculationsGrid({
 
   return (
     <div className="space-y-3">
-      <div className="segmented-control" role="tablist" aria-label="Budget planning views">
+      <div className="segmented-control" role="tablist" aria-label="Financial setup views">
         <button
           type="button"
-          onClick={() => setView("glance")}
+          onClick={() => setView("overview")}
           role="tab"
-          aria-selected={view === "glance"}
+          aria-selected={view === "overview"}
         >
-          <LayoutList className="h-4 w-4" aria-hidden /> Plan health
+          <LayoutList className="h-4 w-4" aria-hidden /> Expected monthly amounts
         </button>
         <button
           type="button"
@@ -672,17 +673,17 @@ export default function CalculationsGrid({
         </button>
       </div>
 
-      {view === "glance" ? (
-        <GlanceView rows={rows} onOpen={setDrawerId} />
+      {view === "overview" ? (
+        <FinancialOverview rows={rows} onOpen={setDrawerId} />
       ) : (
       <>
       {/* shared toolbar: search, result count, reset, saved views, export + our extras */}
       <Toolbar
         grid={grid}
-        searchPlaceholder="Search projections…"
+        searchPlaceholder="Search financial setup…"
         exportEndpoint="/api/calculations/export"
-        exportTitle="Calculations"
-        exportFilename="calculations"
+        exportTitle="Financial setup"
+        exportFilename="financial-setup"
         showColumnChooser={false}
         extraActions={
           <>
@@ -696,7 +697,7 @@ export default function CalculationsGrid({
             {canManage && (
               <span className="ml-auto inline-flex items-center gap-1">
                 <select value={addFor} onChange={(e) => setAddFor(e.target.value)} className="rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1.5">
-                  <option value="">Add a plan for…</option>
+                  <option value="">Add a setup for…</option>
                   {individuals.map((i) => (
                     <option key={i.id} value={i.id}>{i.name}</option>
                   ))}
@@ -714,11 +715,11 @@ export default function CalculationsGrid({
       {/* filter-aware totals */}
       {totals && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Annual employee base</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.yearly)}</div></div>
-          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Monthly employee base</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.monthly)}</div></div>
-          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Net plan amount</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.net)}</div></div>
-          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Annual set-aside</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.after)}</div></div>
-          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Plans</div><div className="text-lg font-semibold tabular-nums">{totals.strategies}</div></div>
+          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Yearly gross</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.yearly)}</div></div>
+          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Monthly gross</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.monthly)}</div></div>
+          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Calculated net</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.net)}</div></div>
+          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Approved final</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.approved)}</div></div>
+          <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Setups</div><div className="text-lg font-semibold tabular-nums">{totals.strategies}</div></div>
           <div className={tile}><div className="eyebrow text-[var(--color-text-soft)]">Individuals</div><div className="text-lg font-semibold tabular-nums">{totals.individuals}</div></div>
         </div>
       )}
@@ -786,7 +787,7 @@ export default function CalculationsGrid({
                       onDoubleClick={() => canEdit && setEditing({ rowId: r.id, colKey: c.key })}
                       className={`relative whitespace-nowrap border-b border-r px-2 py-1 ${numeric ? "text-right tabular-nums" : "text-left"} ${canEdit ? "cursor-cell" : "cursor-default"} ${c.kind === "computed" ? "text-[var(--color-text-soft)]" : ""} ${isActive ? "border-[var(--color-primary)] ring-1 ring-inset ring-[var(--color-primary)]" : "border-[var(--color-rule)]"} ${selected && !isActive ? "bg-[var(--color-primary-soft)]" : c.kind === "computed" ? "bg-[var(--color-surface-muted)]" : ""}`}
                       style={isFrozen ? { position: "sticky", left: frozenLeft[c.key], zIndex: 10, background: frozenBg, minWidth: c.key === "individual" ? 170 : 130 } : undefined}
-                      title={c.key === "renewalDate" && r.periodStart ? `Budget period: ${r.periodStart} → ${r.periodEnd}` : undefined}
+                      title={c.key === "renewalDate" && r.periodStart ? `Renewal cycle: ${r.periodStart} → ${r.periodEnd}` : undefined}
                     >
                       {c.render ? (
                         c.render(r, text, { editing: isEditing, canManage })
@@ -811,7 +812,7 @@ export default function CalculationsGrid({
             ))}
             {grid.sorted.length === 0 && (
               <tr>
-                <td colSpan={grid.visibleColumns.length + 1} className="px-3 py-10 text-center text-[var(--color-text-soft)]">No plans match the current filters.</td>
+                <td colSpan={grid.visibleColumns.length + 1} className="px-3 py-10 text-center text-[var(--color-text-soft)]">No financial setups match the current filters.</td>
               </tr>
             )}
           </tbody>
@@ -895,8 +896,8 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
       <div className="flex items-center justify-between border-b border-[var(--color-rule)] px-4 py-3">
         <div>
           <div className="eyebrow text-[var(--color-text-soft)]">Calculation</div>
-          <div className="text-lg font-semibold">{row ? `${row.individualName} — ${row.label}` : "Budget plan"}</div>
-          {row?.periodStart && <div className="text-xs text-[var(--color-text-soft)]">Budget period {row.periodStart} → {row.periodEnd} (from renewal date)</div>}
+          <div className="text-lg font-semibold">{row ? `${row.individualName} — ${row.label}` : "Financial setup"}</div>
+          {row?.renewalDate && <div className="text-xs text-[var(--color-text-soft)]">Renewal date {row.renewalDate}</div>}
         </div>
         <button type="button" onClick={onClose} className="rounded px-2 py-1 text-lg hover:bg-black/5" aria-label="Close">×</button>
       </div>
@@ -951,13 +952,16 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
             </table>
             {canManage && (
               <p className="mb-3 text-[11px] text-[var(--color-text-soft)]">
-                Type a rate to override it for this plan; clear the box to return to the program default. Changing a rate recalculates everything instantly.
+                Type a rate to override it for this setup; clear the box to return to the program default. Changing a rate recalculates everything instantly.
               </p>
             )}
             <div className="space-y-1.5">
               {data.explain.steps.map((s) => (
                 <div key={s.key} className="flex items-baseline justify-between gap-3 border-b border-[var(--color-rule)] py-1">
-                  <div><div className="font-medium">{s.label}</div><div className="text-xs text-[var(--color-text-soft)]">{s.formula}</div></div>
+                  <div>
+                    <div className="font-medium">{s.key === "after_all" ? "Approved final (entered)" : s.label}</div>
+                    <div className="text-xs text-[var(--color-text-soft)]">{s.key === "after_all" ? "Monthly approved amount from the workbook" : s.formula}</div>
+                  </div>
                   <div className="tabular-nums font-semibold">{s.value ? formatMoney(s.value) : "—"}</div>
                 </div>
               ))}

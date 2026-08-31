@@ -9,7 +9,7 @@ import {
 import type { PgLikePool } from "@/lib/import/commit";
 import { createIndividual } from "@/lib/manage/individuals";
 import { createSession } from "@/lib/manage/schedule";
-import { saveCalculation } from "@/lib/manage/calculations";
+import { createStrategy, updateStrategy } from "@/lib/manage/calculation-strategies";
 import { cutsMonthlyReport, actualVsScheduledReport } from "@/lib/data/report-queries";
 import { dec } from "@/lib/money";
 
@@ -41,38 +41,38 @@ suite("phase 4D — additional reports (real PostgreSQL)", () => {
   });
   afterAll(closeTestPool);
 
-  it("cuts-monthly returns a saved calculation's After All and the spreadsheet difference", async () => {
+  it("cuts-monthly reads the active Financial setup and its approved monthly final", async () => {
     const ind = unwrap(await createIndividual(pool, { displayName: "Cuts Person" }, ACTOR));
     const dayHab = await programId("DAY_HAB");
 
-    // 1000 h x 17 = 17000 gross; -10% then -5% sequentially -> 14535 After All.
+    // 1000 h x 17 = 17000 yearly; the two cuts are sequential. The approved
+    // final is an entered monthly figure and is not derived from the cuts.
+    const strategy = unwrap(await createStrategy(pool, { individualId: ind.id, label: "Primary" }, ACTOR));
     unwrap(
-      await saveCalculation(
+      await updateStrategy(
         pool,
         {
-          individualId: ind.id,
-          programId: dayHab,
-          annualAuthorizedHours: "1000",
-          programRate: "17",
-          agencyRate: "19",
+          id: strategy.id,
+          hours: { [dayHab]: "1000" },
+          rateOverrides: { [dayHab]: "17" },
           cut1Percent: "10",
           cut2Percent: "5",
           clockAdjustment: "0",
-          spreadsheetValue: "15000",
+          afterAll: "1250",
         },
         ACTOR,
-        "initial",
       ),
     );
 
     const rows = await cutsMonthlyReport(pool, {});
     const row = rows.find((r) => r.individualName === "Cuts Person");
     expect(row).toBeTruthy();
-    expect(dec(row!.annualGross!).toNumber()).toBe(17000);
-    expect(dec(row!.afterAll!).toNumber()).toBe(14535);
-    expect(dec(row!.spreadsheetValue!).toNumber()).toBe(15000);
-    // difference = spreadsheet value - system After All.
-    expect(dec(row!.difference!).toNumber()).toBe(465);
+    expect(row!.setupName).toBe("Primary");
+    expect(dec(row!.annualGross).toNumber()).toBe(17000);
+    expect(dec(row!.monthlyGross).toNumber()).toBeCloseTo(1416.67, 2);
+    expect(dec(row!.calculatedNet).toNumber()).toBeCloseTo(1211.25, 2);
+    expect(dec(row!.approvedFinal!).toNumber()).toBe(1250);
+    expect(dec(row!.difference!).toNumber()).toBeCloseTo(38.75, 2);
   });
 
   it("actual-vs-scheduled computes the variance (actual minus scheduled) for hours and money", async () => {

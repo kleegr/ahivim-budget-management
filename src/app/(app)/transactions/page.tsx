@@ -9,7 +9,7 @@ import type { FilterState } from "@/components/data-grid/types";
 import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Billing history - Ahivim" };
+export const metadata = { title: "Transactions - Ahivim" };
 
 type SP = Record<string, string | string[] | undefined>;
 const one = (v: string | string[] | undefined): string | undefined =>
@@ -70,6 +70,18 @@ function buildInitialFilters(rows: GridTransaction[], sp: SP): { filters: Filter
   if (payTo) {
     filters.payTo = { selected: [payTo] };
     labels.push(`paid to ${payTo}`);
+  } else {
+    const payToKey = one(sp.payToKey)?.trim().toLocaleLowerCase();
+    if (payToKey) {
+      const payeeValues = [...new Set(rows
+        .filter((row) => row.payTo?.trim().toLocaleLowerCase() === payToKey)
+        .map((row) => row.payTo)
+        .filter((value): value is string => Boolean(value)))];
+      if (payeeValues.length > 0) {
+        filters.payTo = { selected: payeeValues };
+        labels.push(`paid to ${payeeValues[0]!.trim()}`);
+      }
+    }
   }
 
   const checkNumber = one(sp.checkNumber);
@@ -132,7 +144,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   if (result.ok && result.data.denied) {
     return (
       <>
-        <PageHeader eyebrow="Billing" title="Billing history" />
+        <PageHeader eyebrow="Actual activity" title="Transactions" />
         <ErrorPanel title="No access to Transactions">
           Your account doesn&rsquo;t include permission to view transactions. Ask an administrator if you need it.
         </ErrorPanel>
@@ -155,20 +167,29 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     : requestedTransactionIds.length > 1
       ? `${requestedTransactionIds.length.toLocaleString()} selected transactions`
       : seeded.label;
+  const hasFilterContext = Object.keys(seeded.filters).length > 0;
+  const requestedView = one(sp.view);
+  const initialView: "checks" | "rows" = contextLabel || hasFilterContext
+    ? "rows"
+    : requestedView === "checks" || requestedView === "rows"
+      ? requestedView
+      : user.role === "admin"
+        ? "rows"
+        : "checks";
 
   return (
     <>
       <PageHeader
-        eyebrow="Billing"
-        title="Billing history"
-        description="Find billing by person, employee, program, date, or check."
+        eyebrow="Actual activity"
+        title="Transactions"
+        description="Actual billing and payroll activity."
       />
 
       {!result.ok ? (
         <ErrorPanel title="Billed activity is unavailable">{result.error}</ErrorPanel>
       ) : requestedTransactionIds.length > 0 && !exactSelectionAvailable ? (
         <ErrorPanel title={requestedTransactionIds.length === 1 ? "This transaction is not available" : "These transactions are not available"}>
-          One or more rows may have been removed, or your account may not include access to them. <ButtonLink href="/transactions">Open all billed activity</ButtonLink>
+          One or more rows may have been removed, or your account may not include access to them. <ButtonLink href="/transactions">Open all transactions</ButtonLink>
         </ErrorPanel>
       ) : rows.length === 0 ? (
         <Card>
@@ -178,12 +199,14 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         </Card>
       ) : (
         <BilledActivityWorkspace
+          key={`${contextLabel ?? "all"}:${initialView}`}
           rows={rows}
           canManage={canManage}
           visibility={result.data.visibility}
           canSeeBudgets={result.data.canSeeBudgets}
           initialFilters={seeded.filters}
           contextLabel={contextLabel}
+          initialView={initialView}
         />
       )}
     </>

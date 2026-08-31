@@ -8,7 +8,7 @@ import {
 } from "@/lib/business/settlement-ledger";
 
 describe("individual settlement targets", () => {
-  it("annualizes sequential monthly cuts and counts fixed Masser once", () => {
+  it("annualizes the approved monthly final without double-counting its calculation components", () => {
     const targets = individualSettlementTargets({
       lines: [{ programLabel: "Com Hab", hours: "120", internalRate: "21" }],
       monthDivisor: "12",
@@ -20,11 +20,12 @@ describe("individual settlement targets", () => {
     });
 
     expect(targets).toEqual([
-      expect.objectContaining({ kind: "individual_cut_1", direction: "reserve", amount: "252.0000" }),
-      expect.objectContaining({ kind: "individual_cut_2", direction: "reserve", amount: "453.6000" }),
-      expect.objectContaining({ kind: "individual_clock", direction: "receivable", amount: "300.0000" }),
-      expect.objectContaining({ kind: "individual_other", direction: "reserve", amount: "120.0000" }),
-      expect.objectContaining({ kind: "individual_masser", direction: "reserve", amount: "750.0000", monthlyAmount: null }),
+      expect.objectContaining({
+        kind: "individual_masser",
+        direction: "reserve",
+        amount: "9000.0000",
+        monthlyAmount: "750.0000",
+      }),
     ]);
   });
 
@@ -32,15 +33,24 @@ describe("individual settlement targets", () => {
     expect(individualSettlementTargets({ lines: [] })).toEqual([]);
   });
 
-  it("can include zero targets so recalculation can close prior work", () => {
-    const targets = individualSettlementTargets({ lines: [] }, { includeZero: true });
+  it("does not create an individual reserve before a final is approved", () => {
+    expect(individualSettlementTargets({
+      lines: [{ programLabel: "Com Hab", hours: "120", internalRate: "21" }],
+      cut1Percent: "0.10",
+      cut2Percent: "0.20",
+    })).toEqual([]);
+  });
 
-    expect(targets.map((target) => [target.kind, target.amount])).toEqual([
-      ["individual_cut_1", "0.0000"],
-      ["individual_cut_2", "0.0000"],
-      ["individual_clock", "0.0000"],
-      ["individual_other", "0.0000"],
-      ["individual_masser", "0.0000"],
+  it("uses the setup divisor for a non-12-month approved final", () => {
+    expect(individualSettlementTargets({
+      lines: [],
+      monthDivisor: "7.5",
+      afterAll: "800",
+    })).toEqual([
+      expect.objectContaining({
+        amount: "6000.0000",
+        monthlyAmount: "800.0000",
+      }),
     ]);
   });
 });

@@ -10,8 +10,9 @@ import { dec } from "@/lib/money";
  *   - gross / internal / agency-additional / hours are simple column sums;
  *   - agency additional per row is gross − internal (workbook column R = Q − P),
  *     already carried on each row, so the total can be negative or positive;
- *   - Total Net Pay is counted ONCE per check number (the workbook's column-S
- *     rule), never repeated for every row of the same check.
+ *   - Total Net Pay is counted once per real payment. Check numbers can be
+ *     reused, so payment identity also includes the payee and check date
+ *     (or the service period when the check date is missing).
  */
 export interface TotalsInput {
   id: string;
@@ -20,11 +21,31 @@ export interface TotalsInput {
   agencyAdditional: string | null;
   hours: string | null;
   totalNetPay: string | null;
+  payTo: string | null;
   checkNumber: string | null;
+  checkDate: string | null;
+  periodBegin: string | null;
+  periodEnd: string | null;
   individualId: string | null;
   individual: string | null;
   employeeId: string | null;
   employee: string | null;
+}
+
+function paymentIdentity(row: TotalsInput): string {
+  const payeeKey = row.payTo?.trim().toLocaleLowerCase()
+    || row.employeeId
+    || row.employee?.trim().toLocaleLowerCase()
+    || "unknown-payee";
+  const checkNumber = row.checkNumber?.trim() || null;
+  if (!checkNumber) return `${payeeKey}:row:${row.id}`;
+
+  const timing = row.checkDate
+    ? `date:${row.checkDate}`
+    : row.periodBegin || row.periodEnd
+      ? `period:${row.periodBegin ?? ""}:${row.periodEnd ?? ""}`
+      : "undated";
+  return `${payeeKey}:check:${checkNumber}:${timing}`;
 }
 
 export interface GridTotals {
@@ -45,27 +66,28 @@ export function computeGridTotals(rows: TotalsInput[]): GridTotals {
   let addl = dec(0);
   let hours = dec(0);
   let net = dec(0);
-  const checks = new Set<string>();
+  const payments = new Set<string>();
   const inds = new Set<string>();
   const emps = new Set<string>();
-  const seenCheck = new Set<string>();
+  const seenNetPayment = new Set<string>();
 
   for (const r of rows) {
     if (r.gross) gross = gross.plus(dec(r.gross));
     if (r.internalAmount) internal = internal.plus(dec(r.internalAmount));
     if (r.agencyAdditional) addl = addl.plus(dec(r.agencyAdditional));
     if (r.hours) hours = hours.plus(dec(r.hours));
-    if (r.checkNumber) checks.add(r.checkNumber);
+    const paymentKey = paymentIdentity(r);
+    payments.add(paymentKey);
     const indKey = r.individualId ?? r.individual;
     if (indKey) inds.add(indKey);
     const empKey = r.employeeId ?? r.employee;
     if (empKey) emps.add(empKey);
 
-    // Net pay is a per-check figure repeated on every row of the check; count it once.
-    const ck = r.checkNumber ?? `row:${r.id}`;
-    if (!seenCheck.has(ck)) {
-      seenCheck.add(ck);
-      if (r.totalNetPay) net = net.plus(dec(r.totalNetPay));
+    // Net pay is repeated on every row belonging to one payment. Count the
+    // first populated value once while keeping rows without a number separate.
+    if (r.totalNetPay && !seenNetPayment.has(paymentKey)) {
+      seenNetPayment.add(paymentKey);
+      net = net.plus(dec(r.totalNetPay));
     }
   }
 
@@ -76,7 +98,7 @@ export function computeGridTotals(rows: TotalsInput[]): GridTotals {
     hours: hours.toFixed(2),
     netPerCheck: net.toFixed(2),
     transactions: rows.length,
-    checks: checks.size,
+    checks: payments.size,
     individuals: inds.size,
     employees: emps.size,
   };

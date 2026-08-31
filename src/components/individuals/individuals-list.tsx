@@ -34,6 +34,7 @@ export type IndividualBudget = {
   usedPct: number | null;
   elapsedPct: number | null;
   renews: string | null;
+  renewalCount: number;
   usedHours: number;
   hoursLeft: number | null;
   plans: number;
@@ -212,6 +213,11 @@ function Renewal({ budget }: { budget: IndividualBudget }) {
   return (
     <div className={tone}>
       <p className="tnum whitespace-nowrap font-medium">{formatDate(budget.renews)}</p>
+      {budget.renewalCount > 1 ? (
+        <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
+          Next of {budget.renewalCount} program dates
+        </p>
+      ) : null}
       {detail ? <p className="mt-0.5 text-xs font-medium">{detail}</p> : null}
     </div>
   );
@@ -339,7 +345,7 @@ export default function IndividualsList({
       ),
     },
     {
-      key: "renews", label: "Renewal", kind: "date", width: 140,
+      key: "renews", label: "Next renewal", kind: "date", width: 168,
       accessor: (row) => row.budget?.renews ?? "9999-12-31",
       render: (row) => row.budget ? <Link href={individualBudgetHref(row.id)} className="block underline-offset-2 hover:underline"><Renewal budget={row.budget} /></Link> : <span className="text-[var(--color-ink-faint)]">-</span>,
     },

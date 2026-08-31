@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, RotateCcw, Search, TableProperties } from "lucide-react";
+import { ListChecks, RotateCcw, Search, TableProperties } from "lucide-react";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 import type { TransactionFieldVisibility } from "@/lib/auth/money-redaction";
@@ -32,8 +32,14 @@ const routingLabel = (routing: CheckRouting) => {
 };
 
 function checkRowsHref(check: CheckSummary): string {
-  const params = new URLSearchParams({ checkNumber: check.checkNumber ?? "" });
-  if (check.employeeId) params.set("employeeId", check.employeeId);
+  const params = new URLSearchParams({ view: "rows" });
+  if (check.transactionIds.length <= 200) {
+    for (const id of check.transactionIds) params.append("transactionId", id);
+    return `/transactions?${params.toString()}`;
+  }
+  if (check.checkNumber) params.set("checkNumber", check.checkNumber);
+  if (check.payTo) params.set("payToKey", check.payTo.trim().toLocaleLowerCase());
+  else if (check.employeeId) params.set("employeeId", check.employeeId);
   else if (check.employee) params.set("employee", check.employee);
   if (check.checkDate) params.set("period", `${check.checkDate}..${check.checkDate}`);
   else {
@@ -216,6 +222,7 @@ export default function BilledActivityWorkspace({
   canSeeBudgets,
   initialFilters,
   contextLabel,
+  initialView = "checks",
 }: {
   rows: GridTransaction[];
   canManage: boolean;
@@ -223,32 +230,56 @@ export default function BilledActivityWorkspace({
   canSeeBudgets: boolean;
   initialFilters?: FilterState;
   contextLabel?: string | null;
+  initialView?: WorkspaceView;
 }) {
-  const [view, setView] = useState<WorkspaceView>(contextLabel ? "rows" : "checks");
+  const [view, setView] = useState<WorkspaceView>(contextLabel ? "rows" : initialView);
+
+  const selectView = (nextView: WorkspaceView) => {
+    setView(nextView);
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", nextView);
+    window.history.replaceState(null, "", url.toString());
+  };
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-[var(--color-ink)]">{view === "checks" ? "Checks" : "Billing details"}</p>
+      {!contextLabel ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="segmented-control" role="tablist" aria-label="Transaction views">
+            <button
+              id="transactions-rows-tab"
+              type="button"
+              role="tab"
+              aria-selected={view === "rows"}
+              aria-controls="transactions-workspace-panel"
+              onClick={() => selectView("rows")}
+            >
+              <TableProperties aria-hidden className="h-4 w-4" /> Transactions
+            </button>
+            <button
+              id="transactions-checks-tab"
+              type="button"
+              role="tab"
+              aria-selected={view === "checks"}
+              aria-controls="transactions-workspace-panel"
+              onClick={() => selectView("checks")}
+            >
+              <ListChecks aria-hidden className="h-4 w-4" /> Payroll checks
+            </button>
+          </div>
           <p className="text-xs text-[var(--color-ink-faint)]">
-            {view === "checks" ? "One line for each check" : `${rows.length.toLocaleString()} billing records`}
+            {view === "checks" ? "One line per check" : `${rows.length.toLocaleString()} transactions`}
           </p>
         </div>
-        {view === "checks" ? (
-          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setView("rows")}>
-            <TableProperties aria-hidden className="h-4 w-4" /> View details
-          </button>
-        ) : (
-          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setView("checks")}>
-            <ArrowLeft aria-hidden className="h-4 w-4" /> Back to checks
-          </button>
-        )}
-      </div>
+      ) : null}
 
-      <div role="tabpanel">
+      <div
+        id="transactions-workspace-panel"
+        role="tabpanel"
+        aria-labelledby={contextLabel ? undefined : view === "rows" ? "transactions-rows-tab" : "transactions-checks-tab"}
+      >
         {view === "checks" ? (
-          <ChecksView rows={rows} visibility={visibility} onShowRows={() => setView("rows")} />
+          <ChecksView rows={rows} visibility={visibility} onShowRows={() => selectView("rows")} />
         ) : (
           <TransactionsGrid
             rows={rows}

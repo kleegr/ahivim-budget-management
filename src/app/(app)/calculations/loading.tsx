@@ -1,9 +1,9 @@
 import { Skeleton } from "@/components/ui-viz";
 
-/** Instant route-level placeholder while budget projections load. */
+/** Instant route-level placeholder while financial setup loads. */
 export default function CalculationsLoading() {
   return (
-    <div role="status" aria-label="Loading projections">
+    <div role="status" aria-label="Loading financial setup">
       {/* PageHeader */}
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div className="w-full max-w-2xl">

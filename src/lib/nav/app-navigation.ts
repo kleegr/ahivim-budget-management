@@ -1,4 +1,4 @@
-export type NavigationGate = "manager" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents" | "portal" | "agencies";
+export type NavigationGate = "manager" | "owner-transactions" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents" | "portal" | "agencies";
 
 export interface NavigationAccess {
   role: string;
@@ -25,7 +25,7 @@ export interface NavigationDestination {
 }
 
 export interface NavigationWorkspace {
-  id: "overview" | "portal" | "budgets" | "activity" | "payroll" | "employees" | "classes" | "reports";
+  id: "overview" | "portal" | "transactions" | "budgets" | "activity" | "payroll" | "employees" | "classes" | "reports";
   label: string;
   hint: string;
   activePrefixes: readonly string[];
@@ -71,10 +71,26 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
     ],
   },
   {
+    id: "transactions",
+    label: "Transactions",
+    hint: "Actual billing and payroll history",
+    activePrefixes: ["/transactions"],
+    destinations: [
+      {
+        id: "transactions",
+        label: "Transactions",
+        href: "/transactions",
+        hint: "Actual billing and payroll history",
+        keywords: "transactions billing payroll checks ledger source actual activity",
+        gate: "owner-transactions",
+      },
+    ],
+  },
+  {
     id: "budgets",
     label: "People & budgets",
     hint: "People, authorized hours, usage, and renewals",
-    activePrefixes: ["/individuals", "/people", "/calculations", "/projections", "/masser"],
+    activePrefixes: ["/individuals", "/people"],
     destinations: [
       {
         id: "budget-portfolio",
@@ -106,7 +122,7 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
     id: "payroll",
     label: "Money",
     hint: "Payments, collections, and set-asides",
-    activePrefixes: ["/collections", "/settlements"],
+    activePrefixes: ["/collections", "/settlements", "/calculations", "/projections", "/masser"],
     destinations: [
       {
         id: "collections",
@@ -205,26 +221,18 @@ const ADMIN_DESTINATIONS: readonly NavigationDestination[] = [
 const ADVANCED_COMMANDS: readonly NavigationDestination[] = [
   {
     id: "billing-history",
-    label: "Billing history",
+    label: "Transactions",
     href: "/transactions",
-    hint: "Imported service and payroll history",
+    hint: "Actual billing and payroll history",
     keywords: "transactions billed ledger source",
     gate: "transactions",
   },
   {
     id: "annual-plans",
-    label: "Annual financial plans",
+    label: "Financial setup",
     href: "/calculations",
-    hint: "Annual deductions, adjustments, and projected net",
+    hint: "Expected monthly amounts, sequential cuts, and approved final",
     keywords: "budget planning financial calculations cuts projections",
-    gate: "manager",
-  },
-  {
-    id: "masser-set-asides",
-    label: "Annual set-asides",
-    href: "/masser",
-    hint: "Annual set-aside targets",
-    keywords: "masser annual reserve set aside",
     gate: "manager",
   },
   {
@@ -308,6 +316,7 @@ function allowed(gate: NavigationGate | undefined, access: NavigationAccess): bo
   if (!gate) return true;
   if (!access.accessResolved) return false;
   if (gate === "manager") return access.role === "manager" || access.role === "admin";
+  if (gate === "owner-transactions") return access.role === "admin" && access.canSeeTransactions;
   if (gate === "transactions") return access.canSeeTransactions;
   if (gate === "settlements") return access.canSeeSettlements;
   if (gate === "planning") return access.canPlan;

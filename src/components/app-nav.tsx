@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  ReceiptText,
   Search,
   Settings2,
   ShieldCheck,
@@ -41,6 +42,7 @@ const ROLE_LABEL: Record<string, string> = {
 const WORKSPACE_ICONS: Record<VisibleNavigationWorkspace["id"], LucideIcon> = {
   overview: LayoutDashboard,
   portal: ShieldCheck,
+  transactions: ReceiptText,
   budgets: WalletCards,
   payroll: BadgeDollarSign,
   activity: CalendarDays,

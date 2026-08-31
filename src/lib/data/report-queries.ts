@@ -1,5 +1,6 @@
 import type { PgLikePool } from "@/lib/import/commit";
-import { toMoney, toHours } from "@/lib/money";
+import { dec, toMoney, toHours } from "@/lib/money";
+import { listStrategies } from "@/lib/manage/calculation-strategies";
 import {
   listScheduledForReconcile,
   listBilledNotScheduled,
@@ -701,91 +702,75 @@ export async function dashboardReportMetrics(pool: PgLikePool): Promise<Dashboar
 /* -------------------------------------------------------------------------- */
 
 export interface CutsMonthlyRow {
-  calculationId: string;
+  strategyId: string;
   individualName: string;
+  setupName: string;
   programCode: string | null;
   programName: string | null;
-  annualGross: string | null;
-  monthlyGross: string | null;
-  cut1Amount: string | null;
-  cut2Amount: string | null;
-  clockAdjustment: string | null;
-  finalGross: string | null;
-  finalNet: string | null;
-  afterAll: string | null;
-  spreadsheetValue: string | null;
-  /** spreadsheet value − system After All; null when either is absent. */
+  annualGross: string;
+  monthlyGross: string;
+  cut1Amount: string;
+  cut2Amount: string;
+  clockAdjustment: string;
+  otherAdjustment: string;
+  calculatedNet: string;
+  approvedFinal: string | null;
+  /** Approved monthly final minus the step-by-step calculated net. */
   difference: string | null;
 }
 
 /**
- * One row per ACTIVE calculation: the whole waterfall (annual/monthly gross,
- * both cuts, clock adjustment, final gross/net, After All) plus the stored
- * spreadsheet value and the difference against the system After All. Money is
- * carried as decimal strings; null figures stay null so the screen shows
- * "Not available" rather than a fabricated 0.
+ * One row per active Financial setup strategy. This deliberately reads the
+ * same canonical plans as the Financial setup workspace; the legacy
+ * budget_calculations import is not a second source of financial truth.
  */
 export async function cutsMonthlyReport(
   pool: PgLikePool,
   opts: { program?: string } = {},
 ): Promise<CutsMonthlyRow[]> {
-  const program = (opts.program ?? "").trim() || null;
-  const { rows } = await pool.query<{
-    calculation_id: string;
-    individual_name: string;
-    program_code: string | null;
-    program_name: string | null;
-    annual_gross: string | null;
-    monthly_gross: string | null;
-    cut1_amount: string | null;
-    cut2_amount: string | null;
-    clock_adjustment: string | null;
-    final_gross: string | null;
-    final_net: string | null;
-    after_all: string | null;
-    spreadsheet_value: string | null;
-    difference: string | null;
-  }>(
-    `SELECT c.id                       AS calculation_id,
-            i.display_name             AS individual_name,
-            p.code                     AS program_code,
-            p.name                     AS program_name,
-            c.annual_gross::text       AS annual_gross,
-            c.monthly_gross::text      AS monthly_gross,
-            c.cut1_amount::text        AS cut1_amount,
-            c.cut2_amount::text        AS cut2_amount,
-            c.clock_adjustment::text   AS clock_adjustment,
-            c.final_gross::text        AS final_gross,
-            c.final_net::text          AS final_net,
-            c.after_all::text          AS after_all,
-            c.spreadsheet_value::text  AS spreadsheet_value,
-            CASE WHEN c.spreadsheet_value IS NOT NULL AND c.after_all IS NOT NULL
-                 THEN (c.spreadsheet_value - c.after_all)::text END AS difference
-     FROM budget_calculations c
-     JOIN individuals i ON i.id = c.individual_id
-     LEFT JOIN programs p ON p.id = c.program_id
-     WHERE c.status = 'active'
-       AND ($1::text IS NULL OR p.code ILIKE '%' || $1 || '%' OR p.name ILIKE '%' || $1 || '%')
-     ORDER BY i.display_name, p.code NULLS FIRST`,
-    [program],
-  );
-  const money = (v: string | null) => (v === null ? null : toMoney(v));
-  return rows.map((r) => ({
-    calculationId: r.calculation_id,
-    individualName: r.individual_name,
-    programCode: r.program_code,
-    programName: r.program_name,
-    annualGross: money(r.annual_gross),
-    monthlyGross: money(r.monthly_gross),
-    cut1Amount: money(r.cut1_amount),
-    cut2Amount: money(r.cut2_amount),
-    clockAdjustment: money(r.clock_adjustment),
-    finalGross: money(r.final_gross),
-    finalNet: money(r.final_net),
-    afterAll: money(r.after_all),
-    spreadsheetValue: money(r.spreadsheet_value),
-    difference: money(r.difference),
-  }));
+  const filter = (opts.program ?? "").trim().toLocaleLowerCase();
+  const { rows, programs } = await listStrategies(pool);
+  const programsById = new Map(programs.map((item) => [item.id, item]));
+  const fraction = (value: string) => {
+    const parsed = dec(value || 0).abs();
+    return parsed.greaterThan(1) ? parsed.dividedBy(100) : parsed;
+  };
+
+  return rows.flatMap((row) => {
+    const selectedPrograms = Object.entries(row.hours)
+      .filter(([, hours]) => !dec(hours).isZero())
+      .map(([programId]) => programsById.get(programId))
+      .filter((program): program is NonNullable<typeof program> => Boolean(program));
+    if (
+      filter &&
+      !selectedPrograms.some((program) =>
+        `${program.code} ${program.name}`.toLocaleLowerCase().includes(filter),
+      )
+    ) {
+      return [];
+    }
+
+    const monthly = dec(row.monthlyGross);
+    const cut1Amount = monthly.times(fraction(row.cut1Percent));
+    const cut2Amount = monthly.minus(cut1Amount).times(fraction(row.cut2Percent));
+    const approved = row.afterAll == null ? null : toMoney(row.afterAll);
+    return [{
+      strategyId: row.id,
+      individualName: row.individualName,
+      setupName: row.label,
+      programCode: selectedPrograms.map((program) => program.code).join(", ") || null,
+      programName: selectedPrograms.map((program) => program.name).join(", ") || null,
+      annualGross: toMoney(row.yearlyGross),
+      monthlyGross: toMoney(row.monthlyGross),
+      cut1Amount: toMoney(cut1Amount),
+      cut2Amount: toMoney(cut2Amount),
+      clockAdjustment: toMoney(row.clockAdjustment),
+      otherAdjustment: toMoney(row.otherAdjustment),
+      calculatedNet: toMoney(row.net),
+      approvedFinal: approved,
+      difference: approved == null ? null : toMoney(dec(approved).minus(row.net)),
+    }];
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1559,9 +1544,9 @@ export const REPORTS: Record<string, ReportDefinition> = {
 
   "cuts-monthly": {
     key: "cuts-monthly",
-    title: "Cuts & monthly calculation",
+    title: "Financial setup audit",
     description:
-      "Every active calculation's waterfall — annual and monthly gross, both cuts, the clock adjustment, final gross and net, Masser (the fixed set-aside) — beside the spreadsheet value and their difference.",
+      "Every active setup's waterfall: yearly and monthly gross, both sequential cuts, adjustments, calculated net, and the entered approved monthly final.",
     filters: [{ key: "program", label: "Program", type: "text", placeholder: "Code or name" }],
     async run(pool, filters) {
       const rows = await cutsMonthlyReport(pool, { program: filters.program });
@@ -1571,30 +1556,30 @@ export const REPORTS: Record<string, ReportDefinition> = {
           emptyMessage: "No active calculations match this filter.",
           columns: [
             { key: "individualName", header: "Individual", type: "text" },
+            { key: "setupName", header: "Setup", type: "text" },
             { key: "programCode", header: "Program", type: "text" },
             { key: "annualGross", header: "Annual gross", type: "money" },
             { key: "monthlyGross", header: "Monthly gross", type: "money" },
             { key: "cut1Amount", header: "Cut 1", type: "money" },
             { key: "cut2Amount", header: "Cut 2", type: "money" },
             { key: "clockAdjustment", header: "Clock adj.", type: "money" },
-            { key: "finalGross", header: "Final gross", type: "money" },
-            { key: "finalNet", header: "Final net", type: "money" },
-            { key: "afterAll", header: "Masser", type: "money" },
-            { key: "spreadsheetValue", header: "Spreadsheet", type: "money" },
-            { key: "difference", header: "Difference", type: "money" },
+            { key: "otherAdjustment", header: "Other adj.", type: "money" },
+            { key: "calculatedNet", header: "Calculated net", type: "money" },
+            { key: "approvedFinal", header: "Approved final / month", type: "money" },
+            { key: "difference", header: "Override difference", type: "money" },
           ],
           rows: rows.map((r) => ({
             individualName: r.individualName,
+            setupName: r.setupName,
             programCode: r.programCode,
             annualGross: r.annualGross,
             monthlyGross: r.monthlyGross,
             cut1Amount: r.cut1Amount,
             cut2Amount: r.cut2Amount,
             clockAdjustment: r.clockAdjustment,
-            finalGross: r.finalGross,
-            finalNet: r.finalNet,
-            afterAll: r.afterAll,
-            spreadsheetValue: r.spreadsheetValue,
+            otherAdjustment: r.otherAdjustment,
+            calculatedNet: r.calculatedNet,
+            approvedFinal: r.approvedFinal,
             difference: r.difference,
           })),
         },

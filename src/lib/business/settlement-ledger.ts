@@ -24,85 +24,24 @@ function rounded(value: Decimal): Decimal {
 }
 
 /**
- * Turn an individual's fixed yearly plan into amounts that can be actioned.
- * Percentage cuts and monthly adjustments are annualized by the plan divisor;
- * Masser is already a fixed yearly figure and is therefore counted once.
+ * Turn the entered approved monthly final into one annual reserve target.
+ * The cuts and adjustments explain how the final was reached; they are not
+ * separate obligations and must not be added to the approved final again.
  */
-export function individualSettlementTargets(
-  input: StrategyInput,
-  options: { includeZero?: boolean } = {},
-): IndividualSettlementTarget[] {
+export function individualSettlementTargets(input: StrategyInput): IndividualSettlementTarget[] {
   const result = computeStrategy(input);
   const divisor = dec(result.monthDivisor);
-  const targets: IndividualSettlementTarget[] = [];
+  if (!result.afterAll || !dec(result.afterAll).abs().greaterThan(0)) return [];
 
-  const addMonthly = (
-    kind: IndividualSettlementTarget["kind"],
-    label: string,
-    monthly: MoneyInput,
-    direction: SettlementDirection,
-    formula: string,
-  ) => {
-    const monthlyAmount = dec(monthly);
-    if (monthlyAmount.isZero() && !options.includeZero) return;
-    targets.push({
-      kind,
-      direction,
-      amount: toMoney(rounded(monthlyAmount.abs().times(divisor))),
-      monthlyAmount: toMoney(monthlyAmount.abs()),
-      label,
-      formula,
-    });
-  };
-
-  addMonthly(
-    "individual_cut_1",
-    "First cut",
-    result.cut1Amount,
-    "reserve",
-    `monthly first cut x ${result.monthDivisor}`,
-  );
-  addMonthly(
-    "individual_cut_2",
-    "Second cut",
-    result.cut2Amount,
-    "reserve",
-    `monthly second cut x ${result.monthDivisor}`,
-  );
-
-  const clock = dec(result.clockAdjustment);
-  if (!clock.isZero() || options.includeZero) {
-    addMonthly(
-      "individual_clock",
-      clock.isNegative() ? "Clock fee" : "Clock set-aside",
-      clock,
-      clock.isNegative() ? "receivable" : "reserve",
-      `monthly clock adjustment x ${result.monthDivisor}`,
-    );
-  }
-  const other = dec(result.otherAdjustment);
-  if (!other.isZero() || options.includeZero) {
-    addMonthly(
-      "individual_other",
-      other.isNegative() ? "Other fee" : "Other set-aside",
-      other,
-      other.isNegative() ? "receivable" : "reserve",
-      `monthly other adjustment x ${result.monthDivisor}`,
-    );
-  }
-
-  if ((result.afterAll && dec(result.afterAll).abs().greaterThan(0)) || options.includeZero) {
-    targets.push({
-      kind: "individual_masser",
-      direction: "reserve",
-      amount: toMoney(dec(result.afterAll ?? 0).abs()),
-      monthlyAmount: null,
-      label: "Masser",
-      formula: "fixed yearly set-aside",
-    });
-  }
-
-  return targets;
+  const monthly = dec(result.afterAll).abs();
+  return [{
+    kind: "individual_masser",
+    direction: "reserve",
+    amount: toMoney(rounded(monthly.times(divisor))),
+    monthlyAmount: toMoney(monthly),
+    label: "Approved final reserve",
+    formula: `approved monthly final x ${result.monthDivisor}`,
+  }];
 }
 
 export function settlementState(

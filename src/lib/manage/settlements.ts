@@ -700,7 +700,6 @@ async function individualCandidates(
         otherAdjustment: row.otherAdjustment,
         afterAll: row.afterAll,
       },
-      { includeZero: true },
     );
     for (const target of targets) {
       candidates.push({
@@ -721,6 +720,7 @@ async function individualCandidates(
           targetLabel: target.label,
           formula: target.formula,
           monthlyAmount: target.monthlyAmount,
+          monthDivisor: row.monthDivisor,
           yearlyGross: row.yearlyGross,
           plannedHours: row.analytics?.plannedHours ?? null,
           actualHours: row.analytics?.actualHours ?? null,
