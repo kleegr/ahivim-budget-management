@@ -1,8 +1,27 @@
 import { describe, expect, it } from "vitest";
 import type { PgLikePool } from "@/lib/import/commit";
-import { getAgencyFinancialReport } from "@/lib/data/agency-financial-report";
+import {
+  getAgencyFinancialReport,
+  listAgencyFinancialOptions,
+} from "@/lib/data/agency-financial-report";
 
 describe("agency financial report read model", () => {
+  it("uses only columns that exist on the production employee table", async () => {
+    const statements: string[] = [];
+    const pool = {
+      query: async (statement: string) => {
+        statements.push(statement);
+        return { rows: [] };
+      },
+    } as unknown as PgLikePool;
+
+    await listAgencyFinancialOptions(pool);
+
+    const employeeQuery = statements.find((statement) => statement.includes("FROM employees"));
+    expect(employeeQuery).toBeDefined();
+    expect(employeeQuery).not.toContain("merged_into_id");
+  });
+
   it("keeps actual income and each expense category separate without double counting", async () => {
     const statements: string[] = [];
     const pool = {

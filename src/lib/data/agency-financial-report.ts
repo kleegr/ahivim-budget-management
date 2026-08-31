@@ -290,7 +290,7 @@ export async function listAgencyFinancialOptions(pool: PgLikePool): Promise<Agen
     pool.query<{ id: string; label: string }>(
       `SELECT id, COALESCE(display_name, normalized_name) AS label
          FROM employees
-        WHERE status <> 'archived' AND merged_into_id IS NULL
+        WHERE status <> 'archived'
         ORDER BY label`,
     ),
     pool.query<{ id: string; code: string; name: string }>(
