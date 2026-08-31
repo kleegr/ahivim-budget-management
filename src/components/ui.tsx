@@ -402,7 +402,7 @@ export function PageHeader({
   className?: string;
 }) {
   return (
-    <header className={`mb-7 flex flex-wrap items-end justify-between gap-x-6 gap-y-4 border-b border-[var(--color-rule)] pb-4 ${className}`}>
+    <header className={`mb-7 flex flex-col items-stretch gap-x-6 gap-y-4 border-b border-[var(--color-rule)] pb-4 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between ${className}`}>
       <div className="min-w-0 flex-1">
         {eyebrow ? <p className="eyebrow text-[var(--color-primary)]">{eyebrow}</p> : null}
         <h1 className="display mt-1 text-[1.75rem] font-semibold leading-tight text-[var(--color-ink)]">{title}</h1>
@@ -411,7 +411,7 @@ export function PageHeader({
         ) : null}
         {meta ? <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--color-ink-faint)]">{meta}</div> : null}
       </div>
-      {action ? <div className="flex shrink-0 flex-wrap items-center gap-2">{action}</div> : null}
+      {action ? <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0 sm:justify-end">{action}</div> : null}
     </header>
   );
 }
