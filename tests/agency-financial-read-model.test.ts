@@ -12,6 +12,7 @@ describe("agency financial report read model", () => {
     expect(normalizeActualAgencyFinancialMonth("2026-09", "2026-08")).toBe("2026-08");
     expect(normalizeActualAgencyFinancialMonth("2026-08", "2026-08")).toBe("2026-08");
     expect(normalizeActualAgencyFinancialMonth("2026-07", "2026-08")).toBe("2026-07");
+    expect(normalizeActualAgencyFinancialMonth("0000-01", "2026-08")).toBe("2026-08");
   });
 
   it("uses only columns that exist on the production employee table", async () => {

@@ -9,12 +9,12 @@ import { ADMIN_EMAIL, ADMIN_PASSWORD } from "./fixtures";
  */
 
 const WORKSPACES: { path: string; title: RegExp; heading: RegExp }[] = [
-  { path: "/dashboard", title: /Dashboard — Ahivim Budget Management/, heading: /Welcome|Dashboard/ },
-  { path: "/transactions", title: /Transactions — Ahivim Budget Management/, heading: /^Transactions$/ },
-  { path: "/calculations", title: /Projections — Ahivim Budget Management/, heading: /^Projections$/ },
-  { path: "/individuals", title: /Individuals — Ahivim Budget Management/, heading: /^Individuals$/ },
-  { path: "/reports", title: /Reports — Ahivim Budget Management/, heading: /^Reports$/ },
-  { path: "/schedule", title: /Schedule — Ahivim Budget Management/, heading: /^Schedule$/ },
+  { path: "/dashboard", title: /Home - Ahivim/, heading: /^(Owner overview|Home)$/ },
+  { path: "/transactions", title: /Transactions - Ahivim/, heading: /^Transactions$/ },
+  { path: "/calculations", title: /Financial setup - Ahivim/, heading: /^Financial setup$/ },
+  { path: "/individuals", title: /People & budgets - Ahivim Budget Management/, heading: /^People & budgets$/ },
+  { path: "/reports", title: /Reports - Ahivim Budget Management/, heading: /^Reports$/ },
+  { path: "/schedule", title: /Schedule - Ahivim/, heading: /^Scheduling$/ },
   { path: "/employees", title: /Employees — Ahivim Budget Management/, heading: /^Employees$/ },
 ];
 

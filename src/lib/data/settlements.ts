@@ -8,6 +8,8 @@ import {
   type SettlementLedgerFreshness,
 } from "@/lib/manage/settlement-freshness";
 
+type Queryable = Pick<PgLikePool, "query">;
+
 export interface SettlementRow {
   id: string;
   kind: string;
@@ -328,6 +330,40 @@ export function summarizeSettlementRows(rows: readonly SettlementSummaryInput[])
     originalTotal: toMoney(active.reduce((sum, row) => sum.plus(row.originalAmount), dec(0))),
     appliedTotal: toMoney(active.reduce((sum, row) => sum.plus(row.appliedAmount), dec(0))),
   };
+}
+
+/** Lightweight current balance summary for the owner overview. */
+export async function getSettlementSummary(pool: Queryable): Promise<SettlementSummary> {
+  const { rows } = await pool.query<{
+    direction: SettlementDirection;
+    original_amount: string;
+    applied_amount: string;
+    status: "active" | "void";
+  }>(
+    `SELECT o.direction,
+            o.original_amount::text,
+            COALESCE(sum(e.amount), 0)::text AS applied_amount,
+            o.status
+       FROM settlement_obligations o
+       LEFT JOIN settlement_events e ON e.settlement_obligation_id = o.id
+      GROUP BY o.id, o.direction, o.original_amount, o.status`,
+  );
+
+  return summarizeSettlementRows(rows.map((row) => ({
+    direction: row.direction,
+    originalAmount: toMoney(row.original_amount),
+    appliedAmount: toMoney(row.applied_amount),
+    balance: settlementBalance(
+      row.original_amount,
+      row.applied_amount,
+      row.status === "void",
+    ),
+    state: settlementState(
+      row.original_amount,
+      row.applied_amount,
+      row.status === "void",
+    ),
+  })));
 }
 
 export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessScope): Promise<SettlementDashboardData> {

@@ -220,8 +220,10 @@ export async function getDocumentVersionFile(
   pool: PgLikePool,
   documentId: string,
   versionId: string,
+  representation: "output" | "source" = "output",
 ): Promise<DocumentFileRecord | null> {
   if (!DOCUMENT_UUID.test(documentId) || !DOCUMENT_UUID.test(versionId)) return null;
+  const blobColumn = representation === "source" ? "source_blob_id" : "output_blob_id";
   const { rows } = await pool.query<{
     version_id: string;
     document_id: string;
@@ -235,7 +237,7 @@ export async function getDocumentVersionFile(
             blob.storage_pathname, blob.storage_etag, blob.content_type,
             blob.filename, blob.byte_size::text AS byte_size
        FROM document_versions version
-       JOIN document_blobs blob ON blob.id = version.output_blob_id
+       JOIN document_blobs blob ON blob.id = version.${blobColumn}
       WHERE version.document_id = $1 AND version.id = $2`,
     [documentId, versionId],
   );

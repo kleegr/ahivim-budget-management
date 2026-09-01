@@ -7,7 +7,7 @@ import {
   type ManualIncomeEntry,
 } from "@/lib/manage/agency-financials";
 
-const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+const MONTH = /^[1-9]\d{3}-(0[1-9]|1[0-2])$/;
 type Queryable = Pick<PgLikePool, "query"> | Pick<PgLikeClient, "query">;
 
 // Strategy snapshots became authoritative with this release. August 2026 is

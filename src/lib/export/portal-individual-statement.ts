@@ -1,4 +1,5 @@
 import { dec, formatMoney, toMoney } from "@/lib/money";
+import { safeSpreadsheetText } from "@/lib/export/tabular";
 import type {
   PortalIndividualStatement,
   PortalIndividualTrendMonth,
@@ -32,7 +33,7 @@ function monthLabel(month: string): string {
 }
 
 function csvCell(value: string): string {
-  const safe = /^[=+\-@]/.test(value) ? `'${value}` : value;
+  const safe = safeSpreadsheetText(value);
   return `"${safe.replaceAll('"', '""')}"`;
 }
 

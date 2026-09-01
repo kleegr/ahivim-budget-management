@@ -38,4 +38,11 @@ describe("owner view-as interface", () => {
     expect(settings).toContain("label={result.ok ? result.data.accountLabel");
     expect(bar).toContain("- {accountLabel}");
   });
+
+  it("shows preview transition failures inside the application", () => {
+    expect(settings).toContain("Could not open that user portal");
+    expect(settings).toContain("previewError");
+    expect(bar).toContain('useSearchParams().get("previewError")');
+    expect(bar).toContain("Could not return:");
+  });
 });

@@ -56,7 +56,13 @@ function hoursOnlyScope(): AccessScope {
 
 function planning(): PlanningAccess {
   return {
-    user: { id: "00000000-0000-4000-8000-000000000007", email: "planner@example.com", displayName: "Planner", role: "viewer" },
+    user: {
+      id: "00000000-0000-4000-8000-000000000007",
+      actorId: "00000000-0000-4000-8000-000000000007",
+      email: "planner@example.com",
+      displayName: "Planner",
+      role: "viewer",
+    },
     access: hoursOnlyScope(),
     agencyIds: [AGENCY_A, AGENCY_B],
     agencyRosters: [

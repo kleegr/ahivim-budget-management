@@ -79,7 +79,7 @@ export async function reconciliationSummary(
             COALESCE(sum(t.imported_hours),0)::text AS hours,
             COALESCE(sum(t.imported_amount),0)::text AS amount
      FROM payroll_transactions t
-     WHERE t.period_begin BETWEEN $1 AND $2
+     WHERE canonical_service_date(t.period_begin, t.check_date, t.period_end) BETWEEN $1 AND $2
        AND ($3::uuid IS NULL OR t.program_id = $3)
        AND ($4::uuid IS NULL OR t.individual_id = $4)
        AND NOT EXISTS (SELECT 1 FROM scheduled_sessions s WHERE s.matched_transaction_id = t.id)`,
@@ -169,6 +169,7 @@ export async function listScheduledForReconcile(
 
 export interface BilledLine {
   id: string;
+  serviceDate: string | null;
   periodBegin: string | null;
   periodEnd: string | null;
   programCode: string | null;
@@ -185,24 +186,27 @@ export async function listBilledNotScheduled(
 ): Promise<BilledLine[]> {
   const f = sqlFilter(filter);
   const { rows } = await pool.query<{
-    id: string; period_begin: string | null; period_end: string | null; program_code: string | null;
+    id: string; service_date: string | null; period_begin: string | null; period_end: string | null; program_code: string | null;
     individual_name: string | null; imported_hours: string | null; imported_amount: string | null;
   }>(
-    `SELECT t.id, t.period_begin::text, t.period_end::text, p.code AS program_code,
+    `SELECT t.id,
+            canonical_service_date(t.period_begin, t.check_date, t.period_end)::text AS service_date,
+            t.period_begin::text, t.period_end::text, p.code AS program_code,
             i.display_name AS individual_name, t.imported_hours::text, t.imported_amount::text
      FROM payroll_transactions t
      LEFT JOIN programs p ON p.id = t.program_id
      LEFT JOIN individuals i ON i.id = t.individual_id
-     WHERE t.period_begin BETWEEN $1 AND $2
+     WHERE canonical_service_date(t.period_begin, t.check_date, t.period_end) BETWEEN $1 AND $2
        AND ($3::uuid IS NULL OR t.program_id = $3)
        AND ($4::uuid IS NULL OR t.individual_id = $4)
        AND NOT EXISTS (SELECT 1 FROM scheduled_sessions s WHERE s.matched_transaction_id = t.id)
-     ORDER BY t.period_begin NULLS LAST
+     ORDER BY canonical_service_date(t.period_begin, t.check_date, t.period_end) NULLS LAST
      LIMIT $5`,
     [f.from, f.to, f.programId, f.individualId, Math.min(Math.max(limit, 1), 500)],
   );
   return rows.map((r) => ({
     id: r.id,
+    serviceDate: r.service_date,
     periodBegin: r.period_begin,
     periodEnd: r.period_end,
     programCode: r.program_code,
@@ -219,7 +223,7 @@ export async function candidatesForSession(
 ): Promise<BilledLine[]> {
   if (!isUuid(scheduledSessionId)) return [];
   const { rows } = await pool.query<{
-    id: string; period_begin: string | null; period_end: string | null; program_code: string | null;
+    id: string; service_date: string | null; period_begin: string | null; period_end: string | null; program_code: string | null;
     individual_name: string | null; imported_hours: string | null; imported_amount: string | null;
   }>(
     `WITH s AS (
@@ -227,7 +231,9 @@ export async function candidatesForSession(
               (SELECT a.individual_id FROM scheduled_allocations a WHERE a.scheduled_session_id = ss.id LIMIT 1) AS individual_id
        FROM scheduled_sessions ss WHERE ss.id = $1
      )
-     SELECT t.id, t.period_begin::text, t.period_end::text, p.code AS program_code,
+     SELECT t.id,
+            canonical_service_date(t.period_begin, t.check_date, t.period_end)::text AS service_date,
+            t.period_begin::text, t.period_end::text, p.code AS program_code,
             i.display_name AS individual_name, t.imported_hours::text, t.imported_amount::text
      FROM s
      JOIN payroll_transactions t
@@ -242,6 +248,7 @@ export async function candidatesForSession(
   );
   return rows.map((r) => ({
     id: r.id,
+    serviceDate: r.service_date,
     periodBegin: r.period_begin,
     periodEnd: r.period_end,
     programCode: r.program_code,
@@ -600,7 +607,7 @@ async function findDuplicateTransactions(
      FROM payroll_transactions t
      LEFT JOIN individuals i ON i.id = t.individual_id
      LEFT JOIN programs p ON p.id = t.program_id
-     WHERE t.period_begin BETWEEN $1 AND $2
+     WHERE canonical_service_date(t.period_begin, t.check_date, t.period_end) BETWEEN $1 AND $2
        AND ($3::uuid IS NULL OR t.program_id = $3)
        AND ($4::uuid IS NULL OR t.individual_id = $4)
      GROUP BY t.transaction_fingerprint
@@ -625,11 +632,13 @@ async function findDuplicateTransactions(
      FROM payroll_transactions t
      LEFT JOIN individuals i ON i.id = t.individual_id
      LEFT JOIN programs p ON p.id = t.program_id
-     WHERE t.period_begin BETWEEN $1 AND $2
+     WHERE canonical_service_date(t.period_begin, t.check_date, t.period_end) BETWEEN $1 AND $2
        AND ($3::uuid IS NULL OR t.program_id = $3)
        AND ($4::uuid IS NULL OR t.individual_id = $4)
        AND t.individual_id IS NOT NULL AND t.program_id IS NOT NULL
-     GROUP BY t.individual_id, t.program_id, t.period_begin, t.period_end, t.imported_amount
+     GROUP BY t.individual_id, t.program_id, t.period_begin, t.period_end,
+              canonical_service_date(t.period_begin, t.check_date, t.period_end),
+              t.imported_amount
      HAVING count(*) > 1
      ORDER BY count(*) DESC
      LIMIT 200`,

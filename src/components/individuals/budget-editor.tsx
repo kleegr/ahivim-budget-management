@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { dec, formatMoney, formatHours } from "@/lib/money";
@@ -101,6 +101,11 @@ export default function BudgetEditor({
   const [busy, setBusy] = useState(false);
   const [savingActive, setSavingActive] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const strategyIdRef = useRef(strategyId);
+
+  useEffect(() => {
+    strategyIdRef.current = strategyId;
+  }, [individualId, strategyId]);
 
   // "How many hours/month to bill to finish" — per PROGRAM, each toward its own
   // renewal (Day Hab / Supplemental run the calendar year, so their months-left
@@ -134,13 +139,20 @@ export default function BudgetEditor({
   // the individual): active accounts auto-roll their renewal; inactive freeze.
   const toggleActive = async () => {
     setSavingActive(true);
+    setNotice(null);
     try {
-      await fetch(`/api/individuals/${individualId}`, {
+      const response = await fetch(`/api/individuals/${individualId}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: activeInitial ? "deactivate" : "restore" }),
       });
+      const result = await response.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!response.ok || result?.ok === false) {
+        throw new Error(result?.error ?? "Could not update the account status.");
+      }
       router.refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not update the account status.");
     } finally {
       setSavingActive(false);
     }
@@ -213,7 +225,7 @@ export default function BudgetEditor({
     setNotice(null);
     try {
       // Create the plan first if the person has none yet.
-      let sid = strategyId;
+      let sid = strategyIdRef.current;
       if (!sid) {
         const res = await fetch("/api/calculation-strategies", {
           method: "POST",
@@ -223,6 +235,9 @@ export default function BudgetEditor({
         const j = await res.json();
         if (!res.ok || j.ok === false) throw new Error(j.error ?? "Could not create the plan.");
         sid = j.data.id as string;
+        // Keep the newly created plan through a partial-save retry. The server
+        // prop refresh happens only after every step succeeds.
+        strategyIdRef.current = sid;
       }
 
       const hours: Record<string, string> = {};
@@ -248,11 +263,15 @@ export default function BudgetEditor({
         if (!res.ok || j.ok === false) throw new Error(j.error ?? "Could not save the financial plan.");
 
       if (active !== activeInitial) {
-        await fetch(`/api/individuals/${individualId}`, {
+        const statusResponse = await fetch(`/api/individuals/${individualId}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ action: active ? "restore" : "deactivate" }),
         });
+        const statusResult = await statusResponse.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+        if (!statusResponse.ok || statusResult?.ok === false) {
+          throw new Error(statusResult?.error ?? "The financial plan was saved, but the account status could not be updated.");
+        }
       }
       setEditing(false);
       router.refresh();
@@ -310,6 +329,11 @@ export default function BudgetEditor({
             ) : null}
           </div>
         </div>
+        {notice ? (
+          <p role="alert" className="border-b border-[var(--color-rule)] bg-[var(--color-danger-soft)] px-5 py-2 text-sm text-[var(--color-danger)]">
+            {notice}
+          </p>
+        ) : null}
         {rows.length === 0 ? (
           <div className="px-5 py-6 text-sm text-[var(--color-ink-soft)]">
             No projection inputs yet.{canEdit ? " Click “Edit financial plan” to add the first one." : ""}

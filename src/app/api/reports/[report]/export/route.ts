@@ -4,6 +4,7 @@ import { apiUser } from "@/lib/auth/session";
 import { jsonError, redactError } from "@/lib/http";
 import { dec, formatHours } from "@/lib/money";
 import { agencyDate } from "@/lib/business/agency-time";
+import { safeSpreadsheetText } from "@/lib/export/tabular";
 import {
   REPORTS,
   isReportKey,
@@ -103,21 +104,24 @@ function buildCsv(reportTitle: string, tables: ReportTable[]): string {
   const multi = tables.length > 1;
   const blocks = tables.map((table) => {
     const lines: string[] = [];
-    if (multi && table.title) lines.push(escapeCsv(table.title));
-    lines.push(table.columns.map((c) => escapeCsv(c.header)).join(","));
+    if (multi && table.title) lines.push(escapeCsv(safeSpreadsheetText(table.title)));
+    lines.push(table.columns.map((c) => escapeCsv(safeSpreadsheetText(c.header))).join(","));
     if (table.rows.length === 0) {
       lines.push(escapeCsv(table.emptyMessage ?? "No rows"));
     } else {
       for (const row of table.rows) {
         lines.push(
-          table.columns.map((c) => escapeCsv(csvValue(c.type, row[c.key] ?? null))).join(","),
+          table.columns.map((c) => {
+            const value = csvValue(c.type, row[c.key] ?? null);
+            return escapeCsv(c.type === "text" ? safeSpreadsheetText(value) : value);
+          }).join(","),
         );
       }
     }
     return lines.join("\r\n");
   });
   const header = `${reportTitle}`;
-  return [escapeCsv(header), "", blocks.join("\r\n\r\n")].join("\r\n");
+  return [escapeCsv(safeSpreadsheetText(header)), "", blocks.join("\r\n\r\n")].join("\r\n");
 }
 
 /* -------------------------------------------------------------------------- */

@@ -23,3 +23,11 @@ export function viewerHomePath(access: AccessScope, portal: PortalAccessContext)
   if (access.full || access.allEmployees || access.employeeIds.length > 0) return "/employees";
   return "/settings";
 }
+
+/** Preserve a denied deep-link explanation while routing a viewer to their workspace. */
+export function withDeniedNotice(path: string, denied: boolean): string {
+  if (!denied) return path;
+  const url = new URL(path, "https://ahivim.local");
+  url.searchParams.set("denied", "1");
+  return `${url.pathname}${url.search}${url.hash}`;
+}

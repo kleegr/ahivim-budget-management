@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
+import type { AccessScope } from "@/lib/auth/access";
 
 vi.mock("@/lib/data/schedule-queries", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/data/schedule-queries")>(),
@@ -188,6 +189,42 @@ describe("save-time employee availability", () => {
       hasConflict: true,
       hasBudgetRisk: false,
       warningCount: 1,
+    }]);
+  });
+
+  it("does not count stored budget warnings for a staffing-only calendar", async () => {
+    const pool = {
+      query: vi.fn(async () => ({
+        rows: [{
+          id: SESSION_ID,
+          warnings: [
+            { code: "over_authorized_hours", message: "Hours would be exceeded." },
+            { code: "missing_authorization", message: "No authorization was found." },
+          ],
+          has_conflict: false,
+          has_availability_conflict: false,
+          has_budget_risk: true,
+          has_assignment_gap: false,
+        }],
+      })),
+    } as unknown as PgLikePool;
+
+    const scope = {
+      full: true,
+      allIndividuals: true,
+      allEmployees: true,
+      canSeeBudgets: false,
+    } as AccessScope;
+    const result = await listSessionWarningFlags(pool, {
+      from: "2026-09-07",
+      to: "2026-09-07",
+    }, scope);
+
+    expect(result).toEqual([{
+      id: SESSION_ID,
+      hasConflict: false,
+      hasBudgetRisk: false,
+      warningCount: 0,
     }]);
   });
 });

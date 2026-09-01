@@ -8,7 +8,7 @@ import {
   STAFFING_MANAGER_ACCESS,
 } from "@/lib/auth/access-presets";
 import type { PortalAccessContext } from "@/lib/auth/portal-access";
-import { viewerHomePath } from "@/lib/nav/home-route";
+import { viewerHomePath, withDeniedNotice } from "@/lib/nav/home-route";
 
 function viewerAccess(patch: Partial<AccessScope> = {}): AccessScope {
   return {
@@ -53,6 +53,13 @@ function portalAccess(patch: Partial<PortalAccessContext>): PortalAccessContext 
 }
 
 describe("viewerHomePath", () => {
+  it("preserves a visible explanation after a denied deep link", () => {
+    expect(withDeniedNotice("/schedule", true)).toBe("/schedule?denied=1");
+    expect(withDeniedNotice("/portal?month=2026-09", true))
+      .toBe("/portal?month=2026-09&denied=1");
+    expect(withDeniedNotice("/schedule", false)).toBe("/schedule");
+  });
+
   it("opens Classes for a class-financial-only account", () => {
     expect(viewerHomePath(viewerAccess({ canSeeMoney: true, canSeeClassFinancials: true }), EMPTY_PORTAL))
       .toBe("/classes");

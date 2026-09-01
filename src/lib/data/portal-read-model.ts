@@ -472,6 +472,111 @@ effective_hours AS (
 )`;
 }
 
+// Whole-check amounts are agency-safe only with one employee agency or a
+// complete set of linked service rows that all resolve to the requesting agency.
+function agencyPayrollCheckVisibilitySql(checkAlias: string, agencyIdSql: string): string {
+  const checkServiceDate = `canonical_service_date(
+    ${checkAlias}.period_begin, ${checkAlias}.check_date, ${checkAlias}.period_end
+  )`;
+  const sourceServiceDate = `canonical_service_date(
+    source_transaction.period_begin,
+    source_transaction.check_date,
+    source_transaction.period_end
+  )`;
+  return `(
+    (
+      SELECT count(DISTINCT candidate_membership.agency_id)
+        FROM agency_employees candidate_membership
+       WHERE candidate_membership.employee_id = ${checkAlias}.employee_id
+         AND candidate_membership.is_active = true
+         AND ${checkServiceDate} BETWEEN candidate_membership.effective_from
+             AND COALESCE(candidate_membership.effective_to, 'infinity'::date)
+    ) = 1
+    OR (
+      SELECT count(*) > 0
+         AND bool_and(
+           attribution.agency_count = 1
+           AND attribution.requested_agency_count = 1
+         )
+        FROM LATERAL (
+          SELECT source_transaction.id,
+                 count(DISTINCT source_agency.agency_id) AS agency_count,
+                 count(DISTINCT source_agency.agency_id) FILTER (
+                   WHERE source_agency.agency_id = ${agencyIdSql}
+                 ) AS requested_agency_count
+            FROM payroll_transactions source_transaction
+            LEFT JOIN agency_individuals source_agency
+              ON source_agency.individual_id = source_transaction.individual_id
+             AND source_agency.is_active = true
+             AND source_agency.bills_services = true
+             AND ${sourceServiceDate} BETWEEN source_agency.effective_from
+                 AND COALESCE(source_agency.effective_to, 'infinity'::date)
+           WHERE source_transaction.payroll_check_id = ${checkAlias}.id
+           GROUP BY source_transaction.id
+        ) attribution
+    )
+  )`;
+}
+
+// Give-back obligations are whole-check balances. When an employee belongs to
+// multiple agencies, every source transaction must resolve to one agency and it
+// must be the agency requesting the balance.
+function agencyGiveBackVisibilitySql(obligationAlias: string, agencyIdSql: string): string {
+  const obligationServiceDate = `canonical_service_date(
+    ${obligationAlias}.period_begin, ${obligationAlias}.check_date, ${obligationAlias}.period_end
+  )`;
+  const sourceServiceDate = `canonical_service_date(
+    source_transaction.period_begin,
+    source_transaction.check_date,
+    source_transaction.period_end
+  )`;
+  return `(
+    (
+      SELECT count(DISTINCT candidate_membership.agency_id)
+        FROM agency_employees candidate_membership
+       WHERE candidate_membership.employee_id = ${obligationAlias}.employee_id
+         AND candidate_membership.is_active = true
+         AND ${obligationServiceDate} BETWEEN candidate_membership.effective_from
+             AND COALESCE(candidate_membership.effective_to, 'infinity'::date)
+    ) = 1
+    OR (
+      SELECT count(*) > 0
+         AND bool_and(
+           attribution.agency_count = 1
+           AND attribution.requested_agency_count = 1
+         )
+        FROM LATERAL (
+          SELECT source_id.value,
+                 source_transaction.id,
+                 count(DISTINCT source_agency.agency_id) AS agency_count,
+                 count(DISTINCT source_agency.agency_id) FILTER (
+                   WHERE source_agency.agency_id = ${agencyIdSql}
+                 ) AS requested_agency_count
+            FROM jsonb_array_elements_text(
+              CASE
+                WHEN jsonb_typeof(${obligationAlias}.calculation_metadata->'sourceTransactionIds') = 'array'
+                  THEN ${obligationAlias}.calculation_metadata->'sourceTransactionIds'
+                ELSE '[]'::jsonb
+              END
+            ) source_id(value)
+            LEFT JOIN payroll_transactions source_transaction
+              ON source_transaction.id = CASE
+                WHEN source_id.value ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                  THEN source_id.value::uuid
+                ELSE NULL
+              END
+            LEFT JOIN agency_individuals source_agency
+              ON source_agency.individual_id = source_transaction.individual_id
+             AND source_agency.is_active = true
+             AND source_agency.bills_services = true
+             AND ${sourceServiceDate} BETWEEN source_agency.effective_from
+                 AND COALESCE(source_agency.effective_to, 'infinity'::date)
+           GROUP BY source_id.value, source_transaction.id
+        ) attribution
+    )
+  )`;
+}
+
 function roleSummary(role: PortalRole): PortalRoleSummary {
   return { key: role, label: PORTAL_ROLE_LABELS[role] };
 }
@@ -1569,6 +1674,7 @@ async function agencyMemberSummaries(
               AND date_trunc('month', canonical_service_date(
                     checks.period_begin, checks.check_date, checks.period_end
                   )) = $2::date
+              AND ${agencyPayrollCheckVisibilitySql("checks", "membership.agency_id")}
             GROUP BY membership.agency_id, checks.employee_id`,
           [memberDirectChecks, monthStart],
         )
@@ -1610,6 +1716,7 @@ async function agencyMemberSummaries(
             WHERE membership.agency_id = ANY($1::uuid[])
               AND obligation.direction = 'receivable'
               AND obligation.kind LIKE 'employee_giveback%'
+              AND ${agencyGiveBackVisibilitySql("obligation", "membership.agency_id")}
             GROUP BY membership.agency_id, obligation.employee_id`,
           [memberGiveBack, monthStart],
         )
@@ -1919,6 +2026,7 @@ export async function getPortalHomeReadModel(
                                   canonical_service_date(checks.period_begin, checks.check_date,
                                     checks.period_end))
                         )
+                       AND ${agencyPayrollCheckVisibilitySql("checks", "requested.agency_id")}
                   ) END AS payroll_gross_this_month,
                   CASE WHEN requested.agency_id = ANY($5::uuid[]) THEN COALESCE((
                     SELECT sum(checks.actual_net)
@@ -1943,6 +2051,7 @@ export async function getPortalHomeReadModel(
                                   canonical_service_date(checks.period_begin, checks.check_date,
                                     checks.period_end))
                        )
+                       AND ${agencyPayrollCheckVisibilitySql("checks", "requested.agency_id")}
                   ), 0)::text END AS payroll_net_this_month,
                   CASE WHEN requested.agency_id = ANY($6::uuid[]) THEN COALESCE((
                     SELECT sum(GREATEST(obligation.original_amount - COALESCE(events.applied, 0), 0))
@@ -1968,6 +2077,7 @@ export async function getPortalHomeReadModel(
                                   canonical_service_date(obligation.period_begin, obligation.check_date,
                                     obligation.period_end))
                        )
+                       AND ${agencyGiveBackVisibilitySql("obligation", "requested.agency_id")}
                   ), 0)::text END AS giveback_remaining
              FROM unnest($1::uuid[]) AS requested(agency_id)`,
           [

@@ -6,6 +6,7 @@ import { hashPassword, verifyPassword } from "./crypto";
 import type { Role } from "./session";
 import type { VisibilityPermissions } from "./access";
 import type { AccountPresetId } from "./account-presets";
+import { resolveAuditAttribution } from "./audit-attribution";
 
 /**
  * User records and the credential checks performed against them.
@@ -101,15 +102,20 @@ async function writeAuditQuery(
   queryable: Pick<PgLikePool, "query">,
   entry: AuditEntry,
 ): Promise<void> {
+  const attribution = await resolveAuditAttribution(entry.userId ?? null);
+  const metadata = { ...(entry.metadata ?? {}) };
+  if (attribution.impersonatedUserId) {
+    metadata.impersonatedUserId = attribution.impersonatedUserId;
+  }
   await queryable.query(
     `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, metadata)
      VALUES ($1, $2, $3, $4, $5)`,
     [
-      entry.userId ?? null,
+      attribution.actorId,
       entry.action,
       entry.entityType ?? null,
       entry.entityId ?? null,
-      entry.metadata ? JSON.stringify(entry.metadata) : null,
+      Object.keys(metadata).length ? JSON.stringify(metadata) : null,
     ],
   );
 }

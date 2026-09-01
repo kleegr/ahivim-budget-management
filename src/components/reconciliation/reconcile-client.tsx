@@ -236,7 +236,7 @@ export default function ReconcileClient({
             caption="Imported transactions with no scheduled match"
             head={
               <>
-                <Th>Period</Th>
+                <Th>Service period / date</Th>
                 <Th>Program</Th>
                 <Th>Individual</Th>
                 <Th numeric>Hours</Th>
@@ -246,7 +246,11 @@ export default function ReconcileClient({
           >
             {billed.map((b) => (
               <Tr key={b.id}>
-                <Td className="tnum whitespace-nowrap">{periodLabel(b.periodBegin, b.periodEnd)}</Td>
+                <Td className="tnum whitespace-nowrap">
+                  {b.periodBegin && b.periodEnd
+                    ? periodLabel(b.periodBegin, b.periodEnd)
+                    : b.serviceDate ?? periodLabel(b.periodBegin, b.periodEnd)}
+                </Td>
                 <Td>{b.programCode ?? <span className="text-[var(--color-ink-faint)]">—</span>}</Td>
                 <Td>{b.individualName ?? <span className="text-[var(--color-ink-faint)]">—</span>}</Td>
                 <Td numeric><Hours value={b.hours} /></Td>

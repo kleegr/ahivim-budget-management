@@ -421,6 +421,95 @@ describe("portal-safe home read model", () => {
     expect(memberDueFilter).toContain("obligation.status = 'active'");
   });
 
+  it("hides whole checks with ambiguous agency ownership unless every linked row resolves to one agency", async () => {
+    const context: PortalAccessContext = {
+      userId: "multi-agency-collector",
+      globalRoles: [],
+      individualLinks: [],
+      employeeLinks: [],
+      agencyAccess: [
+        {
+          agencyId: AGENCY_A,
+          agencyCode: "A",
+          agencyName: "Agency A",
+          role: "collector",
+          grants: [],
+          denials: [],
+        },
+        {
+          agencyId: AGENCY_B,
+          agencyCode: "B",
+          agencyName: "Agency B",
+          role: "collector",
+          grants: [],
+          denials: [],
+        },
+      ],
+    };
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM agencies a")) {
+        return {
+          rows: [
+            {
+              id: AGENCY_A,
+              code: "A",
+              name: "Agency A",
+              managed_budget_count: 0,
+              billing_without_budget_count: 0,
+            },
+            {
+              id: AGENCY_B,
+              code: "B",
+              name: "Agency B",
+              managed_budget_count: 0,
+              billing_without_budget_count: 0,
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    });
+    const pool = { query, connect: vi.fn() } as unknown as PgLikePool;
+
+    await getPortalHomeReadModel(pool, context, "2026-05");
+
+    const memberCheckSql = query.mock.calls.find(([sql]) =>
+      sql.includes("checks.employee_id AS person_id"),
+    )?.[0];
+    const memberGiveBackSql = query.mock.calls.find(([sql]) =>
+      sql.includes("obligation.employee_id AS person_id"),
+    )?.[0];
+    const agencyFinancialSql = query.mock.calls.find(([sql]) => sql.includes("FROM unnest"))?.[0];
+    expect(memberCheckSql).toBeDefined();
+    expect(memberGiveBackSql).toBeDefined();
+    expect(agencyFinancialSql).toBeDefined();
+
+    for (const sql of [memberCheckSql!, agencyFinancialSql!]) {
+      expect(sql).toContain("count(DISTINCT candidate_membership.agency_id)");
+      expect(sql).toContain("SELECT count(*) > 0");
+      expect(sql).toContain("source_transaction.payroll_check_id = checks.id");
+      expect(sql).toContain("bool_and(");
+      expect(sql).toContain("attribution.agency_count = 1");
+      expect(sql).toContain("attribution.requested_agency_count = 1");
+      expect(sql).toContain("source_agency.bills_services = true");
+    }
+    expect(memberCheckSql).toContain("source_agency.agency_id = membership.agency_id");
+    expect(agencyFinancialSql?.match(
+      /source_agency\.agency_id = requested\.agency_id/g,
+    )).toHaveLength(3);
+
+    for (const sql of [memberGiveBackSql!, agencyFinancialSql!]) {
+      expect(sql).toContain("calculation_metadata->'sourceTransactionIds'");
+      expect(sql).toContain("jsonb_array_elements_text(");
+      expect(sql).toContain("source_transaction.id = CASE");
+      expect(sql).toContain("THEN source_id.value::uuid");
+      expect(sql).toContain("attribution.agency_count = 1");
+      expect(sql).toContain("attribution.requested_agency_count = 1");
+    }
+    expect(memberGiveBackSql).toContain("source_agency.agency_id = membership.agency_id");
+    expect(agencyFinancialSql).toContain("source_agency.agency_id = requested.agency_id");
+  });
+
   it("keeps physical dollar balances separate from effective hour authorization totals", async () => {
     const context: PortalAccessContext = {
       userId: "individual-budget-user",

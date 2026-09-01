@@ -27,7 +27,8 @@ export async function GET(
     if (!hasDocumentStorage()) {
       return jsonError("Private document storage is not configured. Ask an administrator to connect document storage.", 503);
     }
-    const file = await getDocumentVersionFile(found.access.pool, id, versionId);
+    const representation = request.nextUrl.searchParams.get("source") === "1" ? "source" : "output";
+    const file = await getDocumentVersionFile(found.access.pool, id, versionId, representation);
     if (!file) return jsonError("That document version was not found.", 404);
     const blob = await readPrivateDocumentBlob(file.pathname, request.headers.get("if-none-match"));
     if (!blob) return jsonError("That document file was not found.", 404);
@@ -44,7 +45,7 @@ export async function GET(
       action: download ? "document_version_downloaded" : "document_version_opened",
       entityType: "document",
       entityId: id,
-      metadata: { versionId },
+      metadata: { versionId, representation },
     });
     return new Response(blob.stream, {
       status: 200,

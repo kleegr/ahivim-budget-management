@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import {
   apiUser,
+  clearAuthenticationCookies,
   createImpersonationSession,
   currentImpersonationSession,
   currentSession,
+  restoreOwnerSession,
 } from "@/lib/auth/session";
 import { findUserById, writeAudit } from "@/lib/auth/users";
 import { jsonError, sameOriginOrFail } from "@/lib/http";
@@ -19,12 +21,17 @@ export async function POST(request: NextRequest) {
 
   const wantsJson = (request.headers.get("content-type") ?? "").includes("application/json");
   const actor = await apiUser("admin");
-  if (!actor) return jsonError("Administrator access required", 403);
+  if (!actor) return failedStart(request, wantsJson, "Administrator access required", 403);
 
   // An administrator target may itself have admin authority, so this explicit
   // proof check is what prevents a view-as session from being nested.
   if (await currentImpersonationSession()) {
-    return jsonError("Return to your own portal before viewing another user.", 409);
+    return failedStart(
+      request,
+      wantsJson,
+      "Return to your own portal before viewing another user.",
+      409,
+    );
   }
 
   let targetUserId = "";
@@ -37,7 +44,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (!targetUserId || targetUserId === actor.id) {
-    return jsonError("Choose another active user to preview.", 400);
+    return failedStart(request, wantsJson, "Choose another active user to preview.", 400);
   }
 
   const ownerSession = await currentSession();
@@ -46,13 +53,36 @@ export async function POST(request: NextRequest) {
     || ownerSession.userId !== actor.id
     || ownerSession.impersonatorUserId
   ) {
-    return jsonError("Your session could not be verified. Sign in again.", 401);
+    return failedStart(
+      request,
+      wantsJson,
+      "Your session could not be verified. Sign in again.",
+      401,
+    );
   }
 
   const pool = getPool();
   const target = await findUserById(pool, targetUserId).catch(() => null);
   if (!target || !target.isActive) {
-    return jsonError("That user is not available to preview.", 404);
+    return failedStart(
+      request,
+      wantsJson,
+      "That user is not available to preview.",
+      404,
+    );
+  }
+
+  let proof: Awaited<ReturnType<typeof createImpersonationSession>>;
+  try {
+    proof = await createImpersonationSession(actor, target, ownerSession.exp);
+  } catch {
+    await clearAuthenticationCookies().catch(() => undefined);
+    return failedStart(
+      request,
+      wantsJson,
+      "The user preview could not be started. Sign in and try again.",
+      503,
+    );
   }
 
   try {
@@ -63,13 +93,32 @@ export async function POST(request: NextRequest) {
       entityId: target.id,
       metadata: { targetRole: target.role },
     });
-    await createImpersonationSession(actor, target, ownerSession.exp);
   } catch {
-    return jsonError("The user preview could not be started. Try again.", 503);
+    const restored = await restoreOwnerSession(actor, proof).catch(() => false);
+    if (!restored) await clearAuthenticationCookies().catch(() => undefined);
+    return failedStart(
+      request,
+      wantsJson,
+      "The user preview could not be recorded, so it was not opened. Try again.",
+      503,
+    );
   }
 
   if (wantsJson) {
     return NextResponse.json({ ok: true, redirectTo: "/home" });
   }
   return NextResponse.redirect(new URL("/home", request.nextUrl.origin), { status: 303 });
+}
+
+function failedStart(
+  request: NextRequest,
+  wantsJson: boolean,
+  message: string,
+  status: number,
+) {
+  if (wantsJson) return jsonError(message, status);
+  const settings = new URL("/settings", request.nextUrl.origin);
+  settings.searchParams.set("previewError", message);
+  settings.hash = "access";
+  return NextResponse.redirect(settings, { status: 303 });
 }

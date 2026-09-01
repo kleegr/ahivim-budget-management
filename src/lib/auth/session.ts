@@ -172,6 +172,8 @@ export async function restoreOwnerSession(
 
 export interface AuthenticatedUser {
   id: string;
+  /** The signed-in person responsible for writes; differs from id during owner preview. */
+  actorId: string;
   email: string;
   displayName: string;
   role: Role;
@@ -221,6 +223,7 @@ async function loadAuthenticationContext(): Promise<{
 
   const user: AuthenticatedUser = {
     id: record.id,
+    actorId: record.id,
     email: record.email,
     displayName: record.displayName,
     role: record.role,
@@ -241,15 +244,16 @@ async function loadAuthenticationContext(): Promise<{
   }
 
   return {
-    user,
+    user: { ...user, actorId: ownerRecord.id },
     impersonation: {
       owner: {
         id: ownerRecord.id,
+        actorId: ownerRecord.id,
         email: ownerRecord.email,
         displayName: ownerRecord.displayName,
         role: ownerRecord.role,
       },
-      target: user,
+      target: { ...user, actorId: ownerRecord.id },
       expiresAt: impersonation.exp,
     },
   };

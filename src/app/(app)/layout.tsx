@@ -5,6 +5,7 @@ import { withDb } from "@/lib/data/pool";
 import { agencyIdsWithPlanningAccess, hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
 import ImpersonationBar from "@/components/auth/impersonation-bar";
 import { resolveAccountProfile } from "@/lib/auth/account-label";
+import AccessNotice from "@/components/auth/access-notice";
 
 export const dynamic = "force-dynamic";
 
@@ -92,6 +93,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         />
         <div className="flex min-h-[calc(100vh-var(--impersonation-bar-height))] min-w-0 flex-1 flex-col">
           <main id="main" className="mx-auto w-full max-w-[100rem] flex-1 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+            <AccessNotice />
             {children}
           </main>
           <footer className="mx-auto w-full max-w-[100rem] px-4 pb-8 text-xs text-[var(--color-ink-faint)] sm:px-6 lg:px-8">

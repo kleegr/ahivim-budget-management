@@ -86,15 +86,29 @@ function escapeCsv(field: string): string {
   return /[",\r\n]/.test(field) ? `"${field.replace(/"/g, '""')}"` : field;
 }
 
+/** Keep user-entered text literal when opened in spreadsheet software. */
+export function safeSpreadsheetText(field: string): string {
+  return /^[=+\-@\t\r\n]/.test(field) ? `'${field}` : field;
+}
+
+function safeCsvCell(type: ExportFieldType, field: string): string {
+  if (type !== "text") return field;
+  return safeSpreadsheetText(field);
+}
+
 export function buildCsv(tables: ExportTable[]): string {
   const blocks = tables.map((table) => {
     const lines: string[] = [];
-    if (tables.length > 1 && table.title) lines.push(escapeCsv(table.title));
-    lines.push(table.columns.map((c) => escapeCsv(c.header)).join(","));
+    if (tables.length > 1 && table.title) lines.push(escapeCsv(safeCsvCell("text", table.title)));
+    lines.push(table.columns.map((c) => escapeCsv(safeCsvCell("text", c.header))).join(","));
     for (const row of table.rows) {
-      lines.push(table.columns.map((c) => escapeCsv(csvCell(c.type, row[c.key] ?? null))).join(","));
+      lines.push(table.columns.map((c) => escapeCsv(
+        safeCsvCell(c.type, csvCell(c.type, row[c.key] ?? null)),
+      )).join(","));
     }
-    if (table.rows.length === 0) lines.push(escapeCsv(table.emptyMessage ?? "No rows"));
+    if (table.rows.length === 0) lines.push(escapeCsv(
+      safeCsvCell("text", table.emptyMessage ?? "No rows"),
+    ));
     return lines.join("\r\n");
   });
   return blocks.join("\r\n\r\n");

@@ -1,10 +1,12 @@
 import Link from "next/link";
+import { Suspense, type ReactNode } from "react";
 import {
   ArrowRight,
   BarChart3,
   Calculator,
   Clock3,
   Filter,
+  HandCoins,
   ReceiptText,
   RotateCcw,
   WalletCards,
@@ -21,6 +23,15 @@ import type {
 } from "@/lib/dashboard/owner-summary";
 import { formatHours, formatMoney } from "@/lib/money";
 import type { GridView } from "@/lib/manage/grid-views";
+import { getAgencyFinancialReport, type AgencyFinancialReport } from "@/lib/data/agency-financial-report";
+import { getSettlementSummary, type SettlementSummary } from "@/lib/data/settlements";
+import { withDb } from "@/lib/data/pool";
+
+export interface OwnerActualMoney {
+  month: string;
+  totals: AgencyFinancialReport["totals"];
+  operations: SettlementSummary;
+}
 
 const LONG_DATE = new Intl.DateTimeFormat("en-US", {
   month: "long",
@@ -32,6 +43,12 @@ const LONG_DATE = new Intl.DateTimeFormat("en-US", {
 const SHORT_DATE = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+const MONTH_DATE = new Intl.DateTimeFormat("en-US", {
+  month: "long",
   year: "numeric",
   timeZone: "UTC",
 });
@@ -104,6 +121,116 @@ function SummaryMetric({
       </span>
       {hint ? <span className="mt-1 block text-xs leading-4 text-[var(--color-ink-faint)]">{hint}</span> : null}
     </Link>
+  );
+}
+
+function OwnerMoneyShell({ month, children }: { month: string; children: ReactNode }) {
+  return (
+    <section aria-labelledby="owner-money-heading">
+      <SectionHeading
+        id="owner-money-heading"
+        eyebrow="Actual money"
+        title="Money"
+        description={`${MONTH_DATE.format(new Date(`${month}-01T00:00:00Z`))} actual income and expenses, plus today's open money work.`}
+        href={`/reports/agency-financials?month=${month}`}
+        action="Open agency financials"
+        icon={HandCoins}
+      />
+      {children}
+    </section>
+  );
+}
+
+function OwnerMoneyLoading({ month }: { month: string }) {
+  return (
+    <OwnerMoneyShell month={month}>
+      <div
+        role="status"
+        aria-live="polite"
+        className="mt-4 min-h-24 border-y border-[var(--color-rule-strong)] px-3 py-4 text-sm text-[var(--color-ink-soft)]"
+      >
+        Loading actual money...
+      </div>
+    </OwnerMoneyShell>
+  );
+}
+
+async function OwnerActualMoneySection({ month }: { month: string }) {
+  const result = await withDb(async (pool) => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const [actualFinancials, operations] = await Promise.all([
+        getAgencyFinancialReport(client, month),
+        getSettlementSummary(client),
+      ]);
+      await client.query("COMMIT");
+      return {
+        month: actualFinancials.month,
+        totals: actualFinancials.totals,
+        operations,
+      } satisfies OwnerActualMoney;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+
+  if (!result.ok) {
+    return (
+      <OwnerMoneyShell month={month}>
+        <div role="alert" className="mt-4 flex min-h-24 flex-wrap items-center justify-between gap-3 border-y border-[var(--color-rule-strong)] px-3 py-4 text-sm">
+          <p className="text-[var(--color-ink-soft)]">Actual money is temporarily unavailable. The rest of the owner overview is still current.</p>
+          <ButtonLink href="/dashboard">Try again</ButtonLink>
+        </div>
+      </OwnerMoneyShell>
+    );
+  }
+
+  const actualMoney = result.data;
+  return (
+    <OwnerMoneyShell month={actualMoney.month}>
+      <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] md:grid-cols-3 lg:grid-cols-6 lg:divide-y-0">
+        <SummaryMetric
+          label="Actual income"
+          value={formatMoney(actualMoney.totals.income.total)}
+          href={`/reports/agency-financials?month=${actualMoney.month}`}
+          hint="Transactions and recorded receipts"
+        />
+        <SummaryMetric
+          label="Actual expenses"
+          value={formatMoney(actualMoney.totals.expenses.total)}
+          href={`/reports/agency-financials?month=${actualMoney.month}`}
+          hint="Set-asides, taxes, and shares"
+        />
+        <SummaryMetric
+          label="Agency result"
+          value={formatMoney(actualMoney.totals.agencyResult)}
+          href={`/reports/agency-financials?month=${actualMoney.month}`}
+          hint="Income minus listed expenses"
+        />
+        <SummaryMetric
+          label="Agency pays"
+          value={formatMoney(actualMoney.operations.agencyOwes)}
+          href="/settlements?queue=payable"
+          hint="Open employee payments"
+        />
+        <SummaryMetric
+          label="Employees owe"
+          value={formatMoney(actualMoney.operations.employeesOwe)}
+          href="/settlements?queue=receivable"
+          hint="Open collections"
+        />
+        <SummaryMetric
+          label="Set aside"
+          value={formatMoney(actualMoney.operations.reservesToSetAside)}
+          href="/settlements?queue=reserve"
+          hint={`${(actualMoney.operations.openCount + actualMoney.operations.partialCount).toLocaleString()} open money items`}
+        />
+      </div>
+    </OwnerMoneyShell>
   );
 }
 
@@ -242,16 +369,16 @@ function RecentChecks({
 
 export default function OwnerDashboard({
   summary,
-  denied,
   activitySelection,
   activityOptions,
   savedViews,
+  financialMonth,
 }: {
   summary: OwnerDashboardSummary;
-  denied: boolean;
   activitySelection: OwnerActivitySelection;
   activityOptions: OwnerActivityFilterOptions;
   savedViews: GridView[];
+  financialMonth: string;
 }) {
   const transactions = summary.transactions;
   const budgets = summary.budgets;
@@ -270,7 +397,7 @@ export default function OwnerDashboard({
       <PageHeader
         eyebrow="Ahivim"
         title="Owner overview"
-        description="Actual activity, active authorizations, and current financial plans."
+        description="Actual activity, current money, active authorizations, and financial plans."
         action={(
           <>
             <ButtonLink href="/reports">
@@ -281,12 +408,6 @@ export default function OwnerDashboard({
           </>
         )}
       />
-
-      {denied ? (
-        <p role="status" className="mb-6 border-l-2 border-[var(--color-info)] bg-[var(--color-info-soft)] px-3 py-2 text-sm text-[var(--color-ink-soft)]">
-          That page is not part of your access. You are back on the owner overview.
-        </p>
-      ) : null}
 
       <div className="space-y-12">
         <section aria-labelledby="owner-transactions-heading">
@@ -335,6 +456,10 @@ export default function OwnerDashboard({
             />
           </div>
         </section>
+
+        <Suspense fallback={<OwnerMoneyLoading month={financialMonth} />}>
+          <OwnerActualMoneySection month={financialMonth} />
+        </Suspense>
 
         <section aria-labelledby="owner-financial-heading">
           <SectionHeading

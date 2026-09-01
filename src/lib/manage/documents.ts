@@ -14,6 +14,7 @@ import {
   inspectPrivateDocumentBlob,
   maxPdfUploadBytes,
 } from "@/lib/documents/document-storage";
+import { parsePdfEditorManifest } from "@/lib/documents/pdf-editor-persistence";
 import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { recordChange } from "./audit";
 import { fail, ok, type Result } from "./errors";
@@ -95,19 +96,49 @@ function validateByteSize(value: number): number | null {
   return Number.isSafeInteger(value) && value > 0 && value <= maxPdfUploadBytes() ? value : null;
 }
 
-function normalizedEditorState(value: unknown): Result<Record<string, unknown>> {
+function normalizedJsonEditorState(value: unknown): Result<Record<string, unknown>> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return fail("validation", "Editor state must be a JSON object.");
   }
   try {
     const serialized = JSON.stringify(value);
+    if (typeof serialized !== "string") {
+      return fail("validation", "Editor state must contain valid JSON values.");
+    }
     if (Buffer.byteLength(serialized, "utf8") > MAX_EDITOR_STATE_BYTES) {
       return fail("validation", "This editor state is too large to save.");
     }
-    return ok(JSON.parse(serialized) as Record<string, unknown>);
+    const parsed: unknown = JSON.parse(serialized);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return fail("validation", "Editor state must remain a JSON object.");
+    }
+    return ok(parsed as Record<string, unknown>);
   } catch {
     return fail("validation", "Editor state must contain valid JSON values.");
   }
+}
+
+function normalizedEditorState(
+  value: unknown,
+  editorSchemaVersion: number,
+): Result<Record<string, unknown>> {
+  const normalized = normalizedJsonEditorState(value);
+  if (!normalized.ok) return normalized;
+  const declaredSchemaVersion = normalized.data.schemaVersion;
+
+  if (editorSchemaVersion === 1 && declaredSchemaVersion === undefined) {
+    // Versions created before the structured PDF manifest remain readable and restorable.
+    return normalized;
+  }
+  if ((editorSchemaVersion !== 1 && editorSchemaVersion !== 2)
+    || declaredSchemaVersion !== editorSchemaVersion) {
+    return fail("validation", "This PDF editor state version is not supported.");
+  }
+  const manifest = parsePdfEditorManifest(normalized.data);
+  if (!manifest) {
+    return fail("validation", "PDF editor state is incomplete or invalid. Reload the document and try again.");
+  }
+  return ok(manifest as unknown as Record<string, unknown>);
 }
 
 function uploadReservation(
@@ -409,12 +440,12 @@ export async function finalizeDocumentVersion(
   if (!DOCUMENT_UUID.test(input.intentId) || !DOCUMENT_UUID.test(input.idempotencyKey)) {
     return fail("validation", "Upload intent and idempotency key must be valid IDs.");
   }
-  const editorState = normalizedEditorState(input.editorState ?? {});
-  if (!editorState.ok) return editorState;
   const editorSchemaVersion = input.editorSchemaVersion ?? 1;
   if (!Number.isInteger(editorSchemaVersion) || editorSchemaVersion <= 0) {
     return fail("validation", "Editor schema version must be a positive integer.");
   }
+  const editorState = normalizedEditorState(input.editorState ?? {}, editorSchemaVersion);
+  if (!editorState.ok) return editorState;
   const pageCount = input.pageCount ?? null;
   if (pageCount !== null && (!Number.isInteger(pageCount) || pageCount <= 0 || pageCount > 100_000)) {
     return fail("validation", "Page count must be a positive integer.");
@@ -601,12 +632,12 @@ export async function saveDocumentDraft(
 ): Promise<Result<DocumentDraftRecord>> {
   if (!DOCUMENT_UUID.test(documentId)) return fail("not_found", "That document was not found.");
   if (!DOCUMENT_UUID.test(input.baseVersionId)) return fail("validation", "Choose a valid base version.");
-  const state = normalizedEditorState(input.editorState);
-  if (!state.ok) return state;
   const schemaVersion = input.editorSchemaVersion ?? 1;
   if (!Number.isInteger(schemaVersion) || schemaVersion <= 0) {
     return fail("validation", "Editor schema version must be a positive integer.");
   }
+  const state = normalizedEditorState(input.editorState, schemaVersion);
+  if (!state.ok) return state;
   if (input.expectedRevision !== null
       && (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1)) {
     return fail("validation", "Draft revision must be a positive integer or null.");

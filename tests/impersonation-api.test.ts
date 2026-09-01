@@ -63,10 +63,19 @@ function jsonRequest(path: string, body: Record<string, unknown> = {}) {
   });
 }
 
+function formRequest(path: string, body: Record<string, string> = {}) {
+  return new NextRequest(`http://localhost${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(body),
+  });
+}
+
 describe("owner view-as API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getPool.mockReturnValue(pool);
+    mocks.clearAuthenticationCookies.mockResolvedValue(undefined);
     mocks.apiUser.mockResolvedValue(owner);
     mocks.currentSession.mockResolvedValue({
       userId: OWNER_ID,
@@ -99,6 +108,46 @@ describe("owner view-as API", () => {
       action: "user_impersonation_started",
       entityId: TARGET_ID,
     }));
+    expect(mocks.createImpersonationSession.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.writeAudit.mock.invocationCallOrder[0]!);
+  });
+
+  it("returns native form failures to Users with an actionable message", async () => {
+    mocks.findUserById.mockResolvedValueOnce({ ...target, isActive: false });
+    const response = await startImpersonation(formRequest(
+      "/api/auth/impersonation/start",
+      { targetUserId: TARGET_ID },
+    ));
+
+    expect(response.status).toBe(303);
+    const location = response.headers.get("location") ?? "";
+    expect(location).toContain("/settings?previewError=");
+    expect(location).toContain("#access");
+    expect(location).not.toContain("%7B%22error%22");
+  });
+
+  it("rolls back the preview when its durable audit cannot be written", async () => {
+    mocks.writeAudit.mockRejectedValueOnce(new Error("audit unavailable"));
+    const response = await startImpersonation(jsonRequest(
+      "/api/auth/impersonation/start",
+      { targetUserId: TARGET_ID },
+    ));
+
+    expect(response.status).toBe(503);
+    expect(mocks.restoreOwnerSession).toHaveBeenCalledWith(owner, proof);
+    expect(mocks.clearAuthenticationCookies).not.toHaveBeenCalled();
+  });
+
+  it("clears partial authentication state when preview cookies cannot be created", async () => {
+    mocks.createImpersonationSession.mockRejectedValueOnce(new Error("cookie unavailable"));
+    const response = await startImpersonation(jsonRequest(
+      "/api/auth/impersonation/start",
+      { targetUserId: TARGET_ID },
+    ));
+
+    expect(response.status).toBe(503);
+    expect(mocks.clearAuthenticationCookies).toHaveBeenCalledOnce();
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
   });
 
   it("requires an administrator and refuses self, disabled targets, and nesting", async () => {
@@ -165,6 +214,27 @@ describe("owner view-as API", () => {
       action: "user_impersonation_stopped",
       entityId: TARGET_ID,
     }));
+    expect(mocks.writeAudit.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.restoreOwnerSession.mock.invocationCallOrder[0]!);
+    expect(mocks.clearAuthenticationCookies).not.toHaveBeenCalled();
+  });
+
+  it("keeps the preview active when the stop audit cannot be written", async () => {
+    mocks.currentSession.mockResolvedValue({
+      userId: TARGET_ID,
+      role: "viewer",
+      displayName: "Planner",
+      impersonatorUserId: OWNER_ID,
+      exp: proof.exp,
+    });
+    mocks.currentImpersonationSession.mockResolvedValue(proof);
+    mocks.findUserById.mockResolvedValue(owner);
+    mocks.writeAudit.mockRejectedValueOnce(new Error("audit unavailable"));
+
+    const response = await stopImpersonation(jsonRequest("/api/auth/impersonation/stop"));
+
+    expect(response.status).toBe(503);
+    expect(mocks.restoreOwnerSession).not.toHaveBeenCalled();
     expect(mocks.clearAuthenticationCookies).not.toHaveBeenCalled();
   });
 

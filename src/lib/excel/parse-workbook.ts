@@ -11,6 +11,7 @@ import {
   type AhivimField,
   type AhivimRow,
 } from "./column-map";
+import { dec } from "@/lib/money";
 
 /**
  * WORKBOOK PARSING
@@ -43,6 +44,7 @@ export interface ParsedCell {
   text: string;
   formula: string | null;
   isError: boolean;
+  recoveredNumericDate: boolean;
 }
 
 export interface ParsedAhivimRow {
@@ -71,26 +73,74 @@ export interface WorkbookParseResult {
   warnings: string[];
 }
 
-const FORMULA_INJECTION_PREFIX = /^[=+\-@\t\r]/;
+const FORMULA_INJECTION_PREFIX = /^[=+\-@\t\r\n]/;
+const EXCEL_DAY_MS = 86_400_000;
+const EXCEL_1900_UNIX_EPOCH_OFFSET = 25_569;
+const EXCEL_1904_OFFSET = 1_462;
+
+const NUMERIC_AHIVIM_FIELDS = new Set<AhivimField>([
+  "hours",
+  "rate",
+  "amount",
+  "totalNetPay",
+  "calculatedInternalAmount",
+  "dedupNetPayFormula",
+]);
+
+const FIELD_LABELS: Partial<Record<AhivimField, string>> = {
+  hours: "Hours",
+  rate: "Rate",
+  amount: "Amount",
+  totalNetPay: "Total Net Pay",
+  calculatedInternalAmount: "Internal Amount",
+  dedupNetPayFormula: "Deduplicated Net Pay",
+};
 
 /** Neutralise a value that will later be written into a spreadsheet export. */
 export function sanitizeForExport(value: string): string {
   return FORMULA_INJECTION_PREFIX.test(value) ? `'${value}` : value;
 }
 
-function cellToParsed(cell: ExcelJS.Cell | undefined): ParsedCell {
+function excelDateToSerial(value: Date, date1904: boolean): string {
+  const serial = dec(value.getTime())
+    .dividedBy(EXCEL_DAY_MS)
+    .plus(EXCEL_1900_UNIX_EPOCH_OFFSET)
+    .minus(date1904 ? EXCEL_1904_OFFSET : 0);
+  return serial.toDecimalPlaces(10).toString();
+}
+
+function dateValueText(value: Date, numeric: boolean, date1904: boolean): {
+  text: string;
+  recoveredNumericDate: boolean;
+} {
+  if (numeric) {
+    return {
+      text: excelDateToSerial(value, date1904),
+      recoveredNumericDate: true,
+    };
+  }
+  return { text: value.toISOString().slice(0, 10), recoveredNumericDate: false };
+}
+
+function cellToParsed(
+  cell: ExcelJS.Cell | undefined,
+  options?: { numeric?: boolean; date1904?: boolean },
+): ParsedCell {
+  const numeric = options?.numeric ?? false;
+  const date1904 = options?.date1904 ?? false;
   if (!cell || cell.value === null || cell.value === undefined) {
-    return { text: "", formula: null, isError: false };
+    return { text: "", formula: null, isError: false, recoveredNumericDate: false };
   }
   const v = cell.value;
 
   if (typeof v === "object") {
     if (v instanceof Date) {
-      return { text: v.toISOString().slice(0, 10), formula: null, isError: false };
+      const converted = dateValueText(v, numeric, date1904);
+      return { ...converted, formula: null, isError: false };
     }
     if ("error" in v) {
       // #NAME?, #REF! and friends. Recorded, never trusted.
-      return { text: "", formula: null, isError: true };
+      return { text: "", formula: null, isError: true, recoveredNumericDate: false };
     }
     if ("formula" in v || "sharedFormula" in v) {
       const formula =
@@ -98,15 +148,17 @@ function cellToParsed(cell: ExcelJS.Cell | undefined): ParsedCell {
         ("sharedFormula" in v && v.sharedFormula ? `shared->${String(v.sharedFormula)}` : null);
       const result = "result" in v ? v.result : undefined;
       if (result && typeof result === "object" && "error" in result) {
-        return { text: "", formula, isError: true };
+        return { text: "", formula, isError: true, recoveredNumericDate: false };
       }
       if (result instanceof Date) {
-        return { text: result.toISOString().slice(0, 10), formula, isError: false };
+        const converted = dateValueText(result, numeric, date1904);
+        return { ...converted, formula, isError: false };
       }
       return {
         text: result === null || result === undefined ? "" : String(result),
         formula,
         isError: false,
+        recoveredNumericDate: false,
       };
     }
     if ("richText" in v && Array.isArray(v.richText)) {
@@ -114,14 +166,25 @@ function cellToParsed(cell: ExcelJS.Cell | undefined): ParsedCell {
         text: v.richText.map((r: { text: string }) => r.text).join(""),
         formula: null,
         isError: false,
+        recoveredNumericDate: false,
       };
     }
     if ("text" in v) {
-      return { text: String(v.text ?? ""), formula: null, isError: false };
+      return {
+        text: String(v.text ?? ""),
+        formula: null,
+        isError: false,
+        recoveredNumericDate: false,
+      };
     }
   }
 
-  return { text: String(v).trim(), formula: null, isError: false };
+  return {
+    text: String(v).trim(),
+    formula: null,
+    isError: false,
+    recoveredNumericDate: false,
+  };
 }
 
 function findHeaderRow(sheet: ExcelJS.Worksheet): { rowNumber: number; headers: string[] } | null {
@@ -176,6 +239,7 @@ function isBlankRow(values: Record<AhivimField, string>): boolean {
 export async function parseWorkbook(bytes: Buffer): Promise<WorkbookParseResult> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(bytes as unknown as ArrayBuffer);
+  const date1904 = workbook.properties.date1904 === true;
 
   const warnings: string[] = [];
   const sheets: SheetSummary[] = [];
@@ -215,6 +279,7 @@ export async function parseWorkbook(bytes: Buffer): Promise<WorkbookParseResult>
   };
 
   if (ahivim) {
+    const recoveredNumericDates = new Map<AhivimField, number>();
     const header = findHeaderRow(ahivim);
     if (header) {
       const built = buildColumnMap(header.headers);
@@ -234,7 +299,10 @@ export async function parseWorkbook(bytes: Buffer): Promise<WorkbookParseResult>
 
     // Control totals live above the header, in row 1.
     for (const [key, cell] of Object.entries(CONTROL_TOTAL_CELLS)) {
-      const value = cellToParsed(ahivim.getRow(cell.row).getCell(cell.col)).text;
+      const value = cellToParsed(ahivim.getRow(cell.row).getCell(cell.col), {
+        numeric: true,
+        date1904,
+      }).text;
       controlTotals[key as keyof WorkbookControlTotals] = value === "" ? null : value;
     }
 
@@ -245,9 +313,15 @@ export async function parseWorkbook(bytes: Buffer): Promise<WorkbookParseResult>
       const formulas: Partial<Record<AhivimField, string>> = {};
 
       for (const field of Object.keys(columnMap) as AhivimField[]) {
-        const cell = cellToParsed(row.getCell(columnMap[field]));
+        const cell = cellToParsed(row.getCell(columnMap[field]), {
+          numeric: NUMERIC_AHIVIM_FIELDS.has(field),
+          date1904,
+        });
         raw[field] = cell.text.trim();
         if (cell.formula) formulas[field] = cell.formula;
+        if (cell.recoveredNumericDate) {
+          recoveredNumericDates.set(field, (recoveredNumericDates.get(field) ?? 0) + 1);
+        }
         if (cell.isError && raw[field] === "") {
           // A formula error leaves the value blank; validation will catch it.
           formulas[field] = formulas[field] ?? "#ERROR";
@@ -271,6 +345,15 @@ export async function parseWorkbook(bytes: Buffer): Promise<WorkbookParseResult>
               message: i.message,
             })),
       });
+    }
+
+    if (recoveredNumericDates.size > 0) {
+      const details = [...recoveredNumericDates.entries()]
+        .map(([field, count]) => `${count} ${FIELD_LABELS[field] ?? field}`)
+        .join(", ");
+      warnings.push(
+        `Recovered numeric values from cells that were accidentally formatted as dates: ${details}.`,
+      );
     }
   }
 

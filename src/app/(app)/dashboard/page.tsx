@@ -27,6 +27,9 @@ import { dec, formatHours } from "@/lib/money";
 import { ErrorPanel, PageHeader } from "@/components/ui";
 import GoogleSheetSyncButton from "@/components/sync/google-sheet-sync-button";
 import OwnerDashboard from "@/components/dashboard/owner-dashboard";
+import {
+  normalizeActualAgencyFinancialMonth,
+} from "@/lib/data/agency-financial-report";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Home - Ahivim" };
@@ -117,10 +120,10 @@ export default async function DashboardPage({
   const user = await requireUser("manager");
   const params = await searchParams;
   const one = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
-  const denied = params.denied;
   const today = agencyDate();
 
   if (user.role === "admin") {
+    const financialMonth = normalizeActualAgencyFinancialMonth(today.slice(0, 7));
     const activitySelection = normalizeOwnerActivitySelection({
       checkDateFrom: one(params.from) ?? null,
       checkDateTo: one(params.to) ?? null,
@@ -133,7 +136,13 @@ export default async function DashboardPage({
       payrollPeriod: one(params.payrollPeriod) ?? null,
     });
     const ownerResult = await withDb(async (pool) => {
-      const [transactions, programBudgets, budgetBoard, strategyResult, savedViews] = await Promise.all([
+      const [
+        transactions,
+        programBudgets,
+        budgetBoard,
+        strategyResult,
+        savedViews,
+      ] = await Promise.all([
         listTransactionsForGrid(pool),
         listCurrentProgramBudgets(pool, { asOf: today }),
         listIndividualBudgetBoard(pool, new Date(`${today}T12:00:00Z`)),
@@ -167,10 +176,10 @@ export default async function DashboardPage({
     return (
       <OwnerDashboard
         summary={ownerResult.data.summary}
-        denied={Boolean(denied)}
         activitySelection={activitySelection}
         activityOptions={ownerResult.data.activityOptions}
         savedViews={ownerResult.data.savedViews}
+        financialMonth={financialMonth}
       />
     );
   }
@@ -238,12 +247,6 @@ export default async function DashboardPage({
         description="Choose what you want to do."
         action={<GoogleSheetSyncButton />}
       />
-
-      {denied ? (
-        <p role="status" className="mb-5 border-l-2 border-[var(--color-info)] bg-[var(--color-info-soft)] px-3 py-2 text-sm text-[var(--color-ink-soft)]">
-          That page is not part of your access. You are back on Home.
-        </p>
-      ) : null}
 
       <section aria-labelledby="start-heading">
         <h2 id="start-heading" className="display text-lg font-semibold text-[var(--color-ink)]">What do you want to do?</h2>

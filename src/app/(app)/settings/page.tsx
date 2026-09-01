@@ -67,7 +67,13 @@ function permissionSummary(input: {
   return `Can view ${readableList(view)} for the people assigned to this account.`;
 }
 
-export default async function SettingsPage() {
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const previewError = typeof params.previewError === "string" ? params.previewError : null;
   const user = await requireUser("viewer");
   const isAdmin = user.role === "admin";
 
@@ -138,6 +144,11 @@ export default async function SettingsPage() {
       />
 
       <div className="flex flex-col gap-4">
+        {isAdmin && previewError ? (
+          <div role="alert">
+            <ErrorPanel title="Could not open that user portal">{previewError}</ErrorPanel>
+          </div>
+        ) : null}
         <nav aria-label="Settings sections" className="scroll-thin sticky top-[var(--shell-header-height,0px)] z-20 -mx-1 flex gap-1 overflow-x-auto border-b border-[var(--color-rule)] bg-[var(--color-paper)] px-1 py-2">
           {isAdmin ? <Link href="#access" className="btn btn-sm btn-ghost shrink-0">Users</Link> : null}
           {result.ok && result.data.canViewProgramRates ? <Link href="#programs" className="btn btn-sm btn-ghost shrink-0">Programs</Link> : null}

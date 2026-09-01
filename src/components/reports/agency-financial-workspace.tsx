@@ -7,6 +7,8 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  Download,
+  FileSpreadsheet,
   HandCoins,
   Plus,
   ReceiptText,
@@ -627,6 +629,8 @@ export default function AgencyFinancialWorkspace({
           {report.month < agencyDate().slice(0, 7) ? <Link className="btn btn-icon btn-secondary" aria-label="Next month" title="Next month" href={`/reports/agency-financials?month=${shiftMonth(report.month, 1)}`}><ChevronRight className="h-4 w-4" aria-hidden /></Link> : <span className="btn btn-icon btn-secondary cursor-not-allowed opacity-50" aria-label="Next month unavailable" aria-disabled="true"><ChevronRight className="h-4 w-4" aria-hidden /></span>}
         </div>
         <div className="flex flex-wrap gap-2">
+          <a className="btn btn-secondary" download href={`/api/agency-financials/export?format=csv&month=${report.month}`}><Download className="h-4 w-4" aria-hidden /> CSV</a>
+          <a className="btn btn-secondary" download href={`/api/agency-financials/export?format=xlsx&month=${report.month}`}><FileSpreadsheet className="h-4 w-4" aria-hidden /> Excel</a>
           <button type="button" className="btn btn-secondary" onClick={() => openProgramSplit()}><Split className="h-4 w-4" aria-hidden /> Program split</button>
           <button type="button" className="btn btn-secondary" onClick={() => openPayRule()}><Users className="h-4 w-4" aria-hidden /> Employee pay rule</button>
           <button type="button" className="btn btn-primary" onClick={() => setModal("income")}><Plus className="h-4 w-4" aria-hidden /> Add income</button>

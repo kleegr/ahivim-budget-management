@@ -44,18 +44,28 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  try {
+    await writeAudit(pool, {
+      userId: owner.id,
+      action: "user_impersonation_stopped",
+      entityType: "user",
+      entityId: impersonation.targetUserId,
+    });
+  } catch {
+    return failedReturn(
+      request,
+      wantsJson,
+      "The return could not be recorded. You are still viewing this user.",
+      503,
+      true,
+    );
+  }
+
   const restored = await restoreOwnerSession(owner, impersonation).catch(() => false);
   if (!restored) {
     await clearAuthenticationCookies();
     return failedReturn(request, wantsJson, "The owner session has expired.", 401);
   }
-
-  await writeAudit(pool, {
-    userId: owner.id,
-    action: "user_impersonation_stopped",
-    entityType: "user",
-    entityId: impersonation.targetUserId,
-  }).catch(() => undefined);
 
   if (wantsJson) {
     return NextResponse.json({ ok: true, redirectTo: "/home" });
@@ -68,8 +78,26 @@ function failedReturn(
   wantsJson: boolean,
   message: string,
   status: number,
+  keepPreview = false,
 ) {
   if (wantsJson) return jsonError(message, status);
+  if (keepPreview) {
+    const referer = request.headers.get("referer");
+    const destination = new URL("/home", request.nextUrl.origin);
+    if (referer) {
+      try {
+        const candidate = new URL(referer);
+        if (candidate.origin === request.nextUrl.origin) {
+          destination.pathname = candidate.pathname;
+          destination.search = candidate.search;
+        }
+      } catch {
+        // Use the role's normal home route when the referrer is invalid.
+      }
+    }
+    destination.searchParams.set("previewError", message);
+    return NextResponse.redirect(destination, { status: 303 });
+  }
   const signin = new URL("/signin", request.nextUrl.origin);
   signin.searchParams.set("error", message);
   return NextResponse.redirect(signin, { status: 303 });

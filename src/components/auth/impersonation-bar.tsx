@@ -1,4 +1,7 @@
+"use client";
+
 import { RotateCcw } from "lucide-react";
+import { useSearchParams } from "next/navigation";
 import type { CurrentImpersonation } from "@/lib/auth/session";
 
 export default function ImpersonationBar({
@@ -8,14 +11,19 @@ export default function ImpersonationBar({
   impersonation: CurrentImpersonation;
   accountLabel: string;
 }) {
+  const previewError = useSearchParams().get("previewError");
   return (
     <div
       role="status"
       className="sticky top-0 z-[90] flex h-11 items-center border-b border-[#b78314] bg-[#fff4cf] px-3 text-sm text-[#5f4100] shadow-sm"
     >
       <div className="mx-auto flex w-full max-w-[100rem] items-center justify-between gap-3">
-        <p className="min-w-0 truncate">
-          Viewing as <strong>{impersonation.target.displayName}</strong> - {accountLabel}
+        <p className="min-w-0 truncate" role={previewError ? "alert" : undefined}>
+          {previewError ? (
+            <><strong>Could not return:</strong> {previewError}</>
+          ) : (
+            <>Viewing as <strong>{impersonation.target.displayName}</strong> - {accountLabel}</>
+          )}
         </p>
         <form method="post" action="/api/auth/impersonation/stop" className="shrink-0">
           <button

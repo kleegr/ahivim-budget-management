@@ -1,4 +1,5 @@
 import type { PgLikePool, PgLikeClient } from "@/lib/import/commit";
+import { resolveAuditAttribution } from "@/lib/auth/audit-attribution";
 
 /**
  * The single place a change is recorded.
@@ -22,15 +23,19 @@ export interface ChangeEntry {
 type Queryable = Pick<PgLikePool, "query"> | Pick<PgLikeClient, "query">;
 
 export async function recordChange(db: Queryable, entry: ChangeEntry): Promise<void> {
+  const attribution = await resolveAuditAttribution(entry.actorId);
   const metadata: Record<string, unknown> = { ...(entry.extra ?? {}) };
   if (entry.previous !== undefined) metadata.previous = entry.previous;
   if (entry.next !== undefined) metadata.next = entry.next;
+  if (attribution.impersonatedUserId) {
+    metadata.impersonatedUserId = attribution.impersonatedUserId;
+  }
 
   await db.query(
     `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, reason, metadata)
      VALUES ($1, $2, $3, $4, $5, $6)`,
     [
-      entry.actorId,
+      attribution.actorId,
       entry.action,
       entry.entityType,
       entry.entityId,

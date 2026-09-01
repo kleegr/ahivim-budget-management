@@ -83,6 +83,15 @@ import {
   type PdfExportMode,
 } from "@/lib/documents/pdf-export-mode";
 import {
+  createPdfEditorManifest,
+  decodePdfEditorAssets,
+  parsePdfEditorManifest,
+  pdfEditorAssetCapacityError,
+  pdfEditorAssetSourceBytes,
+  type PdfEditorFontMimeType,
+  type PdfEditorManifest,
+} from "@/lib/documents/pdf-editor-persistence";
+import {
   inspectPdfPage,
   loadPdfJs,
   type PdfDetectedFont,
@@ -106,6 +115,7 @@ interface EditorFont {
   id: string;
   name: string;
   bytes: Uint8Array | null;
+  mimeType?: PdfEditorFontMimeType;
   cssFamily: string;
   objectUrl?: string;
   face?: FontFace;
@@ -178,15 +188,6 @@ interface DocumentCreationReservation {
   upload: UploadReservation;
 }
 
-interface PdfEditorManifest {
-  schemaVersion: 1;
-  overlays: PdfOverlay[];
-  pageOrder: number[];
-  pageRotations: Record<number, number>;
-  formValues: Record<string, PdfFormValue>;
-  exportMode: PdfExportMode;
-}
-
 interface ApiEnvelope<T> {
   ok: boolean;
   data?: T;
@@ -207,24 +208,6 @@ async function documentApi<T>(url: string, init?: RequestInit): Promise<T> {
 
 function bytesAsArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-}
-
-function editorManifest(
-  overlays: PdfOverlay[],
-  pageOrder: number[],
-  pageRotations: Record<number, number>,
-  formValues: Record<string, PdfFormValue>,
-  exportMode: PdfExportMode,
-): PdfEditorManifest {
-  return { schemaVersion: 1, overlays, pageOrder, pageRotations, formValues, exportMode };
-}
-
-function parseEditorManifest(value: Record<string, unknown>): PdfEditorManifest | null {
-  if (value.schemaVersion !== 1 || !Array.isArray(value.overlays) || !Array.isArray(value.pageOrder)) return null;
-  if (!value.pageRotations || typeof value.pageRotations !== "object") return null;
-  if (!value.formValues || typeof value.formValues !== "object") return null;
-  if (value.exportMode !== "standard" && value.exportMode !== "secure") return null;
-  return value as unknown as PdfEditorManifest;
 }
 
 function formatStoredBytes(value: number): string {
@@ -358,6 +341,7 @@ export default function PdfEditorWorkspace({
   const [savingVersion, setSavingVersion] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
+  const [persistedEditorSignature, setPersistedEditorSignature] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fontInputRef = useRef<HTMLInputElement>(null);
@@ -402,20 +386,23 @@ export default function PdfEditorWorkspace({
     : null;
   const hasFormChanges = JSON.stringify(formValues) !== JSON.stringify(initialFormValues);
   const hasChanges = hasPdfEditorChanges(history.present, pageRotations) || pageOrderChanged || hasFormChanges;
-  const unsavedWorkAtRisk = hasChanges && (!storedDocument || draftStatus !== "saved");
-  const currentEditorManifest = useMemo(() => editorManifest(
-    displayOverlays,
+  const currentEditorManifest = useMemo(() => createPdfEditorManifest({
+    overlays: displayOverlays,
     pageOrder,
     pageRotations,
     formValues,
-    exportModeResolution.mode,
-  ), [displayOverlays, exportModeResolution.mode, formValues, pageOrder, pageRotations]);
+    exportMode: exportModeResolution.mode,
+    fonts: customFonts,
+    images,
+  }), [customFonts, displayOverlays, exportModeResolution.mode, formValues, images, pageOrder, pageRotations]);
   const currentEditorSignature = useMemo(
     () => JSON.stringify(currentEditorManifest),
     [currentEditorManifest],
   );
-  const draftNeedsVersionSave = history.present.some((overlay) => overlay.kind === "image")
-    || customFonts.some((font) => font.source === "imported");
+  const hasUnsavedChanges = storedDocument
+    ? persistedEditorSignature !== null && persistedEditorSignature !== currentEditorSignature
+    : hasChanges;
+  const unsavedWorkAtRisk = hasUnsavedChanges && (!storedDocument || draftStatus !== "saved");
   const sourceText = nativeSourceText && nativeSourceText.length > 0
     ? nativeSourceText
     : ocrTextByPage[pageNumber] ?? nativeSourceText;
@@ -721,6 +708,43 @@ export default function PdfEditorWorkspace({
     });
   }, []);
 
+  const restoreManifestAssets = useCallback(async (manifest: PdfEditorManifest) => {
+    const decoded = decodePdfEditorAssets(manifest);
+    const restoredImages: EditorImage[] = decoded.images.map((image) => ({
+      ...image,
+      objectUrl: URL.createObjectURL(new Blob([bytesAsArrayBuffer(image.bytes)], { type: image.mimeType })),
+    }));
+    const restoredFonts: EditorFont[] = [];
+    for (const font of decoded.fonts) {
+      const cssFamily = `AhivimPdfFont-${font.id.replace(/[^a-z0-9-]/gi, "-")}`;
+      let objectUrl: string | undefined;
+      let face: FontFace | undefined;
+      try {
+        objectUrl = URL.createObjectURL(new Blob([bytesAsArrayBuffer(font.bytes)], { type: font.mimeType }));
+        face = new FontFace(cssFamily, `url(${objectUrl})`);
+        await face.load();
+        document.fonts.add(face);
+      } catch {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        objectUrl = undefined;
+        face = undefined;
+      }
+      restoredFonts.push({
+        ...font,
+        cssFamily: face ? cssFamily : STANDARD_FONTS[0].css,
+        objectUrl,
+        face,
+        source: "imported",
+      });
+    }
+    setImages(restoredImages);
+    setCustomFonts((current) => [
+      ...current.filter((font) => !restoredFonts.some((restored) => restored.id === font.id)),
+      ...restoredFonts,
+    ]);
+    return { fonts: restoredFonts, images: restoredImages };
+  }, []);
+
   const openPdf = useCallback(async (
     file: File,
     skipDiscardConfirmation = false,
@@ -739,7 +763,7 @@ export default function PdfEditorWorkspace({
     if (
       !skipDiscardConfirmation
       && loaded
-      && hasChanges
+      && unsavedWorkAtRisk
       && !window.confirm("Open a new PDF and discard the current edits?")
     ) {
       return false;
@@ -792,6 +816,7 @@ export default function PdfEditorWorkspace({
         setVersions([]);
         setDraftRevision(null);
         setDraftStatus("idle");
+        setPersistedEditorSignature(null);
         lastDraftSignatureRef.current = null;
         initialDocumentLoadedRef.current = initialDocumentId;
         if (initialDocumentId) window.history.replaceState(null, "", "/documents/pdf-editor");
@@ -799,7 +824,7 @@ export default function PdfEditorWorkspace({
       clearCustomFonts();
       clearImages();
       void previousDocument?.destroy();
-      return true;
+      return { pageCount: pdfDocument.numPages, formValues: nextFormValues };
     } catch (openError) {
       setError(errorMessage(openError));
       return false;
@@ -807,7 +832,7 @@ export default function PdfEditorWorkspace({
       setOpening(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
-  }, [clearCustomFonts, clearImages, hasChanges, initialDocumentId, loaded]);
+  }, [clearCustomFonts, clearImages, initialDocumentId, loaded, unsavedWorkAtRisk]);
 
   useEffect(() => {
     if (!initialSourcePath || initialSourceLoadedRef.current === initialSourcePath) return;
@@ -856,29 +881,68 @@ export default function PdfEditorWorkspace({
     });
     const currentVersion = detail.versions.find((version) => version.id === detail.document.currentVersionId);
     if (!currentVersion) throw new Error("This document does not have a saved PDF version yet.");
-    const response = await fetch(`/api/documents/${documentId}/versions/${currentVersion.id}/file`, {
+    const versionManifest = parsePdfEditorManifest(currentVersion.editorState);
+    const savedDraft = options.includeDraft !== false
+      && detail.draft?.baseVersionId === currentVersion.id
+      ? parsePdfEditorManifest(detail.draft.editorState)
+      : null;
+    const editorManifestAvailable = Boolean(versionManifest || savedDraft);
+    const response = await fetch(
+      `/api/documents/${documentId}/versions/${currentVersion.id}/file${editorManifestAvailable ? "?source=1" : ""}`,
+      {
       cache: "no-store",
       credentials: "same-origin",
       signal: options.signal,
-    });
+      },
+    );
     if (!response.ok || !response.headers.get("content-type")?.includes("application/pdf")) {
       throw new Error("The saved PDF could not be opened.");
     }
     const file = new File([await response.blob()], currentVersion.filename, { type: "application/pdf" });
-    if (!await openPdf(file, true, true)) {
+    const opened = await openPdf(file, true, true);
+    if (!opened) {
       throw new Error("The saved PDF could not be parsed. The previously open document was left unchanged.");
     }
 
+    const fallbackManifest = createPdfEditorManifest({
+      overlays: [],
+      pageOrder: Array.from({ length: opened.pageCount }, (_, index) => index + 1),
+      pageRotations: {},
+      formValues: opened.formValues,
+      exportMode: "standard",
+    });
+    const normalizeManifestForSource = (manifest: PdfEditorManifest): PdfEditorManifest => {
+      const decoded = decodePdfEditorAssets(manifest);
+      return createPdfEditorManifest({
+        overlays: manifest.overlays.map((overlay) => normalizeOverlay(overlay)),
+        pageOrder: manifest.pageOrder.length > 0 ? manifest.pageOrder : fallbackManifest.pageOrder,
+        pageRotations: manifest.pageRotations,
+        formValues: Object.keys(manifest.formValues).length > 0 ? manifest.formValues : opened.formValues,
+        exportMode: manifest.exportMode,
+        fonts: decoded.fonts.map((font) => ({ ...font, source: "imported" as const })),
+        images: decoded.images,
+      });
+    };
+    const persistedManifest = versionManifest
+      ? normalizeManifestForSource(versionManifest)
+      : fallbackManifest;
+    const activeManifest = savedDraft
+      ? normalizeManifestForSource(savedDraft)
+      : persistedManifest;
+    await restoreManifestAssets(activeManifest);
+
+    setHistory({ past: [], present: activeManifest.overlays, future: [] });
+    setPageOrder(activeManifest.pageOrder);
+    setPageRotations(activeManifest.pageRotations);
+    setFormValues(activeManifest.formValues);
+    setExportMode(activeManifest.exportMode);
     setStoredDocument(detail.document);
     setVersions(detail.versions);
-    setDraftRevision(null);
-    setDraftStatus("idle");
-    lastDraftSignatureRef.current = null;
+    setPersistedEditorSignature(JSON.stringify(persistedManifest));
+    setDraftRevision(savedDraft && detail.draft ? detail.draft.revision : null);
+    setDraftStatus(savedDraft ? "saved" : "idle");
+    lastDraftSignatureRef.current = savedDraft ? JSON.stringify(activeManifest) : null;
 
-    const savedDraft = options.includeDraft !== false
-      && detail.draft?.baseVersionId === currentVersion.id
-      ? parseEditorManifest(detail.draft.editorState)
-      : null;
     if (options.includeDraft !== false && detail.draft && detail.draft.baseVersionId !== currentVersion.id) {
       try {
         await documentApi<{ discarded: boolean }>(`/api/documents/${documentId}/draft`, { method: "DELETE" });
@@ -889,25 +953,12 @@ export default function PdfEditorWorkspace({
       }
     }
     if (savedDraft && detail.draft) {
-      const recoverableOverlays = savedDraft.overlays
-        .filter((overlay) => overlay.kind !== "image")
-        .map((overlay) => normalizeOverlay(overlay));
-      setHistory({ past: [], present: recoverableOverlays, future: [] });
-      if (savedDraft.pageOrder.length > 0) setPageOrder(savedDraft.pageOrder);
-      setPageRotations(savedDraft.pageRotations);
-      setFormValues(savedDraft.formValues);
-      setExportMode(savedDraft.exportMode);
-      setDraftRevision(detail.draft.revision);
-      setDraftStatus("saved");
-      lastDraftSignatureRef.current = JSON.stringify({ ...savedDraft, overlays: recoverableOverlays });
-      if (recoverableOverlays.length !== savedDraft.overlays.length) {
-        setNotice("Text and layout changes were recovered. Save versions after adding images so their source files stay attached.");
-      } else {
-        setNotice("Your autosaved changes were recovered.");
-      }
+      setNotice("Your autosaved changes were recovered.");
+    } else if (versionManifest && versionManifest.overlays.length > 0) {
+      setNotice("Saved editable PDF content was restored.");
     }
     return { ...detail, currentVersion, file };
-  }, [openPdf]);
+  }, [openPdf, restoreManifestAssets]);
 
   useEffect(() => {
     if (!initialDocumentId || initialDocumentLoadedRef.current === initialDocumentId) return;
@@ -937,7 +988,7 @@ export default function PdfEditorWorkspace({
     const baseVersionId = storedDocument?.currentVersionId;
     if (!documentId || !baseVersionId || opening || savingVersion) return;
 
-    if (!hasChanges) {
+    if (!hasUnsavedChanges) {
       if (draftRevisionRef.current === null) {
         setDraftStatus("idle");
         return;
@@ -957,10 +1008,6 @@ export default function PdfEditorWorkspace({
       return () => window.clearTimeout(timeout);
     }
 
-    if (draftNeedsVersionSave) {
-      setDraftStatus("save-needed");
-      return;
-    }
     if (lastDraftSignatureRef.current === currentEditorSignature) {
       setDraftStatus("saved");
       return;
@@ -976,7 +1023,7 @@ export default function PdfEditorWorkspace({
           body: JSON.stringify({
             baseVersionId,
             expectedRevision: draftRevisionRef.current,
-            editorSchemaVersion: 1,
+            editorSchemaVersion: 2,
             editorState: manifest,
           }),
         });
@@ -993,8 +1040,7 @@ export default function PdfEditorWorkspace({
   }, [
     currentEditorManifest,
     currentEditorSignature,
-    draftNeedsVersionSave,
-    hasChanges,
+    hasUnsavedChanges,
     opening,
     savingVersion,
     storedDocument?.currentVersionId,
@@ -1105,6 +1151,15 @@ export default function PdfEditorWorkspace({
         : null;
     if (!mimeType) {
       setError("Choose a PNG or JPEG image.");
+      return;
+    }
+    const capacityError = pdfEditorAssetCapacityError(
+      pdfEditorAssetSourceBytes(customFonts, images),
+      file.size,
+      "image",
+    );
+    if (capacityError) {
+      setError(capacityError);
       return;
     }
 
@@ -1375,6 +1430,18 @@ export default function PdfEditorWorkspace({
     setError(null);
     let objectUrl: string | null = null;
     try {
+      const mimeType: PdfEditorFontMimeType | null = file.type === "font/otf" || file.name.toLowerCase().endsWith(".otf")
+        ? "font/otf"
+        : file.type === "font/ttf" || file.name.toLowerCase().endsWith(".ttf")
+          ? "font/ttf"
+          : null;
+      if (!mimeType) throw new Error("Choose a TTF or OTF font file.");
+      const capacityError = pdfEditorAssetCapacityError(
+        pdfEditorAssetSourceBytes(customFonts, images),
+        file.size,
+        "font",
+      );
+      if (capacityError) throw new Error(capacityError);
       const bytes = new Uint8Array(await file.arrayBuffer());
       const id = `custom-${crypto.randomUUID()}`;
       const cssFamily = `AhivimPdfFont-${id}`;
@@ -1386,6 +1453,7 @@ export default function PdfEditorWorkspace({
         id,
         name: file.name.replace(/\.(?:ttf|otf)$/i, ""),
         bytes,
+        mimeType,
         cssFamily,
         objectUrl,
         face,
@@ -1503,7 +1571,7 @@ export default function PdfEditorWorkspace({
       idempotencyKey: crypto.randomUUID(),
       baseVersionId,
       exportMode: savedExportMode,
-      editorSchemaVersion: 1,
+      editorSchemaVersion: 2,
       editorState: manifest,
       pageCount: savedPageCount,
       changeSummary,
@@ -1544,13 +1612,13 @@ export default function PdfEditorWorkspace({
       });
       const documentId = creation.document.id;
       await uploadPdf(creation.upload, sourceFile);
-      const originalManifest = editorManifest(
-        [],
-        Array.from({ length: loaded.document.numPages }, (_, index) => index + 1),
-        {},
-        initialFormValues,
-        "standard",
-      );
+      const originalManifest = createPdfEditorManifest({
+        overlays: [],
+        pageOrder: Array.from({ length: loaded.document.numPages }, (_, index) => index + 1),
+        pageRotations: {},
+        formValues: initialFormValues,
+        exportMode: "standard",
+      });
       const originalVersion = await finalizeUploadedVersion({
         documentId,
         reservation: creation.upload,
@@ -1624,7 +1692,7 @@ export default function PdfEditorWorkspace({
         baseVersionId: storedDocument.currentVersionId,
         manifest,
         exportMode: secure ? "secure" : "standard",
-        changeSummary: hasChanges ? "Saved edits" : "Saved checkpoint",
+        changeSummary: hasUnsavedChanges ? "Saved edits" : "Saved checkpoint",
         pageCount,
       });
       await documentApi<{ discarded: boolean }>(`/api/documents/${storedDocument.id}/draft`, { method: "DELETE" })
@@ -1645,7 +1713,7 @@ export default function PdfEditorWorkspace({
 
   const restoreVersion = async (version: StoredDocumentVersion) => {
     if (!storedDocument?.currentVersionId || restoringVersionId) return;
-    if (hasChanges) {
+    if (hasUnsavedChanges) {
       setHistoryOpen(false);
       setError("Save the current work as a version before restoring an earlier version.");
       return;

@@ -104,7 +104,7 @@ export const REPORT_LIBRARY: ReportLibraryGroup[] = [
         title: "Billing spread by program",
         question: "How does Funder billed divide between Employee base and Agency spread?",
         description: "Shows Funder billed, Employee base, and Agency spread as separate, reconciling values by program.",
-        timeBasis: "Service period begin date",
+        timeBasis: "Canonical service date",
         note: "Deal cuts, give-backs, and payment balances are managed in Payments.",
         columnLabels: {
           agencyGross: "Funder billed",
@@ -118,7 +118,7 @@ export const REPORT_LIBRARY: ReportLibraryGroup[] = [
         title: "Employee base by recipient",
         question: "What Employee base was recorded, and who received the source payment?",
         description: "Groups recorded Employee base by employee and payment recipient. Settlement status and Direct-check net remain in Settlements.",
-        timeBasis: "Service period begin date",
+        timeBasis: "Canonical service date",
         note: "For paid, partial, extra, and remaining balances, use Settlements.",
         columnLabels: {
           totalPayment: "Employee base",
@@ -177,7 +177,7 @@ export const REPORT_LIBRARY: ReportLibraryGroup[] = [
         title: "Billed, not scheduled",
         question: "Which transactions have no matching planned session?",
         description: "Lists committed transactions without a matching schedule, including hours and Funder billed.",
-        timeBasis: "Service period begin date",
+        timeBasis: "Canonical service date",
         columnLabels: { amount: "Funder billed" },
         icon: ReceiptText,
       },

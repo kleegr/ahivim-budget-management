@@ -597,7 +597,10 @@ export default function PortalHome({
       {!hasPortalIdentity ? (
         <Card>
           <EmptyState title="Portal access is not assigned" icon={<ShieldCheck aria-hidden className="h-5 w-5" />}>
-            Your account is active, but it is not linked to a portal profile or agency.
+            <div>
+              <p>Your account is active, but it is not linked to a portal profile or agency. Ask your administrator to connect it.</p>
+              <Link href="/settings#account" className="btn btn-sm btn-secondary mt-3">Review account</Link>
+            </div>
           </EmptyState>
         </Card>
       ) : (
