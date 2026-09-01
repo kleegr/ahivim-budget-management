@@ -17,16 +17,65 @@ import AttributePayments from "@/components/settings/attribute-payments";
 import UserAccessAdmin from "@/components/settings/user-access-admin";
 import ProgramRules from "@/components/settings/program-rules";
 import Link from "next/link";
+import { hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
+import { resolveAccountProfile } from "@/lib/auth/account-label";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings — Ahivim Budget Management" };
+
+function readableList(items: string[]): string {
+  if (items.length < 2) return items[0] ?? "assigned portal information";
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(", ")}, and ${items.at(-1)}`;
+}
+
+function permissionSummary(input: {
+  role: string;
+  canPlan: boolean;
+  canManagePortalSchedules: boolean;
+  canManagePortalAssignments: boolean;
+  canManageSettlements: boolean;
+  canManageClassInvoices: boolean;
+  canEditDocuments: boolean;
+  canSeeTransactions: boolean;
+  canSeeBudgets: boolean;
+  canSeeSettlements: boolean;
+  canSeeClassFinancials: boolean;
+}): string {
+  if (input.role === "admin") return "Full access, including user management and migrations.";
+  if (input.role === "manager") return "Read everything; upload, commit and discard imports.";
+
+  const manage: string[] = [];
+  if (input.canPlan) {
+    manage.push(input.canSeeBudgets
+      ? "schedules, assignments, and authorized hours"
+      : "schedules and assignments");
+  } else {
+    if (input.canManagePortalSchedules) manage.push("agency schedules");
+    if (input.canManagePortalAssignments) manage.push("agency assignments");
+  }
+  if (input.canManageSettlements) manage.push("collections, payroll checks, and monthly set-asides");
+  if (input.canManageClassInvoices) manage.push("class billing and invoices");
+  if (input.canEditDocuments) manage.push("documents");
+  if (manage.length > 0) return `Can manage ${readableList(manage)}.`;
+
+  const view: string[] = [];
+  if (input.canSeeTransactions) view.push("transactions");
+  if (input.canSeeBudgets) view.push("budgets");
+  if (input.canSeeSettlements) view.push("collections");
+  if (input.canSeeClassFinancials) view.push("class billing");
+  return `Can view ${readableList(view)} for the people assigned to this account.`;
+}
 
 export default async function SettingsPage() {
   const user = await requireUser("viewer");
   const isAdmin = user.role === "admin";
 
   const result = await withDb(async (pool) => {
-    const scope = await resolveAccessScope(pool, user);
+    const [scope, portal] = await Promise.all([
+      resolveAccessScope(pool, user),
+      resolvePortalAccess(pool, user),
+    ]);
     const canSeeBilledAmounts = scope.canSeeBilledAmounts;
     const canSeeEmployeeAmounts = scope.canSeeEmployeeAmounts;
     const canViewProgramRates = canSeeBilledAmounts || canSeeEmployeeAmounts;
@@ -57,6 +106,20 @@ export default async function SettingsPage() {
       canSeeEmployeeAmounts,
       canViewProgramRates,
       canPlan: canAccessPlanning(scope),
+      canManagePortalSchedules: portal.agencyAccess.some((assignment) => (
+        hasPortalCapability(portal, "schedules.agency.manage", assignment.agencyId)
+      )),
+      canManagePortalAssignments: portal.agencyAccess.some((assignment) => (
+        hasPortalCapability(portal, "assignments.agency.manage", assignment.agencyId)
+      )),
+      canManageSettlements: scope.canManageSettlements,
+      canManageClassInvoices: scope.canManageClassInvoices,
+      canEditDocuments: scope.canEditDocuments,
+      canSeeTransactions: scope.canSeeTransactions,
+      canSeeBudgets: scope.canSeeBudgets,
+      canSeeSettlements: scope.canSeeSettlements,
+      canSeeClassFinancials: scope.canSeeClassFinancials,
+      accountLabel: resolveAccountProfile(user.role, scope, portal).label,
     };
   });
 
@@ -87,16 +150,14 @@ export default async function SettingsPage() {
             <dt className="text-[var(--color-ink-faint)]">Email</dt>
             <dd>{user.email}</dd>
             <dt className="text-[var(--color-ink-faint)]">Role</dt>
-            <dd><Badge value={user.role === "admin" ? "committed" : "pending"} label={user.role} /></dd>
+            <dd><Badge value={user.role === "admin" ? "committed" : "pending"} label={result.ok ? result.data.accountLabel : resolveAccountProfile(user.role, null, null).label} /></dd>
             <dt className="text-[var(--color-ink-faint)]">Permissions</dt>
             <dd className="text-[var(--color-ink-soft)]">
-              {user.role === "admin"
-                ? "Full access, including user management and migrations."
-                : result.ok && result.data.canPlan && !result.data.canViewProgramRates
-                  ? "Planning access for schedules, assignments, and authorized hours."
-                  : user.role === "manager"
-                  ? "Read everything; upload, commit and discard imports."
-                  : "Read-only."}
+              {result.ok
+                ? permissionSummary({ role: user.role, ...result.data })
+                : user.role === "admin"
+                  ? "Full access, including user management and migrations."
+                  : "Access follows the role and people assigned to this account."}
             </dd>
           </dl>
           <PasswordForm />

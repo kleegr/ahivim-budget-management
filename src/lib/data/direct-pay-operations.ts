@@ -343,7 +343,7 @@ export async function listPayrollChecks(
     verificationStatus: row.verification_status,
     notes: row.notes,
     linkedTransactions: Number(row.linked_transactions),
-    transactionIds: row.transaction_ids ?? [],
+    transactionIds: scope.canSeeTransactions ? row.transaction_ids ?? [] : [],
     updatedAt: row.updated_at,
   }));
 }

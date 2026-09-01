@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { commitStagedImport, type CommitInput, type PgLikePool } from "@/lib/import/commit";
-import { updateStrategy } from "@/lib/manage/calculation-strategies";
+import {
+  createManualIncomeEntry,
+  saveEmployeeIndividualCompensationTerm,
+} from "@/lib/manage/agency-financials";
+import { setStrategyStatus, updateStrategy } from "@/lib/manage/calculation-strategies";
+import { issueClassInvoice } from "@/lib/manage/class-invoices";
 import { saveEmployeeDeal } from "@/lib/manage/employee-deals";
 import { mergeEmployees } from "@/lib/manage/employee-merge";
 import { mergeIndividuals } from "@/lib/manage/individual-merge";
@@ -49,6 +54,40 @@ const KEEP_ID = "00000000-0000-4000-8000-000000000001";
 const MERGE_ID = "00000000-0000-4000-8000-000000000002";
 
 describe("settlement source lock ordering", () => {
+  it("locks before manual income reads automatic income sources", async () => {
+    const { pool, calls } = recordingPool((sql) => {
+      if (sql.includes("WITH automatic_income AS")) {
+        return {
+          rows: [{
+            source_type: "google_sheet_transaction",
+            source_id: KEEP_ID,
+            source_ref: "CHECK-100",
+          }],
+        };
+      }
+      return { rows: [] };
+    });
+
+    const result = await createManualIncomeEntry(pool, {
+      serviceDate: "2026-08-15",
+      sourceType: "reimbursement",
+      grossAmount: "50",
+    }, KEEP_ID);
+
+    expect(result).toMatchObject({ ok: false, code: "conflict" });
+    expectSourceLockImmediatelyAfterBegin(calls);
+    expect(calls.findIndex(({ sql }) => sql.includes("WITH automatic_income AS"))).toBeGreaterThan(1);
+  });
+
+  it("locks before invoice issue reads and locks the invoice", async () => {
+    const { pool, calls } = recordingPool();
+
+    const result = await issueClassInvoice(pool, KEEP_ID, KEEP_ID);
+
+    expect(result).toMatchObject({ ok: false, code: "not_found" });
+    expectRowLockAfterSourceLock(calls, "class_invoices");
+  });
+
   it("locks before saveEmployeeDeal reads and locks the employee", async () => {
     const { pool, calls } = recordingPool();
 
@@ -63,6 +102,23 @@ describe("settlement source lock ordering", () => {
     expectRowLockAfterSourceLock(calls, "employees");
   });
 
+  it("locks settlement sources before the employee-individual pay-rule lock", async () => {
+    const { pool, calls } = recordingPool();
+
+    const result = await saveEmployeeIndividualCompensationTerm(pool, {
+      employeeId: KEEP_ID,
+      individualId: MERGE_ID,
+      employeeSharePercent: "75",
+      effectiveFrom: "2026-08-01",
+      reason: "Regression test",
+    }, KEEP_ID);
+
+    expect(result).toMatchObject({ ok: false, code: "not_found" });
+    expectSourceLockImmediatelyAfterBegin(calls);
+    expect(calls[2]?.sql).toContain("hashtextextended");
+    expect(calls[2]?.params).toEqual([`employee-individual-pay:${KEEP_ID}:${MERGE_ID}`]);
+  });
+
   it("locks before updateStrategy reads and locks the strategy", async () => {
     const { pool, calls } = recordingPool(() => ({ rows: [], rowCount: 0 }));
 
@@ -70,6 +126,30 @@ describe("settlement source lock ordering", () => {
 
     expect(result).toMatchObject({ ok: false, code: "not_found" });
     expectRowLockAfterSourceLock(calls, "calculation_strategies");
+  });
+
+  it("snapshots the prior strategy state before changing its status", async () => {
+    const { pool, calls } = recordingPool((sql) => {
+      if (sql.includes("SELECT id FROM calculation_strategies") && sql.includes("FOR UPDATE")) {
+        return { rows: [{ id: KEEP_ID }], rowCount: 1 };
+      }
+      if (sql.includes("SELECT to_jsonb(s.*)")) {
+        return { rows: [{ snap: { id: KEEP_ID, status: "active" }, revision: 1 }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+
+    const result = await setStrategyStatus(pool, { id: KEEP_ID, status: "archived" }, KEEP_ID);
+
+    expect(result).toEqual({ ok: true, data: { id: KEEP_ID } });
+    expectRowLockAfterSourceLock(calls, "calculation_strategies");
+    const snapshotInsert = calls.findIndex(({ sql }) => sql.includes("INSERT INTO calculation_strategy_revisions"));
+    const statusUpdate = calls.findIndex(({ sql }) => sql.includes("UPDATE calculation_strategies SET status"));
+    const auditInsert = calls.findIndex(({ sql }) => sql.includes("INSERT INTO audit_logs"));
+    expect(snapshotInsert).toBeGreaterThan(2);
+    expect(statusUpdate).toBeGreaterThan(snapshotInsert);
+    expect(auditInsert).toBeGreaterThan(statusUpdate);
+    expect(calls.at(-1)?.sql).toBe("COMMIT");
   });
 
   it("locks before mergeEmployees reads and locks either employee", async () => {

@@ -4,6 +4,7 @@ import AppNav from "@/components/app-nav";
 import { withDb } from "@/lib/data/pool";
 import { agencyIdsWithPlanningAccess, hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
 import ImpersonationBar from "@/components/auth/impersonation-bar";
+import { resolveAccountProfile } from "@/lib/auth/account-label";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +29,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   let canEditDocuments = false;
   let canUsePortal = false;
   let canManageAgencies = false;
+  let accountLabel = resolveAccountProfile(user.role, null, null).label;
   const access = await withDb(async (pool) => {
     const [scope, portal] = await Promise.all([
       resolveAccessScope(pool, user),
@@ -53,6 +55,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         || portal.individualLinks.length > 0
         || portal.employeeLinks.length > 0,
       canManageAgencies: hasPortalCapability(portal, "agencies.manage"),
+      accountLabel: resolveAccountProfile(user.role, scope, portal).label,
     };
   });
   if (access.ok) {
@@ -66,14 +69,16 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     canEditDocuments = access.data.canEditDocuments;
     canUsePortal = access.data.canUsePortal;
     canManageAgencies = access.data.canManageAgencies;
+    accountLabel = access.data.accountLabel;
   }
 
   return (
-    <div className={`${impersonation ? "[--impersonation-bar-height:2.5rem]" : "[--impersonation-bar-height:0px]"} [--shell-header-height:calc(var(--impersonation-bar-height)+4rem)] md:[--shell-header-height:var(--impersonation-bar-height)]`}>
-      {impersonation ? <ImpersonationBar impersonation={impersonation} /> : null}
+    <div className={`${impersonation ? "[--impersonation-bar-height:2.75rem]" : "[--impersonation-bar-height:0px]"} [--shell-header-height:calc(var(--impersonation-bar-height)+4rem)] md:[--shell-header-height:var(--impersonation-bar-height)]`}>
+      {impersonation ? <ImpersonationBar impersonation={impersonation} accountLabel={accountLabel} /> : null}
       <div className="min-h-[calc(100vh-var(--impersonation-bar-height))] bg-[var(--color-paper)] md:flex">
         <AppNav
           user={user}
+          accountLabel={accountLabel}
           accessResolved={accessResolved}
           canSeeTransactions={canSeeTransactions}
           canSeeSettlements={canSeeSettlements}

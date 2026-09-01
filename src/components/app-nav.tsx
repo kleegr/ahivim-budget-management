@@ -33,12 +33,6 @@ import {
 } from "@/lib/nav/app-navigation";
 import CommandBar from "@/components/command-bar";
 
-const ROLE_LABEL: Record<string, string> = {
-  admin: "Administrator",
-  manager: "Manager",
-  viewer: "Viewer",
-};
-
 const WORKSPACE_ICONS: Record<VisibleNavigationWorkspace["id"], LucideIcon> = {
   overview: LayoutDashboard,
   portal: ShieldCheck,
@@ -206,12 +200,12 @@ function AdministrationNavigation({
   );
 }
 
-function UserFooter({ user }: { user: AuthenticatedUser }) {
+function UserFooter({ user, accountLabel }: { user: AuthenticatedUser; accountLabel: string }) {
   return (
     <div className="border-t border-[var(--color-rule)] px-4 py-3">
       <div className="mb-2 min-w-0">
         <p className="truncate text-sm font-medium text-[var(--color-ink)]">{user.displayName}</p>
-        <p className="text-xs text-[var(--color-ink-faint)]">{ROLE_LABEL[user.role] ?? user.role}</p>
+        <p className="text-xs text-[var(--color-ink-faint)]">{accountLabel}</p>
       </div>
       <form method="post" action="/api/auth/logout">
         <button type="submit" className="btn btn-sm btn-secondary flex w-full items-center justify-center gap-2">
@@ -227,12 +221,14 @@ function SidebarBody({
   user,
   pathname,
   access,
+  accountLabel,
   onNavigate,
   adminControlId,
 }: {
   user: AuthenticatedUser;
   pathname: string;
   access: NavigationAccess;
+  accountLabel: string;
   onNavigate?: (href: string) => void;
   adminControlId: string;
 }) {
@@ -242,13 +238,14 @@ function SidebarBody({
         <WorkspaceNavigation pathname={pathname} access={access} onNavigate={onNavigate} />
         <AdministrationNavigation pathname={pathname} access={access} onNavigate={onNavigate} controlId={adminControlId} />
       </nav>
-      <UserFooter user={user} />
+      <UserFooter user={user} accountLabel={accountLabel} />
     </>
   );
 }
 
 export default function AppNav({
   user,
+  accountLabel,
   accessResolved = false,
   canSeeTransactions = false,
   canSeeSettlements = false,
@@ -261,6 +258,7 @@ export default function AppNav({
   canManageAgencies = false,
 }: {
   user: AuthenticatedUser;
+  accountLabel: string;
   accessResolved?: boolean;
   canSeeTransactions?: boolean;
   canSeeSettlements?: boolean;
@@ -482,6 +480,7 @@ export default function AppNav({
         </div>
         <SidebarBody
           user={user}
+          accountLabel={accountLabel}
           pathname={pathname}
           access={access}
           onNavigate={beginNavigation}
@@ -503,6 +502,7 @@ export default function AppNav({
         </div>
         <SidebarBody
           user={user}
+          accountLabel={accountLabel}
           pathname={pathname}
           access={access}
           onNavigate={beginNavigation}

@@ -25,11 +25,21 @@ describe("Masser request feedback", () => {
     expect(source).not.toContain("syncImportedPayrollCheckReviews");
   });
 
-  it("does not imply a viewer collector can change employee deals", () => {
+  it("shows employee deal links only when that account can view deals", () => {
     expect(workspaceSource).toContain(
       'canManageEmployeeDeals ? "View or change deal" : "View deal"',
     );
+    expect(workspaceSource).toContain("canSeeEmployeeDeals ? <>");
     expect(workspaceSource).toContain("(manager changes)");
+  });
+
+  it("does not link source rows or show an empty action column without access", () => {
+    expect(workspaceSource).toContain("canSeeTransactions ? <Link href={payrollCheckRowsHref(row)}");
+    expect(workspaceSource).toContain("row.linkedTransactions > 0");
+    expect(workspaceSource).toContain('{canManageChecks ? <th className="px-3 py-2.5 text-right">Action</th> : null}');
+    expect(workspaceSource).toContain('{canManageChecks ? <td className="px-3 py-3 text-right">');
+    const dataSource = readFileSync(resolve("src/lib/data/direct-pay-operations.ts"), "utf8");
+    expect(dataSource).toContain("scope.canSeeTransactions ? row.transaction_ids ?? [] : []");
   });
 
   it("links managers directly to the individual set-aside workflow", () => {
@@ -37,6 +47,21 @@ describe("Masser request feedback", () => {
       "`/settlements?individualId=${row.individualId}&queue=reserve`",
     );
     expect(workspaceSource).toContain("Record set-aside");
+  });
+
+  it("does not offer a dead collection action to read-only viewers", () => {
+    expect(workspaceSource).toContain(
+      '{canManage ? <td className="px-3 py-3 text-right"><Link className="btn btn-sm btn-ghost whitespace-nowrap"',
+    );
+    expect(workspaceSource).toContain(
+      '{canManage ? <th className="px-3 py-2.5 text-right">Action</th> : null}',
+    );
+  });
+
+  it("gives Masser tabs, dismiss actions, and table links mobile touch targets", () => {
+    expect(workspaceSource).toContain("touch-target flex shrink-0 items-center");
+    expect(workspaceSource).toContain("touch-target inline-flex items-center px-2");
+    expect(workspaceSource.match(/<table className="touch-table/g)).toHaveLength(3);
   });
 
   it("separates the approved monthly plan from recorded ledger facts", () => {

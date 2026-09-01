@@ -28,7 +28,9 @@ export default async function MasserPage({
         planningOnly: isPlanningOnlyAccess(scope),
         data: null,
         canManage: false,
+        canSeeEmployeeDeals: false,
         canManageEmployeeDeals: false,
+        canSeeTransactions: false,
         canManageFinancialPlans: false,
         canRepairImports: false,
       };
@@ -38,7 +40,9 @@ export default async function MasserPage({
       planningOnly: false,
       data: await getCollectionsWorkspace(pool, scope, month),
       canManage: scope.canManageSettlements,
+      canSeeEmployeeDeals: scope.canSeeEmployeeDeals,
       canManageEmployeeDeals: user.role !== "viewer" && scope.canSeeEmployeeDeals,
+      canSeeTransactions: scope.canSeeTransactions,
       canManageFinancialPlans: user.role !== "viewer" && scope.full && scope.canSeeBudgets,
       canRepairImports: scope.canManageSettlements
         && scope.allEmployees
@@ -84,7 +88,9 @@ export default async function MasserPage({
             key={workspaceKey}
             data={result.data.data}
             canManage={result.data.canManage}
+            canSeeEmployeeDeals={result.data.canSeeEmployeeDeals}
             canManageEmployeeDeals={result.data.canManageEmployeeDeals}
+            canSeeTransactions={result.data.canSeeTransactions}
             canManageFinancialPlans={result.data.canManageFinancialPlans}
             canRepairImports={result.data.canRepairImports}
             initialView={initialState?.view}

@@ -3,6 +3,7 @@ import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { dec, toMoney } from "@/lib/money";
 import { recordChange } from "./audit";
 import { fail, ok, type Result } from "./errors";
+import { acquireSettlementSourceLock } from "./settlement-freshness";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -10,6 +11,7 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 type Queryable = Pick<PgLikePool, "query"> | Pick<PgLikeClient, "query">;
 
 export type ManualIncomeSource = "class" | "reimbursement" | "custom_program" | "other";
+export type AutomaticIncomeSourceType = "google_sheet_transaction" | "issued_class_invoice";
 
 export interface ProgramRevenueTerm {
   id: string;
@@ -57,6 +59,10 @@ export interface ManualIncomeEntry {
   individualAmount: string;
   sourceRef: string | null;
   notes: string | null;
+  automaticSourceOverrideReason: string | null;
+  automaticSourceOverrideSourceType: AutomaticIncomeSourceType | null;
+  automaticSourceOverrideSourceId: string | null;
+  automaticSourceOverrideSourceRef: string | null;
   status: "active" | "void";
   voidReason: string | null;
   programBudgetEventId: string | null;
@@ -109,6 +115,10 @@ interface ManualIncomeRow {
   individual_amount: string;
   source_ref: string | null;
   notes: string | null;
+  automatic_source_override_reason: string | null;
+  automatic_source_override_source_type: AutomaticIncomeSourceType | null;
+  automatic_source_override_source_id: string | null;
+  automatic_source_override_source_ref: string | null;
   status: "active" | "void";
   void_reason: string | null;
   program_budget_event_id: string | null;
@@ -245,6 +255,10 @@ function mapManualIncome(row: ManualIncomeRow): ManualIncomeEntry {
     individualAmount: toMoney(row.individual_amount),
     sourceRef: row.source_ref,
     notes: row.notes,
+    automaticSourceOverrideReason: row.automatic_source_override_reason ?? null,
+    automaticSourceOverrideSourceType: row.automatic_source_override_source_type ?? null,
+    automaticSourceOverrideSourceId: row.automatic_source_override_source_id ?? null,
+    automaticSourceOverrideSourceRef: row.automatic_source_override_source_ref ?? null,
     status: row.status,
     voidReason: row.void_reason,
     programBudgetEventId: row.program_budget_event_id,
@@ -292,11 +306,68 @@ const MANUAL_INCOME_SELECT = `
          entry.program_id, program.code AS program_code, program.name AS program_name,
          entry.gross_amount::text, entry.agency_share_percent::text,
          entry.agency_amount::text, entry.individual_amount::text,
-         entry.source_ref, entry.notes, entry.status, entry.void_reason,
+         entry.source_ref, entry.notes,
+         separate_decision.automatic_source_override_reason,
+         separate_decision.automatic_source_override_source_type,
+         separate_decision.automatic_source_override_source_id,
+         separate_decision.automatic_source_override_source_ref,
+         entry.status, entry.void_reason,
          entry.program_budget_event_id, entry.created_at::text
     FROM agency_manual_income_entries entry
     LEFT JOIN individuals individual ON individual.id = entry.individual_id
-    LEFT JOIN programs program ON program.id = entry.program_id`;
+    LEFT JOIN programs program ON program.id = entry.program_id
+    LEFT JOIN LATERAL (
+      SELECT CASE WHEN audit.action IN (
+                    'agency_income.created',
+                    'agency_income.counted_separately'
+                  )
+                  THEN NULLIF(
+                    btrim(audit.metadata #>> '{next,automaticSourceOverride,reason}'),
+                    ''
+                  )
+                  ELSE NULL
+             END AS automatic_source_override_reason,
+             CASE WHEN audit.action IN (
+                    'agency_income.created',
+                    'agency_income.counted_separately'
+                  )
+                  THEN NULLIF(
+                    audit.metadata #>> '{next,automaticSourceOverride,sourceType}',
+                    ''
+                  )
+                  ELSE NULL
+             END AS automatic_source_override_source_type,
+             CASE WHEN audit.action IN (
+                    'agency_income.created',
+                    'agency_income.counted_separately'
+                  )
+                  THEN NULLIF(
+                    audit.metadata #>> '{next,automaticSourceOverride,sourceId}',
+                    ''
+                  )
+                  ELSE NULL
+             END AS automatic_source_override_source_id,
+             CASE WHEN audit.action IN (
+                    'agency_income.created',
+                    'agency_income.counted_separately'
+                  )
+                  THEN NULLIF(
+                    audit.metadata #>> '{next,automaticSourceOverride,sourceRef}',
+                    ''
+                  )
+                  ELSE NULL
+             END AS automatic_source_override_source_ref
+        FROM audit_logs audit
+       WHERE audit.entity_type = 'agency_manual_income_entry'
+         AND audit.entity_id = entry.id
+         AND audit.action IN (
+               'agency_income.created',
+               'agency_income.counted_separately',
+               'agency_income.treated_as_same_payment'
+             )
+       ORDER BY audit.created_at DESC, audit.id DESC
+       LIMIT 1
+    ) separate_decision ON true`;
 
 export async function listProgramRevenueTerms(
   db: Queryable,
@@ -370,6 +441,89 @@ interface IncomeBudgetRow {
   consumption_source: string;
   authorized_dollars: string | null;
   consumed_dollars: string;
+}
+
+interface AutomaticIncomeMatchRow {
+  source_type: AutomaticIncomeSourceType;
+  source_id: string;
+  source_ref: string;
+}
+
+const AUTOMATIC_INCOME_CTE = `WITH automatic_income AS (
+  SELECT 'google_sheet_transaction'::text AS source_type,
+         source_transaction.id AS source_id,
+         COALESCE(
+           NULLIF(btrim(source_transaction.check_number), ''),
+           source_transaction.id::text
+         ) AS source_ref,
+         canonical_service_date(
+           source_transaction.period_begin,
+           source_transaction.check_date,
+           source_transaction.period_end
+         ) AS service_date,
+         source_transaction.imported_amount AS gross_amount,
+         source_transaction.individual_id,
+         source_transaction.program_id
+    FROM payroll_transactions source_transaction
+   WHERE source_transaction.imported_amount IS NOT NULL
+)`;
+
+async function findAutomaticIncomeMatch(
+  db: Queryable,
+  input: {
+    serviceDate: string;
+    grossAmount: string;
+    individualId: string | null;
+    programId: string | null;
+  },
+): Promise<AutomaticIncomeMatchRow | null> {
+  const { rows } = await db.query<AutomaticIncomeMatchRow>(
+    `${AUTOMATIC_INCOME_CTE}
+     SELECT source_type, source_id, source_ref
+       FROM automatic_income
+      WHERE service_date = $1::date
+        AND gross_amount = $2::numeric
+        AND ($3::uuid IS NULL OR individual_id = $3::uuid)
+        AND ($4::uuid IS NULL OR program_id = $4::uuid)
+      ORDER BY source_type, source_id
+      LIMIT 1`,
+    [input.serviceDate, input.grossAmount, input.individualId, input.programId],
+  );
+  return rows[0] ?? null;
+}
+
+async function findMatchingAutomaticIncomeSource(
+  db: Queryable,
+  input: {
+    sourceType: AutomaticIncomeSourceType;
+    sourceId: string;
+    serviceDate: string;
+    grossAmount: string;
+    individualId: string | null;
+    programId: string | null;
+  },
+): Promise<AutomaticIncomeMatchRow | null> {
+  const { rows } = await db.query<AutomaticIncomeMatchRow>(
+    `${AUTOMATIC_INCOME_CTE}
+     SELECT source_type, source_id, source_ref
+       FROM automatic_income
+      WHERE source_type = $1
+        AND source_id = $2::uuid
+        AND service_date = $3::date
+        AND gross_amount = $4::numeric
+        AND ($5::uuid IS NULL OR individual_id = $5::uuid)
+        AND ($6::uuid IS NULL OR program_id = $6::uuid)
+      LIMIT 1`,
+    [
+      input.sourceType,
+      input.sourceId,
+      input.serviceDate,
+      input.grossAmount,
+      input.individualId,
+      input.programId,
+    ],
+  );
+  return rows[0] ?? null;
 }
 
 async function effectiveProgramTerm(
@@ -553,6 +707,7 @@ export async function saveEmployeeIndividualCompensationTerm(
   if (reason.length < 5) return fail("validation", "Give a short reason for this pay rule.");
 
   return inTransaction(pool, async (client) => {
+    await acquireSettlementSourceLock(client);
     await client.query(
       `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
       [`employee-individual-pay:${input.employeeId}:${input.individualId}`],
@@ -663,6 +818,16 @@ export interface CreateManualIncomeInput {
   sourceRef?: string | null;
   notes?: string | null;
   overBudgetOverrideReason?: string | null;
+  automaticSourceOverrideReason?: string | null;
+}
+
+export type IncomeMatchingDecisionAction = "count_separately" | "treat_as_same_payment";
+
+export interface CountIncomeSeparatelyInput {
+  action?: IncomeMatchingDecisionAction;
+  sourceType: AutomaticIncomeSourceType;
+  sourceId: string;
+  reason: string;
 }
 
 export async function createManualIncomeEntry(
@@ -676,8 +841,9 @@ export async function createManualIncomeEntry(
   }
   const gross = checkedMoney(input.grossAmount);
   if (!gross.ok) return gross;
-  const individualId = input.individualId?.trim() || null;
-  const programId = input.programId?.trim() || null;
+  let individualId = input.individualId?.trim() || null;
+  let programId = input.programId?.trim() || null;
+  let splitEffectiveDate = input.serviceDate;
   if ((individualId && !UUID.test(individualId)) || (programId && !UUID.test(programId))) {
     return fail("validation", "Choose a valid individual and program.");
   }
@@ -685,8 +851,24 @@ export async function createManualIncomeEntry(
     return fail("validation", "Custom program income needs an individual and program.");
   }
   const sourceRef = input.sourceRef?.trim() || null;
+  if (input.sourceType === "class" && !sourceRef && (!individualId || !programId)) {
+    return fail(
+      "validation",
+      "Choose an individual and program for class income, or enter an issued invoice number.",
+    );
+  }
+  const automaticSourceOverrideReason = input.automaticSourceOverrideReason?.trim() || null;
 
   return inTransaction(pool, async (client) => {
+    await acquireSettlementSourceLock(client);
+    let referencedClassInvoice: {
+      id: string;
+      individual_id: string;
+      program_id: string | null;
+      invoice_date: string;
+      status: string;
+      custom_split_required: boolean;
+    } | null = null;
     if (sourceRef) {
       const duplicate = await client.query<{ id: string }>(
         `SELECT id FROM agency_manual_income_entries
@@ -696,14 +878,81 @@ export async function createManualIncomeEntry(
       );
       if (duplicate.rows[0]) return fail("conflict", "That reference is already recorded.");
       if (input.sourceType === "class") {
-        const invoice = await client.query<{ id: string }>(
-          `SELECT id FROM class_invoices
-            WHERE lower(invoice_number) = lower($1) AND status = 'issued' LIMIT 1`,
+        const invoice = await client.query<{
+          id: string;
+          individual_id: string;
+          program_id: string | null;
+          invoice_date: string;
+          status: string;
+          custom_split_required: boolean;
+        }>(
+          `SELECT invoice.id, invoice.individual_id, budget.program_id,
+                  invoice.invoice_date::text, invoice.status,
+                  EXISTS (
+                    SELECT 1
+                      FROM individual_program_revenue_terms split_history
+                     WHERE split_history.individual_id = invoice.individual_id
+                       AND split_history.program_id = budget.program_id
+                       AND split_history.effective_from <= invoice.invoice_date
+                  ) AS custom_split_required
+             FROM class_invoices invoice
+             JOIN class_budget_periods budget ON budget.id = invoice.class_budget_period_id
+            WHERE lower(btrim(invoice.invoice_number)) = lower(btrim($1))
+            LIMIT 1
+            FOR SHARE OF invoice, budget`,
           [sourceRef],
         );
-        if (invoice.rows[0]) {
-          return fail("conflict", "That issued class invoice is already included automatically.");
+        referencedClassInvoice = invoice.rows[0] ?? null;
+        if (referencedClassInvoice && referencedClassInvoice.status !== "issued") {
+          return fail(
+            "conflict",
+            "That class invoice is not issued. Open Classes and verify the invoice before recording payment.",
+          );
         }
+        if (referencedClassInvoice && referencedClassInvoice.program_id === null) {
+          return fail(
+            "conflict",
+            "Repair this invoice's Classes program link before recording payment.",
+          );
+        }
+        if (referencedClassInvoice
+            && ((individualId && referencedClassInvoice.individual_id !== individualId)
+              || (programId && referencedClassInvoice.program_id !== programId))) {
+          return fail(
+            "conflict",
+            "That invoice belongs to a different individual or program. Check the reference and selections.",
+          );
+        }
+        if (referencedClassInvoice) {
+          individualId = referencedClassInvoice.individual_id;
+          programId = referencedClassInvoice.program_id;
+          splitEffectiveDate = referencedClassInvoice.invoice_date;
+        }
+      }
+    }
+    if (input.sourceType === "class" && (!individualId || !programId)) {
+      return fail(
+        "validation",
+        "Choose an individual and program for class income, or enter an issued invoice number.",
+      );
+    }
+
+    const automaticIncomeMatch = await findAutomaticIncomeMatch(client, {
+      serviceDate: input.serviceDate,
+      grossAmount: gross.data,
+      individualId,
+      programId,
+    });
+    if (automaticIncomeMatch) {
+      const reasonLength = automaticSourceOverrideReason?.length ?? 0;
+      if (input.sourceType !== "class" && reasonLength < 5) {
+        return fail(
+          "conflict",
+          `This matches Google Sheet transaction ${automaticIncomeMatch.source_ref}, which is already counted. If this is a separate payment, add a separate-payment reason.`,
+        );
+      }
+      if (input.sourceType === "class" && automaticSourceOverrideReason && reasonLength < 5) {
+        return fail("validation", "Explain why this class receipt is a separate payment.");
       }
     }
 
@@ -723,8 +972,14 @@ export async function createManualIncomeEntry(
     }
 
     const term = individualId && programId
-      ? await effectiveProgramTerm(client, individualId, programId, input.serviceDate)
+      ? await effectiveProgramTerm(client, individualId, programId, splitEffectiveDate)
       : null;
+    if (referencedClassInvoice?.custom_split_required && !term) {
+      return fail(
+        "conflict",
+        "Set an effective program split for this invoice date before recording payment.",
+      );
+    }
     if (input.sourceType === "custom_program" && !term) {
       return fail("conflict", "Set this individual's program split before recording the income.");
     }
@@ -737,8 +992,43 @@ export async function createManualIncomeEntry(
     const agencyAmount = split.agencyAmount;
     const individualAmount = split.individualAmount;
 
+    let manualIncomeMatch: { id: string } | null = null;
+    if (!sourceRef) {
+      const duplicate = await client.query<{ id: string }>(
+        `SELECT id
+           FROM agency_manual_income_entries
+          WHERE status = 'active'
+            AND service_date = $1::date
+            AND source_type = $2
+            AND individual_id IS NOT DISTINCT FROM $3::uuid
+            AND program_id IS NOT DISTINCT FROM $4::uuid
+            AND gross_amount = $5::numeric
+            AND agency_share_percent = $6::numeric
+            AND notes IS NOT DISTINCT FROM $7::text
+            AND NULLIF(btrim(source_ref), '') IS NULL
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1`,
+        [
+          input.serviceDate,
+          input.sourceType,
+          individualId,
+          programId,
+          gross.data,
+          agencyShare,
+          input.notes?.trim() || null,
+        ],
+      );
+      manualIncomeMatch = duplicate.rows[0] ?? null;
+      if (manualIncomeMatch && (automaticSourceOverrideReason?.length ?? 0) < 5) {
+        return fail(
+          "conflict",
+          "This exact income is already recorded. If this is a separate payment, add a separate-payment reason.",
+        );
+      }
+    }
+
     let budget: IncomeBudgetRow | null = null;
-    if (individualId && programId) {
+    if (individualId && programId && input.sourceType !== "class") {
       const current = await client.query<IncomeBudgetRow>(
         `SELECT authorization_id, budget_period_id, required_auth_type,
                 consumption_source, authorized_dollars::text, consumed_dollars::text
@@ -759,7 +1049,9 @@ export async function createManualIncomeEntry(
         && (!budget || budget.authorized_dollars === null || budget.required_auth_type === "hours")) {
       return fail("conflict", "Add an active dollar budget for this individual and program first.");
     }
-    const shouldPostBudget = budget !== null && budget.consumption_source !== "payroll";
+    const shouldPostBudget = budget !== null
+      && budget.consumption_source !== "payroll"
+      && input.sourceType !== "class";
     if (budget && shouldPostBudget && budget.authorized_dollars !== null) {
       const projected = dec(budget.consumed_dollars).plus(gross.data);
       if (projected.greaterThan(budget.authorized_dollars)
@@ -833,12 +1125,106 @@ export async function createManualIncomeEntry(
         agencyAmount,
         individualAmount,
         sourceRef,
+        referencedClassInvoiceId: referencedClassInvoice?.id ?? null,
         budgetEventId,
+        automaticSourceOverride: automaticIncomeMatch ? {
+          sourceType: automaticIncomeMatch.source_type,
+          sourceId: automaticIncomeMatch.source_id,
+          sourceRef: automaticIncomeMatch.source_ref,
+          reason: automaticSourceOverrideReason,
+        } : null,
+        manualIncomeOverride: manualIncomeMatch ? {
+          sourceId: manualIncomeMatch.id,
+          reason: automaticSourceOverrideReason,
+        } : null,
       },
-      reason: input.notes?.trim() || input.overBudgetOverrideReason?.trim() || null,
+      reason: automaticSourceOverrideReason
+        || input.notes?.trim()
+        || input.overBudgetOverrideReason?.trim()
+        || null,
     });
     const created = await client.query<ManualIncomeRow>(`${MANUAL_INCOME_SELECT} WHERE entry.id = $1`, [id]);
     return ok(mapManualIncome(created.rows[0]!));
+  });
+}
+
+export async function countManualIncomeSeparately(
+  pool: PgLikePool,
+  id: string,
+  input: CountIncomeSeparatelyInput,
+  actorId: string,
+): Promise<Result<{ id: string }>> {
+  if (!UUID.test(id)) return fail("not_found", "That income entry no longer exists.");
+  const action = input.action ?? "count_separately";
+  if (!(new Set<IncomeMatchingDecisionAction>(["count_separately", "treat_as_same_payment"])).has(action)) {
+    return fail("validation", "Choose a valid income matching decision.");
+  }
+  if (!UUID.test(input.sourceId)
+      || input.sourceType !== "google_sheet_transaction") {
+    return fail("validation", "The matched income source is invalid. Refresh the report and try again.");
+  }
+  const reason = input.reason.trim();
+  if (reason.length < 5) {
+    return fail(
+      "validation",
+      action === "count_separately"
+        ? "Explain why this is a separate payment."
+        : "Explain why these records are the same payment.",
+    );
+  }
+
+  return inTransaction(pool, async (client) => {
+    await acquireSettlementSourceLock(client);
+    const locked = await client.query<{
+      service_date: string;
+      gross_amount: string;
+      individual_id: string | null;
+      program_id: string | null;
+      status: "active" | "void";
+    }>(
+      `SELECT service_date::text, gross_amount::text, individual_id, program_id, status
+         FROM agency_manual_income_entries
+        WHERE id = $1
+        FOR UPDATE`,
+      [id],
+    );
+    const entry = locked.rows[0];
+    if (!entry || entry.status !== "active") {
+      return fail("not_found", "That active income entry no longer exists.");
+    }
+    const source = await findMatchingAutomaticIncomeSource(client, {
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      serviceDate: entry.service_date,
+      grossAmount: entry.gross_amount,
+      individualId: entry.individual_id,
+      programId: entry.program_id,
+    });
+    if (!source) {
+      return fail("conflict", "That source no longer matches this income. Refresh the report before deciding.");
+    }
+    const automaticSourceMatch = {
+      sourceType: source.source_type,
+      sourceId: source.source_id,
+      sourceRef: source.source_ref,
+    };
+    await recordChange(client, {
+      actorId,
+      action: action === "count_separately"
+        ? "agency_income.counted_separately"
+        : "agency_income.treated_as_same_payment",
+      entityType: "agency_manual_income_entry",
+      entityId: id,
+      next: {
+        incomeMatchingDecision: action === "count_separately" ? "separate_payment" : "same_payment",
+        automaticSourceMatch,
+        automaticSourceOverride: action === "count_separately"
+          ? { ...automaticSourceMatch, reason }
+          : null,
+      },
+      reason,
+    });
+    return ok({ id });
   });
 }
 

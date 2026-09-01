@@ -83,15 +83,19 @@ export default async function EmployeeDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams?: Promise<{ view?: string | string[] }>;
+  searchParams?: Promise<{ view?: string | string[]; effectiveFrom?: string | string[] }>;
 }) {
   const user = await requireUser("viewer");
   const canEdit = user.role !== "viewer";
   const [{ id }, query] = await Promise.all([
     params,
-    searchParams ?? Promise.resolve<{ view?: string | string[] }>({}),
+    searchParams ?? Promise.resolve<{ view?: string | string[]; effectiveFrom?: string | string[] }>({}),
   ]);
   const initialView = typeof query.view === "string" ? query.view : undefined;
+  const requestedEffectiveFrom = typeof query.effectiveFrom === "string"
+    && /^\d{4}-\d{2}-\d{2}$/.test(query.effectiveFrom)
+    ? query.effectiveFrom
+    : null;
   if (!isUuid(id)) notFound();
 
   const result = await withDb(async (pool) => {
@@ -221,7 +225,7 @@ export default async function EmployeeDetailPage({
             />
             <Field label="Direct give-back %" name="directPercent" type="number" defaultValue={directPercent} placeholder="e.g. 10" help="Used only for the percentage option. It is applied to the whole check net, never gross or taxes." />
             <Field label="Default agency cut of base %" name="agencyCutPercent" type="number" defaultValue={agencyPercent} placeholder="e.g. 20" help="Used when this employee has no person-specific pay rule. The billed spread always stays with the agency." />
-            <Field label="Starts on" name="effectiveFrom" type="date" defaultValue={currentDeal?.effectiveFrom ?? today} required />
+            <Field label="Starts on" name="effectiveFrom" type="date" defaultValue={requestedEffectiveFrom ?? currentDeal?.effectiveFrom ?? today} required />
             <Field label="Ends on (optional)" name="effectiveTo" type="date" defaultValue={currentDeal?.effectiveTo ?? ""} />
             <Field label="Reason for change" name="reason" placeholder="New agreement, correction, annual review…" required />
             <TextAreaField label="Deal notes" name="notes" defaultValue={currentDeal?.notes} />

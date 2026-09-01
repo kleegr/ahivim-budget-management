@@ -1,15 +1,23 @@
 import { agencyMonth } from "@/lib/business/agency-time";
-import type { PgLikePool } from "@/lib/import/commit";
+import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { dec, toMoney } from "@/lib/money";
 import {
   listManualIncomeEntries,
+  type AutomaticIncomeSourceType,
   type ManualIncomeEntry,
 } from "@/lib/manage/agency-financials";
 
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+type Queryable = Pick<PgLikePool, "query"> | Pick<PgLikeClient, "query">;
+
+// Strategy snapshots became authoritative with this release. August 2026 is
+// the first monthly end-state we can reconstruct without guessing legacy data.
+export const FIRST_RELIABLE_SET_ASIDE_MONTH = "2026-08";
+const FIRST_RELIABLE_SET_ASIDE_MONTH_END = "2026-09-01";
 
 export type PayRuleSource = "person_rule" | "employee_default" | "missing";
 export type ClassSplitSource = "configured" | "full_agency_default" | "missing";
+export type SetAsideStateSource = "current" | "saved_revision";
 
 export interface AgencyFinancialOption {
   id: string;
@@ -25,9 +33,11 @@ export interface AgencyFinancialOptions {
 
 export interface AgencyTransactionActual {
   id: string;
+  sourceRef: string;
   serviceDate: string;
   individualId: string | null;
   individualName: string | null;
+  programId: string | null;
   employeeId: string | null;
   employeeName: string | null;
   programName: string | null;
@@ -37,6 +47,21 @@ export interface AgencyTransactionActual {
   employeeSharePercent: string | null;
   employeeExpense: string | null;
   payRuleSource: PayRuleSource | null;
+}
+
+export interface AutomaticIncomeSourceMatch {
+  sourceType: AutomaticIncomeSourceType;
+  sourceId: string;
+  sourceRef: string;
+}
+
+export interface AgencyManualIncomeActual extends ManualIncomeEntry {
+  automaticSourceDuplicate: boolean;
+  matchedIncomeSource: AutomaticIncomeSourceMatch | null;
+  matchedSplitSource: AutomaticIncomeSourceMatch | null;
+  countSeparatelyReason: string | null;
+  countedInIncome: boolean;
+  countedSplitExpense: boolean;
 }
 
 export interface DirectPayCheckActual {
@@ -58,13 +83,21 @@ export interface MonthlySetAsideActual {
   individualId: string;
   individualName: string;
   setupName: string;
-  firstCutPercent: string;
-  secondCutPercent: string;
+  firstCutPercent: string | null;
+  secondCutPercent: string | null;
   approvedMonthlyFinal: string | null;
+  historyAvailable: boolean;
+  stateSource: SetAsideStateSource | null;
+  effectiveAt: string | null;
+  revisionId: string | null;
+  revisionNumber: number | null;
+  revisionReason: string | null;
+  revisionCreatedAt: string | null;
 }
 
 export interface ClassInvoiceActual {
   id: string;
+  classBudgetPeriodId: string;
   invoiceNumber: string;
   invoiceDate: string;
   individualId: string;
@@ -76,6 +109,10 @@ export interface ClassInvoiceActual {
   agencyAmount: string | null;
   individualExpense: string | null;
   splitSource: ClassSplitSource;
+  matchedIncomeSource: AutomaticIncomeSourceMatch | null;
+  countSeparatelyReason: string | null;
+  countedInIncome: boolean;
+  countedSplitExpense: boolean;
 }
 
 export interface AgencyFinancialCoverage {
@@ -87,7 +124,10 @@ export interface AgencyFinancialCoverage {
   directChecksMissingDeal: number;
   classInvoicesMissingProgram: number;
   classInvoicesMissingSplit: number;
+  classInvoiceDuplicatesExcluded: number;
   setupsMissingApprovedFinal: number;
+  setAsideHistoriesUnavailable: number;
+  manualIncomeDuplicatesExcluded: number;
   unknownPaymentRecipients: number;
 }
 
@@ -99,7 +139,7 @@ export interface AgencyFinancialReport {
   directChecks: DirectPayCheckActual[];
   setAsides: MonthlySetAsideActual[];
   classInvoices: ClassInvoiceActual[];
-  manualIncome: ManualIncomeEntry[];
+  manualIncome: AgencyManualIncomeActual[];
   totals: {
     income: {
       transactions: string;
@@ -123,9 +163,11 @@ export interface AgencyFinancialReport {
 
 interface TransactionRow {
   id: string;
+  source_ref: string;
   service_date: string;
   individual_id: string | null;
   individual_name: string | null;
+  program_id: string | null;
   employee_id: string | null;
   employee_name: string | null;
   program_name: string | null;
@@ -154,13 +196,21 @@ interface SetAsideRow {
   individual_id: string;
   individual_name: string;
   setup_name: string;
-  cut1_percent: string;
-  cut2_percent: string;
+  cut1_percent: string | null;
+  cut2_percent: string | null;
   approved_final: string | null;
+  history_available: boolean;
+  state_source: SetAsideStateSource | null;
+  effective_at: string | null;
+  revision_id: string | null;
+  revision_number: number | null;
+  revision_reason: string | null;
+  revision_created_at: string | null;
 }
 
 interface ClassInvoiceRow {
   id: string;
+  class_budget_period_id: string;
   invoice_number: string;
   invoice_date: string;
   individual_id: string;
@@ -174,6 +224,14 @@ interface ClassInvoiceRow {
 
 export function normalizeAgencyFinancialMonth(value?: string | null): string {
   return value && MONTH.test(value) ? value : agencyMonth();
+}
+
+export function normalizeActualAgencyFinancialMonth(
+  value?: string | null,
+  currentMonth = agencyMonth(),
+): string {
+  const month = normalizeAgencyFinancialMonth(value);
+  return month > currentMonth ? currentMonth : month;
 }
 
 export function agencyFinancialMonthRange(value?: string | null): {
@@ -279,7 +337,7 @@ function directDealLabel(row: CheckRow): string | null {
   return "Employee keeps all net";
 }
 
-export async function listAgencyFinancialOptions(pool: PgLikePool): Promise<AgencyFinancialOptions> {
+export async function listAgencyFinancialOptions(pool: Queryable): Promise<AgencyFinancialOptions> {
   const [individuals, employees, programs] = await Promise.all([
     pool.query<{ id: string; label: string }>(
       `SELECT id, COALESCE(display_name, normalized_name) AS label
@@ -305,20 +363,22 @@ export async function listAgencyFinancialOptions(pool: PgLikePool): Promise<Agen
 }
 
 export async function getAgencyFinancialReport(
-  pool: PgLikePool,
+  pool: Queryable,
   requestedMonth?: string | null,
 ): Promise<AgencyFinancialReport> {
   const range = agencyFinancialMonthRange(requestedMonth);
   const canonicalTransactionDate = "canonical_service_date(t.period_begin, t.check_date, t.period_end)";
   const canonicalCheckDate = "canonical_service_date(check_fact.period_begin, check_fact.check_date, check_fact.period_end)";
 
-  const [transactionResult, checkResult, setAsideResult, classResult, manualIncome] = await Promise.all([
+  const [transactionResult, checkResult, setAsideResult, classResult, manualIncomeEntries] = await Promise.all([
     pool.query<TransactionRow>(
       `SELECT t.id,
+              COALESCE(NULLIF(btrim(t.check_number), ''), t.id::text) AS source_ref,
               to_char(${canonicalTransactionDate}, 'YYYY-MM-DD') AS service_date,
               t.individual_id,
               CASE WHEN individual.id IS NULL THEN NULL
                    ELSE COALESCE(individual.display_name, individual.normalized_name) END AS individual_name,
+              t.program_id,
               t.employee_id,
               CASE WHEN employee.id IS NULL THEN NULL
                    ELSE COALESCE(employee.display_name, employee.normalized_name) END AS employee_name,
@@ -403,19 +463,77 @@ export async function getAgencyFinancialReport(
       [range.start, range.endExclusive],
     ),
     pool.query<SetAsideRow>(
-      `SELECT strategy.id AS strategy_id, strategy.individual_id,
+      `WITH strategy_state_candidates AS (
+         SELECT strategy.id AS strategy_id, strategy.individual_id, strategy.label,
+                strategy.cut1_percent, strategy.cut2_percent, strategy.after_all,
+                strategy.status, strategy.sort_order,
+                strategy.updated_at AS effective_from,
+                'current'::text AS state_source,
+                NULL::uuid AS source_revision_id,
+                NULL::integer AS source_revision_number,
+                NULL::text AS source_revision_reason,
+                NULL::timestamptz AS source_revision_created_at,
+                1 AS current_state, 2147483647 AS candidate_revision
+           FROM calculation_strategies strategy
+         UNION ALL
+         SELECT strategy.id AS strategy_id, strategy.individual_id,
+                COALESCE(NULLIF(revision.snapshot->>'label', ''), strategy.label) AS label,
+                COALESCE(NULLIF(revision.snapshot->>'cut1_percent', '')::numeric, 0) AS cut1_percent,
+                COALESCE(NULLIF(revision.snapshot->>'cut2_percent', '')::numeric, 0) AS cut2_percent,
+                NULLIF(revision.snapshot->>'after_all', '')::numeric AS after_all,
+                COALESCE(NULLIF(revision.snapshot->>'status', ''), 'active') AS status,
+                COALESCE(NULLIF(revision.snapshot->>'sort_order', '')::integer, strategy.sort_order) AS sort_order,
+                COALESCE(
+                  NULLIF(revision.snapshot->>'updated_at', '')::timestamptz,
+                  strategy.created_at
+                ) AS effective_from,
+                'saved_revision'::text AS state_source,
+                revision.id AS source_revision_id,
+                revision.revision AS source_revision_number,
+                revision.reason AS source_revision_reason,
+                revision.created_at AS source_revision_created_at,
+                0 AS current_state, revision.revision AS candidate_revision
+           FROM calculation_strategies strategy
+           JOIN calculation_strategy_revisions revision ON revision.strategy_id = strategy.id
+       ), effective_strategy_states AS (
+         SELECT DISTINCT ON (candidate.strategy_id)
+                candidate.strategy_id, candidate.individual_id, candidate.label,
+                candidate.cut1_percent, candidate.cut2_percent, candidate.after_all,
+                candidate.status, candidate.sort_order, candidate.state_source,
+                candidate.effective_from, candidate.source_revision_id,
+                candidate.source_revision_number, candidate.source_revision_reason,
+                candidate.source_revision_created_at
+           FROM strategy_state_candidates candidate
+          WHERE $1::date >= $2::date
+            AND candidate.effective_from < ($1::date AT TIME ZONE 'America/New_York')
+          ORDER BY candidate.strategy_id, candidate.effective_from DESC,
+                   candidate.current_state DESC, candidate.candidate_revision DESC
+       )
+       SELECT base.id AS strategy_id, base.individual_id,
               COALESCE(individual.display_name, individual.normalized_name) AS individual_name,
-              strategy.label AS setup_name,
+              COALESCE(strategy.label, base.label) AS setup_name,
               strategy.cut1_percent::text,
               strategy.cut2_percent::text,
-              strategy.after_all::text AS approved_final
-         FROM calculation_strategies strategy
-         JOIN individuals individual ON individual.id = strategy.individual_id
-        WHERE strategy.status = 'active'
-        ORDER BY individual_name, strategy.sort_order, strategy.label`,
+              strategy.after_all::text AS approved_final,
+              (strategy.strategy_id IS NOT NULL) AS history_available,
+              strategy.state_source,
+              strategy.effective_from::text AS effective_at,
+              strategy.source_revision_id AS revision_id,
+              strategy.source_revision_number AS revision_number,
+              strategy.source_revision_reason AS revision_reason,
+              strategy.source_revision_created_at::text AS revision_created_at
+         FROM calculation_strategies base
+         JOIN individuals individual ON individual.id = base.individual_id
+         LEFT JOIN effective_strategy_states strategy ON strategy.strategy_id = base.id
+        WHERE base.created_at < ($1::date AT TIME ZONE 'America/New_York')
+          AND (strategy.strategy_id IS NULL OR strategy.status = 'active')
+        ORDER BY individual_name, COALESCE(strategy.sort_order, base.sort_order),
+                 COALESCE(strategy.label, base.label)`,
+      [range.endExclusive, FIRST_RELIABLE_SET_ASIDE_MONTH_END],
     ),
     pool.query<ClassInvoiceRow>(
-      `SELECT invoice.id, invoice.invoice_number, invoice.invoice_date::text,
+      `SELECT invoice.id, invoice.class_budget_period_id,
+              invoice.invoice_number, invoice.invoice_date::text,
               invoice.individual_id,
               COALESCE(individual.display_name, individual.normalized_name) AS individual_name,
               budget.program_id, program.name AS program_name,
@@ -462,9 +580,11 @@ export async function getAgencyFinancialReport(
       : null;
     return {
       id: row.id,
+      sourceRef: row.source_ref ?? row.id,
       serviceDate: row.service_date,
       individualId: row.individual_id,
       individualName: row.individual_name,
+      programId: row.program_id ?? null,
       employeeId: row.employee_id,
       employeeName: row.employee_name,
       programName: row.program_name,
@@ -507,34 +627,137 @@ export async function getAgencyFinancialReport(
     firstCutPercent: row.cut1_percent,
     secondCutPercent: row.cut2_percent,
     approvedMonthlyFinal: approvedMonthlySetAside(row.approved_final),
+    historyAvailable: row.history_available,
+    stateSource: row.state_source,
+    effectiveAt: row.effective_at,
+    revisionId: row.revision_id,
+    revisionNumber: row.revision_number,
+    revisionReason: row.revision_reason,
+    revisionCreatedAt: row.revision_created_at,
   }));
 
-  const classInvoices = classResult.rows.map<ClassInvoiceActual>((row) => {
-    const split = classInvoiceSplit({
-      grossAmount: row.total_amount,
-      agencySharePercent: row.agency_share_percent,
-      customSplitRequired: row.custom_split_required,
-    });
+  interface AutomaticIncomeCandidate extends AutomaticIncomeSourceMatch {
+    serviceDate: string;
+    grossAmount: string;
+    individualId: string | null;
+    programId: string | null;
+  }
+  const sourceKey = (serviceDate: string, grossAmount: string) => `${serviceDate}|${grossAmount}`;
+  const sourceMatches = (
+    source: AutomaticIncomeCandidate,
+    individualId: string | null,
+    programId: string | null,
+  ) => (
+    (individualId === null || source.individualId === individualId)
+    && (programId === null || source.programId === programId)
+  );
+  const sourceReference = (source: AutomaticIncomeCandidate): AutomaticIncomeSourceMatch => ({
+    sourceType: source.sourceType,
+    sourceId: source.sourceId,
+    sourceRef: source.sourceRef,
+  });
+  const sheetSources: AutomaticIncomeCandidate[] = transactions
+    .filter((transaction) => transaction.grossAmount !== null)
+    .map((transaction) => ({
+      sourceType: "google_sheet_transaction" as const,
+      sourceId: transaction.id,
+      sourceRef: transaction.sourceRef,
+      serviceDate: transaction.serviceDate,
+      grossAmount: transaction.grossAmount!,
+      individualId: transaction.individualId,
+      programId: transaction.programId,
+    }))
+    .sort((left, right) => left.sourceId.localeCompare(right.sourceId));
+
+  const classInvoices: ClassInvoiceActual[] = classResult.rows.map((row) => {
+    const grossAmount = toMoney(row.total_amount);
+    const split: ReturnType<typeof classInvoiceSplit> = row.program_id === null
+      ? {
+          agencySharePercent: null,
+          agencyAmount: null,
+          individualExpense: null,
+          source: "missing",
+        }
+      : classInvoiceSplit({
+          grossAmount,
+          agencySharePercent: row.agency_share_percent,
+          customSplitRequired: row.custom_split_required,
+        });
     return {
       id: row.id,
+      classBudgetPeriodId: row.class_budget_period_id,
       invoiceNumber: row.invoice_number,
       invoiceDate: row.invoice_date,
       individualId: row.individual_id,
       individualName: row.individual_name,
       programId: row.program_id,
       programName: row.program_name,
-      grossAmount: toMoney(row.total_amount),
+      grossAmount,
       agencySharePercent: split.agencySharePercent,
       agencyAmount: split.agencyAmount,
       individualExpense: split.individualExpense,
       splitSource: split.source,
+      matchedIncomeSource: null,
+      countSeparatelyReason: null,
+      countedInIncome: false,
+      countedSplitExpense: false,
     };
   });
 
+  const consumedSheetSources = new Set<string>();
+  const manualOutcomes = new Map<string, Pick<
+    AgencyManualIncomeActual,
+    "automaticSourceDuplicate" | "matchedIncomeSource" | "matchedSplitSource"
+      | "countSeparatelyReason" | "countedInIncome" | "countedSplitExpense"
+  >>();
+  for (const entry of [...manualIncomeEntries].sort((left, right) => left.id.localeCompare(right.id))) {
+    const key = sourceKey(entry.serviceDate, entry.grossAmount);
+    const candidates = sheetSources.filter((source) => (
+      sourceKey(source.serviceDate, source.grossAmount) === key
+      && sourceMatches(source, entry.individualId, entry.programId)
+    ));
+    const decisionSource = entry.automaticSourceOverrideReason
+      && entry.automaticSourceOverrideSourceType
+      && entry.automaticSourceOverrideSourceId
+      ? candidates.find((source) => (
+          source.sourceType === entry.automaticSourceOverrideSourceType
+          && source.sourceId === entry.automaticSourceOverrideSourceId
+        )) ?? null
+      : null;
+    if (decisionSource && entry.automaticSourceOverrideReason) {
+      manualOutcomes.set(entry.id, {
+        automaticSourceDuplicate: true,
+        matchedIncomeSource: sourceReference(decisionSource),
+        matchedSplitSource: null,
+        countSeparatelyReason: entry.automaticSourceOverrideReason,
+        countedInIncome: true,
+        countedSplitExpense: true,
+      });
+      continue;
+    }
+
+    const incomeMatch = candidates.find((source) => !consumedSheetSources.has(source.sourceId)) ?? null;
+    if (incomeMatch) consumedSheetSources.add(incomeMatch.sourceId);
+    manualOutcomes.set(entry.id, {
+      automaticSourceDuplicate: incomeMatch !== null,
+      matchedIncomeSource: incomeMatch ? sourceReference(incomeMatch) : null,
+      matchedSplitSource: null,
+      countSeparatelyReason: null,
+      countedInIncome: incomeMatch === null,
+      countedSplitExpense: true,
+    });
+  }
+  const manualIncome: AgencyManualIncomeActual[] = manualIncomeEntries.map((entry) => ({
+    ...entry,
+    ...manualOutcomes.get(entry.id)!,
+  }));
+  const countedManualIncome = manualIncome.filter((entry) => entry.countedInIncome);
+  const countedManualSplits = manualIncome.filter((entry) => entry.countedSplitExpense);
+
   const transactionIncome = transactions.reduce((sum, row) => sum.plus(row.grossAmount ?? 0), dec(0));
-  const classIncome = classInvoices.reduce((sum, row) => sum.plus(row.grossAmount), dec(0));
-  const manualIncomeTotal = manualIncome.reduce((sum, row) => sum.plus(row.grossAmount), dec(0));
-  const approvedSetAsides = setAsides.reduce(
+  const classIncome = dec(0);
+  const manualIncomeTotal = countedManualIncome.reduce((sum, row) => sum.plus(row.grossAmount), dec(0));
+  const approvedSetAsides = setAsides.filter((row) => row.historyAvailable).reduce(
     (sum, row) => sum.plus(row.approvedMonthlyFinal ?? 0),
     dec(0),
   );
@@ -547,11 +770,8 @@ export async function getAgencyFinancialReport(
     (sum, row) => sum.plus(row.employeeExpense ?? 0),
     dec(0),
   );
-  const classIndividualShare = classInvoices.reduce(
-    (sum, row) => sum.plus(row.individualExpense ?? 0),
-    dec(0),
-  );
-  const manualIndividualShare = manualIncome.reduce(
+  const classIndividualShare = dec(0);
+  const manualIndividualShare = countedManualSplits.reduce(
     (sum, row) => sum.plus(row.individualAmount),
     dec(0),
   );
@@ -605,7 +825,14 @@ export async function getAgencyFinancialReport(
       directChecksMissingDeal: directChecks.filter((row) => row.dealLabel === null).length,
       classInvoicesMissingProgram: classInvoices.filter((row) => row.programId === null).length,
       classInvoicesMissingSplit: classInvoices.filter((row) => row.splitSource === "missing").length,
-      setupsMissingApprovedFinal: setAsides.filter((row) => row.approvedMonthlyFinal === null).length,
+      classInvoiceDuplicatesExcluded: 0,
+      setupsMissingApprovedFinal: setAsides.filter((row) => (
+        row.historyAvailable && row.approvedMonthlyFinal === null
+      )).length,
+      setAsideHistoriesUnavailable: setAsides.filter((row) => !row.historyAvailable).length,
+      manualIncomeDuplicatesExcluded: manualIncome.filter((row) => (
+        row.sourceType !== "class" && !row.countedInIncome
+      )).length,
       unknownPaymentRecipients: transactions.filter((row) => row.paymentRecipient === "unknown").length,
     },
   };

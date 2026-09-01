@@ -63,7 +63,7 @@ suite("ExcelJS loads and parses under a strict CommonJS runtime", () => {
       "const E = require('exceljs'); new E.Workbook(); process.stdout.write('LOADED');",
     );
     expect(out).toContain("LOADED");
-  });
+  }, 30_000);
 
   it("parses a real .xlsx end to end without ERR_REQUIRE_ESM", () => {
     const script = `

@@ -2,7 +2,7 @@
 
 This is the implementation and release contract for the Ahivim agency
 operating system. It maps the owner's stated business rules, roles, and daily
-workflows to the current shared code tree as of 2026-08-31.
+workflows to the current shared code tree as of 2026-09-01.
 
 A page existing is not proof that a workflow is complete. Code status and
 production acceptance are deliberately separate.
@@ -47,7 +47,7 @@ role still needs direct signed-in production acceptance.
 
 | Preset/profile | Status | Home, work, and hard privacy boundary |
 | --- | --- | --- |
-| Owner | PARTIAL | Whole-agency home, multi-person activity cohorts, all reports, all people, all money, all settings, user administration, Sign In As, and exact drilldowns. Saved owner cohort views and the historical financial-report limitation remain open. |
+| Owner | PARTIAL | Whole-agency home, multi-person activity cohorts, all reports, all people, all money, all settings, user administration, Sign In As, and exact drilldowns. Saved owner cohort views and full role-by-role production acceptance remain open. |
 | Office Manager | IMPLEMENTED | Everyday internal work, reports, budgets, and financials, without user-account administration. |
 | Budget Planner | IMPLEMENTED | Full-roster budget coverage, assignments, employee availability, calendar, and hours-only direct-pay target progress. May create, revise, or cancel active non-Classes hour authorizations. Cannot receive rates, dollars, transactions, payroll, taxes, employee deals, Masser, or manual financial adjustments. Planner mutation payloads and responses are server allowlisted/scrubbed. |
 | Staffing Manager | IMPLEMENTED | Finance-free employee directory/detail, weekly availability, time off, assignments, and schedule. Employee APIs expose only identity/status fields; no budgets, rates, notes, external payroll references, checks, taxes, transactions, deals, or settlements. |
@@ -70,8 +70,8 @@ role-specific read models and API tests.
 | Workspace or workflow | Status | Implemented contract | Remaining work before production verification |
 | --- | --- | --- | --- |
 | Owner Home | PARTIAL | Calm overview of actual activity, canonical budget position, money position, latest payroll, exact drilldowns, date/pay-period/employee filters, and multi-person cohorts. Evidence: `src/components/dashboard/owner-dashboard.tsx`, `owner-people-multi-select.tsx`. | Add named saved cohort views; reconcile all cards and links against production. |
-| Owner Agency Financials | PARTIAL | Owner-only monthly workspace for actual transaction income, issued class invoices, manual income, approved final monthly set-asides, verified-check taxes/direct employee keeps, agency-routed employee shares, split residual expenses, disclosures, and source drilldowns. Missing gross/base/deal/split values are counted and excluded, never guessed. Evidence: `src/app/(app)/reports/agency-financials/page.tsx`, `src/lib/data/agency-financial-report.ts`, `src/components/reports/agency-financial-workspace.tsx`. | Migration 0036 and browser/data reconciliation are pending. For a historical selected month, approved set-aside currently uses the active strategy's approved `after_all`; strategy revision history cannot yet reconstruct that value as-of the month. |
-| Manual and custom-program income | IMPLEMENTED | Owner can record class income outside invoicing, reimbursements, custom-program income, or other income; split gross into agency and individual amounts; deduplicate source references; and void with an audited budget-event reversal. Custom-program income requires an individual, program, effective split, and active dollar budget, with an explicit over-budget reason. Evidence: `src/lib/manage/agency-financials.ts`, `src/app/api/agency-financials/income/*`. | Deploy migration 0036 and verify create/over-budget/void flows on production records. |
+| Owner Agency Financials | IMPLEMENTED | Owner-only monthly workspace for actual Google Sheet transaction income plus explicitly recorded receipts, approved final monthly set-asides, verified-check taxes/direct employee keeps, agency-routed employee shares, individual split expenses, disclosures, and source drilldowns. Issued class invoices reserve budget and remain receivable references; they are neither cash income nor expenses. Missing gross/base/deal/split values are disclosed and excluded, never guessed. Saved setup revisions reconstruct the state effective for each month from August 2026 forward; earlier unavailable history remains visible and uncounted. Evidence: `src/app/(app)/reports/agency-financials/page.tsx`, `src/lib/data/agency-financial-report.ts`, `src/components/reports/agency-financial-workspace.tsx`. | Reconcile representative Sheet, manual-receipt, direct-pay, agency-routed, class, split, and historical set-aside records in production. |
+| Manual and custom-program income | IMPLEMENTED | Owner can record received class payments, reimbursements, custom-program income, or other income; split gross into agency and individual amounts; deduplicate Sheet matches and source references; and void with an audited reversal. A class receipt never consumes the class allowance again because invoice issue/void owns that history. Custom-program income requires an individual, program, effective split, and active dollar budget, with an explicit over-budget reason. Evidence: `src/lib/manage/agency-financials.ts`, `src/app/api/agency-financials/income/*`. | Verify same-Sheet-payment enrichment, separate payments, invoice references, over-budget custom income, and void flows on production records. |
 | Individual-program revenue splits | IMPLEMENTED | Owner can maintain audited, non-overlapping, effective-dated agency-share percentages per individual and program. Issued classes use the effective split; 100% agency is the default only when no custom split history says a split is required. Evidence: `individual_program_revenue_terms`, `/api/agency-financials/program-splits`. | Reconcile before, on, and after an effective-date change in production. |
 | Employee-person pay rules | IMPLEMENTED | Owner can maintain audited, non-overlapping, effective-dated employee shares for a specific employee and individual. The specific rule precedes the employee default for agency-routed base pay and dirties the settlement ledger on change. Evidence: `employee_individual_compensation_terms`, `/api/agency-financials/employee-terms`. | Rebuild and reconcile affected settlements after migration 0036 is deployed. |
 | Transactions | IMPLEMENTED | Spreadsheet-like per-value filters, dates, checks, people, programs, multi-person selection, synchronized totals, row/check modes, drilldowns, and export. | Production performance, URL-length, keyboard, mobile, and first-click acceptance on a large real payroll. |
@@ -103,12 +103,12 @@ role-specific read models and API tests.
 | Legacy unlinked group history | Repair or backfill session links before historical physical employee hours can be exactly deduplicated. |
 | Production document storage | Connected private Blob configuration and access-control acceptance. |
 | Class PDF identity | Owner approval of exact logo, brand marks, signatures, and final rendered examples. |
-| Historical approved set-asides | A strategy revision/as-of read model before past months can use the approved value that was effective in that month. |
+| Historical approved set-asides | Saved setup revisions provide as-of values from August 2026 forward. Earlier months without trustworthy snapshots remain disclosed and excluded until source history is supplied. |
 
 ## Remaining Delivery Order
 
-1. Close the known in-repo gaps: historical approved-set-aside reconstruction,
-   retroactive time-off conflict queue, guided Program creation, saved owner
+1. Close the known in-repo gaps: retroactive time-off conflict queue, guided
+   Program creation, saved owner
    cohort views, and the system-wide actionable-error/first-click pass.
 2. Run the full unit/integration/e2e, typecheck, and zero-warning lint suites on
    one stable commit. Record any database tests skipped for lack of

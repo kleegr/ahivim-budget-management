@@ -5,7 +5,7 @@ import {
   getAgencyFinancialReport,
   agencyFinancialMonthRange,
   listAgencyFinancialOptions,
-  normalizeAgencyFinancialMonth,
+  normalizeActualAgencyFinancialMonth,
 } from "@/lib/data/agency-financial-report";
 import {
   listEmployeeIndividualCompensationTerms,
@@ -26,21 +26,31 @@ export default async function AgencyFinancialsPage({
   await requireUser("admin");
   const params = await searchParams;
   const requested = Array.isArray(params.month) ? params.month[0] : params.month;
-  const month = normalizeAgencyFinancialMonth(requested);
+  const month = normalizeActualAgencyFinancialMonth(requested);
   const range = agencyFinancialMonthRange(month);
   const result = await withDb(async (pool) => {
-    const [report, options, programTerms, employeeTerms, incomeHistory] = await Promise.all([
-      getAgencyFinancialReport(pool, month),
-      listAgencyFinancialOptions(pool),
-      listProgramRevenueTerms(pool),
-      listEmployeeIndividualCompensationTerms(pool),
-      listManualIncomeEntries(pool, {
-        from: range.start,
-        to: range.endInclusive,
-        includeVoided: true,
-      }),
-    ]);
-    return { report, options, programTerms, employeeTerms, incomeHistory };
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const [report, options, programTerms, employeeTerms, incomeHistory] = await Promise.all([
+        getAgencyFinancialReport(client, month),
+        listAgencyFinancialOptions(client),
+        listProgramRevenueTerms(client),
+        listEmployeeIndividualCompensationTerms(client),
+        listManualIncomeEntries(client, {
+          from: range.start,
+          to: range.endInclusive,
+          includeVoided: true,
+        }),
+      ]);
+      await client.query("COMMIT");
+      return { report, options, programTerms, employeeTerms, incomeHistory };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   });
 
   return (

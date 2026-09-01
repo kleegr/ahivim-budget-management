@@ -31,6 +31,9 @@ export async function POST(request: NextRequest) {
         overBudgetOverrideReason: body.overBudgetOverrideReason
           ? String(body.overBudgetOverrideReason)
           : null,
+        automaticSourceOverrideReason: body.automaticSourceOverrideReason
+          ? String(body.automaticSourceOverrideReason)
+          : null,
       },
       user.id,
     );

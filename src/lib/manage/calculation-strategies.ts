@@ -770,13 +770,37 @@ export async function setStrategyStatus(
 ): Promise<Result<{ id: string }>> {
   if (!UUID.test(input.id)) return fail("validation", "A valid strategy is required.");
   const status = input.status === "archived" ? "archived" : "active";
-  const { rowCount } = await pool.query(
-    `UPDATE calculation_strategies SET status = $2, updated_at = now() WHERE id = $1`,
-    [input.id, status],
-  );
-  if (rowCount === 0) return fail("not_found", "That strategy no longer exists.");
-  await recordChange(pool, { actorId, action: status === "archived" ? "strategy_archived" : "strategy_restored", entityType: "calculation_strategy", entityId: input.id });
-  return ok({ id: input.id });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await acquireSettlementSourceLock(client);
+    const existing = await client.query(
+      `SELECT id FROM calculation_strategies WHERE id = $1 FOR UPDATE`,
+      [input.id],
+    );
+    if (existing.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return fail("not_found", "That strategy no longer exists.");
+    }
+    await snapshot(client, input.id, null, actorId);
+    await client.query(
+      `UPDATE calculation_strategies SET status = $2, updated_at = now() WHERE id = $1`,
+      [input.id, status],
+    );
+    await recordChange(client, {
+      actorId,
+      action: status === "archived" ? "strategy_archived" : "strategy_restored",
+      entityType: "calculation_strategy",
+      entityId: input.id,
+    });
+    await client.query("COMMIT");
+    return ok({ id: input.id });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    return fail("validation", error instanceof Error ? error.message : "Could not change the strategy status.");
+  } finally {
+    client.release();
+  }
 }
 
 export interface StrategyRevision {

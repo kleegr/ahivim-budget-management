@@ -16,6 +16,7 @@ import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { dec, toHours, toMoney } from "@/lib/money";
 import { recordChange } from "./audit";
 import { ok, type ResultCode } from "./errors";
+import { acquireSettlementSourceLock } from "./settlement-freshness";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIVITY_CODE = /^[A-Z0-9][A-Z0-9_-]{0,39}$/;
@@ -1034,6 +1035,7 @@ export async function issueClassInvoice(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await acquireSettlementSourceLock(client);
     const invoiceResult = await client.query<{
       class_budget_period_id: string;
       status: string;
@@ -1154,6 +1156,532 @@ export async function issueClassInvoice(
     return ok((await getClassInvoice(pool, id))!);
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export interface RepairIssuedClassInvoiceProgramLinkInput {
+  classBudgetPeriodId: string;
+  reason?: string | null;
+}
+
+export interface RepairedClassInvoiceProgramLink {
+  invoiceId: string;
+  classBudgetPeriodId: string;
+  programId: string;
+}
+
+interface LegacyClassInvoiceForBridge {
+  id: string;
+  status: "issued" | "void";
+  service_period_end: string;
+  total_amount: string;
+}
+
+interface LegacyClassLedgerForBridge {
+  class_invoice_id: string;
+  event_type: "issue" | "void";
+  amount: string;
+  created_by_user_id: string | null;
+  created_at: string;
+}
+
+interface ClassProgramEventForBridge {
+  id: string;
+  budget_period_id: string;
+  individual_id: string;
+  program_id: string;
+  event_type: "consume" | "reverse";
+  service_date: string;
+  hours: string;
+  amount: string;
+  source_id: string;
+  reverses_event_id: string | null;
+}
+
+function classProgramEventMatches(
+  event: ClassProgramEventForBridge,
+  expected: {
+    budgetPeriodId: string;
+    individualId: string;
+    programId: string;
+    eventType: "consume" | "reverse";
+    serviceDate: string;
+    amount: string;
+    reversesEventId: string | null;
+  },
+): boolean {
+  return event.budget_period_id === expected.budgetPeriodId
+    && event.individual_id === expected.individualId
+    && event.program_id === expected.programId
+    && event.event_type === expected.eventType
+    && event.service_date === expected.serviceDate
+    && dec(event.hours).eq(0)
+    && dec(event.amount).eq(expected.amount)
+    && event.reverses_event_id === expected.reversesEventId;
+}
+
+/**
+ * Repair a legacy class allowance and all of its frozen invoice history into
+ * the canonical program-budget model. The class ledger remains authoritative.
+ */
+export async function repairIssuedClassInvoiceProgramLink(
+  pool: PgLikePool,
+  id: string,
+  input: RepairIssuedClassInvoiceProgramLinkInput,
+  actorId: string,
+): Promise<ClassOperationResult<RepairedClassInvoiceProgramLink>> {
+  if (!UUID.test(id)) return classFail("not_found", "That class invoice no longer exists.");
+  if (!UUID.test(input.classBudgetPeriodId)) {
+    return classFail("validation", "Choose the class budget that belongs to this invoice.");
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await acquireSettlementSourceLock(client);
+    const invoiceResult = await client.query<{
+      class_budget_period_id: string;
+      status: string;
+    }>(
+      `SELECT class_budget_period_id, status
+         FROM class_invoices
+        WHERE id = $1
+        FOR UPDATE`,
+      [id],
+    );
+    const invoice = invoiceResult.rows[0];
+    if (!invoice) {
+      await client.query("ROLLBACK");
+      return classFail("not_found", "That class invoice no longer exists.");
+    }
+    if (invoice.status !== "issued" && invoice.status !== "void") {
+      await client.query("ROLLBACK");
+      return classFail("immutable", "Only issued or void class invoice history can have its missing program link repaired.");
+    }
+    if (invoice.class_budget_period_id !== input.classBudgetPeriodId) {
+      await client.query("ROLLBACK");
+      return classFail("conflict", "This invoice is no longer linked to the selected class budget. Refresh and try again.");
+    }
+
+    // Invoice lifecycle operations lock the invoice before the allowance. Lock
+    // every frozen invoice in the same order before taking the allowance lock.
+    const invoiceHistory = await client.query<LegacyClassInvoiceForBridge>(
+      `SELECT id, status, service_period_end::text AS service_period_end,
+              total_amount::text AS total_amount
+         FROM class_invoices
+        WHERE class_budget_period_id = $1
+          AND status IN ('issued', 'void')
+        ORDER BY id
+        FOR UPDATE`,
+      [input.classBudgetPeriodId],
+    );
+    if (!invoiceHistory.rows.some((historyInvoice) => historyInvoice.id === id)) {
+      await client.query("ROLLBACK");
+      return classFail("conflict", "This invoice changed while its class history was being locked. Refresh and try again.");
+    }
+    const budgetResult = await client.query<{
+      id: string;
+      individual_id: string;
+      label: string;
+      start_date: string;
+      end_date: string;
+      authorized_amount: string;
+      status: "active" | "closed";
+      notes: string | null;
+      created_by_user_id: string | null;
+      updated_at: string;
+      program_id: string | null;
+      budget_period_id: string | null;
+      budget_authorization_id: string | null;
+    }>(
+      `SELECT id, individual_id, label, start_date::text AS start_date,
+              end_date::text AS end_date, authorized_amount::text AS authorized_amount,
+              status, notes, created_by_user_id, updated_at::text AS updated_at,
+              program_id, budget_period_id, budget_authorization_id
+         FROM class_budget_periods
+        WHERE id = $1
+        FOR UPDATE`,
+      [input.classBudgetPeriodId],
+    );
+    const budget = budgetResult.rows[0];
+    if (!budget) {
+      await client.query("ROLLBACK");
+      return classFail("not_found", "The class budget linked to this invoice no longer exists.");
+    }
+    const classLedgerResult = await client.query<LegacyClassLedgerForBridge>(
+      `SELECT ledger.class_invoice_id, ledger.event_type,
+              ledger.amount::text AS amount, ledger.created_by_user_id,
+              ledger.created_at::text AS created_at
+         FROM class_budget_ledger ledger
+         JOIN class_invoices invoice ON invoice.id = ledger.class_invoice_id
+        WHERE ledger.class_budget_period_id = $1
+          AND invoice.status IN ('issued', 'void')
+        ORDER BY ledger.class_invoice_id, ledger.event_type
+        FOR UPDATE OF ledger`,
+      [input.classBudgetPeriodId],
+    );
+    const programResult = await client.query<{ id: string }>(
+      `SELECT id
+         FROM programs
+        WHERE code = 'CLASSES' AND is_active
+        FOR SHARE`,
+    );
+    const program = programResult.rows[0];
+    if (!program) {
+      await client.query("ROLLBACK");
+      return classFail("conflict", "The active Classes program is not available.");
+    }
+    if (budget.program_id && budget.program_id !== program.id) {
+      await client.query("ROLLBACK");
+      return classFail(
+        "conflict",
+        "This class budget is already linked to a different program and was not changed.",
+      );
+    }
+
+    let budgetPeriodId = budget.budget_period_id;
+    let canonicalPeriod: {
+      individual_id: string;
+      start_date: string;
+      end_date: string;
+      status: "active" | "closed";
+      archived_at: string | null;
+    };
+    if (budgetPeriodId) {
+      const periodResult = await client.query<typeof canonicalPeriod & { id: string }>(
+        `SELECT id, individual_id, start_date::text AS start_date,
+                end_date::text AS end_date, status, archived_at::text AS archived_at
+           FROM budget_periods
+          WHERE id = $1
+          FOR UPDATE`,
+        [budgetPeriodId],
+      );
+      const period = periodResult.rows[0];
+      if (!period
+          || period.individual_id !== budget.individual_id
+          || period.start_date !== budget.start_date
+          || period.end_date !== budget.end_date
+          || period.status !== budget.status) {
+        await client.query("ROLLBACK");
+        return classFail("conflict", "The linked program budget does not match this class allowance and was not changed.");
+      }
+      canonicalPeriod = period;
+    } else {
+      const periodResult = await client.query<{
+        id: string;
+        individual_id: string;
+        start_date: string;
+        end_date: string;
+        status: "active" | "closed";
+        archived_at: string | null;
+      }>(
+        `INSERT INTO budget_periods
+           (individual_id, label, start_date, end_date, period_type, renewal_date,
+            status, source, notes, archived_at)
+         VALUES ($1, $2, $3, $4, 'custom', ($4::date + 1), $5,
+                 $6, $7, CASE WHEN $5 = 'closed' THEN $8::timestamptz ELSE NULL END)
+         RETURNING id, individual_id, start_date::text AS start_date,
+                   end_date::text AS end_date, status, archived_at::text AS archived_at`,
+        [
+          budget.individual_id,
+          budget.label,
+          budget.start_date,
+          budget.end_date,
+          budget.status,
+          `class_bridge:${budget.id}`,
+          budget.notes,
+          budget.updated_at,
+        ],
+      );
+      canonicalPeriod = periodResult.rows[0]!;
+      budgetPeriodId = periodResult.rows[0]!.id;
+    }
+
+    let budgetAuthorizationId = budget.budget_authorization_id;
+    let authorization: {
+      id: string;
+      budget_period_id: string;
+      individual_id: string;
+      program_id: string;
+      authorized_dollars: string | null;
+      rate_basis: string | null;
+      status: string;
+      archived_at: string | null;
+    } | undefined;
+    if (budgetAuthorizationId) {
+      authorization = (await client.query<typeof authorization & { id: string }>(
+        `SELECT id, budget_period_id, individual_id, program_id,
+                authorized_dollars::text AS authorized_dollars, rate_basis,
+                status, archived_at::text AS archived_at
+           FROM budget_authorizations
+          WHERE id = $1
+          FOR UPDATE`,
+        [budgetAuthorizationId],
+      )).rows[0];
+    } else {
+      authorization = (await client.query<NonNullable<typeof authorization>>(
+        `SELECT id, budget_period_id, individual_id, program_id,
+                authorized_dollars::text AS authorized_dollars, rate_basis,
+                status, archived_at::text AS archived_at
+           FROM budget_authorizations
+          WHERE budget_period_id = $1 AND program_id = $2
+            AND status = 'active' AND archived_at IS NULL
+          FOR UPDATE`,
+        [budgetPeriodId, program.id],
+      )).rows[0];
+      budgetAuthorizationId = authorization?.id ?? null;
+    }
+    if (authorization
+        && (authorization.budget_period_id !== budgetPeriodId
+          || authorization.individual_id !== budget.individual_id
+          || authorization.program_id !== program.id
+          || authorization.status !== "active"
+          || authorization.archived_at !== null
+          || authorization.rate_basis !== "dollars"
+          || authorization.authorized_dollars === null
+          || !dec(authorization.authorized_dollars).eq(budget.authorized_amount))) {
+      await client.query("ROLLBACK");
+      return classFail("conflict", "The linked Classes authorization does not match this allowance and was not changed.");
+    }
+    if (!authorization) {
+      const authorizationResult = await client.query<{ id: string }>(
+        `INSERT INTO budget_authorizations
+           (budget_period_id, individual_id, program_id, authorized_hours,
+            internal_rate, authorized_dollars, rate_basis, revision, status,
+            source, notes, created_by_user_id)
+         VALUES ($1, $2, $3, 0, 0, $4, 'dollars', 1, 'active',
+                 'class_bridge', $5, $6)
+         RETURNING id`,
+        [
+          budgetPeriodId,
+          budget.individual_id,
+          program.id,
+          toMoney(budget.authorized_amount),
+          budget.notes,
+          budget.created_by_user_id ?? actorId,
+        ],
+      );
+      budgetAuthorizationId = authorizationResult.rows[0]!.id;
+    }
+
+    const ledgerByInvoice = new Map<string, Map<"issue" | "void", LegacyClassLedgerForBridge>>();
+    for (const entry of classLedgerResult.rows) {
+      const invoiceLedger = ledgerByInvoice.get(entry.class_invoice_id) ?? new Map();
+      invoiceLedger.set(entry.event_type, entry);
+      ledgerByInvoice.set(entry.class_invoice_id, invoiceLedger);
+    }
+    for (const historyInvoice of invoiceHistory.rows) {
+      const ledger = ledgerByInvoice.get(historyInvoice.id);
+      const issue = ledger?.get("issue");
+      const voidEntry = ledger?.get("void");
+      if (!issue
+          || !dec(issue.amount).eq(historyInvoice.total_amount)
+          || (historyInvoice.status === "void"
+            && (!voidEntry || !dec(voidEntry.amount).eq(dec(historyInvoice.total_amount).negated())))
+          || (historyInvoice.status === "issued" && Boolean(voidEntry))) {
+        await client.query("ROLLBACK");
+        return classFail("conflict", "The class invoice ledger is incomplete or inconsistent. No program-budget history was changed.");
+      }
+    }
+
+    const sourceIds = invoiceHistory.rows.map((historyInvoice) => historyInvoice.id);
+    const eventByInvoiceAndType = new Map<string, ClassProgramEventForBridge>();
+    const canonicalEventRows = sourceIds.length > 0
+      ? (await client.query<ClassProgramEventForBridge>(
+          `SELECT id, budget_period_id, individual_id, program_id, event_type,
+                  service_date::text AS service_date, hours::text AS hours,
+                  amount::text AS amount, source_id, reverses_event_id
+             FROM program_budget_events
+            WHERE source_type = 'class_invoice'
+              AND source_id = ANY($1::text[])
+              AND event_type IN ('consume', 'reverse')
+            ORDER BY source_id, event_type
+            FOR UPDATE`,
+          [sourceIds],
+        )).rows
+      : [];
+    for (const event of canonicalEventRows) {
+      eventByInvoiceAndType.set(`${event.source_id}:${event.event_type}`, event);
+    }
+
+    let needsOpenPeriod = false;
+    for (const historyInvoice of invoiceHistory.rows) {
+      const ledger = ledgerByInvoice.get(historyInvoice.id)!;
+      const issue = ledger.get("issue")!;
+      const consume = eventByInvoiceAndType.get(`${historyInvoice.id}:consume`);
+      if (consume && !classProgramEventMatches(consume, {
+        budgetPeriodId,
+        individualId: budget.individual_id,
+        programId: program.id,
+        eventType: "consume",
+        serviceDate: historyInvoice.service_period_end,
+        amount: issue.amount,
+        reversesEventId: null,
+      })) {
+        await client.query("ROLLBACK");
+        return classFail("conflict", "A class invoice is already attached to a different program-budget event. No history was changed.");
+      }
+      if (!consume) needsOpenPeriod = true;
+      const reverse = eventByInvoiceAndType.get(`${historyInvoice.id}:reverse`);
+      if (historyInvoice.status === "issued" && reverse) {
+        await client.query("ROLLBACK");
+        return classFail("conflict", "An issued class invoice already has a program-budget reversal. No history was changed.");
+      }
+    }
+
+    const finalArchivedAt = canonicalPeriod.status === "closed"
+      ? canonicalPeriod.archived_at ?? budget.updated_at
+      : null;
+    if (needsOpenPeriod && canonicalPeriod.status === "closed") {
+      await client.query(
+        `UPDATE budget_periods SET status = 'active', archived_at = NULL WHERE id = $1`,
+        [budgetPeriodId],
+      );
+    } else if (canonicalPeriod.status === "active" && canonicalPeriod.archived_at !== null) {
+      await client.query(
+        `UPDATE budget_periods SET archived_at = NULL WHERE id = $1`,
+        [budgetPeriodId],
+      );
+    }
+
+    for (const historyInvoice of invoiceHistory.rows) {
+      const ledger = ledgerByInvoice.get(historyInvoice.id)!;
+      const issue = ledger.get("issue")!;
+      let consume = eventByInvoiceAndType.get(`${historyInvoice.id}:consume`);
+      if (!consume) {
+        consume = (await client.query<ClassProgramEventForBridge>(
+          `INSERT INTO program_budget_events
+             (budget_period_id, individual_id, program_id, event_type, service_date,
+              hours, amount, source_type, source_id, note, created_by_user_id, created_at)
+           VALUES ($1, $2, $3, 'consume', $4, 0, $5, 'class_invoice', $6,
+                   'Repaired from the class invoice issue ledger.', $7, $8)
+           RETURNING id, budget_period_id, individual_id, program_id, event_type,
+                     service_date::text AS service_date, hours::text AS hours,
+                     amount::text AS amount, source_id, reverses_event_id`,
+          [budgetPeriodId, budget.individual_id, program.id, historyInvoice.service_period_end,
+           issue.amount, historyInvoice.id, issue.created_by_user_id, issue.created_at],
+        )).rows[0];
+      }
+      if (!consume || !classProgramEventMatches(consume, {
+        budgetPeriodId,
+        individualId: budget.individual_id,
+        programId: program.id,
+        eventType: "consume",
+        serviceDate: historyInvoice.service_period_end,
+        amount: issue.amount,
+        reversesEventId: null,
+      })) {
+        throw new Error("The repaired class invoice consumption event could not be verified.");
+      }
+      if (historyInvoice.status === "void") {
+        const voidEntry = ledger.get("void")!;
+        let reverse = eventByInvoiceAndType.get(`${historyInvoice.id}:reverse`);
+        if (reverse && !classProgramEventMatches(reverse, {
+          budgetPeriodId,
+          individualId: budget.individual_id,
+          programId: program.id,
+          eventType: "reverse",
+          serviceDate: historyInvoice.service_period_end,
+          amount: voidEntry.amount,
+          reversesEventId: consume.id,
+        })) {
+          await client.query("ROLLBACK");
+          return classFail("conflict", "A void class invoice is already attached to a different program-budget reversal. No history was changed.");
+        }
+        if (!reverse) {
+          reverse = (await client.query<ClassProgramEventForBridge>(
+            `INSERT INTO program_budget_events
+               (budget_period_id, individual_id, program_id, event_type, service_date,
+                hours, amount, source_type, source_id, reverses_event_id, note,
+                created_by_user_id, created_at)
+             VALUES ($1, $2, $3, 'reverse', $4, 0, $5, 'class_invoice', $6, $7,
+                     'Repaired from the class invoice void ledger.', $8, $9)
+             RETURNING id, budget_period_id, individual_id, program_id, event_type,
+                       service_date::text AS service_date, hours::text AS hours,
+                       amount::text AS amount, source_id, reverses_event_id`,
+            [budgetPeriodId, budget.individual_id, program.id, historyInvoice.service_period_end,
+             voidEntry.amount, historyInvoice.id, consume.id,
+             voidEntry.created_by_user_id, voidEntry.created_at],
+          )).rows[0];
+        }
+        if (!reverse || !classProgramEventMatches(reverse, {
+          budgetPeriodId,
+          individualId: budget.individual_id,
+          programId: program.id,
+          eventType: "reverse",
+          serviceDate: historyInvoice.service_period_end,
+          amount: voidEntry.amount,
+          reversesEventId: consume.id,
+        })) {
+          throw new Error("The repaired class invoice reversal event could not be verified.");
+        }
+      }
+    }
+
+    if (needsOpenPeriod && canonicalPeriod.status === "closed") {
+      await client.query(
+        `UPDATE budget_periods SET status = 'closed', archived_at = $2::timestamptz WHERE id = $1`,
+        [budgetPeriodId, finalArchivedAt],
+      );
+    } else if (canonicalPeriod.status === "closed" && canonicalPeriod.archived_at === null) {
+      await client.query(
+        `UPDATE budget_periods SET archived_at = $2::timestamptz WHERE id = $1`,
+        [budgetPeriodId, finalArchivedAt],
+      );
+    }
+
+    const repaired = await client.query<{ id: string }>(
+      `UPDATE class_budget_periods
+          SET program_id = $1, budget_period_id = $2, budget_authorization_id = $3,
+              updated_by_user_id = $4, updated_at = now()
+        WHERE id = $5
+          AND program_id IS NOT DISTINCT FROM $6::uuid
+          AND budget_period_id IS NOT DISTINCT FROM $7::uuid
+          AND budget_authorization_id IS NOT DISTINCT FROM $8::uuid
+        RETURNING id`,
+      [program.id, budgetPeriodId, budgetAuthorizationId, actorId, input.classBudgetPeriodId,
+       budget.program_id, budget.budget_period_id, budget.budget_authorization_id],
+    );
+    if (!repaired.rows[0]) {
+      await client.query("ROLLBACK");
+      return classFail("conflict", "The class budget links changed before they could be repaired. Refresh and try again.");
+    }
+    const data: RepairedClassInvoiceProgramLink = {
+      invoiceId: id,
+      classBudgetPeriodId: input.classBudgetPeriodId,
+      programId: program.id,
+    };
+    await recordChange(client, {
+      actorId,
+      action: "class_invoice_program_link_repaired",
+      entityType: "class_invoice",
+      entityId: id,
+      previous: {
+        classBudgetPeriodId: input.classBudgetPeriodId,
+        programId: budget.program_id,
+        budgetPeriodId: budget.budget_period_id,
+        budgetAuthorizationId: budget.budget_authorization_id,
+      },
+      next: {
+        ...data,
+        budgetPeriodId,
+        budgetAuthorizationId,
+        reconciledInvoices: invoiceHistory.rows.length,
+      },
+      reason: input.reason?.trim() || "Repaired the legacy class allowance and its canonical invoice history.",
+    });
+    await client.query("COMMIT");
+    return ok(data);
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    const code = typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+    if (code === "23P01" || code === "23505") {
+      return classFail("conflict", "This class allowance overlaps or conflicts with an existing Classes program budget. No history was changed.");
+    }
     throw error;
   } finally {
     client.release();
