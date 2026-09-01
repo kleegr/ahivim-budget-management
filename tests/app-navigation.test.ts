@@ -65,7 +65,7 @@ describe("role-specific workspaces", () => {
     expect(workspaces.some((workspace) => workspace.id === "payroll")).toBe(false);
   });
 
-  it("keeps Transactions out of the primary workspace list for non-owner managers", () => {
+  it("gives an office manager Transactions in the primary workspace list", () => {
     const access = {
       role: "manager",
       accessResolved: true,
@@ -76,7 +76,8 @@ describe("role-specific workspaces", () => {
       canEditDocuments: true,
     };
 
-    expect(getVisibleWorkspaces(access).some((workspace) => workspace.id === "transactions")).toBe(false);
+    expect(getVisibleWorkspaces(access).find((workspace) => workspace.id === "transactions")?.href).toBe("/transactions");
+    expect(getVisibleWorkspaces({ ...access, canSeeTransactions: false }).some((workspace) => workspace.id === "transactions")).toBe(false);
     expect(getCommandDestinations(access).find((item) => item.href === "/transactions")?.label).toBe("Transactions");
   });
 
@@ -127,6 +128,7 @@ describe("role-specific workspaces", () => {
       canPlan: true,
       canSeeClassFinancials: true,
       canEditDocuments: true,
+      canManageAgencies: true,
     };
 
     const workspaces = getVisibleWorkspaces(resolved);
@@ -137,6 +139,7 @@ describe("role-specific workspaces", () => {
       "activity",
       "payroll",
       "employees",
+      "agencies",
       "classes",
       "reports",
     ]);
@@ -178,7 +181,9 @@ describe("role-specific workspaces", () => {
     };
 
     expect(getVisibleAdminDestinations(base).map((item) => item.href)).not.toContain("/settings/agencies");
+    expect(getVisibleWorkspaces(base).map((item) => item.href)).not.toContain("/agencies");
     expect(getVisibleAdminDestinations({ ...base, canManageAgencies: true }).map((item) => item.href)).toContain("/settings/agencies");
+    expect(getVisibleWorkspaces({ ...base, canManageAgencies: true }).map((item) => item.href)).toContain("/agencies");
   });
 
   it("labels restricted settings as the user's own account", () => {

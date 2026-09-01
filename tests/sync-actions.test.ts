@@ -36,6 +36,32 @@ describe("sync action destinations", () => {
     });
   });
 
+  it("opens schedule matching when an otherwise successful sync needs review", () => {
+    expect(syncOutcomePresentation({
+      status: "no_changes",
+      note: "The sheet is unchanged. Automatic schedule matching needs attention.",
+      reconciliation: {
+        scheduleMatching: {
+          status: "needs_review",
+          reviewHref: "/schedule?view=matching",
+        },
+      },
+    })).toEqual({
+      tone: "ok",
+      message: "The sheet is unchanged. Automatic schedule matching needs attention.",
+      action: { href: "/schedule?view=matching", label: "Open schedule matching" },
+    });
+  });
+
+  it("does not trust an arbitrary schedule-review destination", () => {
+    expect(syncOutcomePresentation({
+      status: "success",
+      reconciliation: {
+        scheduleMatching: { status: "needs_review", reviewHref: "https://example.test" },
+      },
+    }).action).toBeNull();
+  });
+
   it("does not hide a failed payment-marker write-back behind a successful pull", () => {
     expect(syncRoundTripOutcomePresentation({
       summary: { status: "success", note: "3 new rows loaded." },

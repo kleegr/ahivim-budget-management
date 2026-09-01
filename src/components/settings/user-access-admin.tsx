@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { CalendarClock, Check, Copy, Eye, EyeOff, GraduationCap, LogIn, Plus, UsersRound, WalletCards, X } from "lucide-react";
@@ -610,7 +610,14 @@ export default function UserAccessAdmin({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [refreshing, startRefresh] = useTransition();
+  const actionBusy = busy || refreshing;
+  const [busyAction, setBusyAction] = useState<string | null>(null);
   const [impersonatingId, setImpersonatingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!busy && !refreshing) setBusyAction(null);
+  }, [busy, refreshing]);
 
   // Add-user form.
   const [addOpen, setAddOpen] = useState(false);
@@ -637,9 +644,15 @@ export default function UserAccessAdmin({
   // rather than silently overwriting the user's real access with blank defaults.
   const [editLoadFailed, setEditLoadFailed] = useState(false);
 
-  async function patch(id: string, body: Record<string, unknown>, okMsg = "Saved.") {
+  async function patch(
+    id: string,
+    body: Record<string, unknown>,
+    okMsg = "Saved.",
+    actionKey = `access:${id}`,
+  ) {
     setError(null);
     setNotice(null);
+    setBusyAction(actionKey);
     setBusy(true);
     try {
       const res = await fetch(`/api/admin/users/${id}`, {
@@ -651,7 +664,7 @@ export default function UserAccessAdmin({
       if (!res.ok || !data.ok) setError(data.error ?? "That change was rejected.");
       else {
         setNotice(okMsg);
-        router.refresh();
+        startRefresh(() => router.refresh());
       }
       return res.ok && data.ok === true;
     } catch {
@@ -828,6 +841,7 @@ export default function UserAccessAdmin({
     e.preventDefault();
     setError(null);
     setNotice(null);
+    setBusyAction("create");
     setBusy(true);
     try {
       const password = temporaryPassword || generateTemporaryPassword();
@@ -861,7 +875,7 @@ export default function UserAccessAdmin({
         setCopiedCredential(false);
         setForm({ email: "", displayName: "" });
         setAddOpen(false);
-        router.refresh();
+        startRefresh(() => router.refresh());
       }
     } catch {
       setError("Could not reach the server.");
@@ -875,7 +889,7 @@ export default function UserAccessAdmin({
       setError("Enter a temporary password of at least 10 characters.");
       return;
     }
-    const ok = await patch(id, { password: newPassword.trim() }, "Password updated.");
+    const ok = await patch(id, { password: newPassword.trim() }, "Password updated.", `password:${id}`);
     if (ok) {
       setEditingId(null);
       setNewPassword("");
@@ -962,7 +976,7 @@ export default function UserAccessAdmin({
               <select value={addProfile} onChange={(e) => chooseAddProfile(e.target.value as AccountProfileId)} className="input mt-1 w-full text-sm">
                 <optgroup label="Agency team">
                   {ACCOUNT_PROFILES.filter((profile) => [
-                    "owner", "budget_planner", "staffing_manager", "money_collector", "class_billing",
+                    "owner", "manager", "budget_planner", "staffing_manager", "money_collector", "class_billing",
                   ].includes(profile.id)).map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
                 </optgroup>
                 <optgroup label="Portals">
@@ -972,7 +986,7 @@ export default function UserAccessAdmin({
                   ].includes(profile.id)).map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
                 </optgroup>
                 <optgroup label="Advanced">
-                  {ACCOUNT_PROFILES.filter((profile) => profile.id === "manager" || profile.id === "custom")
+                  {ACCOUNT_PROFILES.filter((profile) => profile.id === "custom")
                     .map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
                 </optgroup>
               </select>
@@ -1025,7 +1039,9 @@ export default function UserAccessAdmin({
               </div>
             </details>
           ) : null}
-          <button type="submit" disabled={busy} className="btn btn-primary mt-4">{busy ? "Creating…" : "Create login"}</button>
+          <button type="submit" disabled={actionBusy} aria-busy={actionBusy && busyAction === "create"} className="btn btn-primary mt-4">
+            {actionBusy && busyAction === "create" ? "Creating…" : "Create login"}
+          </button>
         </form>
       ) : null}
 
@@ -1068,8 +1084,14 @@ export default function UserAccessAdmin({
                         </button>
                       </form>
                     ) : null}
-                    <button type="button" disabled={busy} onClick={() => patch(u.id, { isActive: !u.isActive })} className="btn btn-sm btn-ghost">
-                      {u.isActive ? "Disable" : "Enable"}
+                    <button
+                      type="button"
+                      disabled={actionBusy}
+                      aria-busy={actionBusy && busyAction === `toggle:${u.id}`}
+                      onClick={() => patch(u.id, { isActive: !u.isActive }, "Saved.", `toggle:${u.id}`)}
+                      className="btn btn-sm btn-ghost"
+                    >
+                      {actionBusy && busyAction === `toggle:${u.id}` ? (u.isActive ? "Disabling…" : "Enabling…") : u.isActive ? "Disable" : "Enable"}
                     </button>
                     <button type="button" onClick={() => openEdit(u)} className="btn btn-sm btn-secondary">
                       {open ? "Close" : "Manage"}
@@ -1103,7 +1125,9 @@ export default function UserAccessAdmin({
                           <button type="button" onClick={() => setNewPassword(generateTemporaryPassword())} className="btn btn-sm btn-secondary">Generate</button>
                         </div>
                         <div className="mt-3 flex gap-2">
-                          <button type="button" disabled={busy} onClick={() => void savePortalPassword(u.id)} className="btn btn-primary btn-sm">Save password</button>
+                          <button type="button" disabled={actionBusy} aria-busy={actionBusy && busyAction === `password:${u.id}`} onClick={() => void savePortalPassword(u.id)} className="btn btn-primary btn-sm">
+                            {actionBusy && busyAction === `password:${u.id}` ? "Saving…" : "Save password"}
+                          </button>
                           <button type="button" onClick={() => setEditingId(null)} className="btn btn-ghost btn-sm">Cancel</button>
                         </div>
                       </div>
@@ -1154,7 +1178,9 @@ export default function UserAccessAdmin({
                         </div>
                       </details>
                       <div className="flex gap-2">
-                        <button type="button" disabled={busy} onClick={() => saveEdit(u.id)} className="btn btn-primary btn-sm">Save changes</button>
+                        <button type="button" disabled={actionBusy} aria-busy={actionBusy && busyAction === `access:${u.id}`} onClick={() => saveEdit(u.id)} className="btn btn-primary btn-sm">
+                          {actionBusy && busyAction === `access:${u.id}` ? "Saving…" : "Save changes"}
+                        </button>
                         <button type="button" onClick={() => setEditingId(null)} className="btn btn-ghost btn-sm">Cancel</button>
                       </div>
                     </div>

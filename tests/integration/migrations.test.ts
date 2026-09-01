@@ -16,8 +16,8 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`CREATE SCHEMA public`);
 
     const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
-    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 38]);
-    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 38]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 39]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 39]);
   }, 60_000);
 
   it("creates the ledger and every expected table", async () => {
@@ -60,7 +60,7 @@ suite("migration runner (real PostgreSQL)", () => {
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(38);
+    expect(again.skipped).toBe(39);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -68,7 +68,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(38);
+    expect(rows).toHaveLength(39);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -107,7 +107,20 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[35].name).toBe("0035_employee_availability.sql");
     expect(rows[36].name).toBe("0036_agency_financial_actuals.sql");
     expect(rows[37].name).toBe("0037_current_authorization_truth.sql");
+    expect(rows[38].name).toBe("0038_unique_schedule_transaction_match.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("enforces one planned visit per recorded transaction at the database boundary", async () => {
+    const { rows } = await testPool().query<{ indexdef: string }>(
+      `SELECT indexdef
+         FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = 'scheduled_sessions_one_transaction_match_key'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.indexdef).toContain("CREATE UNIQUE INDEX");
+    expect(rows[0]!.indexdef).toContain("WHERE (matched_transaction_id IS NOT NULL)");
   });
 
   it("seeds the service catalog, aliases and effective-dated rates", async () => {

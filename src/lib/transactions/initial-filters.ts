@@ -9,16 +9,23 @@ const one = (value: string | string[] | undefined): string | undefined =>
 const many = (value: string | string[] | undefined): string[] =>
   [...new Set((Array.isArray(value) ? value : value ? [value] : []).filter(Boolean))];
 
-/**
- * A check-date drill-through is already a fixed reporting context. The grid's
- * separate period picker must not mount as "All time" and erase this filter.
- */
-export function hasInitialCheckDateFilter(filters?: FilterState): boolean {
-  const filter = filters?.checkDate;
+function hasDateFilter(filters: FilterState | undefined, key: string): boolean {
+  const filter = filters?.[key];
   if (!filter) return false;
   return filter.selected !== undefined
     || (filter.from ?? "") !== ""
     || (filter.to ?? "") !== "";
+}
+
+/**
+ * A date drill-through is already a fixed reporting context. The independent
+ * check-date picker must not show "All time" or combine a second date basis
+ * with a service-date or service-period report.
+ */
+export function hasInitialTransactionDateContext(filters?: FilterState): boolean {
+  return hasDateFilter(filters, "checkDate")
+    || hasDateFilter(filters, "serviceDate")
+    || hasDateFilter(filters, "periodBegin");
 }
 
 /** Resolve stable URL ids to the display values used by the transaction grid. */
@@ -123,7 +130,8 @@ export function buildInitialFilters(
       labels.push(serviceDateFrom === serviceDateTo
         ? `service date ${serviceDateFrom}`
         : `service dates ${serviceDateFrom} to ${serviceDateTo}`);
-    }
+    } else if (serviceDateFrom) labels.push(`service dates from ${serviceDateFrom}`);
+    else if (serviceDateTo) labels.push(`service dates through ${serviceDateTo}`);
   }
 
   const periodFrom = one(search.pbFrom);
@@ -131,6 +139,8 @@ export function buildInitialFilters(
   if (periodFrom || periodTo) {
     filters.periodBegin = { from: periodFrom ?? "", to: periodTo ?? "" };
     if (periodFrom && periodTo) labels.push(`service ${periodFrom} to ${periodTo}`);
+    else if (periodFrom) labels.push(`service periods from ${periodFrom}`);
+    else if (periodTo) labels.push(`service periods through ${periodTo}`);
   }
 
   const recipient = one(search.recipient);

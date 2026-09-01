@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BadgeDollarSign,
   BarChart3,
+  Building2,
   CalendarDays,
   ChevronDown,
   GraduationCap,
@@ -41,6 +42,7 @@ const WORKSPACE_ICONS: Record<VisibleNavigationWorkspace["id"], LucideIcon> = {
   payroll: BadgeDollarSign,
   activity: CalendarDays,
   employees: Users,
+  agencies: Building2,
   classes: GraduationCap,
   reports: BarChart3,
 };

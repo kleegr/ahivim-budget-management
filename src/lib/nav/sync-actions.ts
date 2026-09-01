@@ -40,6 +40,12 @@ export interface SyncSummaryLike {
   status?: unknown;
   error?: unknown;
   note?: unknown;
+  reconciliation?: {
+    scheduleMatching?: {
+      status?: unknown;
+      reviewHref?: unknown;
+    } | null;
+  } | null;
 }
 
 export interface SyncOutcomePresentation {
@@ -72,12 +78,17 @@ export function syncOutcomePresentation(summary: SyncSummaryLike | null | undefi
     };
   }
 
+  const scheduleMatching = summary?.reconciliation?.scheduleMatching;
+  const matchingNeedsReview = scheduleMatching?.status === "needs_review"
+    && scheduleMatching.reviewHref === "/schedule?view=matching";
   return {
     tone: "ok",
     message: typeof summary?.note === "string" && summary.note.trim()
       ? summary.note.trim()
       : "Sync complete.",
-    action: null,
+    action: matchingNeedsReview
+      ? { href: "/schedule?view=matching", label: "Open schedule matching" }
+      : null,
   };
 }
 

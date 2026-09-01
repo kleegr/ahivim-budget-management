@@ -23,6 +23,9 @@ export interface TxLinkParams {
   /** Check-date window. */
   from?: string | null;
   to?: string | null;
+  /** Canonical service-date window used by operational and financial rollups. */
+  serviceFrom?: string | null;
+  serviceTo?: string | null;
 }
 
 export function txLink(p: TxLinkParams): string {
@@ -40,6 +43,8 @@ export function txLink(p: TxLinkParams): string {
   if (p.pbFrom) q.set("pbFrom", p.pbFrom);
   if (p.pbTo) q.set("pbTo", p.pbTo);
   if (p.from && p.to) q.set("period", `${p.from}..${p.to}`);
+  if (p.serviceFrom) q.set("serviceFrom", p.serviceFrom);
+  if (p.serviceTo) q.set("serviceTo", p.serviceTo);
   const s = q.toString();
   return s ? `/transactions?${s}` : "/transactions";
 }

@@ -168,8 +168,10 @@ describe("portal authorization context", () => {
     expect(portalCapabilityAllowedForRole("staffing_manager", "employee_checks.self.net.read")).toBe(false);
   });
 
-  it("does not grant portal categories that have no rendered read model", () => {
-    expect(portalCapabilityAllowedForRole("parent", "schedules.self.read")).toBe(false);
+  it("grants only portal categories backed by a rendered read model", () => {
+    expect(portalCapabilityAllowedForRole("individual", "schedules.self.read")).toBe(true);
+    expect(portalCapabilityAllowedForRole("parent", "schedules.self.read")).toBe(true);
+    expect(portalCapabilityAllowedForRole("employee", "schedules.self.read")).toBe(true);
     expect(portalCapabilityAllowedForRole("employee", "assignments.self.read")).toBe(false);
     expect(portalCapabilityAllowedForRole("employee", "employee_pay.self.read")).toBe(true);
     expect(portalCapabilityAllowedForRole("agency", "transactions.agency.read")).toBe(false);

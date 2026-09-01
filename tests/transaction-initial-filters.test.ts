@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { applyFilters } from "@/components/data-grid/engine";
 import type { ColumnDef } from "@/components/data-grid/types";
 import { computeGridTotals } from "@/lib/business/transaction-totals";
-import { buildInitialFilters, hasInitialCheckDateFilter } from "@/lib/transactions/initial-filters";
+import {
+  buildInitialFilters,
+  hasInitialTransactionDateContext,
+} from "@/lib/transactions/initial-filters";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 
 describe("transaction URL filters", () => {
@@ -22,13 +25,15 @@ describe("transaction URL filters", () => {
       },
     ] as GridTransaction[];
 
-    expect(buildInitialFilters(rows, {
+    const seeded = buildInitialFilters(rows, {
       serviceFrom: "2026-08-01",
       serviceTo: "2026-08-31",
-    })).toEqual({
+    });
+    expect(seeded).toEqual({
       filters: { serviceDate: { from: "2026-08-01", to: "2026-08-31" } },
       label: "service dates 2026-08-01 to 2026-08-31",
     });
+    expect(hasInitialTransactionDateContext(seeded.filters)).toBe(true);
   });
 
   it("opens an owner cohort as one multi-person transaction filter", () => {
@@ -88,7 +93,7 @@ describe("transaction URL filters", () => {
       accessor: (row) => row.checkDate,
     }];
 
-    expect(hasInitialCheckDateFilter(seeded.filters)).toBe(true);
+    expect(hasInitialTransactionDateContext(seeded.filters)).toBe(true);
     const filtered = applyFilters(rows, columns, seeded.filters, "", []);
     expect(filtered.map((row) => row.id)).toEqual(["latest-a", "latest-b"]);
     expect(computeGridTotals(filtered)).toMatchObject({
@@ -108,6 +113,17 @@ describe("transaction URL filters", () => {
     expect(buildInitialFilters([], { checkDateTo: "2026-08-21" })).toEqual({
       filters: { checkDate: { from: "", to: "2026-08-21" } },
       label: "check dates through 2026-08-21",
+    });
+  });
+
+  it("labels one-sided service-date and service-period links", () => {
+    expect(buildInitialFilters([], { serviceFrom: "2026-08-01" })).toEqual({
+      filters: { serviceDate: { from: "2026-08-01", to: "" } },
+      label: "service dates from 2026-08-01",
+    });
+    expect(buildInitialFilters([], { pbTo: "2026-08-31" })).toEqual({
+      filters: { periodBegin: { from: "", to: "2026-08-31" } },
+      label: "service periods through 2026-08-31",
     });
   });
 });

@@ -28,6 +28,7 @@ import type {
   PortalUsageSummary,
 } from "@/lib/data/portal-read-model";
 import type { PortalIndividualStatement } from "@/lib/data/portal-individual-statement";
+import type { PortalUpcomingSchedule } from "@/lib/data/portal-schedule";
 
 function includes(agency: PortalAgencySummary, capability: PortalAgencySummary["capabilities"][number]) {
   return agency.capabilities.includes(capability);
@@ -40,6 +41,102 @@ function present<T>(value: T | null): value is T {
 function monthLabel(month: string): string {
   return new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
     .format(new Date(`${month}-01T00:00:00Z`));
+}
+
+function scheduleDateLabel(value: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(`${value}T00:00:00Z`));
+}
+
+function scheduleTimeLabel(start: string | null, end: string | null): string {
+  const format = (value: string) => new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "UTC",
+  }).format(new Date(`2000-01-01T${value}Z`));
+  if (!start) return "Time to be confirmed";
+  return end ? `${format(start)} to ${format(end)}` : format(start);
+}
+
+export function UpcomingSchedule({
+  schedule,
+  fullHref,
+  summaryLimit = 5,
+}: {
+  schedule: PortalUpcomingSchedule | null;
+  fullHref?: string;
+  summaryLimit?: number | null;
+}) {
+  if (schedule === null) return null;
+  const visibleItems = summaryLimit === null ? schedule.items : schedule.items.slice(0, summaryLimit);
+  const isTruncated = visibleItems.length < schedule.items.length;
+  return (
+    <section className="border-t border-[var(--color-rule)]" aria-label="Upcoming schedule">
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--color-rule)] px-5 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <CalendarDays aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-primary)]" />
+          <h4 className="text-sm font-semibold">Upcoming schedule</h4>
+        </div>
+        <span className="text-xs text-[var(--color-ink-faint)]">Through {scheduleDateLabel(schedule.through)}</span>
+      </div>
+      {schedule.status === "unavailable" ? (
+        <p role="status" className="px-5 py-4 text-sm text-[var(--color-ink-soft)]">
+          The upcoming schedule could not be loaded. Refresh this page to try again.
+        </p>
+      ) : schedule.items.length === 0 ? (
+        <EmptyState compact title="No upcoming visits scheduled" icon={<CalendarDays aria-hidden className="h-5 w-5" />} />
+      ) : (
+        <>
+          <ul className="divide-y divide-[var(--color-rule)]">
+            {visibleItems.map((item, index) => {
+              const counterpart = item.audience === "individual"
+                ? item.employeeName ?? "Employee to be assigned"
+                : item.individualNames.length > 0
+                  ? item.individualNames.join(", ")
+                  : "Individual to be assigned";
+              return (
+                <li
+                  key={`${item.sessionDate}:${item.startTime ?? "open"}:${item.programName}:${index}`}
+                  className="grid gap-2 px-5 py-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-center"
+                >
+                  <div>
+                    <p className="text-sm font-semibold">{scheduleDateLabel(item.sessionDate)}</p>
+                    <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
+                      {scheduleTimeLabel(item.startTime, item.endTime)}
+                    </p>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="truncate text-sm font-medium">{item.programName}</p>
+                      {item.isGroup ? <StatusBadge tone="muted" label="Group" /> : null}
+                    </div>
+                    <p className="mt-0.5 break-words text-xs text-[var(--color-ink-soft)]">{counterpart}</p>
+                  </div>
+                  <p className="text-xs text-[var(--color-ink-soft)] sm:text-right">
+                    <Hours value={item.durationHours} /> h
+                  </p>
+                </li>
+              );
+            })}
+          </ul>
+          {isTruncated && fullHref ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--color-rule)] px-5 py-3">
+              <p className="text-xs text-[var(--color-ink-faint)]">
+                Showing {visibleItems.length} of {schedule.items.length} upcoming visits
+              </p>
+              <Link href={fullHref} className="text-sm font-semibold text-[var(--color-primary)] hover:underline">
+                View full schedule
+              </Link>
+            </div>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
 }
 
 function SummaryGrid({ items }: { items: { label: string; value: ReactNode }[] }) {
@@ -466,6 +563,10 @@ function IndividualAccess({
         </div>
         <UserRound aria-hidden className="h-5 w-5 shrink-0 text-[var(--color-primary)]" />
       </div>
+      <UpcomingSchedule
+        schedule={individual.upcomingSchedule}
+        fullHref={`/portal/schedule?individualId=${encodeURIComponent(individual.id)}`}
+      />
       <BudgetSummary hours={individual.hours} dollars={individual.dollars} />
       <SummaryGrid items={[
         individual.billedThisMonth !== null ? { label: `Billed (${selectedMonth})`, value: <Money value={individual.billedThisMonth} /> } : null,
@@ -490,6 +591,10 @@ function EmployeeAccess({ employee }: { employee: PortalEmployeeSummary }) {
         </div>
         <ReceiptText aria-hidden className="h-5 w-5 shrink-0 text-[var(--color-primary)]" />
       </div>
+      <UpcomingSchedule
+        schedule={employee.upcomingSchedule}
+        fullHref={`/portal/schedule?employeeId=${encodeURIComponent(employee.id)}`}
+      />
       {employee.giveBack ? <SummaryGrid items={[
         { label: `Give-back due (${selectedMonth})`, value: <Money value={employee.giveBack.dueThisMonth} /> },
         { label: `Collected (${selectedMonth})`, value: <Money value={employee.giveBack.collectedThisMonth} /> },

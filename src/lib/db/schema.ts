@@ -1497,6 +1497,9 @@ export const scheduledSessions = pgTable(
     index("scheduled_sessions_employee_idx").on(table.employeeId, table.sessionDate),
     index("scheduled_sessions_series_idx").on(table.seriesId),
     index("scheduled_sessions_match_idx").on(table.matchedTransactionId),
+    uniqueIndex("scheduled_sessions_one_transaction_match_key")
+      .on(table.matchedTransactionId)
+      .where(sql`${table.matchedTransactionId} is not null`),
   ],
 );
 

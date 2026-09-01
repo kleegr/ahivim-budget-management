@@ -37,14 +37,29 @@ function unwrap<T>(r: { ok: true; data: T } | { ok: false; code: string; message
 
 /** Insert an actual imported transaction directly (as a commit would). */
 async function insertTransaction(opts: {
-  individualId: string; programId: string; periodBegin: string; periodEnd: string; hours: string; amount: string;
+  individualId: string;
+  employeeId?: string;
+  programId: string;
+  periodBegin: string;
+  periodEnd: string;
+  hours: string;
+  amount: string;
 }): Promise<string> {
   const { rows } = await testPool().query<{ id: string }>(
     `INSERT INTO payroll_transactions
-       (individual_id, program_id, period_begin, period_end, imported_hours, imported_amount, transaction_fingerprint)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-    [opts.individualId, opts.programId, opts.periodBegin, opts.periodEnd, opts.hours, opts.amount,
-     `fp-${opts.individualId}-${opts.periodBegin}-${opts.periodEnd}-${opts.hours}`],
+       (individual_id, employee_id, program_id, period_begin, period_end,
+        imported_hours, imported_amount, transaction_fingerprint)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [
+      opts.individualId,
+      opts.employeeId ?? null,
+      opts.programId,
+      opts.periodBegin,
+      opts.periodEnd,
+      opts.hours,
+      opts.amount,
+      `fp-${opts.individualId}-${opts.employeeId ?? "none"}-${opts.periodBegin}-${opts.periodEnd}-${opts.hours}-${Math.random()}`,
+    ],
   );
   return rows[0].id;
 }
@@ -161,7 +176,15 @@ suite("phase 3 — reconciliation + import corrections (real PostgreSQL)", () =>
       employeeId: emp.id, programId: dayHab, individualIds: [ind.id],
       sessionDate: "2025-03-10", durationHours: "3", startTime: null, endTime: null,
     }, ACTOR));
-    await insertTransaction({ individualId: ind.id, programId: dayHab, periodBegin: "2025-03-01", periodEnd: "2025-03-15", hours: "3", amount: "51" });
+    await insertTransaction({
+      individualId: ind.id,
+      employeeId: emp.id,
+      programId: dayHab,
+      periodBegin: "2025-03-10",
+      periodEnd: "2025-03-10",
+      hours: "3",
+      amount: "51",
+    });
 
     const before = await reconciliationSummary(pool, { from: "2025-03-01", to: "2025-03-31" });
     expect(before.scheduledNotBilled.count).toBe(1);
@@ -200,6 +223,25 @@ suite("phase 3 — reconciliation + import corrections (real PostgreSQL)", () =>
     expect(await scalar<string>(`SELECT matched_transaction_id FROM scheduled_sessions WHERE id=$1`, [s2.id])).toBe(tx);
   });
 
+  it("allows only one winner when two manual matches race for one transaction", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    const first = unwrap(await createSession(pool, { employeeId: emp.id, programId: dayHab, individualIds: [ind.id], sessionDate: "2025-04-20", durationHours: "2", startTime: null, endTime: null }, ACTOR));
+    const second = unwrap(await createSession(pool, { employeeId: emp.id, programId: dayHab, individualIds: [ind.id], sessionDate: "2025-04-21", durationHours: "2", startTime: null, endTime: null }, ACTOR));
+    const transactionId = await insertTransaction({ individualId: ind.id, programId: dayHab, periodBegin: "2025-04-01", periodEnd: "2025-04-30", hours: "2", amount: "34" });
+
+    const outcomes = await Promise.all([
+      manualMatch(pool, first.id, transactionId, ACTOR),
+      manualMatch(pool, second.id, transactionId, ACTOR),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(1);
+    expect(outcomes.find((outcome) => !outcome.ok)).toMatchObject({ ok: false, code: "conflict" });
+    expect(await scalar<string>(
+      `SELECT count(*)::text FROM scheduled_sessions WHERE matched_transaction_id = $1`,
+      [transactionId],
+    )).toBe("1");
+  });
+
   it("does not auto-match a group session", async () => {
     const { dayHab, emp } = await fixture();
     const a = unwrap(await createIndividual(pool, { displayName: "B One" }, ACTOR));
@@ -210,6 +252,35 @@ suite("phase 3 — reconciliation + import corrections (real PostgreSQL)", () =>
     expect(res.matched).toBe(0); // group sessions are skipped
     const billed = await listBilledNotScheduled(pool, { from: "2025-05-01", to: "2025-05-31" });
     expect(billed).toHaveLength(1);
+  });
+
+  it("does not auto-match a pay-period aggregate across planned visits", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    const first = unwrap(await createSession(pool, {
+      employeeId: emp.id, programId: dayHab, individualIds: [ind.id],
+      sessionDate: "2025-05-12", durationHours: "2", startTime: null, endTime: null,
+    }, ACTOR));
+    const second = unwrap(await createSession(pool, {
+      employeeId: emp.id, programId: dayHab, individualIds: [ind.id],
+      sessionDate: "2025-05-13", durationHours: "2", startTime: null, endTime: null,
+    }, ACTOR));
+    await insertTransaction({
+      individualId: ind.id,
+      employeeId: emp.id,
+      programId: dayHab,
+      periodBegin: "2025-05-01",
+      periodEnd: "2025-05-31",
+      hours: "4",
+      amount: "68",
+    });
+
+    const result = unwrap(await autoReconcile(pool, { from: "2025-05-01", to: "2025-05-31" }, ACTOR));
+    expect(result).toEqual({ matched: 0, considered: 2 });
+    const matches = await pool.query<{ id: string }>(
+      `SELECT id FROM scheduled_sessions WHERE id = ANY($1::uuid[]) AND matched_transaction_id IS NOT NULL`,
+      [[first.id, second.id]],
+    );
+    expect(matches.rows).toHaveLength(0);
   });
 
   it("lists scheduled sessions for reconcile with their match state", async () => {

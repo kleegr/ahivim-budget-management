@@ -23,7 +23,14 @@ export default function GoogleSheetSyncButton() {
       const response = await fetch("/api/sync/run", { method: "POST" });
       const body = (await response.json().catch(() => ({}))) as {
         ok?: boolean;
-        summary?: { status?: unknown; error?: unknown; note?: unknown };
+        summary?: {
+          status?: unknown;
+          error?: unknown;
+          note?: unknown;
+          reconciliation?: {
+            scheduleMatching?: { status?: unknown; reviewHref?: unknown } | null;
+          } | null;
+        };
         writeback?: { status?: unknown; eligible?: unknown; updated?: unknown; skipped?: unknown; error?: unknown };
         error?: unknown;
       };

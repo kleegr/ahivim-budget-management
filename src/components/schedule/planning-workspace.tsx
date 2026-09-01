@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 import { CalendarClock, Clock3 } from "lucide-react";
 import ScheduleCalendar, { type ScheduleCalendarProps } from "@/components/schedule/calendar";
 import AssignmentManager from "@/components/schedule/assignment-manager";
@@ -6,9 +7,11 @@ import EmployeeAvailabilityManager from "@/components/schedule/employee-availabi
 import ServiceSchedules from "@/components/schedule/service-schedules";
 import BudgetCoveragePanel from "@/components/schedule/budget-coverage-panel";
 import DirectPayTargetsPanel from "@/components/schedule/direct-pay-targets-panel";
+import ScheduleMatchingPanel from "@/components/schedule/schedule-matching-panel";
 import { TabPanels } from "@/components/ui-client";
 import type { PlanningWorkspaceData } from "@/lib/data/planning-queries";
 import type { PlannerDirectPayTargetRow } from "@/lib/data/direct-pay-operations";
+import type { PlanningMatchReview } from "@/lib/data/planning-reconciliation";
 import type { View } from "./shared";
 
 interface PlanningWorkspaceProps {
@@ -24,6 +27,8 @@ interface PlanningWorkspaceProps {
   employees: ScheduleCalendarProps["employees"];
   individuals: ScheduleCalendarProps["individuals"];
   programs: ScheduleCalendarProps["programs"];
+  matchReview: PlanningMatchReview;
+  matchReviewLoaded?: boolean;
   directPayTargets?: PlannerDirectPayTargetRow[];
   showDirectPayTargets?: boolean;
   showBudgetTracking?: boolean;
@@ -66,6 +71,8 @@ export default function PlanningWorkspace({
   employees,
   individuals,
   programs,
+  matchReview,
+  matchReviewLoaded = false,
   directPayTargets = [],
   showDirectPayTargets = false,
   showBudgetTracking = true,
@@ -111,6 +118,23 @@ export default function PlanningWorkspace({
                 initialFilters={initialFilters}
                 showBudgetTracking={showBudgetTracking}
               />
+            ),
+          },
+          {
+            id: "matching",
+            label: "Recorded match review",
+            content: matchReviewLoaded ? (
+              <ScheduleMatchingPanel review={matchReview} />
+            ) : (
+              <section className="border-y border-[var(--color-rule)] py-7 text-center">
+                <h2 className="display text-base font-semibold">Recorded match review</h2>
+                <p className="mx-auto mt-1 max-w-xl text-sm text-[var(--color-ink-soft)]">
+                  Past planned visits that still need comparison with recorded services.
+                </p>
+                <Link href="/schedule?view=matching" className="btn btn-secondary btn-sm mt-4">
+                  Open review
+                </Link>
+              </section>
             ),
           },
           {

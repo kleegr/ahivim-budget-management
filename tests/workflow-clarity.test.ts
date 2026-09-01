@@ -44,8 +44,16 @@ describe("primary workflow clarity", () => {
   });
 
   it("does not let the all-time period control erase a deep-linked check date", () => {
-    expect(transactionGrid).toContain("hasInitialCheckDateFilter(initialFilters)");
-    expect(transactionGrid).toContain("hasDeepLinkedCheckDate ? null : <PeriodControl");
+    expect(transactionGrid).toContain("hasInitialTransactionDateContext(initialFilters)");
+    expect(transactionGrid).toContain("hasFixedDateContext ? null : <PeriodControl");
+  });
+
+  it("keeps paid actions busy until refreshed transaction data is committed", () => {
+    expect(transactionGrid).toContain("const actionBusy = busy || refreshing");
+    expect(transactionGrid).toContain("startRefresh(() => router.refresh())");
+    expect(transactionGrid).toContain("const rowUpdating = actionBusy && busyIds.has(r.id)");
+    expect(transactionGrid).toContain('{rowUpdating ? "Updating…"');
+    expect(transactionGrid).toContain("const selectionUpdating = actionBusy");
   });
 
   it("acknowledges a Sign In As click before the full portal reload", () => {

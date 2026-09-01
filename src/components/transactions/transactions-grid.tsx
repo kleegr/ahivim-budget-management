@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { MoveHorizontal, PanelRightOpen, X } from "lucide-react";
@@ -16,7 +16,7 @@ import { formatCell } from "@/components/data-grid/engine";
 import { isNumericKind, type ColumnDef, type FilterState } from "@/components/data-grid/types";
 import PeriodControl, { type PeriodRange } from "@/components/period-control";
 import type { TransactionFieldVisibility } from "@/lib/auth/money-redaction";
-import { hasInitialCheckDateFilter } from "@/lib/transactions/initial-filters";
+import { hasInitialTransactionDateContext } from "@/lib/transactions/initial-filters";
 
 /* ------------------------------------------------------------------ config */
 
@@ -148,7 +148,7 @@ export default function TransactionsGrid({
   // the service-period window), so the user can see exactly what is constraining the view.
   const seededKeys = initialFilters ? Object.keys(initialFilters) : [];
   const initialHidden = INITIAL_HIDDEN.filter((k) => !seededKeys.includes(k));
-  const hasDeepLinkedCheckDate = hasInitialCheckDateFilter(initialFilters);
+  const hasFixedDateContext = hasInitialTransactionDateContext(initialFilters);
 
   const grid = useGrid<GridTransaction, GridTotals>({
     rows,
@@ -175,7 +175,14 @@ export default function TransactionsGrid({
   // bulk "mark paid". A Set of row ids, independent of the filter.
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [refreshing, startRefresh] = useTransition();
+  const actionBusy = busy || refreshing;
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!busy && !refreshing) setBusyIds(new Set());
+  }, [busy, refreshing]);
 
   const toggleRow = useCallback((id: string) => {
     setSel((prev) => {
@@ -206,6 +213,7 @@ export default function TransactionsGrid({
   const setPaid = useCallback(
     async (ids: string[], paid: boolean) => {
       if (ids.length === 0) return;
+      setBusyIds(new Set(ids));
       setBusy(true);
       setNotice(null);
       try {
@@ -216,7 +224,7 @@ export default function TransactionsGrid({
         });
         const j = await res.json();
         if (!res.ok || j.ok === false) throw new Error(j.error ?? "Could not update.");
-        router.refresh();
+        startRefresh(() => router.refresh());
       } catch (e) {
         setNotice(e instanceof Error ? e.message : "Could not update.");
       } finally {
@@ -228,6 +236,7 @@ export default function TransactionsGrid({
 
   const selectedRows = useMemo(() => (grid.filtered as GridTransaction[]).filter((r) => sel.has(r.id)), [grid.filtered, sel]);
   const selTotals = useMemo(() => (selectedRows.length > 0 ? computeGridTotals(selectedRows) : null), [selectedRows]);
+  const selectionUpdating = actionBusy && selectedRows.some((row) => busyIds.has(row.id));
   const SEL_W = 72;
 
   // The persistent period control drives the check-date filter (and the URL).
@@ -311,9 +320,9 @@ export default function TransactionsGrid({
           </Link>
         </div>
       ) : null}
-      {/* A contextual check-date link already defines the period. Mounting the
-          independent picker at its default "All time" would clear that filter. */}
-      {hasDeepLinkedCheckDate ? null : <PeriodControl onChange={applyPeriod} paramKey="period" />}
+      {/* A contextual date link already defines the reporting basis. Showing a
+          separate check-date picker would misleadingly say "All time" or mix dates. */}
+      {hasFixedDateContext ? null : <PeriodControl onChange={applyPeriod} paramKey="period" />}
       <Toolbar
         grid={grid}
         searchPlaceholder="Search transactions…"
@@ -484,6 +493,7 @@ export default function TransactionsGrid({
                   const isFrozen = c.key in frozenLeft;
                   const numeric = isNumericKind(c.kind);
                   if (c.key === "paid") {
+                    const rowUpdating = actionBusy && busyIds.has(r.id);
                     return (
                       <td
                         key={c.key}
@@ -493,16 +503,17 @@ export default function TransactionsGrid({
                         {grid.canManage ? (
                           <button
                             type="button"
-                            disabled={busy}
+                            disabled={actionBusy}
+                            aria-busy={rowUpdating}
                             onClick={() => setPaid([r.id], !r.isPaid)}
-                            title={r.isPaid ? `Source marked paid${r.paidAt ? ` on ${r.paidAt}` : ""}` : "Mark the source row paid"}
+                            title={rowUpdating ? "Updating source marker" : r.isPaid ? `Source marked paid${r.paidAt ? ` on ${r.paidAt}` : ""}` : "Mark the source row paid"}
                             className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
                               r.isPaid
                                 ? "bg-[var(--color-success-soft,#e6f4ea)] text-[var(--color-success,#127a3d)]"
                                 : "text-[var(--color-ink-faint)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
                             }`}
                           >
-                            {r.isPaid ? "Marked" : "Mark source"}
+                            {rowUpdating ? "Updating…" : r.isPaid ? "Marked" : "Mark source"}
                           </button>
                         ) : r.isPaid ? (
                           <span className="text-xs font-medium text-[var(--color-success,#127a3d)]">Marked</span>
@@ -561,11 +572,11 @@ export default function TransactionsGrid({
           <div className="ml-auto flex items-center gap-2">
             {grid.canManage ? (
               <>
-                <button type="button" disabled={busy} onClick={() => setPaid(selectedRows.map((r) => r.id), true)} className="btn btn-sm btn-primary">
-                  {busy ? "…" : "Mark source paid"}
+                <button type="button" disabled={actionBusy} aria-busy={selectionUpdating} onClick={() => setPaid(selectedRows.map((r) => r.id), true)} className="btn btn-sm btn-primary">
+                  {selectionUpdating ? "Updating…" : "Mark source paid"}
                 </button>
-                <button type="button" disabled={busy} onClick={() => setPaid(selectedRows.map((r) => r.id), false)} className="btn btn-sm btn-secondary">
-                  Clear source marker
+                <button type="button" disabled={actionBusy} aria-busy={selectionUpdating} onClick={() => setPaid(selectedRows.map((r) => r.id), false)} className="btn btn-sm btn-secondary">
+                  {selectionUpdating ? "Updating…" : "Clear source marker"}
                 </button>
               </>
             ) : null}

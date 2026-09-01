@@ -2,6 +2,11 @@ import type { PgLikePool, PgLikeResult } from "@/lib/import/commit";
 import { agencyMonth } from "@/lib/business/agency-time";
 import { toHours, toMoney } from "@/lib/money";
 import {
+  employeePortalUpcomingSchedule,
+  individualPortalUpcomingSchedule,
+  type PortalUpcomingSchedule,
+} from "@/lib/data/portal-schedule";
+import {
   PORTAL_ROLE_LABELS,
   hasPortalCapability,
   hasPortalEmployeeCapability,
@@ -55,6 +60,7 @@ export interface PortalIndividualSummary {
   directChecksThisMonth: string | null;
   agencyPaidThisMonth: string | null;
   programs: PortalIndividualProgramSummary[] | null;
+  upcomingSchedule: PortalUpcomingSchedule | null;
 }
 
 export interface PortalEmployeeDirectPaySummary {
@@ -97,6 +103,7 @@ export interface PortalEmployeeSummary {
     collectedThisMonth: string;
     remaining: string;
   } | null;
+  upcomingSchedule: PortalUpcomingSchedule | null;
 }
 
 export interface PortalAgencyIndividualSummary {
@@ -234,6 +241,19 @@ interface AgencyAggregateRow {
   name: string;
   managed_budget_count: number | string;
   billing_without_budget_count: number | string;
+}
+
+interface AgencyRosterCountRow {
+  scope_id: string;
+  individual_count: number | string;
+  employee_count: number | string;
+}
+
+export interface PortalHomeReadModelOptions {
+  /** Restrict agency reads at the database boundary, including owner reads. */
+  agencyIds?: readonly string[];
+  /** Directory rows need aggregate hours and billing, not full member ledgers. */
+  agencySummaryOnly?: boolean;
 }
 
 interface AgencyFinancialRow {
@@ -802,6 +822,7 @@ async function directIndividualSummaries(
   const setAsideIds = individualIdsWith(context, ids, "financials.self.cuts_set_asides.read");
   const directCheckIds = individualIdsWith(context, ids, "financials.self.direct_checks.read");
   const agencyPaidIds = individualIdsWith(context, ids, "financials.self.agency_paid.read");
+  const scheduleIds = individualIdsWith(context, ids, "schedules.self.read");
 
   const [
     peopleResult,
@@ -811,6 +832,7 @@ async function directIndividualSummaries(
     setAsideResult,
     directCheckResult,
     agencyPaidResult,
+    scheduleResults,
   ] = await Promise.all([
     pool.query<PersonRow>(
       `SELECT id, display_name AS name FROM individuals
@@ -1032,6 +1054,10 @@ async function directIndividualSummaries(
           [agencyPaidIds, monthStart],
         )
       : empty<MoneyAggregateRow>(),
+    Promise.all(scheduleIds.map(async (id) => [
+      id,
+      await individualPortalUpcomingSchedule(pool, id),
+    ] as const)),
   ]);
 
   const hourBudgets = mapByScope(hourBudgetResult.rows);
@@ -1040,6 +1066,7 @@ async function directIndividualSummaries(
   const setAside = mapByScope(setAsideResult.rows);
   const directChecks = mapByScope(directCheckResult.rows);
   const agencyPaid = mapByScope(agencyPaidResult.rows);
+  const schedules = new Map(scheduleResults);
   return peopleResult.rows.map((person) => ({
     id: person.id,
     name: person.name,
@@ -1064,6 +1091,7 @@ async function directIndividualSummaries(
           agencyPaid: agencyPaid.get(person.id)?.program_breakdown,
         })
       : null,
+    upcomingSchedule: schedules.get(person.id) ?? null,
   }));
 }
 
@@ -1081,8 +1109,9 @@ async function directEmployeeSummaries(
   const checkIds = unique([...grossIds, ...netIds, ...taxIds]);
   const directPayIds = employeeIdsWith(context, ids, "employee_pay.self.read");
   const giveBackIds = employeeIdsWith(context, ids, "employee_giveback.self.read");
+  const scheduleIds = employeeIdsWith(context, ids, "schedules.self.read");
 
-  const [peopleResult, checksResult, directPayResult, giveBackResult] = await Promise.all([
+  const [peopleResult, checksResult, directPayResult, giveBackResult, scheduleResults] = await Promise.all([
     pool.query<PersonRow>(
       `SELECT id, display_name AS name FROM employees
         WHERE id = ANY($1::uuid[]) AND status <> 'archived'
@@ -1180,6 +1209,10 @@ async function directEmployeeSummaries(
           [giveBackIds, monthStart],
         )
       : empty<GiveBackRow>(),
+    Promise.all(scheduleIds.map(async (id) => [
+      id,
+      await employeePortalUpcomingSchedule(pool, id),
+    ] as const)),
   ]);
 
   const checks = new Map<string, PortalPayrollCheckSummary[]>();
@@ -1212,6 +1245,7 @@ async function directEmployeeSummaries(
     directPay.set(row.employee_id, [...(directPay.get(row.employee_id) ?? []), item]);
   }
   const giveBack = mapByScope(giveBackResult.rows);
+  const schedules = new Map(scheduleResults);
   return peopleResult.rows.map((person) => {
     const collection = giveBack.get(person.id);
     return {
@@ -1231,6 +1265,7 @@ async function directEmployeeSummaries(
         collectedThisMonth: toMoney(collection?.collected_this_month ?? 0),
         remaining: toMoney(collection?.remaining ?? 0),
       } : null,
+      upcomingSchedule: schedules.get(person.id) ?? null,
     };
   });
 }
@@ -1831,9 +1866,14 @@ export async function getPortalHomeReadModel(
   pool: PgLikePool,
   context: PortalAccessContext,
   requestedMonth?: string | null,
+  options?: PortalHomeReadModelOptions,
 ): Promise<PortalHomeReadModel> {
   const month = normalizePortalMonth(requestedMonth);
   const monthStart = `${month}-01`;
+  const requestedAgencyIds = options?.agencyIds === undefined
+    ? null
+    : unique(options.agencyIds);
+  const agencySummaryOnly = options?.agencySummaryOnly === true;
   const scopedAgencyIds = unique(
     context.agencyAccess
       .filter((access) => hasPortalCapability(context, "agencies.read", access.agencyId))
@@ -1851,18 +1891,31 @@ export async function getPortalHomeReadModel(
                   COALESCE(ai.billing_without_budget_count, 0)::int AS billing_without_budget_count
              FROM agencies a
              LEFT JOIN LATERAL (
-               SELECT COUNT(*) FILTER (WHERE manages_budget) AS managed_budget_count,
-                      COUNT(*) FILTER (WHERE bills_services AND NOT manages_budget) AS billing_without_budget_count
-                 FROM agency_individuals
-                WHERE agency_id = a.id AND is_active = true
-                  AND effective_from <= (now() AT TIME ZONE 'America/New_York')::date
-                  AND (effective_to IS NULL
-                    OR effective_to >= (now() AT TIME ZONE 'America/New_York')::date)
+               SELECT COUNT(*) FILTER (WHERE selected.manages_budget) AS managed_budget_count,
+                      COUNT(*) FILTER (
+                        WHERE selected.bills_services AND NOT selected.manages_budget
+                      ) AS billing_without_budget_count
+                 FROM (
+                   SELECT DISTINCT ON (membership.individual_id)
+                          membership.individual_id,
+                          membership.manages_budget,
+                          membership.bills_services
+                     FROM agency_individuals membership
+                    WHERE membership.agency_id = a.id
+                      AND membership.is_active = true
+                      AND membership.effective_from < ($4::date + interval '1 month')
+                      AND (membership.effective_to IS NULL OR membership.effective_to >= $4::date)
+                    ORDER BY membership.individual_id,
+                             membership.effective_from DESC,
+                             membership.updated_at DESC,
+                             membership.id DESC
+                 ) selected
              ) ai ON true
             WHERE a.status = 'active'
               AND ($1::boolean = true OR a.id = ANY($2::uuid[]))
+              AND ($3::uuid[] IS NULL OR a.id = ANY($3::uuid[]))
             ORDER BY a.is_home_agency DESC, a.name`,
-          [ownerCanReadAgencies, scopedAgencyIds],
+          [ownerCanReadAgencies, scopedAgencyIds, requestedAgencyIds, monthStart],
         )
       : empty<AgencyAggregateRow>(),
   ]);
@@ -1870,12 +1923,22 @@ export async function getPortalHomeReadModel(
   const agencyIds = agencyResult.rows.map((row) => row.id);
   const peopleAgencyIds = agencyIdsWith(context, agencyIds, "people.agency.read");
   const hourAgencyIds = agencyIdsWith(context, agencyIds, "hours_budgets.agency.read");
-  const dollarAgencyIds = agencyIdsWith(context, agencyIds, "dollar_budgets.agency.read");
+  const dollarAgencyIds = agencySummaryOnly
+    ? []
+    : agencyIdsWith(context, agencyIds, "dollar_budgets.agency.read");
   const billedAgencyIds = agencyIdsWith(context, agencyIds, "financials.agency.billed_totals.read");
-  const setAsideAgencyIds = agencyIdsWith(context, agencyIds, "financials.agency.cuts_set_asides.read");
-  const agencyPaidAgencyIds = agencyIdsWith(context, agencyIds, "financials.agency.agency_paid.read");
-  const checkAgencyIds = agencyIdsWith(context, agencyIds, "financials.agency.direct_checks.read");
-  const giveBackAgencyIds = agencyIdsWith(context, agencyIds, "settlements.agency.read");
+  const setAsideAgencyIds = agencySummaryOnly
+    ? []
+    : agencyIdsWith(context, agencyIds, "financials.agency.cuts_set_asides.read");
+  const agencyPaidAgencyIds = agencySummaryOnly
+    ? []
+    : agencyIdsWith(context, agencyIds, "financials.agency.agency_paid.read");
+  const checkAgencyIds = agencySummaryOnly
+    ? []
+    : agencyIdsWith(context, agencyIds, "financials.agency.direct_checks.read");
+  const giveBackAgencyIds = agencySummaryOnly
+    ? []
+    : agencyIdsWith(context, agencyIds, "settlements.agency.read");
   const financialAgencyIds = unique([
     ...billedAgencyIds,
     ...setAsideAgencyIds,
@@ -1884,7 +1947,13 @@ export async function getPortalHomeReadModel(
     ...giveBackAgencyIds,
   ]);
 
-  const [agencyHoursResult, agencyDollarsResult, agencyFinancialResult, agencyMembers] = await Promise.all([
+  const [
+    agencyHoursResult,
+    agencyDollarsResult,
+    agencyFinancialResult,
+    agencyRosterCountResult,
+    agencyMembers,
+  ] = await Promise.all([
     hourAgencyIds.length > 0
       ? pool.query<HoursAggregateRow>(
           `WITH ${effectivePortalHoursCte(AGENCY_PORTAL_HOURS_SCOPE)}
@@ -2091,10 +2160,41 @@ export async function getPortalHomeReadModel(
           ],
         )
       : empty<AgencyFinancialRow>(),
+    agencySummaryOnly && peopleAgencyIds.length > 0
+      ? pool.query<AgencyRosterCountRow>(
+          `SELECT agency.id AS scope_id,
+                  (
+                    SELECT count(*)
+                      FROM (
+                        SELECT DISTINCT ON (membership.individual_id) membership.individual_id
+                          FROM agency_individuals membership
+                         WHERE membership.agency_id = agency.id
+                           AND membership.is_active = true
+                           AND membership.effective_from < ($2::date + interval '1 month')
+                           AND (membership.effective_to IS NULL OR membership.effective_to >= $2::date)
+                         ORDER BY membership.individual_id,
+                                  membership.effective_from DESC,
+                                  membership.updated_at DESC,
+                                  membership.id DESC
+                      ) selected_individuals
+                  )::int AS individual_count,
+                  (
+                    SELECT count(DISTINCT membership.employee_id)
+                      FROM agency_employees membership
+                     WHERE membership.agency_id = agency.id
+                       AND membership.is_active = true
+                       AND membership.effective_from < ($2::date + interval '1 month')
+                       AND (membership.effective_to IS NULL OR membership.effective_to >= $2::date)
+                  )::int AS employee_count
+             FROM agencies agency
+            WHERE agency.id = ANY($1::uuid[])`,
+          [peopleAgencyIds, monthStart],
+        )
+      : empty<AgencyRosterCountRow>(),
     agencyMemberSummaries(
       pool,
       month,
-      peopleAgencyIds,
+      agencySummaryOnly ? [] : peopleAgencyIds,
       hourAgencyIds,
       dollarAgencyIds,
       billedAgencyIds,
@@ -2108,6 +2208,7 @@ export async function getPortalHomeReadModel(
   const agencyHours = mapByScope(agencyHoursResult.rows);
   const agencyDollars = mapByScope(agencyDollarsResult.rows);
   const agencyFinancials = mapByScope(agencyFinancialResult.rows);
+  const agencyRosterCounts = mapByScope(agencyRosterCountResult.rows);
   const agencies = agencyResult.rows.map((row): PortalAgencySummary => {
     const accessRoles = context.agencyAccess
       .filter((access) => access.agencyId === row.id)
@@ -2117,16 +2218,25 @@ export async function getPortalHomeReadModel(
     const canReadHours = hourAgencyIds.includes(row.id);
     const canReadDollars = dollarAgencyIds.includes(row.id);
     const financial = agencyFinancials.get(row.id);
-    const agencyIndividuals = canReadPeople ? agencyMembers.individuals.get(row.id) ?? [] : null;
-    const agencyEmployees = canReadPeople ? agencyMembers.employees.get(row.id) ?? [] : null;
+    const rosterCounts = agencyRosterCounts.get(row.id);
+    const agencyIndividuals = canReadPeople && !agencySummaryOnly
+      ? agencyMembers.individuals.get(row.id) ?? []
+      : null;
+    const agencyEmployees = canReadPeople && !agencySummaryOnly
+      ? agencyMembers.employees.get(row.id) ?? []
+      : null;
     return {
       id: row.id,
       code: row.code,
       name: row.name,
       roles: unique(roles).map((role) => roleSummary(role as PortalRole)),
       capabilities: portalCapabilities(context, row.id),
-      individualCount: agencyIndividuals?.length ?? null,
-      employeeCount: agencyEmployees?.length ?? null,
+      individualCount: canReadPeople
+        ? agencyIndividuals?.length ?? Number(rosterCounts?.individual_count ?? 0)
+        : null,
+      employeeCount: canReadPeople
+        ? agencyEmployees?.length ?? Number(rosterCounts?.employee_count ?? 0)
+        : null,
       managedBudgetCount: canReadHours ? Number(row.managed_budget_count) : null,
       billingWithoutBudgetCount: canReadHours ? Number(row.billing_without_budget_count) : null,
       budgetHours: canReadHours ? usage(agencyHours.get(row.id)) : null,

@@ -14,12 +14,13 @@ import PlanningWorkspace from "@/components/schedule/planning-workspace";
 import type { View } from "@/components/schedule/shared";
 import { agencyDate } from "@/lib/business/agency-time";
 import { listPlannerDirectPayTargets } from "@/lib/data/direct-pay-operations";
+import { emptyPlanningMatchReview, getPlanningMatchReview } from "@/lib/data/planning-reconciliation";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Schedule - Ahivim" };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const PLANNING_VIEWS = new Set(["calendar", "coverage", "schedules", "future", "availability", "targets"]);
+const PLANNING_VIEWS = new Set(["calendar", "coverage", "schedules", "matching", "future", "availability", "targets"]);
 const CALENDAR_VIEWS = new Set<View>(["month", "week", "day"]);
 
 export default async function SchedulePage({
@@ -56,15 +57,19 @@ export default async function SchedulePage({
     : undefined;
 
   const result = await withDb(async (pool) => {
-    const [reference, planning, directPayTargets] = await Promise.all([
+    const [reference, planning, matchReview, directPayTargets] = await Promise.all([
       getPlanningReferenceData(pool, planningAccess.access),
       getPlanningWorkspace(pool, today, planningAccess.access, planningAccess.agencyIds),
+      initialView === "matching"
+        ? getPlanningMatchReview(pool, today, planningAccess.access, planningAccess.agencyIds)
+        : Promise.resolve(emptyPlanningMatchReview()),
       canViewPlannerDirectPayTargets(planningAccess)
         ? listPlannerDirectPayTargets(pool, today)
         : Promise.resolve([]),
     ]);
     return {
       reference,
+      matchReview,
       planning: showBudgetTracking
         ? filterPlanningWorkspaceForAgency(planning, planningAccess.agencyRosters)
         : withoutPlanningBudgetDetails(
@@ -106,6 +111,8 @@ export default async function SchedulePage({
               name: p.name,
               isGroupCapable: p.isGroupCapable,
             }))}
+            matchReview={result.data.matchReview}
+            matchReviewLoaded={initialView === "matching"}
             directPayTargets={result.data.directPayTargets}
             showDirectPayTargets={canViewPlannerDirectPayTargets(planningAccess)}
             showBudgetTracking={showBudgetTracking}

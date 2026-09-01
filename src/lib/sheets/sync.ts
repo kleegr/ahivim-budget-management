@@ -11,6 +11,7 @@ import { isPaidCell } from "@/lib/excel/column-map";
 import { fetchSheetCsv, type CsvFetcher, SheetFetchError } from "./fetch";
 import { getSyncConfig, type SheetSyncConfig } from "./config";
 import { sheetSourceIdentity } from "./identity";
+import { autoReconcile } from "@/lib/manage/reconciliation";
 
 /**
  * SHEET SYNC ENGINE
@@ -62,9 +63,75 @@ export interface SyncRunSummary {
   changed: number;
   missing: number;
   importBatchId: string | null;
-  reconciliation: StagingResult["reconciliation"] | null;
+  reconciliation: (Partial<StagingResult["reconciliation"]> & {
+    note: string;
+    scheduleMatching?: ScheduleMatchingOutcome;
+  }) | null;
   error: string | null;
   note: string;
+}
+
+export interface ScheduleMatchingOutcome {
+  status: "not_needed" | "checked" | "needs_review";
+  matched: number;
+  considered: number;
+  from: string | null;
+  to: string | null;
+  reviewHref: "/schedule?view=matching";
+}
+
+const SCHEDULE_MATCH_REVIEW_HREF = "/schedule?view=matching" as const;
+
+/**
+ * Schedule matching is a useful follow-up to an import, but it is not part of
+ * the transaction commit. A temporary matching failure must never rewrite the
+ * committed import as failed.
+ */
+export async function attemptOptionalScheduleMatching(
+  range: { from: string; to: string },
+  reconcile: () => ReturnType<typeof autoReconcile>,
+): Promise<ScheduleMatchingOutcome> {
+  try {
+    const result = await reconcile();
+    if (result.ok) {
+      return {
+        status: "checked",
+        ...result.data,
+        ...range,
+        reviewHref: SCHEDULE_MATCH_REVIEW_HREF,
+      };
+    }
+  } catch {
+    // The retry range is retained below so a later unchanged sync can try again.
+  }
+  return {
+    status: "needs_review",
+    matched: 0,
+    considered: 0,
+    ...range,
+    reviewHref: SCHEDULE_MATCH_REVIEW_HREF,
+  };
+}
+
+function noScheduleMatchingNeeded(): ScheduleMatchingOutcome {
+  return {
+    status: "not_needed",
+    matched: 0,
+    considered: 0,
+    from: null,
+    to: null,
+    reviewHref: SCHEDULE_MATCH_REVIEW_HREF,
+  };
+}
+
+function scheduleMatchingNote(outcome: ScheduleMatchingOutcome): string {
+  if (outcome.status === "needs_review") {
+    return "Automatic schedule matching needs attention. The transaction data is saved; use Sync now to retry or open Schedule matching.";
+  }
+  if (outcome.status === "not_needed") {
+    return "No new dated transactions needed a schedule-matching check.";
+  }
+  return `Schedule matching checked ${outcome.considered} eligible planned visit${outcome.considered === 1 ? "" : "s"}; ${outcome.matched} exact daily record${outcome.matched === 1 ? " was" : "s were"} connected. Other records remain in Schedule matching for review.`;
 }
 
 interface LedgerTxn {
@@ -197,14 +264,46 @@ async function isTransactionAudited(pool: PgLikePool, txnId: string): Promise<bo
   return rows[0]?.audited === true;
 }
 
-async function lastSuccessfulSnapshot(pool: PgLikePool, excludeRunId: string): Promise<string | null> {
-  const { rows } = await pool.query<{ snapshot_sha256: string | null }>(
-    `SELECT snapshot_sha256 FROM sheet_sync_runs
+function storedScheduleMatching(value: unknown): ScheduleMatchingOutcome | null {
+  if (!value || typeof value !== "object") return null;
+  const stored = value as Partial<ScheduleMatchingOutcome>;
+  if (
+    !["not_needed", "checked", "needs_review"].includes(stored.status ?? "")
+    || typeof stored.matched !== "number"
+    || typeof stored.considered !== "number"
+  ) return null;
+  return {
+    status: stored.status!,
+    matched: stored.matched,
+    considered: stored.considered,
+    from: typeof stored.from === "string" ? stored.from : null,
+    to: typeof stored.to === "string" ? stored.to : null,
+    reviewHref: SCHEDULE_MATCH_REVIEW_HREF,
+  };
+}
+
+interface LastSuccessfulSync {
+  snapshotSha256: string;
+  scheduleMatching: ScheduleMatchingOutcome | null;
+}
+
+async function lastSuccessfulSync(pool: PgLikePool, excludeRunId: string): Promise<LastSuccessfulSync | null> {
+  const { rows } = await pool.query<{
+    snapshot_sha256: string | null;
+    schedule_matching: unknown;
+  }>(
+    `SELECT snapshot_sha256, reconciliation->'scheduleMatching' AS schedule_matching
+       FROM sheet_sync_runs
       WHERE status IN ('success','no_changes') AND id <> $1 AND snapshot_sha256 IS NOT NULL
-      ORDER BY started_at DESC LIMIT 1`,
+      ORDER BY started_at DESC, id DESC LIMIT 1`,
     [excludeRunId],
   );
-  return rows[0]?.snapshot_sha256 ?? null;
+  const row = rows[0];
+  if (!row?.snapshot_sha256) return null;
+  return {
+    snapshotSha256: row.snapshot_sha256,
+    scheduleMatching: storedScheduleMatching(row.schedule_matching),
+  };
 }
 
 async function finishRun(
@@ -305,8 +404,18 @@ export async function runSheetSync(
     }
 
     // 2. No-op fast path: the sheet is byte-for-content identical to the last good run.
-    const priorSnapshot = await lastSuccessfulSnapshot(pool, runId);
-    if (priorSnapshot && priorSnapshot === parse.snapshotSha256) {
+    const priorSync = await lastSuccessfulSync(pool, runId);
+    if (priorSync?.snapshotSha256 === parse.snapshotSha256) {
+      const pendingMatch = priorSync.scheduleMatching;
+      const scheduleMatching = pendingMatch?.status === "needs_review" && pendingMatch.from && pendingMatch.to
+        ? await attemptOptionalScheduleMatching(
+            { from: pendingMatch.from, to: pendingMatch.to },
+            () => autoReconcile(pool, { from: pendingMatch.from!, to: pendingMatch.to! }, opts.userId),
+          )
+        : null;
+      const reconciliationNote = scheduleMatching
+        ? `Sheet unchanged since the last successful sync. ${scheduleMatchingNote(scheduleMatching)}`
+        : "Sheet unchanged since the last successful sync.";
       await finishRun(pool, runId, {
         status: "no_changes",
         sourceRows: parsedRows.length,
@@ -315,13 +424,20 @@ export async function runSheetSync(
         skipped: parsedRows.length,
         flagged: 0,
         failed: 0,
-        reconciliation: { note: "Sheet unchanged since the last successful sync." },
+        reconciliation: scheduleMatching
+          ? { note: reconciliationNote, scheduleMatching }
+          : { note: reconciliationNote },
       });
       return {
         ...base,
         status: "no_changes",
         skipped: parsedRows.length,
-        note: "The sheet is unchanged since the last successful sync; nothing was imported.",
+        reconciliation: scheduleMatching
+          ? { note: reconciliationNote, scheduleMatching }
+          : null,
+        note: scheduleMatching
+          ? `The sheet is unchanged; no transactions were imported. ${scheduleMatchingNote(scheduleMatching)}`
+          : "The sheet is unchanged since the last successful sync; nothing was imported.",
       };
     }
 
@@ -617,6 +733,34 @@ export async function runSheetSync(
     }
 
     const flagged = changedCount + missingCount;
+    let scheduleMatching = noScheduleMatchingNeeded();
+    const starts: string[] = [];
+    const ends: string[] = [];
+    for (const staged of staging.rows) {
+      if (!staged.fingerprint || !newTxnByFingerprint.has(staged.fingerprint)) continue;
+      const parsed = parsedByRow.get(staged.sourceRowNumber)?.parsed;
+      if (!parsed) continue;
+      const from = parsed.periodBegin || parsed.checkDate || parsed.periodEnd;
+      const to = parsed.periodEnd || parsed.checkDate || parsed.periodBegin;
+      if (from) starts.push(from);
+      if (to) ends.push(to);
+    }
+    starts.sort();
+    ends.sort();
+    const from = starts[0] ?? null;
+    const to = ends.at(-1) ?? null;
+    if (from && to) {
+      scheduleMatching = await attemptOptionalScheduleMatching(
+        { from, to },
+        () => autoReconcile(pool, { from, to }, opts.userId),
+      );
+    }
+    const syncReconciliation = {
+      ...staging.reconciliation,
+      note: `${staging.reconciliation.note} ${scheduleMatchingNote(scheduleMatching)}`,
+      scheduleMatching,
+    };
+    base.reconciliation = syncReconciliation;
     await finishRun(pool, runId, {
       status: "success",
       sourceRows: parsedRows.length,
@@ -626,7 +770,7 @@ export async function runSheetSync(
       flagged,
       failed: invalidCount,
       importBatchId: commitResult.importBatchId,
-      reconciliation: staging.reconciliation,
+      reconciliation: syncReconciliation,
     });
 
     await recordChange(pool, {
@@ -634,7 +778,16 @@ export async function runSheetSync(
       action: "sheet_sync_completed",
       entityType: "sheet_sync_run",
       entityId: runId,
-      extra: { added, skipped: unchangedCount, changed: changedCount, missing: missingCount, failed: invalidCount },
+      extra: {
+        added,
+        skipped: unchangedCount,
+        changed: changedCount,
+        missing: missingCount,
+        failed: invalidCount,
+        scheduleMatched: scheduleMatching.matched,
+        scheduleConsidered: scheduleMatching.considered,
+        scheduleMatchingStatus: scheduleMatching.status,
+      },
     });
 
     const note =
@@ -644,7 +797,7 @@ export async function runSheetSync(
       (invalidCount ? `, ${invalidCount} could not be parsed` : "") +
       (paidMarked ? `, ${paidMarked} newly marked paid from the sheet` : "") +
       ". " +
-      staging.reconciliation.note;
+      syncReconciliation.note;
 
     return {
       ...base,
@@ -657,7 +810,7 @@ export async function runSheetSync(
       changed: changedCount,
       missing: missingCount,
       importBatchId: commitResult.importBatchId,
-      reconciliation: staging.reconciliation,
+      reconciliation: syncReconciliation,
       note,
     };
   } catch (error) {

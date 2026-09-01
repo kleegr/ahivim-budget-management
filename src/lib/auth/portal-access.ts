@@ -51,6 +51,7 @@ export type EmployeeRelationship = "self";
 
 const INDIVIDUAL_SELF_CAPABILITIES = new Set<PortalCapability>([
   "people.self.read",
+  "schedules.self.read",
   "hours_budgets.self.read",
   "dollar_budgets.self.read",
   "financials.self.billed_totals.read",
@@ -61,6 +62,7 @@ const INDIVIDUAL_SELF_CAPABILITIES = new Set<PortalCapability>([
 
 const EMPLOYEE_SELF_CAPABILITIES = new Set<PortalCapability>([
   "people.self.read",
+  "schedules.self.read",
   "employee_pay.self.read",
   "employee_checks.self.gross.read",
   "employee_checks.self.net.read",
@@ -84,14 +86,17 @@ const ROLE_CAPABILITIES: Record<PortalRole, readonly PortalCapability[]> = {
   owner: PORTAL_CAPABILITIES,
   individual: [
     "people.self.read",
+    "schedules.self.read",
     "hours_budgets.self.read",
   ],
   parent: [
     "people.self.read",
+    "schedules.self.read",
     "hours_budgets.self.read",
   ],
   employee: [
     "people.self.read",
+    "schedules.self.read",
     "employee_pay.self.read",
     "employee_checks.self.gross.read",
     "employee_checks.self.net.read",

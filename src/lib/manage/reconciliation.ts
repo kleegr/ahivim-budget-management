@@ -9,12 +9,19 @@ import { toHours, toMoney, closeEnough } from "@/lib/money";
  * A planned session (scheduled_sessions) is matched to an imported transaction
  * (payroll_transactions) for the same individual + program whose pay period
  * contains the session date. The match is a 1:1 link stored on the session
- * (matched_transaction_id, reconciliation_status). Nothing is auto-committed
- * silently — every match/unmatch is audited, and group sessions are surfaced
- * but never auto-matched (their money divides across individuals).
+ * (matched_transaction_id, reconciliation_status). Only exact daily facts may
+ * auto-match, every match/unmatch is audited, and pay-period aggregates,
+ * ambiguous records, and group sessions remain available for human review.
  */
 
 const isUuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
+const ONE_TRANSACTION_MATCH_INDEX = "scheduled_sessions_one_transaction_match_key";
+
+function isTransactionMatchConflict(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const databaseError = error as { code?: unknown; constraint?: unknown };
+  return databaseError.code === "23505" && databaseError.constraint === ONE_TRANSACTION_MATCH_INDEX;
+}
 const isDate = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v);
 
 export interface ReconcileFilter {
@@ -278,13 +285,20 @@ export async function manualMatch(
   );
   if (other.rows[0]) return fail("conflict", "That transaction is already matched to another session.");
 
-  await pool.query(
-    `UPDATE scheduled_sessions
-       SET matched_transaction_id = $2, reconciliation_status = 'matched',
-           reconciled_by_user_id = $3, reconciled_at = now(), reconciliation_reason = $4, updated_at = now()
-     WHERE id = $1`,
-    [scheduledSessionId, transactionId, actorId, reason ?? null],
-  );
+  try {
+    await pool.query(
+      `UPDATE scheduled_sessions
+         SET matched_transaction_id = $2, reconciliation_status = 'matched',
+             reconciled_by_user_id = $3, reconciled_at = now(), reconciliation_reason = $4, updated_at = now()
+       WHERE id = $1`,
+      [scheduledSessionId, transactionId, actorId, reason ?? null],
+    );
+  } catch (error) {
+    if (isTransactionMatchConflict(error)) {
+      return fail("conflict", "That transaction is already matched to another session.");
+    }
+    throw error;
+  }
   await recordChange(pool, {
     actorId, action: "reconciliation_matched", entityType: "scheduled_session", entityId: scheduledSessionId,
     next: { transactionId }, reason,
@@ -319,11 +333,47 @@ export async function unmatchSession(
   return ok({ id: scheduledSessionId });
 }
 
+interface AutoMatchSession {
+  id: string;
+  program_id: string;
+  session_date: string;
+  individual_id: string | null;
+  allocation_count: number;
+  employee_id: string | null;
+  duration_hours: string;
+  is_group: boolean;
+  group_size: number;
+}
+
+interface AutoMatchCandidate {
+  id: string;
+  employee_id: string | null;
+  imported_hours: string | null;
+  period_begin: string | null;
+  period_end: string | null;
+  is_group_service: boolean;
+}
+
+function isExactDailyCandidate(session: AutoMatchSession, candidate: AutoMatchCandidate): boolean {
+  return session.allocation_count === 1
+    && session.is_group === false
+    && session.group_size === 1
+    && session.individual_id !== null
+    && session.employee_id !== null
+    && candidate.employee_id === session.employee_id
+    && candidate.imported_hours !== null
+    && closeEnough(candidate.imported_hours, session.duration_hours, "0")
+    && candidate.period_begin === session.session_date
+    && candidate.period_end === session.session_date
+    && candidate.is_group_service === false;
+}
+
 /**
- * Auto-link single-individual sessions to the one obvious transaction (same
- * individual + program, session date inside the pay period, transaction not yet
- * used). Conservative: skips group sessions and anything ambiguous. Returns how
- * many were matched.
+ * Auto-link only a transaction that proves it represents one planned visit:
+ * one individual, the same employee and program, exact hours, and a one-day
+ * service period equal to the visit date. Pay-period aggregates and group rows
+ * remain unmatched for human review. Ambiguity on either side also prevents a
+ * match.
  */
 export async function autoReconcile(
   pool: PgLikePool,
@@ -331,52 +381,102 @@ export async function autoReconcile(
   actorId: string | null,
 ): Promise<Result<{ matched: number; considered: number }>> {
   const f = sqlFilter(filter);
-  const { rows: sessions } = await pool.query<{ id: string; program_id: string; session_date: string; individual_id: string }>(
-    `SELECT s.id, s.program_id, s.session_date::text,
-            (SELECT a.individual_id FROM scheduled_allocations a WHERE a.scheduled_session_id = s.id LIMIT 1) AS individual_id
+  const { rows: sessions } = await pool.query<AutoMatchSession>(
+    `SELECT s.id, s.program_id, s.session_date::text, s.employee_id,
+            s.duration_hours::text, s.is_group, s.group_size,
+            (SELECT a.individual_id FROM scheduled_allocations a WHERE a.scheduled_session_id = s.id LIMIT 1) AS individual_id,
+            (SELECT count(*)::int FROM scheduled_allocations a WHERE a.scheduled_session_id = s.id) AS allocation_count
      FROM scheduled_sessions s
      WHERE s.session_date BETWEEN $1 AND $2
        AND s.status IN ('pending','completed')
+       AND s.archived_at IS NULL
        AND s.matched_transaction_id IS NULL
        AND s.is_group = false
-       AND ($3::uuid IS NULL OR s.program_id = $3)`,
-    [f.from, f.to, f.programId],
+       AND s.group_size = 1
+       AND ($3::uuid IS NULL OR s.program_id = $3)
+       AND ($4::uuid IS NULL OR EXISTS (
+             SELECT 1 FROM scheduled_allocations a
+              WHERE a.scheduled_session_id = s.id AND a.individual_id = $4))`,
+    [f.from, f.to, f.programId, f.individualId],
   );
 
-  const used = new Set<string>();
+  const candidatesBySession = new Map<string, string[]>();
+  const sessionsByCandidate = new Map<string, Set<string>>();
+  let considered = 0;
+  for (const session of sessions) {
+    if (
+      !session.individual_id
+      || !session.employee_id
+      || session.allocation_count !== 1
+      || session.is_group
+      || session.group_size !== 1
+    ) continue;
+    considered += 1;
+    const { rows: possibleCandidates } = await pool.query<AutoMatchCandidate>(
+      `SELECT t.id, t.employee_id, t.imported_hours::text,
+              t.period_begin::text, t.period_end::text, t.is_group_service
+         FROM payroll_transactions t
+       WHERE t.individual_id = $1 AND t.program_id = $2
+         AND t.period_begin = $3::date AND t.period_end = $3::date
+         AND t.employee_id = $4
+         AND t.imported_hours = $5::numeric
+         AND t.is_group_service = false
+         AND NOT EXISTS (SELECT 1 FROM scheduled_sessions x WHERE x.matched_transaction_id = t.id)
+       ORDER BY t.id
+       LIMIT 2`,
+      [
+        session.individual_id,
+        session.program_id,
+        session.session_date,
+        session.employee_id,
+        session.duration_hours,
+      ],
+    );
+    const candidates = possibleCandidates.filter((candidate) => isExactDailyCandidate(session, candidate));
+    const ids = candidates.map((candidate) => candidate.id);
+    candidatesBySession.set(session.id, ids);
+    for (const candidateId of ids) {
+      const sessionIds = sessionsByCandidate.get(candidateId) ?? new Set<string>();
+      sessionIds.add(session.id);
+      sessionsByCandidate.set(candidateId, sessionIds);
+    }
+  }
+
   let matched = 0;
   for (const s of sessions) {
-    if (!s.individual_id) continue;
-    const { rows: cand } = await pool.query<{ id: string }>(
-      `SELECT t.id FROM payroll_transactions t
-       WHERE t.individual_id = $1 AND t.program_id = $2
-         AND $3 BETWEEN t.period_begin AND t.period_end
-         AND NOT EXISTS (SELECT 1 FROM scheduled_sessions x WHERE x.matched_transaction_id = t.id)
-       ORDER BY t.period_begin
-       LIMIT 5`,
-      [s.individual_id, s.program_id, s.session_date],
-    );
-    const pick = cand.find((c) => !used.has(c.id));
-    if (!pick) continue;
-    used.add(pick.id);
-    await pool.query(
-      `UPDATE scheduled_sessions
-         SET matched_transaction_id = $2, reconciliation_status = 'matched',
-             reconciled_by_user_id = $3, reconciled_at = now(),
-             reconciliation_reason = 'auto-matched', updated_at = now()
-       WHERE id = $1`,
-      [s.id, pick.id, actorId],
-    );
-    matched += 1;
+    const candidates = candidatesBySession.get(s.id) ?? [];
+    if (candidates.length !== 1) continue;
+    const candidateId = candidates[0]!;
+    if (sessionsByCandidate.get(candidateId)?.size !== 1) continue;
+    try {
+      const { rows: updated } = await pool.query<{ id: string }>(
+        `UPDATE scheduled_sessions
+           SET matched_transaction_id = $2, reconciliation_status = 'matched',
+               reconciled_by_user_id = $3, reconciled_at = now(),
+               reconciliation_reason = 'auto-matched', updated_at = now()
+         WHERE id = $1
+           AND matched_transaction_id IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM scheduled_sessions claimed WHERE claimed.matched_transaction_id = $2
+           )
+         RETURNING id`,
+        [s.id, candidateId, actorId],
+      );
+      if (updated.length === 1) matched += 1;
+    } catch (error) {
+      // The partial unique index is the final arbiter when two matching runs race.
+      if (isTransactionMatchConflict(error)) continue;
+      throw error;
+    }
   }
   if (matched > 0) {
     await recordChange(pool, {
       actorId, action: "reconciliation_auto", entityType: "scheduled_session", entityId: null,
-      next: { matched, considered: sessions.length, range: `${f.from}..${f.to}` },
+      next: { matched, considered, range: `${f.from}..${f.to}` },
       reason: "auto-reconcile",
     });
   }
-  return ok({ matched, considered: sessions.length });
+  return ok({ matched, considered });
 }
 
 /* -------------------------------------------------------------------------- */

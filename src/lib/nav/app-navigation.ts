@@ -1,4 +1,4 @@
-export type NavigationGate = "manager" | "owner" | "owner-transactions" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents" | "portal" | "agencies";
+export type NavigationGate = "manager" | "owner" | "manager-transactions" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents" | "portal" | "agencies";
 
 export interface NavigationAccess {
   role: string;
@@ -25,7 +25,7 @@ export interface NavigationDestination {
 }
 
 export interface NavigationWorkspace {
-  id: "overview" | "portal" | "transactions" | "budgets" | "activity" | "payroll" | "employees" | "classes" | "reports";
+  id: "overview" | "portal" | "transactions" | "budgets" | "activity" | "payroll" | "employees" | "agencies" | "classes" | "reports";
   label: string;
   hint: string;
   activePrefixes: readonly string[];
@@ -82,7 +82,7 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         href: "/transactions",
         hint: "Actual billing and payroll history",
         keywords: "transactions billing payroll checks ledger source actual activity",
-        gate: "owner-transactions",
+        gate: "manager-transactions",
       },
     ],
   },
@@ -147,6 +147,22 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         hint: "Employees, assignments, and availability",
         keywords: "staff workers assignments schedules availability",
         gate: "employees",
+      },
+    ],
+  },
+  {
+    id: "agencies",
+    label: "Agencies",
+    hint: "Organizations, rosters, and operational activity",
+    activePrefixes: ["/agencies"],
+    destinations: [
+      {
+        id: "agency-directory",
+        label: "Agencies",
+        href: "/agencies",
+        hint: "Organizations, rosters, and operational activity",
+        keywords: "agency provider organization roster individuals employees activity",
+        gate: "agencies",
       },
     ],
   },
@@ -325,7 +341,9 @@ function allowed(gate: NavigationGate | undefined, access: NavigationAccess): bo
   if (!access.accessResolved) return false;
   if (gate === "owner") return access.role === "admin";
   if (gate === "manager") return access.role === "manager" || access.role === "admin";
-  if (gate === "owner-transactions") return access.role === "admin" && access.canSeeTransactions;
+  if (gate === "manager-transactions") {
+    return (access.role === "manager" || access.role === "admin") && access.canSeeTransactions;
+  }
   if (gate === "transactions") return access.canSeeTransactions;
   if (gate === "settlements") return access.canSeeSettlements;
   if (gate === "planning") return access.canPlan;

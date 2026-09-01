@@ -151,9 +151,10 @@ describe("preset role privacy matrix", () => {
   it("binds each portal preset to the intended capability family", () => {
     const required: Partial<Record<AccountPresetId, readonly PortalCapability[]>> = {
       owner: PORTAL_CAPABILITIES,
-      individual_parent: ["people.self.read", "hours_budgets.self.read"],
+      individual_parent: ["people.self.read", "schedules.self.read", "hours_budgets.self.read"],
       employee: [
         "people.self.read",
+        "schedules.self.read",
         "employee_pay.self.read",
         "employee_checks.self.gross.read",
         "employee_checks.self.net.read",

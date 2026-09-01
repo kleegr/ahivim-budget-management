@@ -34,6 +34,9 @@ interface Row {
   program: string;
   individual: string;
   employee: string;
+  checkDate?: string;
+  periodBegin?: string;
+  periodEnd?: string;
 }
 
 const R1: Row = { checkNumber: "1001", hours: "10", rate: "25", amount: "250", program: "Com Hab", individual: "Aaron Tester", employee: "Zed Worker" };
@@ -60,13 +63,13 @@ function buildSheet(rows: Row[]): string {
   const dataRows = rows.map((r) => {
     const a = new Array(20).fill("");
     a[0] = "Excellent Staffing";
-    a[1] = "05/25/2023";
+    a[1] = r.checkDate ?? "05/25/2023";
     a[2] = r.checkNumber;
     a[4] = r.hours;
     a[5] = r.rate;
     a[6] = r.amount;
-    a[8] = "05/01/2023";
-    a[9] = "05/15/2023";
+    a[8] = r.periodBegin ?? "05/01/2023";
+    a[9] = r.periodEnd ?? "05/15/2023";
     a[10] = r.program;
     a[11] = r.individual;
     a[12] = r.employee;
@@ -152,6 +155,207 @@ suite("Google Sheet sync (real PostgreSQL)", () => {
     expect(res.added).toBe(1);
     expect(res.skipped).toBe(3);
     expect(await count("payroll_transactions")).toBe(4);
+  });
+
+  it("connects only an exact daily record and leaves aggregates or mismatches for review", async () => {
+    await runSheetSync(pool, {
+      trigger: "manual",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2, R3])),
+      config: CONFIG,
+    });
+    const { rows: facts } = await pool.query<{
+      individual_id: string;
+      employee_id: string;
+      program_id: string;
+    }>(
+      `SELECT individual_id, employee_id, program_id
+         FROM payroll_transactions
+        WHERE check_number = '1001'`,
+    );
+    const fact = facts[0]!;
+    const { rows: otherEmployees } = await pool.query<{ id: string }>(
+      `SELECT id FROM employees WHERE display_name = 'Yan Staff'`,
+    );
+    const sessionIds: string[] = [];
+    async function addPlannedVisit(date: string, hours: string, employeeId = fact.employee_id) {
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO scheduled_sessions
+           (employee_id, program_id, session_date, duration_hours, is_group, group_size, status)
+         VALUES ($1, $2, $3, $4, false, 1, 'pending')
+         RETURNING id`,
+        [employeeId, fact.program_id, date, hours],
+      );
+      await pool.query(
+        `INSERT INTO scheduled_allocations (scheduled_session_id, individual_id, allocation_hours)
+         VALUES ($1, $2, $3)`,
+        [rows[0]!.id, fact.individual_id, hours],
+      );
+      sessionIds.push(rows[0]!.id);
+    }
+    await addPlannedVisit("2023-06-10", "3");
+    await addPlannedVisit("2023-07-10", "3");
+    await addPlannedVisit("2023-08-10", "3");
+    await addPlannedVisit("2023-09-10", "3", otherEmployees[0]!.id);
+
+    const exactDaily = {
+      ...R1,
+      checkNumber: "1005",
+      hours: "3",
+      amount: "75",
+      checkDate: "06/10/2023",
+      periodBegin: "06/10/2023",
+      periodEnd: "06/10/2023",
+    };
+    const aggregate = {
+      ...R1,
+      checkNumber: "1006",
+      hours: "3",
+      amount: "75",
+      checkDate: "07/25/2023",
+      periodBegin: "07/01/2023",
+      periodEnd: "07/15/2023",
+    };
+    const hoursMismatch = {
+      ...R1,
+      checkNumber: "1007",
+      hours: "4",
+      amount: "100",
+      checkDate: "08/10/2023",
+      periodBegin: "08/10/2023",
+      periodEnd: "08/10/2023",
+    };
+    const employeeMismatch = {
+      ...R1,
+      checkNumber: "1008",
+      hours: "3",
+      amount: "75",
+      checkDate: "09/10/2023",
+      periodBegin: "09/10/2023",
+      periodEnd: "09/10/2023",
+    };
+
+    const result = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([
+        R1,
+        R2,
+        R3,
+        exactDaily,
+        aggregate,
+        hoursMismatch,
+        employeeMismatch,
+      ])),
+      config: CONFIG,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.note).toContain("4 eligible planned visits; 1 exact daily record was connected");
+    const { rows: matches } = await pool.query<{ id: string; matched_transaction_id: string | null }>(
+      `SELECT id, matched_transaction_id
+         FROM scheduled_sessions
+        WHERE id = ANY($1::uuid[])
+        ORDER BY session_date`,
+      [sessionIds],
+    );
+    expect(matches.map((row) => row.matched_transaction_id !== null)).toEqual([
+      true,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it("keeps a committed import successful when matching fails and retries on an unchanged sync", async () => {
+    await runSheetSync(pool, {
+      trigger: "manual",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2, R3])),
+      config: CONFIG,
+    });
+    const { rows: facts } = await pool.query<{
+      individual_id: string;
+      employee_id: string;
+      program_id: string;
+    }>(
+      `SELECT individual_id, employee_id, program_id
+         FROM payroll_transactions
+        WHERE check_number = '1001'`,
+    );
+    const fact = facts[0]!;
+    const { rows: sessions } = await pool.query<{ id: string }>(
+      `INSERT INTO scheduled_sessions
+         (employee_id, program_id, session_date, duration_hours, is_group, group_size, status)
+       VALUES ($1, $2, '2023-06-10', '3', false, 1, 'pending')
+       RETURNING id`,
+      [fact.employee_id, fact.program_id],
+    );
+    await pool.query(
+      `INSERT INTO scheduled_allocations (scheduled_session_id, individual_id, allocation_hours)
+       VALUES ($1, $2, '3')`,
+      [sessions[0]!.id, fact.individual_id],
+    );
+    const exactDaily = {
+      ...R1,
+      checkNumber: "1005",
+      hours: "3",
+      amount: "75",
+      checkDate: "06/10/2023",
+      periodBegin: "06/10/2023",
+      periodEnd: "06/10/2023",
+    };
+    const csv = buildSheet([R1, R2, R3, exactDaily]);
+    const matchingFailurePool: PgLikePool = {
+      query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+        if (sql.includes("SELECT s.id, s.program_id") && sql.includes("FROM scheduled_sessions s")) {
+          return Promise.reject(new Error("temporary schedule matching outage"));
+        }
+        return pool.query<T>(sql, params);
+      },
+      connect: () => pool.connect(),
+    };
+
+    const imported = await runSheetSync(matchingFailurePool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(csv),
+      config: CONFIG,
+    });
+
+    expect(imported.status).toBe("success");
+    expect(imported.added).toBe(1);
+    expect(imported.note).toContain("Transactions were imported successfully");
+    expect(await count("payroll_transactions")).toBe(4);
+    const { rows: importedRuns } = await pool.query<{
+      status: string;
+      reconciliation: { scheduleMatching?: { status?: string; from?: string; to?: string } };
+    }>(`SELECT status, reconciliation FROM sheet_sync_runs WHERE id = $1`, [imported.runId]);
+    expect(importedRuns[0]!.status).toBe("success");
+    expect(importedRuns[0]!.reconciliation.scheduleMatching).toMatchObject({
+      status: "needs_review",
+      from: "2023-06-10",
+      to: "2023-06-10",
+    });
+
+    const retry = await runSheetSync(pool, {
+      trigger: "manual",
+      userId: null,
+      fetcher: okFetcher(csv),
+      config: CONFIG,
+    });
+
+    expect(retry.status).toBe("no_changes");
+    expect(retry.note).toContain("Schedule matching checked 1 eligible planned visit; 1 exact daily record was connected");
+    expect(await count("payroll_transactions")).toBe(4);
+    expect(await pool.query<{ matched_transaction_id: string | null }>(
+      `SELECT matched_transaction_id FROM scheduled_sessions WHERE id = $1`,
+      [sessions[0]!.id],
+    )).toMatchObject({ rows: [{ matched_transaction_id: expect.any(String) }] });
+    const { rows: retriedRuns } = await pool.query<{
+      reconciliation: { scheduleMatching?: { status?: string } };
+    }>(`SELECT reconciliation FROM sheet_sync_runs WHERE id = $1`, [retry.runId]);
+    expect(retriedRuns[0]!.reconciliation.scheduleMatching?.status).toBe("checked");
   });
 
   it("flags a changed row for review instead of duplicating or overwriting it", async () => {
