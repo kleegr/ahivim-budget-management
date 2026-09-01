@@ -25,9 +25,10 @@ describe("portal upcoming schedule UI", () => {
     expect(source).toContain("/portal/schedule?employeeId=${encodeURIComponent(employee.id)}");
   });
 
-  it("renders only schedule facts and counterpart names, never financial components", () => {
+  it("renders only permitted schedule facts and never exposes an employee to a parent", () => {
     expect(scheduleUi).toContain('item.audience === "individual"');
-    expect(scheduleUi).toContain("item.employeeName");
+    expect(scheduleUi).toContain('"Scheduled service"');
+    expect(scheduleUi).not.toContain("item.employeeName");
     expect(scheduleUi).toContain("item.individualNames");
     expect(scheduleUi).toContain("item.durationHours");
     expect(scheduleUi).not.toMatch(/<Money|gross|net|tax|amount|rate/i);

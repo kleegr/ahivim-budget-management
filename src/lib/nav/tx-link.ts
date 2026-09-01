@@ -9,6 +9,8 @@
 export interface TxLinkParams {
   transactionId?: string | null;
   transactionIds?: readonly string[] | null;
+  /** Compact server-resolved source key from Money operations. */
+  settlementSource?: string | null;
   individualId?: string | null;
   employeeId?: string | null;
   program?: string | null;
@@ -32,6 +34,7 @@ export function txLink(p: TxLinkParams): string {
   const q = new URLSearchParams();
   if (p.transactionId) q.set("transactionId", p.transactionId);
   for (const id of p.transactionIds ?? []) q.append("transactionId", id);
+  if (p.settlementSource) q.set("settlementSource", p.settlementSource);
   if (p.individualId) q.set("individualId", p.individualId);
   if (p.employeeId) q.set("employeeId", p.employeeId);
   if (p.program) q.set("program", p.program);

@@ -16,7 +16,6 @@ interface PortalUpcomingAssignmentBase {
 
 export interface PortalIndividualUpcomingAssignment extends PortalUpcomingAssignmentBase {
   audience: "individual";
-  employeeName: string | null;
 }
 
 export interface PortalEmployeeUpcomingAssignment extends PortalUpcomingAssignmentBase {
@@ -56,7 +55,6 @@ export function individualPortalAssignment(session: CalendarSession): PortalIndi
   return {
     ...baseAssignment(session),
     audience: "individual",
-    employeeName: session.employeeName,
   };
 }
 

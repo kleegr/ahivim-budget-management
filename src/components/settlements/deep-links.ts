@@ -1,6 +1,8 @@
 import type { FilterState } from "@/components/data-grid/types";
 import { collectionsPayrollCheckHref } from "@/lib/nav/collections-links";
 import { txLink } from "@/lib/nav/tx-link";
+import { MAX_PAYROLL_CHECK_SOURCE_TRANSACTIONS } from "@/lib/business/payroll-check-source";
+import { validSettlementSourceKey } from "@/lib/business/settlement-source-key";
 
 interface CheckIssueLinkSource {
   sourceId: string;
@@ -80,8 +82,16 @@ export function settlementQueueFilters(queue: SettlementQueueFilter): FilterStat
 }
 
 export function settlementCheckIssueHref(issue: CheckIssueLinkSource): string {
-  if (issue.transactionIds?.length) {
-    return txLink({ transactionIds: issue.transactionIds });
+  const exactSourceRows = issue.transactionIds?.length === issue.transactionCount;
+  if (exactSourceRows && issue.transactionIds?.length === 1) {
+    return txLink({ transactionId: issue.transactionIds[0] });
+  }
+  if (exactSourceRows
+      && issue.transactionIds
+      && issue.transactionIds.length > 1
+      && !UUID.test(issue.sourceId)
+      && validSettlementSourceKey(issue.sourceId)) {
+    return txLink({ settlementSource: issue.sourceId });
   }
   if (issue.transactionCount === 1 && UUID.test(issue.sourceId)) {
     return txLink({ transactionId: issue.sourceId });
@@ -129,11 +139,13 @@ export function settlementCheckIssueAction(
 
   const exactSourceRows = issue.transactionIds?.length === issue.transactionCount;
   const canResolveWithOneVerifiedCheck = issue.issue !== "conflicting_check_date";
-  if (isPayrollCheckFact && exactSourceRows && canResolveWithOneVerifiedCheck && permissions.canRecordPayrollCheck) {
-    return {
-      href: collectionsPayrollCheckHref(issue),
-      label: "Record verified check",
-    };
+  if (isPayrollCheckFact
+      && exactSourceRows
+      && issue.transactionCount <= MAX_PAYROLL_CHECK_SOURCE_TRANSACTIONS
+      && canResolveWithOneVerifiedCheck
+      && permissions.canRecordPayrollCheck) {
+    const href = collectionsPayrollCheckHref(issue);
+    if (href) return { href, label: "Record verified check" };
   }
   if (permissions.canSeeTransactions) {
     return {

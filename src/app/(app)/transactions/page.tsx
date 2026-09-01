@@ -8,6 +8,7 @@ import BilledActivityWorkspace from "@/components/transactions/billed-activity-w
 import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
 import { buildInitialFilters } from "@/lib/transactions/initial-filters";
 import { RefreshCw } from "lucide-react";
+import { listSettlementSourceTransactions } from "@/lib/data/settlement-source-transactions";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Transactions - Ahivim" };
@@ -22,8 +23,11 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   const user = await requireUser("viewer");
   const canManage = user.role !== "viewer";
   const sp = await searchParams;
-  const requestedTransactionIds = many(sp.transactionId);
-  const requestedTransactionId = requestedTransactionIds.length === 1 ? requestedTransactionIds[0] : undefined;
+  const requestedTransactionIdsFromUrl = many(sp.transactionId);
+  const requestedSettlementSource = one(sp.settlementSource);
+  const requestedTransactionId = !requestedSettlementSource && requestedTransactionIdsFromUrl.length === 1
+    ? requestedTransactionIdsFromUrl[0]
+    : undefined;
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
@@ -35,14 +39,28 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         rows: [] as GridTransaction[],
         visibility,
         canSeeBudgets: scope.canSeeBudgets,
+        requestedTransactionIds: [] as string[],
+        sourceSelection: null,
       };
     }
+    const sourceSelection = requestedSettlementSource
+      ? await listSettlementSourceTransactions(pool, scope, requestedSettlementSource)
+      : null;
+    const requestedTransactionIds = sourceSelection
+      ? sourceSelection.transactionIds
+      : requestedTransactionIdsFromUrl;
     return {
       denied: false as const,
       planningOnly: false,
-      rows: await listTransactionsForGrid(pool, scope, { transactionIds: requestedTransactionIds }),
+      rows: sourceSelection
+        ? sourceSelection.rows
+        : await listTransactionsForGrid(pool, scope, {
+            transactionIds: requestedTransactionIds,
+          }),
       visibility,
       canSeeBudgets: scope.canSeeBudgets,
+      requestedTransactionIds,
+      sourceSelection,
     };
   });
 
@@ -61,6 +79,14 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   }
 
   const allRows = result.ok ? result.data.rows : [];
+  const requestedTransactionIds = result.ok
+    ? result.data.requestedTransactionIds
+    : requestedTransactionIdsFromUrl;
+  const sourceSelection = result.ok ? result.data.sourceSelection : null;
+  const sourceUnavailable = Boolean(requestedSettlementSource)
+    && (sourceSelection === null
+      || sourceSelection.tooLarge
+      || requestedTransactionIds.length === 0);
   const selectedTransaction = requestedTransactionId
     ? allRows.find((row) => row.id === requestedTransactionId) ?? null
     : null;
@@ -70,7 +96,9 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     ? (exactSelectionAvailable ? allRows : [])
     : allRows;
   const seeded = result.ok ? buildInitialFilters(rows, sp) : { filters: {}, label: null };
-  const contextLabel = selectedTransaction
+  const contextLabel = requestedSettlementSource && !sourceUnavailable
+    ? `${requestedTransactionIds.length.toLocaleString()} source transaction${requestedTransactionIds.length === 1 ? "" : "s"} from Money operations`
+    : selectedTransaction
     ? `Selected transaction${selectedTransaction.checkNumber ? ` · check ${selectedTransaction.checkNumber}` : ""}`
     : requestedTransactionIds.length > 1
       ? `${requestedTransactionIds.length.toLocaleString()} selected transactions`
@@ -95,6 +123,15 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
 
       {!result.ok ? (
         <ErrorPanel title="Billed activity is unavailable">{result.error}</ErrorPanel>
+      ) : sourceUnavailable ? (
+        <ErrorPanel
+          title={sourceSelection?.tooLarge ? "This source is too large to open" : "Source rows are no longer available"}
+          action={<ButtonLink href="/settlements?focus=check-issues">Back to Money operations</ButtonLink>}
+        >
+          {sourceSelection?.tooLarge
+            ? "This source contains more than 10,000 rows. Return to Money operations and narrow the item before opening it."
+            : "The item may have been resolved, removed, or may be outside your access. Refresh Money operations to see its current source rows."}
+        </ErrorPanel>
       ) : requestedTransactionIds.length > 0 && !exactSelectionAvailable ? (
         <ErrorPanel
           title={requestedTransactionIds.length === 1 ? "This transaction is not available" : "These transactions are not available"}

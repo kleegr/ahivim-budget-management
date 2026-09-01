@@ -141,7 +141,7 @@ describe("Money operations deep links", () => {
       canSeeTransactions: true,
     })).toEqual({
       label: "Record verified check",
-      href: "/masser?view=checks&newCheck=1&employeeId=123e4567-e89b-12d3-a456-426614174000&checkNumber=9001&checkDate=2026-08-15&periodBegin=2026-08-01&periodEnd=2026-08-14&sourceTransactionId=123e4567-e89b-12d3-a456-426614174010&sourceTransactionId=123e4567-e89b-12d3-a456-426614174011&sourceTransactionId=123e4567-e89b-12d3-a456-426614174012",
+      href: "/masser?view=checks&newCheck=1&employeeId=123e4567-e89b-12d3-a456-426614174000&checkNumber=9001&checkDate=2026-08-15&periodBegin=2026-08-01&periodEnd=2026-08-14&settlementSource=employee-1%3Acheck%3A9001%3Adate%3A2026-08-15",
     });
 
     expect(settlementCheckIssueAction({ ...issue, issue: "missing_base" }, {
@@ -149,7 +149,7 @@ describe("Money operations deep links", () => {
       canSeeTransactions: true,
     })).toEqual({
       label: "Inspect source rows",
-      href: "/transactions?transactionId=123e4567-e89b-12d3-a456-426614174010&transactionId=123e4567-e89b-12d3-a456-426614174011&transactionId=123e4567-e89b-12d3-a456-426614174012",
+      href: "/transactions?settlementSource=employee-1%3Acheck%3A9001%3Adate%3A2026-08-15",
     });
   });
 
@@ -174,7 +174,84 @@ describe("Money operations deep links", () => {
       canSeeTransactions: true,
     })).toEqual({
       label: "Inspect source rows",
-      href: "/transactions?transactionId=123e4567-e89b-12d3-a456-426614174010&transactionId=123e4567-e89b-12d3-a456-426614174011",
+      href: "/transactions?settlementSource=employee-1%3Aambiguous-check%3A9001",
+    });
+  });
+
+  it("keeps large source links bounded instead of serializing every transaction UUID", () => {
+    const transactionIds = Array.from({ length: 201 }, (_, index) => (
+      `123e4567-e89b-42d3-a456-${String(index).padStart(12, "0")}`
+    ));
+    const href = settlementCheckIssueHref({
+      sourceId: "123e4567-e89b-42d3-a456-426614174000:check:9001:date:2026-08-15",
+      employeeId: "123e4567-e89b-42d3-a456-426614174000",
+      checkNumber: "9001",
+      checkDate: "2026-08-15",
+      periodBegin: "2026-08-01",
+      periodEnd: "2026-08-14",
+      transactionCount: transactionIds.length,
+      transactionIds,
+    });
+
+    expect(href).toBe("/transactions?settlementSource=123e4567-e89b-42d3-a456-426614174000%3Acheck%3A9001%3Adate%3A2026-08-15");
+    expect(href.length).toBeLessThan(500);
+    expect(href).not.toContain("transactionId=");
+    expect(settlementCheckIssueAction({
+      sourceId: "123e4567-e89b-42d3-a456-426614174000:check:9001:date:2026-08-15",
+      employeeId: "123e4567-e89b-42d3-a456-426614174000",
+      checkNumber: "9001",
+      checkDate: "2026-08-15",
+      periodBegin: "2026-08-01",
+      periodEnd: "2026-08-14",
+      transactionCount: transactionIds.length,
+      transactionIds,
+      issue: "missing_net",
+    }, {
+      canRecordPayrollCheck: true,
+      canSeeTransactions: true,
+    })).toEqual({
+      label: "Inspect source rows",
+      href,
+    });
+  });
+
+  it("falls back safely when an imported source key cannot be represented compactly", () => {
+    const href = settlementCheckIssueHref({
+      sourceId: "employee-1:check:bad\nnumber:date:2026-08-15",
+      employeeId: "123e4567-e89b-42d3-a456-426614174000",
+      checkNumber: "bad\nnumber",
+      checkDate: "2026-08-15",
+      periodBegin: null,
+      periodEnd: null,
+      transactionCount: 2,
+      transactionIds: [
+        "123e4567-e89b-42d3-a456-426614174010",
+        "123e4567-e89b-42d3-a456-426614174011",
+      ],
+    });
+
+    expect(href).not.toContain("settlementSource=");
+    expect(href).toContain("employeeId=");
+
+    const transactionIds = Array.from({ length: 21 }, (_, index) => (
+      `123e4567-e89b-42d3-a456-${String(index).padStart(12, "0")}`
+    ));
+    expect(settlementCheckIssueAction({
+      sourceId: "employee-1:check:bad\nnumber:date:2026-08-15",
+      employeeId: "123e4567-e89b-42d3-a456-426614174000",
+      checkNumber: "bad\nnumber",
+      checkDate: "2026-08-15",
+      periodBegin: null,
+      periodEnd: null,
+      transactionCount: transactionIds.length,
+      transactionIds,
+      issue: "missing_net",
+    }, {
+      canRecordPayrollCheck: true,
+      canSeeTransactions: true,
+    })).toEqual({
+      label: "Inspect source rows",
+      href: "/transactions?employeeId=123e4567-e89b-42d3-a456-426614174000&checkNumber=bad%0Anumber&period=2026-08-15..2026-08-15",
     });
   });
 

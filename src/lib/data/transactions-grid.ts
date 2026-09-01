@@ -61,13 +61,20 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 export async function listTransactionsForGrid(
   pool: PgLikePool,
   scope?: AccessScope,
-  opts?: { employeeId?: string; transactionId?: string; transactionIds?: string[] },
+  opts?: {
+    employeeId?: string;
+    transactionId?: string;
+    transactionIds?: string[];
+    /** IDs already resolved from a bounded, access-scoped server-side source. */
+    allowLargeTransactionSelection?: boolean;
+  },
 ): Promise<GridTransaction[]> {
   const requestedIds = [...new Set([
     ...(opts?.transactionId ? [opts.transactionId] : []),
     ...(opts?.transactionIds ?? []),
   ])];
-  if (requestedIds.length > 200 || requestedIds.some((id) => !UUID_PATTERN.test(id))) return [];
+  const selectionLimit = opts?.allowLargeTransactionSelection ? 10_000 : 200;
+  if (requestedIds.length > selectionLimit || requestedIds.some((id) => !UUID_PATTERN.test(id))) return [];
   // Ledger access follows direct grants, not the wider connected-navigation sets.
   const params: unknown[] = [];
   const scopeClause = scope

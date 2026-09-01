@@ -32,6 +32,7 @@ vi.mock("@/lib/manage/agencies", () => ({
 vi.mock("@/lib/manage/audit", () => ({ recordChange: mocks.recordChange }));
 
 import { provisionUser } from "@/lib/auth/provision-user";
+import { PORTAL_ONLY_ACCESS } from "@/lib/auth/account-presets";
 
 const USER = "00000000-0000-4000-8000-000000000001";
 const ACTOR = "00000000-0000-4000-8000-000000000002";
@@ -153,6 +154,43 @@ describe("atomic preset user provisioning", () => {
         null,
       );
     }
+  });
+
+  it("provisions an agency collector as a read-only external portal, not an internal Masser operator", async () => {
+    const { pool } = mockPool();
+
+    const result = await provisionUser(pool, {
+      ...base("agency_collector"),
+      agencyId: SUBJECT,
+    }, ACTOR);
+
+    expect(result).toMatchObject({ ok: true, data: { preset: "agency_collector" } });
+    expect(mocks.createUserWithAccessQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ role: "viewer" }),
+      PORTAL_ONLY_ACCESS,
+      ACTOR,
+    );
+    expect(PORTAL_ONLY_ACCESS).toMatchObject({
+      canSeeSettlements: false,
+      canManageSettlements: false,
+      canSeeTransactions: false,
+      canSeeEmployeeDeals: false,
+      seeAllIndividuals: false,
+      seeAllEmployees: false,
+    });
+    expect(mocks.setAgencyUserAccessQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      SUBJECT,
+      expect.objectContaining({
+        userId: USER,
+        role: "collector",
+        capabilityGrants: [],
+        capabilityDenials: [],
+      }),
+      ACTOR,
+      null,
+    );
   });
 
   it("rolls the new login back when a later portal binding fails", async () => {

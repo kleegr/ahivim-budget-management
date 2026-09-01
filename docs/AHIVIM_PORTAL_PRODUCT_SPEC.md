@@ -1332,12 +1332,12 @@ This appendix summarizes the current repository and `PRODUCT_TRACEABILITY.md`. I
 
 No complete row is yet classified as **Production verified**.
 
-There is meaningful partial production evidence: a deployed September 1, 2026 build passed database/environment health; representative owner transaction and Agency Financials totals were reconciled; owner Masser, repair links, read-only Sheet refresh, Owner-to-Owner Sign In As, and private document storage were observed. This does not replace role-by-role direct-login, mobile, mutating workflow, or external-integration acceptance.
+There is meaningful partial production evidence: production commit `2801cf164af974fc78b8f94dd085ecafab54e3ea` passed database, schema, environment, and XLSX health; representative owner transaction and Agency Financials totals were reconciled; and owner Masser, agencies, schedule matching, repair links, read-only Sheet refresh, Owner-to-Owner Sign In As, and private document storage were observed. This does not replace role-by-role direct-login, mobile, mutating workflow, privacy-payload, or external-integration acceptance. In particular, that deployed baseline does not prove parent schedule privacy or bounded multi-row source links; the current hardening removes employee identity from parent schedules and replaces repeated transaction IDs with access-scoped source keys, pending deployment and direct-login acceptance.
 
 ### A.3 Implemented in the current product, pending full production acceptance
 
 - Canonical transaction ledger and date logic
-- Spreadsheet-style transaction filters, multi-person selection, totals, drilldowns, and exports
+- Spreadsheet-style transaction filters, multi-person selection, totals, exports, and compact access-scoped Money-operation source drilldowns
 - Current budget balances, renewals, pace, history, billing-without-budget, and planner hour authorization edits
 - Group service detection and allocation rules
 - Funder billed, employee base, and agency spread separation
@@ -1357,26 +1357,16 @@ There is meaningful partial production evidence: a deployed September 1, 2026 bu
 - Classes allowances, invoice issue/void, cover sheets, and saved output
 - Private document library and current PDF form/overlay editor
 - Preset user provisioning, granular portal capabilities, and Sign In As
-- Individual/parent, employee, agency/provider, agency scheduler, agency staffing, and agency collector portals
+- Individual/parent, employee, agency/provider, agency scheduler, agency staffing, and agency collector portals; the current parent schedule projection contains service facts only and omits employee identity
 - First-click progress and actionable error patterns across high-use workflows
 
 All items above still require the applicable production reconciliation, direct-login privacy review, desktop/mobile acceptance, and real mutation tests listed in `PRODUCT_TRACEABILITY.md`.
 
-### A.4 Current release-candidate database change
+### A.4 Current production baseline
 
-The current working tree adds migration `0038_unique_schedule_transaction_match.sql` to enforce that one recorded transaction cannot be matched to two planned visits. Before production applies it, the duplicate preflight must return zero rows:
+Production commit `2801cf164af974fc78b8f94dd085ecafab54e3ea` was deployed as Vercel deployment `8dSn6Jz1m2iHy153rgsKtfFgarAP` and assigned to `https://ahivim-budget-management.vercel.app`. The database, schema, environment, and XLSX health checks passed; the database reported all 39 migrations applied and 73 public tables. Migration `0038_unique_schedule_transaction_match.sql` is therefore active and enforces that one recorded transaction cannot be matched to two planned visits.
 
-```sql
-SELECT matched_transaction_id,
-       count(*) AS session_count,
-       array_agg(id ORDER BY id) AS session_ids
-FROM scheduled_sessions
-WHERE matched_transaction_id IS NOT NULL
-GROUP BY matched_transaction_id
-HAVING count(*) > 1;
-```
-
-The September 1 production evidence in `PRODUCT_TRACEABILITY.md` covers the earlier 38-migration deployment, not this new migration.
+This is deployment and owner smoke-test evidence. It is not role-by-role production acceptance. The privacy and bounded-link hardening described in A.2 is newer than this baseline and must be deployed and accepted separately.
 
 ### A.5 External blockers and known limits
 
@@ -1410,14 +1400,15 @@ Private storage is configured, but upload, edit, save, reopen, second save, rest
 
 ### A.6 Remaining acceptance work
 
-1. Deploy the exact release candidate and confirm migrations, schema, environment, and health.
+1. Retain `2801cf1` as the accepted production baseline; deploy each subsequent hardening commit and rerun database, schema, environment, XLSX health, and migration-count verification.
 2. Run the complete unit, type, lint, build, and database integration suites with no skipped required suite.
 3. Reconcile representative normal, group, renewal, no-budget, direct-pay, agency-routed, Masser, class, manual-income, split, and owner-result cases.
 4. Provision every preset through the real user flow and test a direct login on desktop and mobile.
-5. Inspect server responses and exports for forbidden role data, especially planner money fields and external-person leakage.
-6. Complete real Sheet write-back and private document round trips.
-7. Obtain class PDF visual approval.
-8. Make and document the commercial PDF SDK versus overlay-only product decision.
+5. Inspect server responses and exports for forbidden role data, especially planner money fields, parent schedule employee identity, internal IDs, and external-person leakage.
+6. Browser-test compact Money-operation source navigation with 1, 70, and 201 rows, including stale and copied links under restricted access.
+7. Complete real Sheet write-back and private document round trips.
+8. Obtain class PDF visual approval.
+9. Make and document the commercial PDF SDK versus overlay-only product decision.
 
 ---
 

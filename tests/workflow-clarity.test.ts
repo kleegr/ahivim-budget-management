@@ -6,6 +6,7 @@ const nav = readFileSync("src/components/app-nav.tsx", "utf8");
 const layout = readFileSync("src/app/(app)/layout.tsx", "utf8");
 const transactionPage = readFileSync("src/app/(app)/transactions/page.tsx", "utf8");
 const transactionGrid = readFileSync("src/components/transactions/transactions-grid.tsx", "utf8");
+const masserPage = readFileSync("src/app/(app)/masser/page.tsx", "utf8");
 const users = readFileSync("src/components/settings/user-access-admin.tsx", "utf8");
 const ui = readFileSync("src/components/ui.tsx", "utf8");
 
@@ -35,6 +36,14 @@ describe("primary workflow clarity", () => {
   it("takes an empty transaction ledger to the Sheet refresh workflow", () => {
     expect(transactionPage).toContain('<ButtonLink href="/sync" variant="primary">');
     expect(transactionPage).toContain("Open Google Sheet sync");
+  });
+
+  it("opens Money-operation source rows through a compact server-scoped key", () => {
+    expect(transactionPage).toContain("listSettlementSourceTransactions");
+    expect(transactionPage).toContain("source transaction");
+    expect(transactionPage).toContain('href="/settlements?focus=check-issues"');
+    expect(masserPage).toContain("resolveSettlementSourceTransactions");
+    expect(masserPage).toContain("Source rows are no longer available");
   });
 
   it("opens the actual individual budget from transaction details", () => {

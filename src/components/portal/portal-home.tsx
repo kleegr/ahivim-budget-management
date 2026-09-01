@@ -94,7 +94,7 @@ export function UpcomingSchedule({
           <ul className="divide-y divide-[var(--color-rule)]">
             {visibleItems.map((item, index) => {
               const counterpart = item.audience === "individual"
-                ? item.employeeName ?? "Employee to be assigned"
+                ? "Scheduled service"
                 : item.individualNames.length > 0
                   ? item.individualNames.join(", ")
                   : "Individual to be assigned";

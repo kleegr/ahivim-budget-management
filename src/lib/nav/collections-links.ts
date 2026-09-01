@@ -1,3 +1,6 @@
+import { MAX_PAYROLL_CHECK_SOURCE_TRANSACTIONS } from "@/lib/business/payroll-check-source";
+import { validSettlementSourceKey } from "@/lib/business/settlement-source-key";
+
 export type CollectionsView = "summary" | "targets" | "checks";
 
 export interface PayrollCheckDraft {
@@ -12,6 +15,7 @@ export interface PayrollCheckDraft {
 type SearchValues = Record<string, string | string[] | undefined>;
 
 interface PayrollCheckLinkSource {
+  sourceId?: string;
   employeeId: string;
   checkNumber: string | null;
   checkDate: string | null;
@@ -29,6 +33,7 @@ interface CollectionsAccess {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_EXPLICIT_SOURCE_IDS_IN_URL = 20;
 
 function first(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -51,11 +56,17 @@ function checkNumberParam(value: string | string[] | undefined): string | null {
 function sourceTransactionIdsParam(value: string | string[] | undefined): string[] | null {
   if (value === undefined) return [];
   const values = (Array.isArray(value) ? value : [value]).map((item) => item.trim());
-  if (values.length > 200 || values.some((item) => !UUID.test(item))) return null;
+  if (values.length > MAX_PAYROLL_CHECK_SOURCE_TRANSACTIONS
+      || values.some((item) => !UUID.test(item))) return null;
   return [...new Set(values)];
 }
 
-export function collectionsPayrollCheckHref(source: PayrollCheckLinkSource): string {
+export function collectionsSettlementSourceParam(search: SearchValues): string | null {
+  const candidate = first(search.settlementSource);
+  return candidate && validSettlementSourceKey(candidate) ? candidate : null;
+}
+
+export function collectionsPayrollCheckHref(source: PayrollCheckLinkSource): string | null {
   const params = new URLSearchParams({
     view: "checks",
     newCheck: "1",
@@ -65,7 +76,16 @@ export function collectionsPayrollCheckHref(source: PayrollCheckLinkSource): str
   if (source.checkDate) params.set("checkDate", source.checkDate);
   if (source.periodBegin) params.set("periodBegin", source.periodBegin);
   if (source.periodEnd) params.set("periodEnd", source.periodEnd);
-  for (const id of source.transactionIds ?? []) params.append("sourceTransactionId", id);
+  if ((source.transactionIds?.length ?? 0) > 1
+      && source.sourceId
+      && !UUID.test(source.sourceId)
+      && validSettlementSourceKey(source.sourceId)) {
+    params.set("settlementSource", source.sourceId);
+  } else if ((source.transactionIds?.length ?? 0) <= MAX_EXPLICIT_SOURCE_IDS_IN_URL) {
+    for (const id of source.transactionIds ?? []) params.append("sourceTransactionId", id);
+  } else {
+    return null;
+  }
   return `/masser?${params.toString()}`;
 }
 
@@ -94,6 +114,7 @@ export function collectionsFocusedPayrollCheckId(search: SearchValues): string |
 export function collectionsInitialState(
   search: SearchValues,
   access: CollectionsAccess,
+  options: { resolvedSourceTransactionIds?: readonly string[] | null } = {},
 ): { view: CollectionsView; checkDraft: PayrollCheckDraft | null } {
   const requestedView = first(search.view);
   const view: CollectionsView = requestedView === "checks" && access.canOpenChecks
@@ -103,7 +124,14 @@ export function collectionsInitialState(
       : "summary";
 
   const employeeId = first(search.employeeId) ?? "";
-  const sourceTransactionIds = sourceTransactionIdsParam(search.sourceTransactionId);
+  const resolvedSourceIds = options.resolvedSourceTransactionIds;
+  const sourceTransactionIds = resolvedSourceIds === undefined
+    ? sourceTransactionIdsParam(search.sourceTransactionId)
+    : resolvedSourceIds === null
+      || resolvedSourceIds.length > MAX_PAYROLL_CHECK_SOURCE_TRANSACTIONS
+      || resolvedSourceIds.some((id) => !UUID.test(id))
+      ? null
+      : [...new Set(resolvedSourceIds)];
   const canPrefill = view === "checks"
     && first(search.newCheck) === "1"
     && access.canCreateCheck

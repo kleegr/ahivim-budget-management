@@ -329,4 +329,27 @@ describe("actionable review read models", () => {
     expect(invalid).toEqual([]);
     expect(calls).toHaveLength(1);
   });
+
+  it("accepts a large selection only after a server-side scoped source resolved it", async () => {
+    const transactionIds = Array.from({ length: 201 }, (_, index) => (
+      `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`
+    ));
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const pool = {
+      query: async (sql: string, params: unknown[]) => {
+        calls.push({ sql, params });
+        return { rows: [] };
+      },
+    };
+
+    await expect(listTransactionsForGrid(pool as never, undefined, { transactionIds })).resolves.toEqual([]);
+    expect(calls).toHaveLength(0);
+
+    await listTransactionsForGrid(pool as never, undefined, {
+      transactionIds,
+      allowLargeTransactionSelection: true,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.params).toEqual([transactionIds]);
+  });
 });

@@ -43,7 +43,7 @@ function session(overrides: Partial<CalendarSession> = {}): CalendarSession {
 describe("portal-safe upcoming schedules", () => {
   beforeEach(() => mocks.listSessions.mockReset());
 
-  it("shows a parent only the linked person's service facts and assigned employee", async () => {
+  it("shows a parent only the linked person's service facts without employee identity", async () => {
     mocks.listSessions.mockResolvedValue([session()]);
 
     const schedule = await individualPortalUpcomingSchedule(pool, INDIVIDUAL, "2026-06-01");
@@ -66,12 +66,12 @@ describe("portal-safe upcoming schedules", () => {
         durationHours: "2.0000",
         programName: "Community Habilitation",
         isGroup: true,
-        employeeName: "Assigned Employee",
       }],
     });
     const payload = JSON.stringify(schedule);
+    expect(payload).not.toContain("Assigned Employee");
     expect(payload).not.toContain("Other Group Member");
-    expect(payload).not.toMatch(/individualIds|employeeId|programId|seriesId|warning|amount|rate/i);
+    expect(payload).not.toMatch(/individualIds|employeeId|employeeName|programId|seriesId|warning|amount|rate/i);
   });
 
   it("shows an employee only the people assigned to that employee's visit", async () => {

@@ -1,6 +1,7 @@
 import type { DirectPayTargetInterval } from "@/lib/business/direct-pay-targets";
 import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { recordChange } from "@/lib/manage/audit";
+import { MAX_PAYROLL_CHECK_SOURCE_TRANSACTIONS } from "@/lib/business/payroll-check-source";
 import { fail, ok, type Result } from "@/lib/manage/errors";
 import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
 import { dec, toMoney } from "@/lib/money";
@@ -432,7 +433,8 @@ export async function savePayrollCheck(
     return fail("validation", "Choose a valid verification status.");
   }
   const requestedSourceIds = input.sourceTransactionIds ?? [];
-  if (requestedSourceIds.length > 200 || requestedSourceIds.some((id) => !UUID.test(id))) {
+  if (requestedSourceIds.length > MAX_PAYROLL_CHECK_SOURCE_TRANSACTIONS
+      || requestedSourceIds.some((id) => !UUID.test(id))) {
     return fail("validation", "Choose valid source transactions.");
   }
   const sourceTransactionIds = [...new Set(requestedSourceIds)];
