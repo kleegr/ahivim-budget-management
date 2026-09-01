@@ -390,6 +390,8 @@ The restriction applies to navigation, pages, API responses, exports, error deta
 - Partial, extra, correction, reversal, and multi-select completion workflows
 - Compact source references needed to explain an obligation
 
+The owner can grant the collector each sensitive category independently: amount due, amount actually collected, employee collection history, and individual put-away history. The preset must not silently reveal every collection category when only one part of the job was assigned.
+
 **Must not see:** Budget planning, authorized budget dollars, owner agency profit, agency spread, or unrelated financial information outside the collection job.
 
 The collector's statement for an individual shows aggregate billed and put-away information without naming employees or exposing employee checks, taxes, or deal terms.
@@ -406,7 +408,7 @@ The collector's statement for an individual shows aggregate billed and put-away 
 
 **Purpose:** Understand the linked individual's approved services and aggregate financial position.
 
-**Can see:** Only directly linked individuals and only granted categories, including approved hours or budgets, selected-month aggregates, money put away, remaining position, a 12-month trend, schedule when granted, and privacy-safe print or download statements.
+**Can see:** Only directly linked individuals and only granted categories. Financial statements show, by month and in total, aggregate amount billed, aggregate cut or difference, approved put-away, actual put-away, and remaining. The portal may also show approved hours or budgets, a 12-month trend, schedule when granted, and privacy-safe print or download statements.
 
 **Must not see:** Other individuals, employee identity, employee checks, check numbers, gross, net, taxes, employee deal terms, collections from an employee, or agency profit.
 
@@ -414,7 +416,7 @@ The collector's statement for an individual shows aggregate billed and put-away 
 
 **Purpose:** Understand the employee's own direct-pay checks and balance.
 
-**Can see:** Only the linked employee's verified direct checks, permitted gross/net/withholding fields, direct-pay service history, give-back calculation, payments, credit, and remaining balance. Categories can be enabled or denied.
+**Can see:** Only the linked employee's verified direct checks, permitted gross/net/withholding fields, direct-pay service history, give-back calculation, payments, credit, remaining balance, and the net amount the employee ultimately keeps. Categories can be enabled or denied. The owner can choose whether the employee sees all permitted history or only payments made directly to that employee.
 
 **Must not see:** Other employees, unrelated individuals, agency-routed transaction activity presented as direct pay, agency profit, individual financial setup, or denied fields.
 
@@ -422,7 +424,7 @@ The collector's statement for an individual shows aggregate billed and put-away 
 
 **Purpose:** See approved rollups across that agency's dated roster.
 
-**Can see:** Linked individuals and employees, program and person rollups, approved hour or dollar categories, granted financial summaries, and permitted check-level drilldowns.
+**Can see:** Linked individuals and employees, program and person rollups, and only the categories explicitly enabled for that agency. Independent visibility choices include hours, authorized budgets, actual billed amounts, cuts and put-away, employee-direct payments, agency-received payments, check details, and source transactions. An agency can be individual-centered, employee-centered, or both.
 
 **Must not see:** People outside roster dates, denied categories, the agency-wide owner result, internal user administration, or broader person activity that cannot be attributed to the selected agency.
 
@@ -494,6 +496,8 @@ The owner Home includes:
 - Monthly actual income, expenses, agency result, employee collections, agency payments, and individual set-asides
 - Multi-person selection and named saved views
 - Direct links from every total to its source
+- An all-individuals working table with selectable and reorderable columns, renewal date prominent by default, multi-person selection, and totals that follow the current filters
+- A clearly visible Sync now control with last-sync time and separate push and pull results
 
 A failure in one financial section must not blank the operational overview.
 
@@ -547,6 +551,8 @@ A private document library and PDF editor with upload, search, version history, 
 
 A decision-oriented report library. Each report states the question it answers and its date basis, keeps money stages separate, and exports the same filtered rows shown on the screen.
 
+The named **Payroll and checks** report filters by payroll period, check date, check number, employee, individual, program, and payment recipient. The owner can select multiple people, see who was paid and the matching totals, and open the exact source transactions.
+
 ### 7.12 Owner Agency Financials
 
 An owner-only selected-month report using actual recorded income and the approved expense rules. It is not a projection or budget forecast. See Section 12.
@@ -577,7 +583,7 @@ Actual transaction visibility must not depend on creating a deal for every impor
 
 ### 7.18 Users & Settings
 
-The owner creates users through a simple preset chooser, binds the person or agency, sets category access, generates a temporary password, and can preview the resulting portal. Settings also maintain global programs, agencies, roles, aliases, and operating configuration.
+The normal create-user path asks only for name, email, preset role, and the linked person or agency. It then generates a temporary password and offers Sign In As for review. Advanced grants, denials, and category overrides stay collapsed unless the owner needs an exception. Settings also maintain global programs, agencies, roles, aliases, and operating configuration.
 
 ---
 
@@ -734,7 +740,7 @@ The Google Sheet remains the source feed for actual payroll/billing transactions
 
 ### 10.2 The update button
 
-The workspace provides one clear **Sync now** action. A full configured round trip:
+The workspace provides one clear **Sync now** action, reachable immediately from the owner Home or persistent navigation. It shows the last successful sync time. A full configured round trip:
 
 1. Pushes eligible pending Paid-marker changes to the Sheet.
 2. Pulls the latest Sheet rows.
@@ -880,7 +886,7 @@ For a verified payroll check:
 
 `withholding/taxes = check gross - check net`
 
-Taxes are tracked as an expense in the owner actual financial report because the agency did not keep that amount. Taxes are not an agency cut and are not part of the employee give-back percentage.
+Withholding is counted only for a verified check paid directly to an employee under a self-hire program such as Comhab or Respite. It is not inferred for agency-routed payments. For an eligible direct-pay check, taxes are tracked as an expense in the owner actual financial report because the agency did not keep that amount. Taxes are not an agency cut and are not part of the employee give-back percentage.
 
 ### 12.5 Direct-pay employee give-back
 
@@ -911,17 +917,21 @@ For custom programs, classes, reimbursements, or other manually received income,
 
 Splits may differ by individual. They must not overlap for the same person/program/date. A required missing split is a review condition, not permission to assume a favorable result.
 
+The system keeps five stages distinct: authorized allowance, amount manually billed, agency/individual split, actual receipt, and remaining allowance. Recording a billing event does not automatically record cash received.
+
 ### 12.8 Owner Agency Financials: actuals only
 
 This owner-only report answers:
 
-**What actual income was recorded, what actual expenses apply, and what remains for the agency for the selected month?**
+**What actual income was recorded, what actual expenses apply, and what remains for the agency for the selected reporting period?**
+
+The report clearly identifies and supports its selected date basis, such as service month, check date, or payroll period. Totals never silently switch from one basis to another.
 
 It must not use projected budgets as income.
 
 #### Income
 
-- Actual committed Google Sheet transactions in the selected service month
+- Actual committed Google Sheet transactions included by the selected date basis
 - Manually recorded actual receipts for classes, reimbursements, custom programs, or other income
 
 An issued class invoice is a receivable reference. It is not cash income until the actual receipt is recorded.
@@ -956,6 +966,8 @@ The owner can record an actual receipt with:
 - Note and audit reason
 
 The system prevents duplicate enrichment of the same Sheet payment, supports separate receipts, and voids through an audited reversal rather than deletion.
+
+A manually recorded billed amount and a manually recorded receipt are separate events. Billing can consume an allowance or establish a receivable; only the receipt becomes cash income.
 
 ---
 
@@ -1000,6 +1012,8 @@ The balance may increase or decrease as new obligations and events are recorded.
 
 The statement shows, by month and in total:
 
+- Aggregate amount billed
+- Aggregate cut or difference
 - Approved target
 - Recorded put-away
 - Corrections/reversals
@@ -1020,7 +1034,7 @@ Financial Setup defines the approved arrangement. Masser executes and tracks it.
 
 The owner can add a reusable program in Settings, then assign a dated authorization to selected individuals. A custom program may be hourly, dollar-based, payroll-backed, invoice-backed, or manually consumed according to its configuration.
 
-For annual side-income programs, the individual record shows authorized, billed/posted, and remaining dollars. Actual receipts are recorded separately for Agency Financials.
+For annual side-income programs, the individual record separately shows authorized allowance, manually billed amount, agency/individual split, actual receipt, and remaining allowance. Actual receipts are recorded separately for Agency Financials and are never inferred merely because an invoice or billing event exists.
 
 ### 14.2 Class allowance
 
@@ -1032,16 +1046,18 @@ The class billing user can:
 
 - Choose an individual and active allowance
 - Choose class activities
-- Start from standard rates and edit permitted details
-- Generate a default month with up to 22 eligible service dates
+- Start from the standard activity and rate template and edit permitted details
+- Normally propose 22 eligible service dates for the month
 - Never generate a Saturday service date
-- Add, remove, or edit dates and lines before issue
+- Add, remove, or edit dates, lines, and the permitted total before issue
 - Preview the invoice and cover sheet
 - Save a draft
 - Issue the invoice atomically
 - Void an issued invoice with a reason
 
 Issuing consumes the allowance. Voiding reverses that consumption. Drafts do not consume the allowance.
+
+Where the configured activity and rates support it, the normal template may produce the agency's typical approximately $30,000 monthly invoice. The supplied `BM XS Invoice 08.pdf`, `YN XS Invoice 08.pdf`, and `Cover_Sheets_August_2026.pdf` are the visual acceptance references for invoice and cover-sheet fidelity.
 
 ### 14.4 Cover sheets and saved output
 
@@ -1115,6 +1131,7 @@ Reports exist to answer decisions, not to create disconnected copies of data.
 ### 16.2 Money and planning
 
 - **Agency financials:** owner-only actual income, expenses, and result
+- **Payroll and checks:** payroll period, check date/number, employee, individual, program, recipient, multi-person totals, and exact transaction drilldown
 - **Billing spread by program:** funder billed, employee base, and agency spread
 - **Employee base by recipient:** employee base grouped by employee and payment recipient
 - **Program performance:** people, credited hours, physical hours, funder billed, employee base, and spread

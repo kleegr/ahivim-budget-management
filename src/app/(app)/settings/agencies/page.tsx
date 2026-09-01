@@ -119,7 +119,7 @@ export default async function AgencySettingsPage({
     };
   });
 
-  if (result.ok && result.data === null) redirect("/portal?denied=1");
+  if (result.ok && result.data === null) redirect("/home?denied=1");
   const activeUsers = result.ok && result.data ? result.data.users : [];
   const globalRoles = result.ok && result.data ? result.data.globalRoles : [];
   const individualOptions = result.ok && result.data ? result.data.individuals : [];

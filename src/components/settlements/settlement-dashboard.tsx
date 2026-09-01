@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowDownLeft, ArrowUpRight, BadgeCheck, CreditCard, PiggyBank } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, BadgeCheck, ChevronLeft, ChevronRight, CreditCard, PiggyBank } from "lucide-react";
 import { FilterBar, HeaderFilter } from "@/components/data-grid/filter-bar";
 import SortMenu from "@/components/data-grid/sort-menu";
 import { Toolbar } from "@/components/data-grid/toolbar";
@@ -640,6 +640,20 @@ const CHECK_ISSUE_COPY: Record<DirectCheckIssue["issue"], { label: string; guida
   },
 };
 
+const CHECK_ISSUE_PAGE_SIZE = 25;
+
+function checkIssueSearchText(issue: DirectCheckIssue): string {
+  return [
+    issue.employeeName,
+    issue.checkNumber,
+    issue.checkDate,
+    issue.periodBegin,
+    issue.periodEnd,
+    checkIssueReference(issue),
+    CHECK_ISSUE_COPY[issue.issue].label,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
 function CheckIssues({
   data,
   canManagePayrollChecks,
@@ -652,6 +666,9 @@ function CheckIssues({
   focused: boolean;
 }) {
   const targetRef = useDeepLinkTarget<HTMLElement>(focused);
+  const [search, setSearch] = useState("");
+  const [issuePage, setIssuePage] = useState(0);
+  const deferredSearch = useDeferredValue(search);
   if (data.checkIssues.length === 0) {
     if (!focused) return null;
     return (
@@ -670,6 +687,14 @@ function CheckIssues({
 
   const counts = new Map<DirectCheckIssue["issue"], number>();
   for (const issue of data.checkIssues) counts.set(issue.issue, (counts.get(issue.issue) ?? 0) + 1);
+  const searchNeedle = deferredSearch.trim().toLowerCase();
+  const filteredIssues = searchNeedle
+    ? data.checkIssues.filter((issue) => checkIssueSearchText(issue).includes(searchNeedle))
+    : data.checkIssues;
+  const issuePageCount = Math.max(1, Math.ceil(filteredIssues.length / CHECK_ISSUE_PAGE_SIZE));
+  const currentIssuePage = Math.min(issuePage, issuePageCount - 1);
+  const visibleIssueStart = currentIssuePage * CHECK_ISSUE_PAGE_SIZE;
+  const visibleIssues = filteredIssues.slice(visibleIssueStart, visibleIssueStart + CHECK_ISSUE_PAGE_SIZE);
 
   return (
     <section
@@ -695,8 +720,30 @@ function CheckIssues({
           <p id="direct-check-issues-help" className="text-xs leading-5 text-[var(--color-ink-soft)]">
             Direct give-backs use a verified whole-check record; other issues stay tied to their source rows. Resolve the item, then refresh payments.
           </p>
+          {data.checkIssues.length > CHECK_ISSUE_PAGE_SIZE || search.length > 0 ? (
+            <div className="mt-3 flex flex-wrap items-end gap-2">
+              <label className="min-w-56 flex-1 text-xs font-medium text-[var(--color-ink-soft)]">
+                Find a payroll source
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(event) => {
+                    setSearch(event.target.value);
+                    setIssuePage(0);
+                  }}
+                  placeholder="Employee, check, date, or issue"
+                  className="input mt-1 w-full"
+                />
+              </label>
+              <span className="pb-2 text-xs tabular-nums text-[var(--color-ink-faint)]" aria-live="polite">
+                {filteredIssues.length === 0
+                  ? "No matches"
+                  : `Showing ${visibleIssueStart + 1}-${visibleIssueStart + visibleIssues.length} of ${filteredIssues.length}`}
+              </span>
+            </div>
+          ) : null}
           <ul aria-describedby="direct-check-issues-help" className="mt-2 divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)]">
-            {data.checkIssues.map((issue) => {
+            {visibleIssues.map((issue) => {
               const copy = CHECK_ISSUE_COPY[issue.issue];
               const action = settlementCheckIssueAction(issue, {
                 canRecordPayrollCheck: canManagePayrollChecks,
@@ -733,6 +780,34 @@ function CheckIssues({
               );
             })}
           </ul>
+          {filteredIssues.length === 0 ? (
+            <p className="py-4 text-center text-sm text-[var(--color-ink-soft)]">No payroll sources match that search.</p>
+          ) : null}
+          {filteredIssues.length > CHECK_ISSUE_PAGE_SIZE ? (
+            <div className="mt-3 flex items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIssuePage(Math.max(0, currentIssuePage - 1))}
+                disabled={currentIssuePage === 0}
+                className="btn btn-sm btn-ghost gap-1"
+              >
+                <ChevronLeft size={15} aria-hidden="true" />
+                Previous
+              </button>
+              <span className="min-w-20 text-center text-xs tabular-nums text-[var(--color-ink-faint)]">
+                Page {currentIssuePage + 1} of {issuePageCount}
+              </span>
+              <button
+                type="button"
+                onClick={() => setIssuePage(Math.min(issuePageCount - 1, currentIssuePage + 1))}
+                disabled={currentIssuePage >= issuePageCount - 1}
+                className="btn btn-sm btn-ghost gap-1"
+              >
+                Next
+                <ChevronRight size={15} aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
           {!canManagePayrollChecks && !canSeeTransactions ? (
             <p className="mt-2 text-xs text-[var(--color-ink-soft)]">An administrator with payroll-check or billed-activity access must resolve these items.</p>
           ) : null}

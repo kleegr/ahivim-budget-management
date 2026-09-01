@@ -32,7 +32,7 @@ export default async function AgenciesPage({
     ));
   });
 
-  if (result.ok && result.data === null) redirect("/portal?denied=1");
+  if (result.ok && result.data === null) redirect("/home?denied=1");
 
   return (
     <>

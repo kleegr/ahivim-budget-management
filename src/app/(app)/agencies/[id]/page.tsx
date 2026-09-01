@@ -34,7 +34,7 @@ export default async function AgencyProfilePage({
     return { denied: false as const, agency: findAgencyDirectoryEntry(directory, id) };
   });
 
-  if (result.ok && result.data.denied) redirect("/portal?denied=1");
+  if (result.ok && result.data.denied) redirect("/home?denied=1");
   if (result.ok && !result.data.agency) notFound();
 
   const agency = result.ok ? result.data.agency : null;

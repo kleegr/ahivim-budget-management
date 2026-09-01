@@ -16,4 +16,17 @@ describe("restricted-route recovery", () => {
     expect(dashboard).not.toContain("That page is not part of your access");
     expect(ownerDashboard).not.toContain("That page is not part of your access");
   });
+
+  it("returns restricted agency pages to each user's own role workspace", () => {
+    const agencyRoutes = [
+      "src/app/(app)/settings/agencies/page.tsx",
+      "src/app/(app)/agencies/page.tsx",
+      "src/app/(app)/agencies/[id]/page.tsx",
+    ].map((path) => readFileSync(path, "utf8"));
+
+    for (const route of agencyRoutes) {
+      expect(route).toContain('redirect("/home?denied=1")');
+      expect(route).not.toContain('redirect("/portal?denied=1")');
+    }
+  });
 });
