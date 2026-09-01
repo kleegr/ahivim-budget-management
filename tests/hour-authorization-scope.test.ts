@@ -93,7 +93,7 @@ describe("hour authorization subject and program scope", () => {
   it("checks the stored program type and subject before revise or cancel", async () => {
     const query = vi.fn(async (sql: string) => {
       expect(sql).toContain("program.required_auth_type = 'hours'");
-      expect(sql).toContain("authorization.individual_id");
+      expect(sql).toContain("budget_auth.individual_id");
       return { rows: [{ individual_id: OTHER_INDIVIDUAL_ID }] };
     });
     const pool = { query, connect: vi.fn() } as unknown as PgLikePool;

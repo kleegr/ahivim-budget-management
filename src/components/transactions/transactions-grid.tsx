@@ -16,6 +16,7 @@ import { formatCell } from "@/components/data-grid/engine";
 import { isNumericKind, type ColumnDef, type FilterState } from "@/components/data-grid/types";
 import PeriodControl, { type PeriodRange } from "@/components/period-control";
 import type { TransactionFieldVisibility } from "@/lib/auth/money-redaction";
+import { hasInitialCheckDateFilter } from "@/lib/transactions/initial-filters";
 
 /* ------------------------------------------------------------------ config */
 
@@ -147,6 +148,7 @@ export default function TransactionsGrid({
   // the service-period window), so the user can see exactly what is constraining the view.
   const seededKeys = initialFilters ? Object.keys(initialFilters) : [];
   const initialHidden = INITIAL_HIDDEN.filter((k) => !seededKeys.includes(k));
+  const hasDeepLinkedCheckDate = hasInitialCheckDateFilter(initialFilters);
 
   const grid = useGrid<GridTransaction, GridTotals>({
     rows,
@@ -309,7 +311,9 @@ export default function TransactionsGrid({
           </Link>
         </div>
       ) : null}
-      <PeriodControl onChange={applyPeriod} paramKey="period" />
+      {/* A contextual check-date link already defines the period. Mounting the
+          independent picker at its default "All time" would clear that filter. */}
+      {hasDeepLinkedCheckDate ? null : <PeriodControl onChange={applyPeriod} paramKey="period" />}
       <Toolbar
         grid={grid}
         searchPlaceholder="Search transactions…"

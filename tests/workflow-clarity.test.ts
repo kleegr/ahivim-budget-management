@@ -43,6 +43,11 @@ describe("primary workflow clarity", () => {
     expect(transactionGrid).toContain('label: "Duplicate review"');
   });
 
+  it("does not let the all-time period control erase a deep-linked check date", () => {
+    expect(transactionGrid).toContain("hasInitialCheckDateFilter(initialFilters)");
+    expect(transactionGrid).toContain("hasDeepLinkedCheckDate ? null : <PeriodControl");
+  });
+
   it("acknowledges a Sign In As click before the full portal reload", () => {
     expect(users).toContain("setImpersonatingId(u.id)");
     expect(users).toContain('impersonatingId === u.id ? "Opening..." : "Sign in as"');

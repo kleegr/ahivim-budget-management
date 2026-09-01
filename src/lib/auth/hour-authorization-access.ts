@@ -108,10 +108,10 @@ export async function canChangeHourAuthorization(
 ): Promise<boolean> {
   if (!UUID.test(authorizationId)) return false;
   const { rows } = await pool.query<{ individual_id: string }>(
-    `SELECT authorization.individual_id
-       FROM budget_authorizations authorization
-       JOIN programs program ON program.id = authorization.program_id
-      WHERE authorization.id = $1
+    `SELECT budget_auth.individual_id
+       FROM budget_authorizations budget_auth
+       JOIN programs program ON program.id = budget_auth.program_id
+      WHERE budget_auth.id = $1
         AND program.code <> 'CLASSES'
         AND program.required_auth_type = 'hours'
       LIMIT 1`,
@@ -132,14 +132,14 @@ export async function canChangeHourBudgetPeriod(
   if (!UUID.test(budgetPeriodId)) return false;
   const { rows } = await pool.query<{ individual_id: string; allowed: boolean }>(
     `SELECT period.individual_id,
-            count(authorization.id) > 0
+            count(budget_auth.id) > 0
             AND bool_and(program.code <> 'CLASSES' AND program.required_auth_type = 'hours') AS allowed
        FROM budget_periods period
-       JOIN budget_authorizations authorization
-         ON authorization.budget_period_id = period.id
-        AND authorization.status = 'active'
-        AND authorization.archived_at IS NULL
-       JOIN programs program ON program.id = authorization.program_id
+       JOIN budget_authorizations budget_auth
+         ON budget_auth.budget_period_id = period.id
+        AND budget_auth.status = 'active'
+        AND budget_auth.archived_at IS NULL
+       JOIN programs program ON program.id = budget_auth.program_id
       WHERE period.id = $1
         AND period.status = 'active'
         AND period.archived_at IS NULL

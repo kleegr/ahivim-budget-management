@@ -297,11 +297,11 @@ export async function updateBudgetPeriodRenewal(
 
     const programs = await client.query<{ has_classes: boolean }>(
       `SELECT COALESCE(bool_or(program.code = 'CLASSES'), false) AS has_classes
-         FROM budget_authorizations authorization
-         JOIN programs program ON program.id = authorization.program_id
-        WHERE authorization.budget_period_id = $1
-          AND authorization.status = 'active'
-          AND authorization.archived_at IS NULL`,
+         FROM budget_authorizations budget_auth
+         JOIN programs program ON program.id = budget_auth.program_id
+        WHERE budget_auth.budget_period_id = $1
+          AND budget_auth.status = 'active'
+          AND budget_auth.archived_at IS NULL`,
       [id],
     );
     if (programs.rows[0]?.has_classes) {

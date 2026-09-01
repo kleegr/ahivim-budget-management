@@ -73,7 +73,8 @@ describe("agency financial management math", () => {
     expect(settlements).toContain("LEFT JOIN LATERAL (\n         SELECT term.id, term.revision, term.employee_share_percent");
     expect(settlements).toContain("CASE WHEN compensation.id IS NOT NULL");
     expect(settlements).toContain("THEN (1 - compensation.employee_share_percent)::text");
-    expect(settlements).toContain('individualId: first.payment_recipient === "excellent_staffing"');
+    expect(settlements).toContain("individualId: null");
+    expect(settlements).toContain("sourceIndividualId: first.individual_id");
   });
 
   it("keeps duplicate-person merges from combining overlapping financial terms", () => {

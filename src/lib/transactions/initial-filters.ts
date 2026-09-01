@@ -9,6 +9,18 @@ const one = (value: string | string[] | undefined): string | undefined =>
 const many = (value: string | string[] | undefined): string[] =>
   [...new Set((Array.isArray(value) ? value : value ? [value] : []).filter(Boolean))];
 
+/**
+ * A check-date drill-through is already a fixed reporting context. The grid's
+ * separate period picker must not mount as "All time" and erase this filter.
+ */
+export function hasInitialCheckDateFilter(filters?: FilterState): boolean {
+  const filter = filters?.checkDate;
+  if (!filter) return false;
+  return filter.selected !== undefined
+    || (filter.from ?? "") !== ""
+    || (filter.to ?? "") !== "";
+}
+
 /** Resolve stable URL ids to the display values used by the transaction grid. */
 export function buildInitialFilters(
   rows: GridTransaction[],
@@ -99,7 +111,8 @@ export function buildInitialFilters(
       labels.push(checkDateFrom === checkDateTo
         ? `check date ${checkDateFrom}`
         : `check dates ${checkDateFrom} to ${checkDateTo}`);
-    }
+    } else if (checkDateFrom) labels.push(`check dates from ${checkDateFrom}`);
+    else if (checkDateTo) labels.push(`check dates through ${checkDateTo}`);
   }
 
   const serviceDateFrom = one(search.serviceFrom);

@@ -2,9 +2,11 @@ import {
   PDFDocument,
   rgb,
   type PDFFont,
+  type PDFImage,
   type PDFPage,
 } from "pdf-lib";
 import type { ClassInvoiceRecord } from "@/lib/data/class-invoices";
+import { loadPdfBrandAsset } from "@/lib/documents/pdf-brand-assets";
 import { cleanPdfText, embedDocumentFonts, fitPdfText } from "@/lib/documents/pdf-fonts";
 import { dec } from "@/lib/money";
 
@@ -31,7 +33,6 @@ const MUTED = rgb(0.42, 0.44, 0.46);
 const RULE = rgb(0.15, 0.17, 0.18);
 const HEADER_FILL = rgb(0.94, 0.95, 0.95);
 const TEAL = rgb(0.02, 0.39, 0.37);
-const GOLD = rgb(0.91, 0.62, 0.08);
 
 function formatDate(value: string): string {
   const [year, month, day] = value.split("-");
@@ -72,11 +73,10 @@ function drawRight(
   });
 }
 
-function drawBrand(page: PDFPage, regular: PDFFont, bold: PDFFont, italic: PDFFont) {
-  page.drawRectangle({ x: MARGIN, y: 716, width: 7, height: 38, color: TEAL });
-  page.drawRectangle({ x: MARGIN + 7, y: 716, width: 7, height: 38, color: GOLD });
-  page.drawText(BRAND.name, { x: MARGIN + 22, y: 741, size: 16, font: bold, color: INK });
-  page.drawText(BRAND.tagline, { x: MARGIN + 22, y: 720, size: 8, font: italic, color: MUTED });
+function drawBrand(page: PDFPage, logo: PDFImage, regular: PDFFont, bold: PDFFont, italic: PDFFont) {
+  page.drawText(BRAND.name, { x: MARGIN, y: 741, size: 16, font: bold, color: INK });
+  page.drawText(BRAND.tagline, { x: MARGIN, y: 720, size: 8, font: italic, color: MUTED });
+  page.drawImage(logo, { x: 276, y: 688, width: 115, height: 50 });
   page.drawText(BRAND.address1, { x: MARGIN, y: 694, size: 9, font: regular, color: INK });
   page.drawText(BRAND.address2, { x: MARGIN, y: 681, size: 9, font: regular, color: INK });
   page.drawText(BRAND.phone, { x: MARGIN, y: 668, size: 9, font: regular, color: INK });
@@ -224,16 +224,19 @@ export async function buildClassInvoicePdf(invoice: ClassInvoiceRecord): Promise
   document.setAuthor(BRAND.name);
   document.setSubject(`${invoice.purpose} - ${invoice.billToName}`);
   document.setCreator("Ahivim Budget Management");
-  const { regular, bold, italic } = await embedDocumentFonts(document, [
-    invoice.invoiceNumber,
-    invoice.individualName,
-    invoice.billToName,
-    invoice.billToAddressLine1,
-    invoice.billToAddressLine2,
-    invoice.billToCityStateZip,
-    invoice.purpose,
-    invoice.notes,
-    ...invoice.lines.flatMap((line) => [line.description, line.notes]),
+  const [{ regular, bold, italic }, logo] = await Promise.all([
+    embedDocumentFonts(document, [
+      invoice.invoiceNumber,
+      invoice.individualName,
+      invoice.billToName,
+      invoice.billToAddressLine1,
+      invoice.billToAddressLine2,
+      invoice.billToCityStateZip,
+      invoice.purpose,
+      invoice.notes,
+      ...invoice.lines.flatMap((line) => [line.description, line.notes]),
+    ]),
+    loadPdfBrandAsset("xcellent-staffing.png").then((bytes) => document.embedPng(bytes)),
   ]);
   const chunks: Array<ClassInvoiceRecord["lines"]> = [];
   for (let index = 0; index < invoice.lines.length; index += ROWS_PER_PAGE) {
@@ -243,7 +246,7 @@ export async function buildClassInvoicePdf(invoice: ClassInvoiceRecord): Promise
 
   chunks.forEach((rows, pageIndex) => {
     const page = document.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-    drawBrand(page, regular, bold, italic);
+    drawBrand(page, logo, regular, bold, italic);
     drawInvoiceHeading(page, invoice, regular, bold);
     drawBillingBlock(page, invoice, regular, bold);
     drawTableHeader(page, 535, bold);

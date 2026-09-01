@@ -546,7 +546,9 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
     const common = {
       sourceKey,
       employeeId: first.employee_id,
-      individualId: first.payment_recipient === "excellent_staffing" ? first.individual_id : null,
+      // Employee obligations have one accountable party. The individual tied
+      // to agency-routed work remains in metadata and transaction provenance.
+      individualId: null,
       employeeDealId: first.deal_id,
       checkNumber: first.check_number,
       checkDate: first.check_date ?? inferredCheckDates.get(first.id) ?? null,
@@ -680,6 +682,7 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
           dealRevision: first.deal_revision,
           compensationTermId: first.compensation_term_id,
           compensationTermRevision: first.compensation_term_revision,
+          sourceIndividualId: first.individual_id,
           employeeSharePercent: first.employee_share_percent
             ?? (first.agency_cut_percent === null
               ? null

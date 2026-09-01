@@ -2,10 +2,12 @@ import {
   PDFDocument,
   rgb,
   type PDFFont,
+  type PDFImage,
   type PDFPage,
 } from "pdf-lib";
 import type { ClassInvoiceRecord } from "@/lib/data/class-invoices";
 import type { ClassReimbursementProfile } from "@/lib/data/class-reimbursement-profiles";
+import { loadPdfBrandAsset } from "@/lib/documents/pdf-brand-assets";
 import { cleanPdfText, embedDocumentFonts, fitPdfText } from "@/lib/documents/pdf-fonts";
 import { dec } from "@/lib/money";
 
@@ -18,7 +20,6 @@ const RULE = rgb(0.22, 0.23, 0.25);
 const FILL = rgb(0.92, 0.93, 0.94);
 const OFFICE_FILL = rgb(0.86, 0.87, 0.88);
 const PURPLE = rgb(0.39, 0.08, 0.43);
-const RED = rgb(0.76, 0.12, 0.15);
 
 export const CLASS_REIMBURSEMENT_ATTESTATION = "We are requesting reimbursement for the below mentioned item(s). I understand that the items being purchased, or services being requested are for the sole purpose of helping the individual with independence, promote community inclusion, is provided exclusively for the participant, and does not compromise the individual's health and safety, and are included in the individual's current Life Plan and budget.";
 
@@ -60,10 +61,8 @@ function drawRight(page: PDFPage, value: string, right: number, y: number, size:
   page.drawText(value, { x: right - font.widthOfTextAtSize(value, size), y, size, font, color });
 }
 
-function drawHeader(page: PDFPage, regular: PDFFont, bold: PDFFont) {
-  page.drawText("A", { x: 385, y: 737, size: 44, font: bold, color: PURPLE });
-  page.drawText("hivim", { x: 413, y: 740, size: 30, font: bold, color: PURPLE });
-  page.drawText("Serving Our Beloved", { x: 430, y: 724, size: 10, font: bold, color: RED });
+function drawHeader(page: PDFPage, logo: PDFImage, regular: PDFFont, bold: PDFFont) {
+  page.drawImage(logo, { x: 300, y: 699.5, width: 255, height: 82.5 });
   const contact = [
     "15 Adelake Fareway",
     "Monroe NY 10950",
@@ -71,12 +70,12 @@ function drawHeader(page: PDFPage, regular: PDFFont, bold: PDFFont) {
     "Fax: 845-774-7007",
     "Email: fi@ahivim.org",
   ];
-  contact.forEach((line, index) => drawRight(page, line, PAGE_WIDTH - MARGIN, 710 - index * 12, 8, regular, PURPLE));
-  page.drawLine({ start: { x: MARGIN, y: 642 }, end: { x: PAGE_WIDTH - MARGIN, y: 642 }, color: INK, thickness: 1.5 });
+  contact.forEach((line, index) => drawRight(page, line, PAGE_WIDTH - MARGIN, 688 - index * 12, 8, regular, PURPLE));
+  page.drawLine({ start: { x: MARGIN, y: 612 }, end: { x: PAGE_WIDTH - MARGIN, y: 612 }, color: INK, thickness: 1.5 });
   const title = "IDGS REIMBURSEMENT APPLICATION";
   const titleWidth = bold.widthOfTextAtSize(title, 13);
-  page.drawText(title, { x: (PAGE_WIDTH - titleWidth) / 2, y: 625, size: 13, font: bold, color: INK });
-  page.drawLine({ start: { x: MARGIN, y: 615 }, end: { x: PAGE_WIDTH - MARGIN, y: 615 }, color: INK, thickness: 1.5 });
+  page.drawText(title, { x: (PAGE_WIDTH - titleWidth) / 2, y: 594, size: 13, font: bold, color: INK });
+  page.drawLine({ start: { x: MARGIN, y: 584 }, end: { x: PAGE_WIDTH - MARGIN, y: 584 }, color: INK, thickness: 1.5 });
 }
 
 function profileRows(profile: ClassReimbursementProfile): Array<[string, string, string?, string?]> {
@@ -94,7 +93,7 @@ function profileRows(profile: ClassReimbursementProfile): Array<[string, string,
 
 function drawProfile(page: PDFPage, profile: ClassReimbursementProfile, regular: PDFFont, bold: PDFFont) {
   const x = MARGIN;
-  const top = 590;
+  const top = 560;
   const rowHeight = 18;
   const labelWidth = 142;
   const secondaryLabelX = 340;
@@ -126,12 +125,12 @@ function drawAttestation(page: PDFPage, bold: PDFFont) {
     lines = wrap(CLASS_REIMBURSEMENT_ATTESTATION, bold, size, CONTENT_WIDTH);
   }
   lines.forEach((line, index) => {
-    page.drawText(line, { x: MARGIN, y: 446 - index * 8, size, font: bold, color: INK });
+    page.drawText(line, { x: MARGIN, y: 426 - index * 8, size, font: bold, color: INK });
   });
 }
 
 function drawExpenseTable(page: PDFPage, invoice: ClassInvoiceRecord, profile: ClassReimbursementProfile, regular: PDFFont, bold: PDFFont) {
-  const top = 410;
+  const top = 392;
   const headerHeight = 34;
   const rowHeight = 24;
   const widths = [76, 128, 92, 94, 92, 70];
@@ -167,7 +166,7 @@ function drawExpenseTable(page: PDFPage, invoice: ClassInvoiceRecord, profile: C
     x += width;
   });
 
-  for (let row = 1; row < 8; row += 1) {
+  for (let row = 1; row < 11; row += 1) {
     x = MARGIN;
     widths.forEach((width, index) => {
       page.drawRectangle({ x, y: top - headerHeight - rowHeight * (row + 1), width, height: rowHeight, color: index === 4 ? OFFICE_FILL : undefined, borderColor: RULE, borderWidth: 0.45 });
@@ -175,7 +174,7 @@ function drawExpenseTable(page: PDFPage, invoice: ClassInvoiceRecord, profile: C
     });
   }
 
-  const totalY = top - headerHeight - rowHeight * 9;
+  const totalY = top - headerHeight - rowHeight * 11;
   page.drawRectangle({ x: MARGIN, y: totalY, width: CONTENT_WIDTH, height: 26, color: FILL, borderColor: RULE, borderWidth: 0.75 });
   page.drawText("TOTAL DUE", { x: MARGIN + 6, y: totalY + 8, size: 10, font: bold, color: INK });
   drawRight(page, money(invoice.totalAmount), PAGE_WIDTH - MARGIN - 7, totalY + 7, 12, bold, INK);
@@ -211,15 +210,18 @@ export async function buildClassCoverSheetPdf(
   document.setTitle(`Reimbursement application ${invoice.invoiceNumber}`);
   document.setAuthor("Ahivim");
   document.setCreator("Ahivim Budget Management");
-  const { regular, bold } = await embedDocumentFonts(document, [
-    invoice.individualName,
-    invoice.billToName,
-    invoice.purpose,
-    ...invoice.lines.map((line) => line.description),
-    ...Object.values(profile),
+  const [{ regular, bold }, logo] = await Promise.all([
+    embedDocumentFonts(document, [
+      invoice.individualName,
+      invoice.billToName,
+      invoice.purpose,
+      ...invoice.lines.map((line) => line.description),
+      ...Object.values(profile),
+    ]),
+    loadPdfBrandAsset("ahivim-cover.png").then((bytes) => document.embedPng(bytes)),
   ]);
   const page = document.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-  drawHeader(page, regular, bold);
+  drawHeader(page, logo, regular, bold);
   drawProfile(page, profile, regular, bold);
   drawAttestation(page, bold);
   const totalY = drawExpenseTable(page, invoice, profile, regular, bold);

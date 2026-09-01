@@ -185,24 +185,24 @@ export async function getPortfolioForecast(
                  FROM payroll_transactions source_t
                 WHERE EXISTS (
                   SELECT 1
-                    FROM active_budget authorization
-                   WHERE authorization.individual_id = source_t.individual_id
-                     AND authorization.program_id = source_t.program_id
+                    FROM active_budget budget_auth
+                   WHERE budget_auth.individual_id = source_t.individual_id
+                     AND budget_auth.program_id = source_t.program_id
                      AND canonical_service_date(
                            source_t.period_begin,
                            source_t.check_date,
                            source_t.period_end
-                         ) BETWEEN authorization.start_date AND authorization.end_date
+                         ) BETWEEN budget_auth.start_date AND budget_auth.end_date
                 ))
               +
               (SELECT count(*)
                  FROM program_budget_events event
                 WHERE EXISTS (
                   SELECT 1
-                    FROM active_budget authorization
-                   WHERE authorization.budget_period_id = event.budget_period_id
-                     AND authorization.program_id = event.program_id
-                     AND event.service_date BETWEEN authorization.start_date AND authorization.end_date
+                    FROM active_budget budget_auth
+                   WHERE budget_auth.budget_period_id = event.budget_period_id
+                     AND budget_auth.program_id = event.program_id
+                     AND event.service_date BETWEEN budget_auth.start_date AND budget_auth.end_date
                 ))
             )::text AS observations
        FROM active_budget budget`,
