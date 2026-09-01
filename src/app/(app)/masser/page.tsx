@@ -6,7 +6,10 @@ import { withDb } from "@/lib/data/pool";
 import CollectionsWorkspace from "@/components/collections/collections-workspace";
 import { ButtonLink, ErrorPanel, PageHeader } from "@/components/ui";
 import { agencyMonth } from "@/lib/business/agency-time";
-import { collectionsInitialState } from "@/lib/nav/collections-links";
+import {
+  collectionsFocusedPayrollCheckId,
+  collectionsInitialState,
+} from "@/lib/nav/collections-links";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Masser - Ahivim" };
@@ -20,6 +23,7 @@ export default async function MasserPage({
   const raw = await searchParams;
   const monthValue = Array.isArray(raw.month) ? raw.month[0] : raw.month;
   const month = monthValue ?? agencyMonth();
+  const focusedCheckId = collectionsFocusedPayrollCheckId(raw);
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
     if (!scope.canSeeSettlements) {
@@ -38,7 +42,7 @@ export default async function MasserPage({
     return {
       denied: false as const,
       planningOnly: false,
-      data: await getCollectionsWorkspace(pool, scope, month),
+      data: await getCollectionsWorkspace(pool, scope, month, { payrollCheckId: focusedCheckId }),
       canManage: scope.canManageSettlements,
       canSeeEmployeeDeals: scope.canSeeEmployeeDeals,
       canManageEmployeeDeals: user.role !== "viewer" && scope.canSeeEmployeeDeals,
@@ -95,6 +99,9 @@ export default async function MasserPage({
             canRepairImports={result.data.canRepairImports}
             initialView={initialState?.view}
             initialCheckDraft={initialState?.checkDraft}
+            focusedCheckId={result.data.data.payrollChecks.some((check) => check.id === focusedCheckId)
+              ? focusedCheckId
+              : null}
           />}
     </>
   );

@@ -22,8 +22,23 @@ function writtenOverrideReason(reason?: string | null, fallback?: string | null)
   return reason?.trim() || fallback?.trim() || null;
 }
 
-function plannerWarnings(warnings: ScheduleWarning[]): ScheduleWarning[] {
-  return warnings.filter((warning) => warning.code !== "missing_rate");
+const BUDGET_WARNING_CODES = new Set([
+  "over_authorized_hours",
+  "missing_authorization",
+  "outside_authorization_dates",
+  "ambiguous_authorization",
+]);
+
+export interface ScheduleWarningPolicy {
+  enforceBudgetWarnings?: boolean;
+}
+
+export function warningsRequiringScheduleOverride(
+  warnings: ScheduleWarning[],
+  policy?: ScheduleWarningPolicy,
+): ScheduleWarning[] {
+  return warnings.filter((warning) => warning.code !== "missing_rate"
+    && (policy?.enforceBudgetWarnings !== false || !BUDGET_WARNING_CODES.has(warning.code)));
 }
 
 function postgresErrorField(error: unknown, field: "code" | "constraint"): string {
@@ -460,12 +475,14 @@ async function insertSessionWithAllocations(
   pool: PgLikePool,
   input: CreateSessionInput,
   actorId: string | null,
+  warningPolicy?: ScheduleWarningPolicy,
 ): Promise<{ id: string; warnings: ScheduleWarning[] }> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const result = await insertSessionRows(client, input, actorId);
-    if (plannerWarnings(result.warnings).length > 0 && !writtenOverrideReason(input.overrideReason)) {
+    if (warningsRequiringScheduleOverride(result.warnings, warningPolicy).length > 0
+      && !writtenOverrideReason(input.overrideReason)) {
       throw new ScheduleOverrideRequiredError(SCHEDULE_OVERRIDE_REQUIRED_MESSAGE);
     }
     await client.query("COMMIT");
@@ -483,6 +500,7 @@ export async function createSession(
   input: CreateSessionInput,
   actorId: string | null,
   reason?: string | null,
+  warningPolicy?: ScheduleWarningPolicy,
 ): Promise<Result<{ id: string; warnings: ScheduleWarning[] }>> {
   if (!isUuid(input.programId)) return fail("validation", "Choose a program.");
   const individualIds = [...new Set((input.individualIds ?? []).filter(isUuid))];
@@ -495,6 +513,7 @@ export async function createSession(
       pool,
       { ...input, individualIds, overrideReason },
       actorId,
+      warningPolicy,
     );
     await recordChange(pool, {
       actorId,
@@ -569,6 +588,7 @@ export async function createSeries(
   input: CreateSeriesInput,
   actorId: string | null,
   reason?: string | null,
+  warningPolicy?: ScheduleWarningPolicy,
 ): Promise<Result<{ seriesId: string; created: number; warnings: number }>> {
   const validation = validateSeriesInput(input);
   if (validation) return fail("validation", validation);
@@ -622,7 +642,7 @@ export async function createSeries(
         },
         actorId,
       );
-      warnings += plannerWarnings(result.warnings).length;
+      warnings += warningsRequiringScheduleOverride(result.warnings, warningPolicy).length;
     }
     if (warnings > 0 && !overrideReason) {
       await client.query("ROLLBACK");
@@ -677,6 +697,7 @@ export async function updateSeries(
   input: UpdateSeriesInput,
   actorId: string | null,
   reason?: string | null,
+  warningPolicy?: ScheduleWarningPolicy,
 ): Promise<Result<UpdateSeriesResult>> {
   if (!isUuid(seriesId)) return fail("not_found", "That series no longer exists.");
   const validation = validateSeriesInput(input, { enforceOccurrenceLimit: false });
@@ -907,7 +928,7 @@ export async function updateSeries(
         },
         actorId,
       );
-      warnings += plannerWarnings(result.warnings).length;
+      warnings += warningsRequiringScheduleOverride(result.warnings, warningPolicy).length;
     }
     if (warnings > 0 && !overrideReason) {
       await client.query("ROLLBACK");
@@ -1058,6 +1079,7 @@ export async function rescheduleSession(
   to: { sessionDate?: string; startTime?: string | null; endTime?: string | null },
   actorId: string | null,
   reason?: string | null,
+  warningPolicy?: ScheduleWarningPolicy,
 ): Promise<Result<{ id: string; warnings: ScheduleWarning[] }>> {
   if (!isUuid(id)) return fail("not_found", "That session no longer exists.");
   const client = await pool.connect();
@@ -1097,7 +1119,8 @@ export async function rescheduleSession(
       { employeeId: s.employee_id, programId: s.program_id, individualIds: inds.rows.map((r) => r.individual_id), sessionDate, startTime, endTime, durationHours: s.duration_hours },
       id,
     );
-    if (plannerWarnings(warnings).length > 0 && !writtenOverrideReason(reason)) {
+    if (warningsRequiringScheduleOverride(warnings, warningPolicy).length > 0
+      && !writtenOverrideReason(reason)) {
       await client.query("ROLLBACK");
       return fail("validation", SCHEDULE_OVERRIDE_REQUIRED_MESSAGE);
     }
@@ -1126,6 +1149,7 @@ export async function duplicateSession(
   toDate: string,
   actorId: string | null,
   reason?: string | null,
+  warningPolicy?: ScheduleWarningPolicy,
 ): Promise<Result<{ id: string; warnings: ScheduleWarning[] }>> {
   if (!isUuid(id)) return fail("not_found", "That session no longer exists.");
   const { rows } = await pool.query<{
@@ -1151,6 +1175,7 @@ export async function duplicateSession(
     },
     actorId,
     reason,
+    warningPolicy,
   );
 }
 

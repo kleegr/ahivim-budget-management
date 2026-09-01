@@ -43,6 +43,7 @@ function transaction(overrides: Partial<GridTransaction>): GridTransaction {
     matchStatus: "new",
     isGroup: false,
     serviceSessionId: null,
+    groupDetectionStatus: "single",
     isPaid: false,
     paidAt: null,
     paidNote: null,

@@ -4,7 +4,12 @@ import { apiUser } from "@/lib/auth/session";
 import { resolveAccessScope } from "@/lib/auth/access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { listPrograms } from "@/lib/data/app-queries";
-import { createProgram, type ProgramInput } from "@/lib/manage/programs";
+import {
+  createProgram,
+  createProgramSetup,
+  type ProgramInput,
+  type ProgramSetupInput,
+} from "@/lib/manage/programs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -51,7 +56,9 @@ export async function POST(request: NextRequest) {
 
   try {
     const pool = getPool();
-    const result = await createProgram(pool, body as unknown as ProgramInput, user.id, reason);
+    const result = body.guidedSetup === true
+      ? await createProgramSetup(pool, body as unknown as ProgramSetupInput, user.id, reason)
+      : await createProgram(pool, body as unknown as ProgramInput, user.id, reason);
     return resultResponse(result, 201);
   } catch (error) {
     return jsonError(redactError(error), 500);

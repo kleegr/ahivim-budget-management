@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  collectionsFocusedPayrollCheckId,
+  collectionsPayrollCheckFocusHref,
   collectionsInitialState,
   collectionsPayrollCheckHref,
 } from "@/lib/nav/collections-links";
 
 const EMPLOYEE_ID = "123e4567-e89b-12d3-a456-426614174000";
 const TRANSACTION_ID = "123e4567-e89b-12d3-a456-426614174010";
+const PAYROLL_CHECK_ID = "123e4567-e89b-12d3-a456-426614174020";
 
 const fullAccess = {
   canOpenTargets: true,
@@ -15,6 +18,15 @@ const fullAccess = {
 };
 
 describe("Collections deep links", () => {
+  it("opens one exact payroll check in the report month", () => {
+    expect(collectionsPayrollCheckFocusHref({
+      payrollCheckId: PAYROLL_CHECK_ID,
+      month: "2026-08",
+    })).toBe(`/masser?view=checks&month=2026-08&focusCheckId=${PAYROLL_CHECK_ID}`);
+    expect(collectionsFocusedPayrollCheckId({ focusCheckId: PAYROLL_CHECK_ID })).toBe(PAYROLL_CHECK_ID);
+    expect(collectionsFocusedPayrollCheckId({ focusCheckId: "not-a-check" })).toBeNull();
+  });
+
   it("builds a prefilled verified-check URL", () => {
     expect(collectionsPayrollCheckHref({
       employeeId: EMPLOYEE_ID,

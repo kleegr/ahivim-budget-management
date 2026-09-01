@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import {
   apiPlanningUser,
+  isBudgetPlanningWarningCode,
   planningEmployeeIdsAllowedForSubjects,
   planningProgramAllowed,
   planningSeriesAllowed,
@@ -209,6 +210,12 @@ export async function POST(request: NextRequest) {
     if (recurrence) {
       preview.warnings = preview.warnings.filter((warning) => !ALL_DATE_WARNING_CODES.has(warning.code));
     }
+    const canSeeBudgets = planning.access.canSeeBudgets;
+    if (!canSeeBudgets) {
+      preview.warnings = preview.warnings.filter((warning) =>
+        !isBudgetPlanningWarningCode(warning.code));
+      preview.forecast = [];
+    }
     const [employeeAvailability, individualConflicts, seriesAuthorization] = await Promise.all([
       listEmployeeAvailability(pool, {
         programId: draft.programId,
@@ -231,7 +238,7 @@ export async function POST(request: NextRequest) {
         excludeSeriesId: editSeriesId,
         excludeSeriesFromDate: validApplyFromDate,
       }),
-      recurrence
+      recurrence && canSeeBudgets
         ? projectSeriesAuthorization(pool, {
           programId: draft.programId,
           individualIds: draft.individualIds,

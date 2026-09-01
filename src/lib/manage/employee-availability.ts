@@ -40,6 +40,17 @@ export interface EmployeeUnavailabilityWindow {
 export interface EmployeeAvailabilityRules {
   weekly: WeeklyAvailabilityWindow[];
   unavailable: EmployeeUnavailabilityWindow[];
+  scheduleConflicts: EmployeeAvailabilitySessionConflict[];
+}
+
+export interface EmployeeAvailabilitySessionConflict {
+  id: string;
+  sessionDate: string;
+  startTime: string | null;
+  endTime: string | null;
+  durationHours: string;
+  programName: string;
+  individualNames: string[];
 }
 
 export interface WeeklyAvailabilityInput {
@@ -86,6 +97,16 @@ interface UnavailabilityRow {
   label: string | null;
   archived_at: string | null;
   created_at: string;
+}
+
+interface AvailabilityConflictRow {
+  id: string;
+  session_date: string;
+  start_time: string | null;
+  end_time: string | null;
+  duration_hours: string;
+  program_name: string;
+  individual_names: string[] | null;
 }
 
 const WEEKLY_SELECT = `
@@ -184,18 +205,23 @@ export async function listEmployeeAvailabilityRules(
     employeeIds?: string[] | null;
     from?: string | null;
     to?: string | null;
+    reviewFrom?: string | null;
+    conflictAgencyIds?: string[] | null;
     includeArchived?: boolean;
   } = {},
 ): Promise<EmployeeAvailabilityRules> {
-  if (options.employeeId && !UUID_RE.test(options.employeeId)) return { weekly: [], unavailable: [] };
+  const empty = { weekly: [], unavailable: [], scheduleConflicts: [] };
+  if (options.employeeId && !UUID_RE.test(options.employeeId)) return empty;
   if (options.employeeIds && options.employeeIds.some((id) => !UUID_RE.test(id))) {
-    return { weekly: [], unavailable: [] };
+    return empty;
   }
-  if (options.employeeIds?.length === 0) return { weekly: [], unavailable: [] };
-  if ((options.from && !isDate(options.from)) || (options.to && !isDate(options.to))) {
-    return { weekly: [], unavailable: [] };
+  if (options.conflictAgencyIds?.some((id) => !UUID_RE.test(id))) return empty;
+  if (options.employeeIds?.length === 0) return empty;
+  if ((options.from && !isDate(options.from)) || (options.to && !isDate(options.to))
+      || (options.reviewFrom && !isDate(options.reviewFrom))) {
+    return empty;
   }
-  if (options.from && options.to && options.to < options.from) return { weekly: [], unavailable: [] };
+  if (options.from && options.to && options.to < options.from) return empty;
 
   const params: unknown[] = [
     options.employeeId ?? null,
@@ -204,7 +230,7 @@ export async function listEmployeeAvailabilityRules(
     options.from ?? null,
     options.to ?? null,
   ];
-  const [weekly, unavailable] = await Promise.all([
+  const [weekly, unavailable, scheduleConflicts] = await Promise.all([
     pool.query<WeeklyRow>(
       `${WEEKLY_SELECT}
        WHERE ($1::uuid IS NULL OR availability.employee_id = $1)
@@ -227,10 +253,94 @@ export async function listEmployeeAvailabilityRules(
                 unavailable.start_time NULLS FIRST`,
       params,
     ),
+    pool.query<AvailabilityConflictRow>(
+      `SELECT scheduled.id, scheduled.session_date::text AS session_date,
+              scheduled.start_time, scheduled.end_time,
+              scheduled.duration_hours::text AS duration_hours,
+              program.name AS program_name,
+              COALESCE(
+                array_agg(individual.display_name::text ORDER BY individual.display_name)
+                  FILTER (WHERE individual.id IS NOT NULL),
+                ARRAY[]::text[]
+              ) AS individual_names
+         FROM scheduled_sessions scheduled
+         JOIN programs program ON program.id = scheduled.program_id
+         LEFT JOIN scheduled_allocations allocation ON allocation.scheduled_session_id = scheduled.id
+         LEFT JOIN individuals individual ON individual.id = allocation.individual_id
+        WHERE ($1::uuid IS NULL OR scheduled.employee_id = $1)
+          AND ($2::uuid[] IS NULL OR scheduled.employee_id = ANY($2::uuid[]))
+          AND scheduled.status = 'pending'
+          AND scheduled.matched_transaction_id IS NULL
+          AND scheduled.archived_at IS NULL
+          AND ($3::date IS NULL OR scheduled.session_date >= $3::date)
+          AND ($4::uuid[] IS NULL OR EXISTS (
+            SELECT 1
+              FROM unnest($4::uuid[]) permitted(agency_id)
+             WHERE EXISTS (
+               SELECT 1
+                 FROM scheduled_allocations participant
+                WHERE participant.scheduled_session_id = scheduled.id
+             )
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM scheduled_allocations participant
+                  WHERE participant.scheduled_session_id = scheduled.id
+                    AND NOT EXISTS (
+                      SELECT 1
+                        FROM agency_individuals membership
+                       WHERE membership.agency_id = permitted.agency_id
+                         AND membership.individual_id = participant.individual_id
+                         AND membership.is_active = true
+                         AND membership.effective_from <= scheduled.session_date
+                         AND (membership.effective_to IS NULL OR membership.effective_to >= scheduled.session_date)
+                    )
+               )
+               AND scheduled.employee_id IS NOT NULL
+               AND EXISTS (
+                 SELECT 1
+                   FROM agency_employees membership
+                  WHERE membership.agency_id = permitted.agency_id
+                    AND membership.employee_id = scheduled.employee_id
+                    AND membership.is_active = true
+                    AND membership.effective_from <= scheduled.session_date
+                    AND (membership.effective_to IS NULL OR membership.effective_to >= scheduled.session_date)
+               )
+          ))
+          AND EXISTS (
+            SELECT 1
+              FROM employee_unavailability unavailable
+             WHERE unavailable.employee_id = scheduled.employee_id
+               AND unavailable.archived_at IS NULL
+               AND scheduled.session_date BETWEEN unavailable.start_date AND unavailable.end_date
+               AND (
+                 unavailable.start_time IS NULL OR unavailable.end_time IS NULL
+                 OR scheduled.start_time IS NULL OR scheduled.end_time IS NULL
+                 OR (scheduled.start_time < unavailable.end_time AND unavailable.start_time < scheduled.end_time)
+               )
+          )
+        GROUP BY scheduled.id, program.name
+        ORDER BY scheduled.session_date, scheduled.start_time NULLS FIRST, scheduled.id
+        LIMIT 100`,
+      [
+        options.employeeId ?? null,
+        options.employeeIds ?? null,
+        options.reviewFrom ?? null,
+        options.conflictAgencyIds ?? null,
+      ],
+    ),
   ]);
   return {
     weekly: weekly.rows.map(toWeekly),
     unavailable: unavailable.rows.map(toUnavailable),
+    scheduleConflicts: scheduleConflicts.rows.map((row) => ({
+      id: row.id,
+      sessionDate: row.session_date,
+      startTime: row.start_time,
+      endTime: row.end_time,
+      durationHours: row.duration_hours,
+      programName: row.program_name,
+      individualNames: row.individual_names ?? [],
+    })),
   };
 }
 

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 
-vi.mock("@/lib/data/schedule-queries", () => ({
+vi.mock("@/lib/data/schedule-queries", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/data/schedule-queries")>(),
   individualProgramForecast: vi.fn(async () => ({
     actualHours: "0.0000",
     scheduledHours: "0.0000",
@@ -17,6 +18,7 @@ import {
   detectConflicts,
   SCHEDULE_OVERRIDE_REQUIRED_MESSAGE,
 } from "@/lib/manage/schedule";
+import { listSessionWarningFlags } from "@/lib/data/schedule-queries";
 
 const EMPLOYEE_ID = "30000000-0000-4000-8000-000000000001";
 const INDIVIDUAL_ID = "20000000-0000-4000-8000-000000000001";
@@ -154,5 +156,38 @@ describe("save-time employee availability", () => {
     expect(hoursIndex).toBeGreaterThan(lockIndex);
     expect(statements).toContain("ROLLBACK");
     expect(statements).not.toContain("COMMIT");
+  });
+
+  it("keeps newly-entered time off visible as a live warning on an existing session", async () => {
+    let statement = "";
+    const pool = {
+      query: vi.fn(async (sql: string) => {
+        statement = sql;
+        return {
+          rows: [{
+            id: SESSION_ID,
+            warnings: [],
+            has_conflict: false,
+            has_availability_conflict: true,
+            has_budget_risk: false,
+            has_assignment_gap: false,
+          }],
+        };
+      }),
+    } as unknown as PgLikePool;
+
+    const result = await listSessionWarningFlags(pool, {
+      from: "2026-09-07",
+      to: "2026-09-07",
+      employeeId: EMPLOYEE_ID,
+    });
+
+    expect(statement).toContain("FROM employee_unavailability unavailable");
+    expect(result).toEqual([{
+      id: SESSION_ID,
+      hasConflict: true,
+      hasBudgetRisk: false,
+      warningCount: 1,
+    }]);
   });
 });

@@ -28,7 +28,8 @@ export async function GET(request: NextRequest) {
     })).filter((row) => planningSubjectsAllowed(planning, {
       individualIds: [row.individualId],
       employeeId: row.employeeId,
-    }, "read", { from: row.startDate, to: row.endDate }));
+    }, "read", { from: row.startDate, to: row.endDate })).map((row) =>
+      planning.access.canSeeBudgets ? row : { ...row, allowedHours: null });
     return NextResponse.json({ ok: true, data });
   } catch (error) {
     return jsonError(redactError(error), 500);
@@ -47,7 +48,10 @@ export async function POST(request: NextRequest) {
   const body = await readJson(request);
   const reason = typeof body.reason === "string" ? body.reason : null;
   if (!planning.canManageAssignments) return jsonError("Assignment management access required", 403);
-  const input = body as unknown as AssignmentInput;
+  const input = {
+    ...(body as unknown as AssignmentInput),
+    ...(!planning.access.canSeeBudgets ? { allowedHours: null } : {}),
+  };
   if (!planningSubjectsAllowed(planning, {
     individualIds: [input.individualId],
     employeeId: input.employeeId,

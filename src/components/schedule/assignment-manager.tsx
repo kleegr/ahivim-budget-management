@@ -51,12 +51,14 @@ export default function AssignmentManager({
   individuals,
   programs,
   canManage = true,
+  showAllowedHours = true,
 }: {
   rows: PlanningAssignmentRow[];
   employees: Picker[];
   individuals: Picker[];
   programs: ProgramPicker[];
   canManage?: boolean;
+  showAllowedHours?: boolean;
 }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
@@ -121,7 +123,7 @@ export default function AssignmentManager({
       programId: draft.programId || null,
       startDate: draft.startDate || null,
       endDate: draft.endDate || null,
-      allowedHours: draft.allowedHours || null,
+      ...(showAllowedHours ? { allowedHours: draft.allowedHours || null } : {}),
       notes: draft.notes || null,
       reason: draft.reason || null,
     };
@@ -190,7 +192,7 @@ export default function AssignmentManager({
         <div className="border-y border-[var(--color-rule)]">
           <Table
             caption="Current and future employee assignments"
-            head={<><Th>Individual</Th><Th>Employee</Th><Th>Program</Th><Th>Effective dates</Th><Th numeric>Allowed hours</Th><Th>Status</Th><Th><span className="sr-only">Actions</span></Th></>}
+            head={<><Th>Individual</Th><Th>Employee</Th><Th>Program</Th><Th>Effective dates</Th>{showAllowedHours ? <Th numeric>Allowed hours</Th> : null}<Th>Status</Th><Th><span className="sr-only">Actions</span></Th></>}
           >
             {filtered.map((row) => (
               <Tr key={row.id}>
@@ -198,7 +200,7 @@ export default function AssignmentManager({
                 <Td>{row.employeeName}</Td>
                 <Td>{row.programName ?? "All programs"}</Td>
                 <Td><span className="whitespace-nowrap">{dateLabel(row.startDate)} to {dateLabel(row.endDate)}</span></Td>
-                <Td numeric>{row.allowedHours === null ? <span className="text-[var(--color-ink-faint)]">-</span> : <Hours value={row.allowedHours} />}</Td>
+                {showAllowedHours ? <Td numeric>{row.allowedHours === null ? <span className="text-[var(--color-ink-faint)]">-</span> : <Hours value={row.allowedHours} />}</Td> : null}
                 <Td>
                   <StatusBadge
                     label={row.timing === "future" ? "Starts later" : row.timing === "ending_soon" ? "Ending soon" : "Effective now"}
@@ -263,10 +265,12 @@ export default function AssignmentManager({
               Ends
               <input type="date" value={draft.endDate} onChange={(event) => setDraft((current) => ({ ...current, endDate: event.target.value }))} className={inputClass()} />
             </label>
-            <label className="text-sm font-medium sm:col-span-2">
-              Allowed hours
-              <input type="number" min="0" step="0.25" value={draft.allowedHours} onChange={(event) => setDraft((current) => ({ ...current, allowedHours: event.target.value }))} className={inputClass()} />
-            </label>
+            {showAllowedHours ? (
+              <label className="text-sm font-medium sm:col-span-2">
+                Allowed hours
+                <input type="number" min="0" step="0.25" value={draft.allowedHours} onChange={(event) => setDraft((current) => ({ ...current, allowedHours: event.target.value }))} className={inputClass()} />
+              </label>
+            ) : null}
             <label className="text-sm font-medium sm:col-span-2">
               Notes
               <textarea value={draft.notes} onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))} className="mt-1 min-h-20 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-2 text-sm outline-none focus:border-[var(--color-primary)]" />

@@ -10,8 +10,11 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   const user = await apiUser("viewer");
   if (!user) return jsonError("Sign in to continue.", 401);
-  const grid = request.nextUrl.searchParams.get("grid") ?? "";
+  const grid = (request.nextUrl.searchParams.get("grid") ?? "").trim();
   if (!grid) return jsonError("A grid is required.", 400);
+  if (grid === "owner_dashboard" && user.role !== "admin") {
+    return NextResponse.json({ ok: true, data: [] });
+  }
   // Saved view configs are opaque and can contain names, date ranges and hidden
   // financial filters. Viewers cannot create them, so do not share manager views
   // into a granular-access session where those fields cannot be safely redacted.
@@ -26,10 +29,14 @@ export async function POST(request: NextRequest) {
   const cross = sameOriginOrFail(request);
   if (cross) return cross;
   const body = await readJson(request);
+  const gridKey = String(body.gridKey ?? "").trim();
+  if (gridKey === "owner_dashboard" && user.role !== "admin") {
+    return jsonError("Only the owner can save owner dashboard views.", 403);
+  }
   const result = await saveGridView(
     getPool(),
     {
-      gridKey: String(body.gridKey ?? ""),
+      gridKey,
       name: String(body.name ?? ""),
       config: body.config,
     },

@@ -13,6 +13,11 @@ import {
   type AuthenticatedUser,
 } from "./session";
 import { agencyDate } from "@/lib/business/agency-time";
+import type {
+  PlanningReasonCode,
+  PlanningSeriesIssue,
+  PlanningWorkspaceData,
+} from "@/lib/data/planning-queries";
 
 export interface PlanningMembership {
   subjectId: string;
@@ -41,6 +46,67 @@ export interface PlanningAccess {
   assignmentManageAgencyIds: string[];
   canManageSchedules: boolean;
   canManageAssignments: boolean;
+}
+
+const BUDGET_REASON_CODES = new Set<PlanningReasonCode>([
+  "over_budget",
+  "authorization_gap",
+]);
+
+const BUDGET_SERIES_ISSUES = new Set<PlanningSeriesIssue>([
+  "over_budget",
+  "authorization_gap",
+]);
+
+const BUDGET_WARNING_CODES = new Set([
+  "over_authorized_hours",
+  "missing_authorization",
+  "outside_authorization_dates",
+  "ambiguous_authorization",
+]);
+
+export function isBudgetPlanningWarningCode(value: unknown): boolean {
+  return typeof value === "string" && BUDGET_WARNING_CODES.has(value);
+}
+
+/**
+ * Staffing managers share the calendar and assignment tools with budget
+ * planners, but their preset deliberately excludes authorization data. Remove
+ * those fields before a server component serializes the workspace to the
+ * browser; hiding a tab alone would still leak the values in the RSC payload.
+ */
+export function withoutPlanningBudgetDetails(
+  data: PlanningWorkspaceData,
+): PlanningWorkspaceData {
+  const workQueue = data.workQueue
+    .map((row) => ({
+      ...row,
+      reasonCodes: row.reasonCodes.filter((code) => !BUDGET_REASON_CODES.has(code)),
+      // Warning messages are stored as unstructured source text, so retaining a
+      // subset cannot be proven safe. Structured conflict/assignment codes remain.
+      warningMessages: [],
+    }))
+    .filter((row) => row.reasonCodes.length > 0);
+  const series = data.series.map((row) => ({
+    ...row,
+    issueCodes: row.issueCodes.filter((code) => !BUDGET_SERIES_ISSUES.has(code)),
+  }));
+
+  return {
+    ...data,
+    workQueue,
+    workQueueTotal: workQueue.length,
+    coverage: [],
+    series,
+    authorizationGaps: [],
+    assignments: data.assignments.map((row) => ({ ...row, allowedHours: null })),
+    summary: {
+      ...data.summary,
+      overBudgetSessions: 0,
+      coverageGaps: 0,
+      futurePlanGaps: series.filter((row) => row.issueCodes.length > 0).length,
+    },
+  };
 }
 
 interface MembershipRow {

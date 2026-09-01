@@ -19,12 +19,14 @@ interface PlanningWorkspaceProps {
   initialView?: string;
   initialCalendarDate?: string;
   initialCalendarView?: View;
+  initialSessionId?: string;
   initialFilters?: ScheduleCalendarProps["initialFilters"];
   employees: ScheduleCalendarProps["employees"];
   individuals: ScheduleCalendarProps["individuals"];
   programs: ScheduleCalendarProps["programs"];
   directPayTargets?: PlannerDirectPayTargetRow[];
   showDirectPayTargets?: boolean;
+  showBudgetTracking?: boolean;
 }
 function SectionHeading({
   title,
@@ -59,12 +61,14 @@ export default function PlanningWorkspace({
   initialView,
   initialCalendarDate,
   initialCalendarView,
+  initialSessionId,
   initialFilters,
   employees,
   individuals,
   programs,
   directPayTargets = [],
   showDirectPayTargets = false,
+  showBudgetTracking = true,
 }: PlanningWorkspaceProps) {
   const calendar = (
     <ScheduleCalendar
@@ -72,10 +76,12 @@ export default function PlanningWorkspace({
       today={today}
       initialDate={initialCalendarDate}
       initialView={initialCalendarView}
+      initialSessionId={initialSessionId}
       initialFilters={initialFilters}
       employees={employees}
       individuals={individuals}
       programs={programs}
+      showBudgetTracking={showBudgetTracking}
     />
   );
 
@@ -86,11 +92,11 @@ export default function PlanningWorkspace({
         initialId={initialView}
         panels={[
           { id: "calendar", label: "Calendar", content: calendar },
-          {
+          ...(showBudgetTracking ? [{
             id: "coverage",
             label: "Budget tracking",
             content: <BudgetCoveragePanel rows={data.coverage} />,
-          },
+          }] : []),
           {
             id: "schedules",
             label: "Recurring schedules",
@@ -103,6 +109,7 @@ export default function PlanningWorkspace({
                 individuals={individuals}
                 programs={programs}
                 initialFilters={initialFilters}
+                showBudgetTracking={showBudgetTracking}
               />
             ),
           },
@@ -116,6 +123,7 @@ export default function PlanningWorkspace({
                 individuals={individuals}
                 programs={programs}
                 canManageAssignments={canManageAssignments}
+                showAllowedHours={showBudgetTracking}
               />
             ),
           },
@@ -155,12 +163,14 @@ function FuturePlans({
   individuals,
   programs,
   canManageAssignments,
+  showAllowedHours,
 }: {
   data: PlanningWorkspaceData;
   employees: ScheduleCalendarProps["employees"];
   individuals: ScheduleCalendarProps["individuals"];
   programs: ScheduleCalendarProps["programs"];
   canManageAssignments: boolean;
+  showAllowedHours: boolean;
 }) {
   return (
     <section>
@@ -175,6 +185,7 @@ function FuturePlans({
         individuals={individuals}
         programs={programs}
         canManage={canManageAssignments}
+        showAllowedHours={showAllowedHours}
       />
     </section>
   );

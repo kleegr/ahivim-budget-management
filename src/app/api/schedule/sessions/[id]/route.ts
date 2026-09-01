@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiPlanningUser, planningProgramAllowed, planningSubjectsAllowed } from "@/lib/auth/planning-access";
+import {
+  apiPlanningUser,
+  isBudgetPlanningWarningCode,
+  planningProgramAllowed,
+  planningSubjectsAllowed,
+} from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import {
   setSessionStatus,
@@ -103,9 +108,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           },
           user.id,
           reason,
+          { enforceBudgetWarnings: planning.access.canSeeBudgets },
         );
       if (result.ok) {
-        result.data.warnings = result.data.warnings.filter((warning) => warning.code !== "missing_rate");
+        result.data.warnings = result.data.warnings.filter((warning) =>
+          warning.code !== "missing_rate"
+          && (planning.access.canSeeBudgets || !isBudgetPlanningWarningCode(warning.code)));
       }
       return resultResponse(result, 200);
     }
@@ -122,9 +130,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }, "schedule", { from: toDate, to: toDate })) {
         return jsonError("That service date is outside your agency roster.", 403);
       }
-      const result = await duplicateSession(pool, id, toDate, user.id, reason);
+      const result = await duplicateSession(pool, id, toDate, user.id, reason, {
+        enforceBudgetWarnings: planning.access.canSeeBudgets,
+      });
       if (result.ok) {
-        result.data.warnings = result.data.warnings.filter((warning) => warning.code !== "missing_rate");
+        result.data.warnings = result.data.warnings.filter((warning) =>
+          warning.code !== "missing_rate"
+          && (planning.access.canSeeBudgets || !isBudgetPlanningWarningCode(warning.code)));
       }
       return resultResponse(result, 201);
     }

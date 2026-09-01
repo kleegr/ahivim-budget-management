@@ -24,6 +24,7 @@ import { redactTransactionFields } from "@/lib/auth/money-redaction";
  */
 export interface GridTransaction {
   id: string;
+  serviceDate?: string | null; // canonical activity date: period begin, then check date, then period end
   payTo: string | null; // pay_to_raw — the payment recipient as printed on the check
   checkDate: string | null; // YYYY-MM-DD
   checkNumber: string | null;
@@ -49,6 +50,7 @@ export interface GridTransaction {
   matchStatus: string | null; // duplicate_status: new | possible | confirmed
   isGroup: boolean; // group status
   serviceSessionId: string | null; // reconciliation link (matched scheduled session)
+  groupDetectionStatus: string | null; // single | detected | needs_review | confirmed
   isPaid: boolean; // operator-tracked payout status
   paidAt: string | null; // when it was marked paid (YYYY-MM-DD)
   paidNote: string | null; // optional free note kept with the paid flag
@@ -83,6 +85,7 @@ export async function listTransactionsForGrid(
   }
   const { rows } = await pool.query<{
     id: string;
+    service_date: string | null;
     pay_to: string | null;
     check_date: string | null;
     check_number: string | null;
@@ -108,12 +111,14 @@ export async function listTransactionsForGrid(
     match_status: string | null;
     is_group: boolean;
     service_session_id: string | null;
+    group_detection_status: string | null;
     is_paid: boolean;
     paid_at: string | null;
     paid_note: string | null;
   }>(`
     SELECT
       t.id,
+      to_char(canonical_service_date(t.period_begin, t.check_date, t.period_end), 'YYYY-MM-DD') AS service_date,
       t.pay_to_raw                                            AS pay_to,
       to_char(t.check_date,  'YYYY-MM-DD')                    AS check_date,
       t.check_number,
@@ -142,6 +147,7 @@ export async function listTransactionsForGrid(
       t.duplicate_status                                      AS match_status,
       t.is_group_service                                      AS is_group,
       t.service_session_id,
+      ss.group_detection_status,
       t.is_paid,
       to_char(t.paid_at, 'YYYY-MM-DD')                        AS paid_at,
       t.paid_note
@@ -149,6 +155,7 @@ export async function listTransactionsForGrid(
     LEFT JOIN individuals i ON i.id = t.individual_id
     LEFT JOIN employees   e ON e.id = t.employee_id
     LEFT JOIN programs    p ON p.id = t.program_id
+    LEFT JOIN service_sessions ss ON ss.id = t.service_session_id
     WHERE TRUE${scopeClause}${employeeClause}${transactionClause}
     ORDER BY t.check_date DESC NULLS LAST, t.check_number, t.source_row_number NULLS LAST
   `, params);
@@ -163,6 +170,7 @@ export async function listTransactionsForGrid(
       : scope;
     return redactTransactionFields({
     id: r.id,
+    serviceDate: r.service_date,
     payTo: r.pay_to,
     checkDate: r.check_date,
     checkNumber: r.check_number,
@@ -188,6 +196,7 @@ export async function listTransactionsForGrid(
     matchStatus: r.match_status,
     isGroup: r.is_group,
     serviceSessionId: r.service_session_id,
+    groupDetectionStatus: r.group_detection_status,
     isPaid: r.is_paid,
     paidAt: r.paid_at,
       paidNote: r.paid_note,

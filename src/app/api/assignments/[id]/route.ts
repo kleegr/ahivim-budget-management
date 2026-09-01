@@ -41,7 +41,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       const result = await setAssignmentStatus(pool, id, status, user.id, reason);
       return resultResponse(result, 200);
     }
-    const proposed = body as unknown as Partial<AssignmentInput>;
+    const proposed = { ...(body as unknown as Partial<AssignmentInput>) };
+    if (!planning.access.canSeeBudgets) delete proposed.allowedHours;
     if (!planningSubjectsAllowed(planning, {
       individualIds: [proposed.individualId ?? existing.individualId],
       employeeId: proposed.employeeId ?? existing.employeeId,

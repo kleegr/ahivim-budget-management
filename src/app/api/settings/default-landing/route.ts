@@ -8,7 +8,7 @@ import { setSetting } from "@/lib/manage/app-settings";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ALLOWED = new Set(["dashboard", "transactions", "calculations"]);
+const ALLOWED = new Set(["dashboard", "transactions", "individuals", "calculations"]);
 
 export async function POST(request: NextRequest) {
   const user = await apiUser("manager");
@@ -17,7 +17,9 @@ export async function POST(request: NextRequest) {
   if (cross) return cross;
   const body = await readJson(request);
   const value = String(body.value ?? "");
-  if (!ALLOWED.has(value)) return jsonError("Choose Dashboard, Transactions or Calculations.", 400);
+  if (!ALLOWED.has(value)) {
+    return jsonError("Choose Home, Transactions, People & budgets, or Financial setup.", 400);
+  }
   await setSetting(getPool(), "default_landing", value, user.id);
   return NextResponse.json({ ok: true, data: { value } });
 }

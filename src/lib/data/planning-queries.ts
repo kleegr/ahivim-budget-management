@@ -218,7 +218,11 @@ const CONFLICT_WARNING_CODES = new Set([
 ]);
 const BUDGET_WARNING_CODES = new Set(["over_authorized_hours"]);
 const ASSIGNMENT_WARNING_CODES = new Set(["not_assigned"]);
-const AUTHORIZATION_WARNING_CODES = new Set(["missing_authorization", "outside_authorization_dates"]);
+const AUTHORIZATION_WARNING_CODES = new Set([
+  "missing_authorization",
+  "outside_authorization_dates",
+  "ambiguous_authorization",
+]);
 const LIVE_WARNING_CODES = new Set([
   ...CONFLICT_WARNING_CODES,
   ...BUDGET_WARNING_CODES,
@@ -299,12 +303,17 @@ export async function getPlanningWorkspace(
                 EXISTS (
                   SELECT 1
                   FROM scheduled_allocations target
+                  CROSS JOIN LATERAL (
+                    SELECT count(*)::int AS authorization_count,
+                           COALESCE(bool_or(ea.source_candidate_count > 1), false) AS source_ambiguous
+                    FROM effective_budget_authorizations_at(s.session_date) ea
+                    WHERE ea.individual_id = target.individual_id
+                      AND ea.program_id = s.program_id
+                  ) authorization_state
                   WHERE target.scheduled_session_id = s.id
-                    AND NOT EXISTS (
-                      SELECT 1
-                      FROM effective_budget_authorizations_at(s.session_date) ea
-                      WHERE ea.individual_id = target.individual_id
-                        AND ea.program_id = s.program_id
+                    AND (
+                      authorization_state.authorization_count <> 1
+                      OR authorization_state.source_ambiguous
                     )
                 ) AS authorization_gap,
                 (
@@ -417,7 +426,8 @@ export async function getPlanningWorkspace(
                   WHERE stored_warning->>'code' NOT IN (
                     'missing_rate', 'employee_double_booked', 'individual_double_booked',
                     'individual_two_employees_one_to_one', 'over_authorized_hours',
-                    'not_assigned', 'missing_authorization', 'outside_authorization_dates'
+                    'not_assigned', 'missing_authorization', 'outside_authorization_dates',
+                    'ambiguous_authorization'
                   )
                )
        )
@@ -667,14 +677,19 @@ export async function getPlanningWorkspace(
                 SELECT 1
                 FROM visible_series_sessions future_s
                 JOIN scheduled_allocations future_a ON future_a.scheduled_session_id = future_s.id
+                CROSS JOIN LATERAL (
+                  SELECT count(*)::int AS authorization_count,
+                         COALESCE(bool_or(ea.source_candidate_count > 1), false) AS source_ambiguous
+                  FROM effective_budget_authorizations_at(future_s.session_date) ea
+                  WHERE ea.individual_id = future_a.individual_id
+                    AND ea.program_id = future_s.program_id
+                ) authorization_state
                 WHERE future_s.series_id = series.id AND future_s.status = 'pending'
                   AND future_s.matched_transaction_id IS NULL
                   AND future_s.session_date >= $1::date
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM effective_budget_authorizations_at(future_s.session_date) ea
-                    WHERE ea.individual_id = future_a.individual_id
-                      AND ea.program_id = future_s.program_id
+                  AND (
+                    authorization_state.authorization_count <> 1
+                    OR authorization_state.source_ambiguous
                   )
               ) AS authorization_gap,
               EXISTS (
@@ -757,7 +772,8 @@ export async function getPlanningWorkspace(
                     WHERE stored_warning->>'code' NOT IN (
                       'missing_rate', 'employee_double_booked', 'individual_double_booked',
                       'individual_two_employees_one_to_one', 'over_authorized_hours',
-                      'not_assigned', 'missing_authorization', 'outside_authorization_dates'
+                      'not_assigned', 'missing_authorization', 'outside_authorization_dates',
+                      'ambiguous_authorization'
                     )
                   )
               ) AS warning_count

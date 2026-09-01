@@ -10,12 +10,12 @@ import { listProgramRules } from "@/lib/manage/program-rules";
 import {
   Card, Table, Th, Td, Tr, Money, EmptyState, ErrorPanel, PageHeader, Badge, Plain,
 } from "@/components/ui";
-import { CreateButton, ActionButton, Field, SelectField, TextAreaField } from "@/components/manage/client";
+import { CreateButton, ActionButton, Field, TextAreaField } from "@/components/manage/client";
 import PasswordForm from "@/components/password-form";
 import ApplyMigrations from "@/components/manage/apply-migrations";
 import AttributePayments from "@/components/settings/attribute-payments";
 import UserAccessAdmin from "@/components/settings/user-access-admin";
-import ProgramRules from "@/components/settings/program-rules";
+import ProgramRules, { GuidedProgramButton } from "@/components/settings/program-rules";
 import Link from "next/link";
 import { hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
 import { resolveAccountProfile } from "@/lib/auth/account-label";
@@ -129,10 +129,12 @@ export default async function SettingsPage() {
     <>
       <PageHeader
         eyebrow={accountOnly ? "Account" : "Administration"}
-        title={accountOnly ? "Account settings" : "Users & settings"}
+        title={accountOnly ? "Account settings" : isAdmin ? "Users & settings" : "Programs & account"}
         description={accountOnly
           ? "Review your account and update your password."
-          : "Create users and manage the basic system setup."}
+          : isAdmin
+            ? "Create users and manage the basic system setup."
+            : "Review program rates and update your account."}
       />
 
       <div className="flex flex-col gap-4">
@@ -217,30 +219,7 @@ export default async function SettingsPage() {
                   : "Read-only view of the effective-dated schedule used by every calculation"
               }
               action={
-                isAdmin ? (
-                  <CreateButton
-                    label="New program"
-                    title="New program"
-                    endpoint="/api/programs"
-                    size="sm"
-                    fields={
-                      <>
-                        <Field label="Code" name="code" required help="A short code, e.g. RESPITE. Letters, numbers and underscores." />
-                        <Field label="Name" name="name" required />
-                        <SelectField
-                          label="Group capable"
-                          name="isGroupCapable"
-                          defaultValue="false"
-                          options={[
-                            { value: "false", label: "No" },
-                            { value: "true", label: "Yes" },
-                          ]}
-                        />
-                        <TextAreaField label="Notes" name="notes" />
-                      </>
-                    }
-                  />
-                ) : undefined
+                isAdmin ? <GuidedProgramButton /> : undefined
               }
             >
               {result.data.programs.length === 0 ? (

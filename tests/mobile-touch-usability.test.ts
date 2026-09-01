@@ -7,6 +7,7 @@ const individuals = readFileSync("src/components/individuals/individuals-list.ts
 const employees = readFileSync("src/components/employees/employees-list.tsx", "utf8");
 const planningEmployees = readFileSync("src/components/employees/planning-employees-list.tsx", "utf8");
 const syncConsole = readFileSync("src/components/sync/sync-console.tsx", "utf8");
+const signInForm = readFileSync("src/app/signin/signin-form.tsx", "utf8");
 
 describe("mobile table usability", () => {
   it("gives table links and buttons a 44px target only below the mobile breakpoint", () => {
@@ -35,5 +36,15 @@ describe("mobile table usability", () => {
     expect(syncConsole).toMatch(/onClick=\{syncNow\}[\s\S]{0,160}className="btn btn-primary"/);
     expect(syncConsole).toMatch(/type="submit" disabled=\{busy !== null\} className="btn btn-primary"/);
     expect(syncConsole.match(/className="btn btn-primary"/g)).toHaveLength(2);
+  });
+
+  it("uses shared touch-sized controls on the sign-in screen", () => {
+    expect(signInForm.match(/className="input mt-1 w-full text-sm"/g)).toHaveLength(2);
+    expect(signInForm).toContain('className="btn btn-primary w-full"');
+    expect(signInForm).toContain("aria-busy={busy}");
+  });
+
+  it("gives modal scheduling controls a 44px coarse-pointer target", () => {
+    expect(globals).toContain('[role="dialog"] :where(button, select, input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]))');
   });
 });

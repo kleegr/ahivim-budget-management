@@ -24,6 +24,7 @@ export default function EditServiceScheduleModal({
   employees,
   individuals,
   programs,
+  showBudgetTracking = true,
   onClose,
   onUpdated,
 }: {
@@ -32,6 +33,7 @@ export default function EditServiceScheduleModal({
   employees: Picker[];
   individuals: Picker[];
   programs: ProgramPicker[];
+  showBudgetTracking?: boolean;
   onClose: () => void;
   onUpdated: () => void;
 }) {
@@ -340,9 +342,14 @@ export default function EditServiceScheduleModal({
               occurrenceCount={previewOccurrenceCount}
               totalPlannedHours={previewTotalPlannedHours}
               selectedEmployeeId={employeeId}
+              showBudgetTracking={showBudgetTracking}
             />
           ) : !previewBusy ? (
-            <p className="text-sm text-[var(--color-ink-soft)]">Complete the schedule details to check authorization hours, assignments, and conflicts.</p>
+            <p className="text-sm text-[var(--color-ink-soft)]">
+              {showBudgetTracking
+                ? "Complete the schedule details to check authorization hours, assignments, and conflicts."
+                : "Complete the schedule details to check assignments and conflicts."}
+            </p>
           ) : null}
         </section>
 

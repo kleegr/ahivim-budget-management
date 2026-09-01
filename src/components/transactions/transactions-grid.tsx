@@ -39,6 +39,7 @@ const RECIPIENT_LABEL: Record<string, string> = {
    formatCell, so money/hours/date/badge formatting stays identical. */
 
 const COLUMNS: ColumnDef<GridTransaction>[] = [
+  { key: "serviceDate", label: "Service date", kind: "date", width: 110, hidden: true, accessor: (r) => r.serviceDate ?? null },
   { key: "checkDate", label: "Check date", kind: "date", width: 110, frozen: true, accessor: (r) => r.checkDate },
   {
     key: "individual",
@@ -574,6 +575,7 @@ export default function TransactionsGrid({
           row={selected}
           visibility={fields}
           canSeeBudgets={canSeeBudgets}
+          canReviewGroups={canManage}
           onClose={() => setSelected(null)}
           onFilterCheck={(cn) => {
             grid.setFilter("checkNumber", { selected: [cn], contains: "" });
@@ -591,12 +593,14 @@ function DetailDrawer({
   row,
   visibility,
   canSeeBudgets,
+  canReviewGroups,
   onClose,
   onFilterCheck,
 }: {
   row: GridTransaction;
   visibility: TransactionFieldVisibility;
   canSeeBudgets: boolean;
+  canReviewGroups: boolean;
   onClose: () => void;
   onFilterCheck: (checkNumber: string) => void;
 }) {
@@ -637,8 +641,8 @@ function DetailDrawer({
           {row.employeeId && <Link href={`/employees/${row.employeeId}`} className="block text-[var(--color-primary)] hover:underline">Employee: {row.employee} →</Link>}
           {canSeeBudgets && row.individualId && <Link href={individualBudgetHref(row.individualId)} className="block text-[var(--color-primary)] hover:underline">Budget →</Link>}
           {row.checkNumber && <button type="button" onClick={() => onFilterCheck(row.checkNumber as string)} className="block text-left text-[var(--color-primary)] hover:underline">Show all rows on check {row.checkNumber} →</button>}
-          {row.sourceFileId && <Link href={`/imports/${row.sourceFileId}`} className="block text-[var(--color-primary)] hover:underline">Import batch →</Link>}
-          {row.serviceSessionId && <Link href={`/reconciliation`} className="block text-[var(--color-primary)] hover:underline">Reconciliation record →</Link>}
+          {row.importBatchId && <Link href={`/imports/${row.importBatchId}`} className="block text-[var(--color-primary)] hover:underline">Import batch →</Link>}
+          {canReviewGroups && row.serviceSessionId && ["detected", "needs_review", "confirmed"].includes(row.groupDetectionStatus ?? "") ? <Link href={`/reconciliation/groups?sessionId=${row.serviceSessionId}`} className="block text-[var(--color-primary)] hover:underline">Group session record →</Link> : null}
         </div>
       </div>
     </div>

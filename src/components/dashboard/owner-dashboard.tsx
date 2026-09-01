@@ -12,6 +12,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import GoogleSheetSyncButton from "@/components/sync/google-sheet-sync-button";
 import OwnerPeopleMultiSelect from "@/components/dashboard/owner-people-multi-select";
+import OwnerSavedViews from "@/components/dashboard/owner-saved-views";
 import { ButtonLink, PageHeader } from "@/components/ui";
 import type {
   OwnerActivityFilterOptions,
@@ -19,6 +20,7 @@ import type {
   OwnerDashboardSummary,
 } from "@/lib/dashboard/owner-summary";
 import { formatHours, formatMoney } from "@/lib/money";
+import type { GridView } from "@/lib/manage/grid-views";
 
 const LONG_DATE = new Intl.DateTimeFormat("en-US", {
   month: "long",
@@ -108,9 +110,11 @@ function SummaryMetric({
 function ActivityFilters({
   selection,
   options,
+  savedViews,
 }: {
   selection: OwnerActivitySelection;
   options: OwnerActivityFilterOptions;
+  savedViews: GridView[];
 }) {
   const active = Boolean(
     selection.checkDateFrom
@@ -122,12 +126,8 @@ function ActivityFilters({
   const fieldClass = "input mt-1 min-h-10 w-full text-sm";
 
   return (
-    <form
-      action="/dashboard"
-      method="get"
-      aria-label="Filter actual activity"
-      className="mt-5 border-y border-[var(--color-rule-strong)] py-4"
-    >
+    <div className="mt-5 border-y border-[var(--color-rule-strong)] py-4">
+      <form action="/dashboard" method="get" aria-label="Filter actual activity">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <label className="min-w-0 text-xs font-semibold text-[var(--color-ink-soft)]">
           Check date from
@@ -167,7 +167,9 @@ function ActivityFilters({
           </Link>
         ) : null}
       </div>
-    </form>
+      </form>
+      <OwnerSavedViews selection={selection} views={savedViews} />
+    </div>
   );
 }
 
@@ -243,11 +245,13 @@ export default function OwnerDashboard({
   denied,
   activitySelection,
   activityOptions,
+  savedViews,
 }: {
   summary: OwnerDashboardSummary;
   denied: boolean;
   activitySelection: OwnerActivitySelection;
   activityOptions: OwnerActivityFilterOptions;
+  savedViews: GridView[];
 }) {
   const transactions = summary.transactions;
   const budgets = summary.budgets;
@@ -297,7 +301,7 @@ export default function OwnerDashboard({
             action={selected ? "Open selected rows" : "Open transactions"}
             icon={ReceiptText}
           />
-          <ActivityFilters selection={activitySelection} options={activityOptions} />
+          <ActivityFilters selection={activitySelection} options={activityOptions} savedViews={savedViews} />
           <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] md:grid-cols-3 xl:grid-cols-5 xl:divide-y-0">
             <SummaryMetric label="Funder billed" value={formatMoney(transactions.contextTotals.gross)} href={transactions.contextHref} />
             <SummaryMetric label="Employee base" value={formatMoney(transactions.contextTotals.internal)} href={transactions.contextHref} />

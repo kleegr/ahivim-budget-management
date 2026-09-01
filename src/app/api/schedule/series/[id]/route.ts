@@ -92,7 +92,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (!await planningProgramAllowed(pool, planning, input.programId)) {
         return jsonError("Choose an active hours-based planning program.", 403);
       }
-      return resultResponse(await updateSeries(pool, id, input, user.id, reason), 200);
+      return resultResponse(await updateSeries(pool, id, input, user.id, reason, {
+        enforceBudgetWarnings: planning.access.canSeeBudgets,
+      }), 200);
     }
     return jsonError("Unknown action.", 400);
   } catch (error) {

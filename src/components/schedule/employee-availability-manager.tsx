@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Archive, CalendarOff, Clock3, Plus } from "lucide-react";
+import Link from "next/link";
+import { AlertTriangle, Archive, CalendarOff, Clock3, Plus } from "lucide-react";
 import { EmptyState, Table, Td, Th, Tr } from "@/components/ui";
 import type {
   EmployeeAvailabilityRules,
@@ -11,7 +12,7 @@ import type {
 import { ModalShell, prettyTime, send, type Picker } from "./shared";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const EMPTY_RULES: EmployeeAvailabilityRules = { weekly: [], unavailable: [] };
+const EMPTY_RULES: EmployeeAvailabilityRules = { weekly: [], unavailable: [], scheduleConflicts: [] };
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
@@ -242,6 +243,36 @@ export default function EmployeeAvailabilityManager({
       {notice ? <p role="status" className="mb-4 border-l-2 border-[var(--color-pace-on)] bg-[#f0f8f5] px-3 py-2 text-sm text-[var(--color-pace-on)]">{notice}</p> : null}
       {loading ? <p role="status" className="py-8 text-sm text-[var(--color-ink-soft)]">Loading employee hours...</p> : (
         <div className="space-y-8">
+          {rules.scheduleConflicts.length > 0 ? (
+            <section aria-labelledby="availability-review-heading" className="border-l-2 border-[var(--color-pace-near)] bg-[var(--color-warn-soft)] px-4 py-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-pace-near)]" />
+                <div className="min-w-0 flex-1">
+                  <h3 id="availability-review-heading" className="text-sm font-semibold">Schedule review needed</h3>
+                  <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">
+                    {rules.scheduleConflicts.length} future {rules.scheduleConflicts.length === 1 ? "session overlaps" : "sessions overlap"} this employee&apos;s time off. Open a session to reschedule or cancel it.
+                  </p>
+                  <ul className="mt-3 divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)]">
+                    {rules.scheduleConflicts.map((conflict) => (
+                      <li key={conflict.id} className="flex flex-wrap items-center justify-between gap-3 py-2 text-sm">
+                        <div className="min-w-0">
+                          <p className="font-semibold">{dateLabel(conflict.sessionDate)} · {conflict.startTime ? `${prettyTime(conflict.startTime)}${conflict.endTime ? ` to ${prettyTime(conflict.endTime)}` : ""}` : `${conflict.durationHours} hours`}</p>
+                          <p className="truncate text-xs text-[var(--color-ink-soft)]">{conflict.programName} · {conflict.individualNames.join(", ") || "Individual not assigned"}</p>
+                        </div>
+                        <Link
+                          className="btn btn-sm btn-secondary shrink-0"
+                          href={`/schedule?view=calendar&calendarView=day&date=${encodeURIComponent(conflict.sessionDate)}&employeeId=${encodeURIComponent(employeeId)}&sessionId=${encodeURIComponent(conflict.id)}`}
+                        >
+                          Review session
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </section>
+          ) : null}
+
           <section aria-labelledby="weekly-hours-heading">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-rule)] pb-2">
               <div>

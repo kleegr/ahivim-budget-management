@@ -676,6 +676,7 @@ export async function listSessionWarningFlags(
     id: string;
     warnings: unknown;
     has_conflict: boolean;
+    has_availability_conflict: boolean;
     has_budget_risk: boolean;
     has_assignment_gap: boolean;
   }>(
@@ -718,6 +719,22 @@ export async function listSessionWarningFlags(
                 )
               )
             ) AS has_conflict,
+            (
+              s.status = 'pending' AND s.matched_transaction_id IS NULL
+              AND s.employee_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                  FROM employee_unavailability unavailable
+                 WHERE unavailable.employee_id = s.employee_id
+                   AND unavailable.archived_at IS NULL
+                   AND s.session_date BETWEEN unavailable.start_date AND unavailable.end_date
+                   AND (
+                     unavailable.start_time IS NULL OR unavailable.end_time IS NULL
+                     OR s.start_time IS NULL OR s.end_time IS NULL
+                     OR (s.start_time < unavailable.end_time AND unavailable.start_time < s.end_time)
+                   )
+              )
+            ) AS has_availability_conflict,
             (
               s.status = 'pending' AND s.matched_transaction_id IS NULL
               AND EXISTS (
@@ -829,11 +846,13 @@ export async function listSessionWarningFlags(
 
   return rows.map((r) => {
     const staticWarningCount = plannerWarnings(r.warnings).length;
-    const liveWarningCount = Number(r.has_conflict) + Number(r.has_budget_risk) + Number(r.has_assignment_gap);
+    const canSeeBudgetRisk = scope?.canSeeBudgets !== false;
+    const liveWarningCount = Number(r.has_conflict) + Number(r.has_availability_conflict)
+      + Number(canSeeBudgetRisk && r.has_budget_risk) + Number(r.has_assignment_gap);
     return {
       id: r.id,
-      hasConflict: r.has_conflict,
-      hasBudgetRisk: r.has_budget_risk,
+      hasConflict: r.has_conflict || r.has_availability_conflict,
+      hasBudgetRisk: canSeeBudgetRisk && r.has_budget_risk,
       warningCount: staticWarningCount + liveWarningCount,
     };
   });

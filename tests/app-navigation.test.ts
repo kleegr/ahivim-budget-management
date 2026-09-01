@@ -180,4 +180,29 @@ describe("role-specific workspaces", () => {
     expect(getVisibleAdminDestinations(base).map((item) => item.href)).not.toContain("/settings/agencies");
     expect(getVisibleAdminDestinations({ ...base, canManageAgencies: true }).map((item) => item.href)).toContain("/settings/agencies");
   });
+
+  it("labels restricted settings as the user's own account", () => {
+    const viewer = {
+      role: "viewer",
+      accessResolved: true,
+      canSeeTransactions: false,
+      canSeeSettlements: false,
+      canSeeBudgets: false,
+      canPlan: false,
+      canEditDocuments: false,
+    };
+
+    expect(getVisibleAdminDestinations(viewer)).toContainEqual(expect.objectContaining({
+      href: "/settings",
+      label: "My account",
+    }));
+    expect(getVisibleAdminDestinations({ ...viewer, role: "manager" })).toContainEqual(expect.objectContaining({
+      href: "/settings",
+      label: "Settings",
+    }));
+    expect(getVisibleAdminDestinations({ ...viewer, role: "admin" })).toContainEqual(expect.objectContaining({
+      href: "/settings",
+      label: "Users & settings",
+    }));
+  });
 });

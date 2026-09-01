@@ -87,6 +87,7 @@ export default function ServiceSchedules({
   individuals,
   programs,
   initialFilters,
+  showBudgetTracking = true,
 }: {
   rows: PlanningSeriesRow[];
   today: string;
@@ -94,6 +95,7 @@ export default function ServiceSchedules({
   employees: Picker[];
   individuals: Picker[];
   programs: ProgramPicker[];
+  showBudgetTracking?: boolean;
   initialFilters?: {
     employeeId?: string;
     individualId?: string;
@@ -186,7 +188,7 @@ export default function ServiceSchedules({
           <option value="attention">Needs attention</option>
           <option value="ready">Ready</option>
           <option value="unassigned">Employee needed</option>
-          <option value="over_budget">Over budget</option>
+          {showBudgetTracking ? <option value="over_budget">Over budget</option> : null}
           <option value="conflict">Time conflict</option>
         </select>
         <button type="button" onClick={clearFilters} disabled={!hasFilters} className="btn btn-sm btn-ghost disabled:invisible">
@@ -196,7 +198,11 @@ export default function ServiceSchedules({
 
       {filteredRows.length === 0 ? (
         <EmptyState compact title={rows.length === 0 ? "No service schedules yet" : "No schedules match"} icon={<CalendarDays aria-hidden className="h-5 w-5" />}>
-          {rows.length === 0 ? "Create a recurring schedule to begin planning authorized hours." : "Change or clear the active filters."}
+            {rows.length === 0
+              ? showBudgetTracking
+                ? "Create a recurring schedule to begin planning authorized hours."
+                : "Create a recurring schedule to begin planning services."
+              : "Change or clear the active filters."}
         </EmptyState>
       ) : (
         <div className="overflow-x-auto border-b border-[var(--color-rule)]">
@@ -210,7 +216,7 @@ export default function ServiceSchedules({
                 <Th>Weekly pattern</Th>
                 <Th numeric>Per visit</Th>
                 <Th>Effective dates</Th>
-                <Th>Budget readiness</Th>
+                <Th>{showBudgetTracking ? "Budget readiness" : "Schedule readiness"}</Th>
                 <Th>Next</Th>
                 <Th><span className="sr-only">Actions</span></Th>
               </>
@@ -304,6 +310,7 @@ export default function ServiceSchedules({
           initialEmployeeId={employeeId}
           initialIndividualId={individualId}
           initialProgramId={programId}
+          showBudgetTracking={showBudgetTracking}
           onClose={() => setCreating(false)}
           onCreated={() => {
             setCreating(false);
@@ -319,6 +326,7 @@ export default function ServiceSchedules({
           employees={employees}
           individuals={individuals}
           programs={programs}
+          showBudgetTracking={showBudgetTracking}
           onClose={() => setEditing(null)}
           onUpdated={() => {
             setEditing(null);

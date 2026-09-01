@@ -89,6 +89,24 @@ describe("employee availability API", () => {
     expect(await response.json()).toEqual({ ok: true, data: { weekly: [], unavailable: [] } });
     expect(mocks.listRules).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       employeeId: EMPLOYEE_ID,
+      conflictAgencyIds: null,
+    }));
+  });
+
+  it("scopes conflicting session details to the planner's agencies", async () => {
+    mocks.apiPlanningUser.mockResolvedValue({
+      user: { id: "agency-planner" },
+      agencyIds: ["70000000-0000-4000-8000-000000000001"],
+      agencyRosters: [{ employeeIds: [EMPLOYEE_ID] }],
+      canManageAssignments: false,
+    });
+
+    const response = await GET(request(`/api/employee-availability?employeeId=${EMPLOYEE_ID}`));
+
+    expect(response.status).toBe(200);
+    expect(mocks.listRules).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      employeeId: EMPLOYEE_ID,
+      conflictAgencyIds: ["70000000-0000-4000-8000-000000000001"],
     }));
   });
 

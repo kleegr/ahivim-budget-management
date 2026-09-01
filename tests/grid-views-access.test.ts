@@ -5,16 +5,17 @@ const mocks = vi.hoisted(() => ({
   apiUser: vi.fn(),
   getPool: vi.fn(),
   listGridViews: vi.fn(),
+  saveGridView: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/session", () => ({ apiUser: mocks.apiUser }));
 vi.mock("@/lib/db", () => ({ getPool: mocks.getPool }));
 vi.mock("@/lib/manage/grid-views", () => ({
   listGridViews: mocks.listGridViews,
-  saveGridView: vi.fn(),
+  saveGridView: mocks.saveGridView,
 }));
 
-import { GET } from "@/app/api/grid-views/route";
+import { GET, POST } from "@/app/api/grid-views/route";
 
 describe("saved grid view visibility", () => {
   beforeEach(() => {
@@ -43,5 +44,43 @@ describe("saved grid view visibility", () => {
 
     expect(await response.json()).toEqual({ ok: true, data: views });
     expect(mocks.listGridViews).toHaveBeenCalledWith(pool, "transactions");
+  });
+
+  it("does not expose owner dashboard cohorts to another staff profile", async () => {
+    mocks.apiUser.mockResolvedValue({ id: "manager-1", role: "manager" });
+
+    const response = await GET(new NextRequest("http://localhost/api/grid-views?grid=owner_dashboard"));
+
+    expect(await response.json()).toEqual({ ok: true, data: [] });
+    expect(mocks.getPool).not.toHaveBeenCalled();
+    expect(mocks.listGridViews).not.toHaveBeenCalled();
+  });
+
+  it("does not let another staff profile overwrite owner dashboard cohorts", async () => {
+    mocks.apiUser.mockResolvedValue({ id: "manager-1", role: "manager" });
+    const request = new NextRequest("http://localhost/api/grid-views", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ gridKey: "owner_dashboard", name: "Private cohort", config: {} }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(403);
+    expect(mocks.saveGridView).not.toHaveBeenCalled();
+  });
+
+  it("normalizes the grid key before enforcing owner-only access", async () => {
+    mocks.apiUser.mockResolvedValue({ id: "manager-1", role: "manager" });
+    const request = new NextRequest("http://localhost/api/grid-views", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ gridKey: "  owner_dashboard  ", name: "Private cohort", config: {} }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(403);
+    expect(mocks.saveGridView).not.toHaveBeenCalled();
   });
 });

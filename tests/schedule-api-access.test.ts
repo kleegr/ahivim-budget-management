@@ -6,7 +6,10 @@ const mocks = vi.hoisted(() => ({
   getPool: vi.fn(),
 }));
 
-vi.mock("@/lib/auth/planning-access", () => ({ apiPlanningUser: mocks.apiPlanningUser }));
+vi.mock("@/lib/auth/planning-access", () => ({
+  apiPlanningUser: mocks.apiPlanningUser,
+  isBudgetPlanningWarningCode: vi.fn(() => false),
+}));
 vi.mock("@/lib/db", () => ({ getPool: mocks.getPool }));
 
 import { GET as listSessions, POST as createSession } from "@/app/api/schedule/sessions/route";
@@ -49,6 +52,16 @@ describe("planning API authorization boundary", () => {
 
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ ok: false, error: "Planning access required" });
+    expect(mocks.getPool).not.toHaveBeenCalled();
+  });
+
+  it("denies utilization data to a staffing-only planner before opening the database", async () => {
+    mocks.apiPlanningUser.mockResolvedValue({ access: { canSeeBudgets: false } });
+
+    const response = await getUtilization(request(`/api/schedule/utilization?individualId=${ID}`));
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ ok: false, error: "Budget planning access required" });
     expect(mocks.getPool).not.toHaveBeenCalled();
   });
 });

@@ -36,7 +36,7 @@ function poolWithClient(query: PgLikeClient["query"]): PgLikePool {
 describe("employee availability management", () => {
   it("creates a weekly window and records the mutation in the same transaction", async () => {
     const statements: string[] = [];
-    const query = vi.fn(async (sql: string) => {
+    const query = vi.fn(async (sql: string, _params?: unknown[]) => {
       statements.push(sql);
       if (sql.includes("SELECT id FROM employees")) return { rows: [{ id: EMPLOYEE_ID }] };
       if (sql.includes("SELECT id FROM employee_weekly_availability")) return { rows: [] };
@@ -99,9 +99,22 @@ describe("employee availability management", () => {
   });
 
   it("lists both rule types with one finance-free read model", async () => {
-    const query = vi.fn(async (sql: string) => sql.includes("employee_weekly_availability")
-      ? { rows: [weeklyRow()] }
-      : {
+    const query = vi.fn(async (sql: string, _params?: unknown[]) => {
+      if (sql.includes("FROM scheduled_sessions")) {
+        return {
+          rows: [{
+            id: "60000000-0000-4000-8000-000000000001",
+            session_date: "2026-09-07",
+            start_time: "09:00",
+            end_time: "10:00",
+            duration_hours: "1.0000",
+            program_name: "Com Hab",
+            individual_names: ["Ari"],
+          }],
+        };
+      }
+      if (sql.includes("employee_weekly_availability")) return { rows: [weeklyRow()] };
+      return {
         rows: [{
           id: "40000000-0000-4000-8000-000000000002",
           employee_id: EMPLOYEE_ID,
@@ -114,15 +127,37 @@ describe("employee availability management", () => {
           archived_at: null,
           created_at: "2026-08-31T12:00:00.000Z",
         }],
-      });
+      };
+    });
 
     const result = await listEmployeeAvailabilityRules(
       { query } as unknown as PgLikePool,
-      { employeeId: EMPLOYEE_ID },
+      {
+        employeeId: EMPLOYEE_ID,
+        conflictAgencyIds: ["70000000-0000-4000-8000-000000000001"],
+      },
     );
 
     expect(result.weekly[0]).toMatchObject({ kind: "weekly", weekday: 1 });
     expect(result.unavailable[0]).toMatchObject({ kind: "unavailable", startDate: "2026-09-07" });
+    expect(result.scheduleConflicts[0]).toEqual({
+      id: "60000000-0000-4000-8000-000000000001",
+      sessionDate: "2026-09-07",
+      startTime: "09:00",
+      endTime: "10:00",
+      durationHours: "1.0000",
+      programName: "Com Hab",
+      individualNames: ["Ari"],
+    });
+    const conflictCall = query.mock.calls.find(([sql]) => String(sql).includes("FROM scheduled_sessions scheduled"));
+    expect(conflictCall?.[0]).toContain("FROM agency_individuals membership");
+    expect(conflictCall?.[0]).toContain("FROM agency_employees membership");
+    expect(conflictCall?.[1]).toEqual([
+      EMPLOYEE_ID,
+      null,
+      null,
+      ["70000000-0000-4000-8000-000000000001"],
+    ]);
     expect(JSON.stringify(result).toLowerCase()).not.toMatch(/rate|amount|transaction|check|tax|payout/);
   });
 

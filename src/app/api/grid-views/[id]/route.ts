@@ -13,7 +13,10 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
   const cross = sameOriginOrFail(request);
   if (cross) return cross;
   const { id } = await params;
-  const grid = request.nextUrl.searchParams.get("grid") ?? "";
+  const grid = (request.nextUrl.searchParams.get("grid") ?? "").trim();
+  if (grid === "owner_dashboard" && user.role !== "admin") {
+    return jsonError("Only the owner can delete owner dashboard views.", 403);
+  }
   const result = await deleteGridView(getPool(), { gridKey: grid, id }, user.id);
   return resultResponse(result);
 }

@@ -47,6 +47,7 @@ describe("agency assignment mutation scope", () => {
     mocks.apiPlanningUser.mockResolvedValue({
       user: { id: "user" },
       canManageAssignments: true,
+      access: { canSeeBudgets: true },
     });
     mocks.getPool.mockReturnValue({});
     mocks.getAssignment.mockResolvedValue({
@@ -58,6 +59,7 @@ describe("agency assignment mutation scope", () => {
       subjects.employeeId !== EMPLOYEE_OUTSIDE);
     mocks.planningProgramAllowed.mockResolvedValue(true);
     mocks.setAssignmentStatus.mockResolvedValue({ ok: true, data: { id: ASSIGNMENT } });
+    mocks.updateAssignment.mockResolvedValue({ ok: true, data: { id: ASSIGNMENT } });
   });
 
   it("rejects proposed subjects outside the agency even when the existing assignment is in scope", async () => {
@@ -97,5 +99,29 @@ describe("agency assignment mutation scope", () => {
       expect.anything(), ASSIGNMENT, "ended", "user", null,
     );
     expect(mocks.updateAssignment).not.toHaveBeenCalled();
+  });
+
+  it("ignores allowed-hour edits from a staffing-only account", async () => {
+    mocks.apiPlanningUser.mockResolvedValue({
+      user: { id: "user" },
+      canManageAssignments: true,
+      access: { canSeeBudgets: false },
+    });
+    const request = new NextRequest(`http://localhost/api/assignments/${ASSIGNMENT}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ allowedHours: "100", notes: "Staffing update" }),
+    });
+
+    const response = await PATCH(request, { params: Promise.resolve({ id: ASSIGNMENT }) });
+
+    expect(response.status).toBe(200);
+    expect(mocks.updateAssignment).toHaveBeenCalledWith(
+      expect.anything(),
+      ASSIGNMENT,
+      { notes: "Staffing update" },
+      "user",
+      null,
+    );
   });
 });

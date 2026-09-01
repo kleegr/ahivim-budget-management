@@ -63,7 +63,9 @@ export async function POST(request: NextRequest) {
     if (!await planningProgramAllowed(pool, planning, input.programId)) {
       return jsonError("Choose an active hours-based planning program.", 403);
     }
-    const result = await createSeries(pool, input, user.id, reason);
+    const result = await createSeries(pool, input, user.id, reason, {
+      enforceBudgetWarnings: planning.access.canSeeBudgets,
+    });
     return resultResponse(result, 201);
   } catch (error) {
     return jsonError(redactError(error), 500);

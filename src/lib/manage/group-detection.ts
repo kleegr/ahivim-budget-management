@@ -106,13 +106,14 @@ export function classifyGroupCandidate(c: GroupClassificationInput): GroupClassi
  */
 export async function listGroupCandidates(
   pool: PgLikePool,
-  options: { status?: string } = {},
+  options: { status?: string; sessionId?: string } = {},
   limit = 200,
 ): Promise<GroupCandidate[]> {
   const status =
     options.status && (GROUP_STATUSES as readonly string[]).includes(options.status)
       ? options.status
       : null;
+  const sessionId = options.sessionId && isUuid(options.sessionId) ? options.sessionId : null;
   const cap = Math.min(Math.max(limit, 1), 500);
 
   const { rows } = await pool.query<{
@@ -155,9 +156,10 @@ export async function listGroupCandidates(
      WHERE (ss.group_size > 1
             OR ss.group_detection_status IN ('detected', 'needs_review', 'confirmed'))
        AND ($1::text IS NULL OR ss.group_detection_status = $1)
+       AND ($2::uuid IS NULL OR ss.id = $2)
      ORDER BY ss.period_begin NULLS LAST, ss.id
-     LIMIT $2`,
-    [status, cap],
+     LIMIT $3`,
+    [status, sessionId, cap],
   );
 
   if (rows.length === 0) return [];

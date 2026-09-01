@@ -58,6 +58,29 @@ describe("direct-pay financial redaction", () => {
     expect(JSON.stringify(check)).not.toContain("300.00");
   });
 
+  it("keeps an exact-check drilldown inside the caller's employee scope", async () => {
+    const pool = poolWith([]);
+    const checkId = "123e4567-e89b-12d3-a456-426614174020";
+    const employeeId = "123e4567-e89b-12d3-a456-426614174000";
+    const scope = {
+      ...fullAccess("viewer-1", "viewer"),
+      full: false,
+      allEmployees: false,
+      grantedEmployeeIds: [employeeId],
+      employeeIds: [employeeId],
+      canSeeCheckNet: true,
+      canSeeTaxes: false,
+    };
+
+    await listPayrollChecks(pool, scope, 100, checkId);
+
+    const [sql, params] = vi.mocked(pool.query).mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("c.employee_id = ANY($1::uuid[])");
+    expect(sql).toContain("c.id = $2::uuid");
+    expect(sql).toContain("LIMIT $3");
+    expect(params).toEqual([[employeeId], checkId, 100]);
+  });
+
   it("lets an hours-only role see the derived target without target money", async () => {
     const pool = poolWith([{
       id: "target-1",

@@ -72,6 +72,8 @@ export async function GET(request: NextRequest) {
       employeeIds,
       from: requestedFrom,
       to: requestedTo,
+      reviewFrom: agencyDate(),
+      conflictAgencyIds: planning.agencyIds.length > 0 ? planning.agencyIds : null,
       includeArchived,
     });
     return NextResponse.json({ ok: true, data });

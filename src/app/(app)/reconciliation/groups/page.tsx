@@ -30,9 +30,13 @@ export default async function GroupReviewPage({
   const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
   const statusParam = one(sp.status);
   const status = statusParam && (GROUP_STATUSES as readonly string[]).includes(statusParam) ? statusParam : "";
+  const sessionId = one(sp.sessionId);
 
   const result = await withDb(async (pool) => {
-    const candidates = await listGroupCandidates(pool, { status: status || undefined });
+    const candidates = await listGroupCandidates(pool, {
+      status: status || undefined,
+      sessionId,
+    });
     return candidates.map<ReviewCandidate>((c) => ({ ...c, classification: classifyGroupCandidate(c) }));
   });
 
@@ -53,6 +57,7 @@ export default async function GroupReviewPage({
             method="get"
             className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-3 text-sm"
           >
+            {sessionId ? <input type="hidden" name="sessionId" value={sessionId} /> : null}
             <label className="block">
               <span className="eyebrow">Detection status</span>
               <select

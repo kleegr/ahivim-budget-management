@@ -32,6 +32,7 @@ export default function CreateSessionModal({
   initialEmployeeId = "",
   initialIndividualId = "",
   initialProgramId = "",
+  showBudgetTracking = true,
   onClose,
   onCreated,
 }: {
@@ -43,6 +44,7 @@ export default function CreateSessionModal({
   initialEmployeeId?: string;
   initialIndividualId?: string;
   initialProgramId?: string;
+  showBudgetTracking?: boolean;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -372,7 +374,7 @@ export default function CreateSessionModal({
         {/* Right: live forecast + warnings */}
         <div className="space-y-3">
           {previewBusy ? <p role="status" className="text-sm text-[var(--color-ink-soft)]">Checking this schedule...</p> : null}
-          {preview && (!recurring || (seriesAuthorization && seriesAuthorization.occurrenceCount > 0)) ? (
+          {preview ? (
             <SchedulePreflightSummary
               preview={preview}
               isGroup={isGroup}
@@ -380,6 +382,7 @@ export default function CreateSessionModal({
               occurrenceCount={occurrenceCount}
               totalPlannedHours={totalPlannedHours}
               selectedEmployeeId={employeeId}
+              showBudgetTracking={showBudgetTracking}
             />
           ) : null}
 
@@ -680,6 +683,7 @@ export function SchedulePreflightSummary({
   occurrenceCount,
   totalPlannedHours,
   selectedEmployeeId,
+  showBudgetTracking = true,
 }: {
   preview: PlanningSchedulePreview;
   isGroup: boolean;
@@ -687,6 +691,7 @@ export function SchedulePreflightSummary({
   occurrenceCount: number;
   totalPlannedHours: string | null;
   selectedEmployeeId: string;
+  showBudgetTracking?: boolean;
 }) {
   const cats: Record<WarningCategory, string[]> = { budget: [], conflict: [], other: [] };
   for (const warning of preview.warnings) {
@@ -752,24 +757,31 @@ export function SchedulePreflightSummary({
     .filter((individual) => individual.conflictingOccurrenceCount > 0)
     .map((individual) =>
       `${individual.individualName} is already scheduled on ${individual.conflictingOccurrenceCount} visit${individual.conflictingOccurrenceCount === 1 ? "" : "s"}.`);
-  const over = recurring
+  const over = showBudgetTracking && recurring
     ? (preview.seriesAuthorization?.individuals ?? []).some((individual) =>
       individual.periods.some((period) =>
         period.remainingAfterHours !== null && dec(period.remainingAfterHours).isNegative()))
-    : preview.forecast.some((forecast) =>
+    : showBudgetTracking && preview.forecast.some((forecast) =>
       forecast.remainingAfterHours !== null && dec(forecast.remainingAfterHours).isNegative());
-  const flagged = cats.budget.length > 0
-    || cats.conflict.length > 0
+  const flagged = cats.conflict.length > 0
     || cats.other.length > 0
-    || seriesAuthorizationWarnings.length > 0
+    || (showBudgetTracking && cats.budget.length > 0)
+    || (showBudgetTracking && seriesAuthorizationWarnings.length > 0)
     || employeeSeriesWarnings.length > 0
     || individualSeriesWarnings.length > 0;
   const tone: "over" | "warn" | "ok" = over ? "over" : flagged ? "warn" : "ok";
   const color =
     tone === "over" ? "var(--color-pace-over)" : tone === "warn" ? "var(--color-pace-near)" : "var(--color-pace-on)";
   const heading = tone === "over" ? "Over authorization" : tone === "warn" ? "Review before saving" : "Clear to schedule";
-  const sub =
-    tone === "over"
+  const sub = !showBudgetTracking
+    ? tone === "warn"
+      ? "You can still save with a reason, but check the schedule flags below first."
+      : recurring
+        ? selectedEmployeeId
+          ? "The individuals are free and the selected employee is ready across the series."
+          : "The individuals are free; the series will remain unassigned."
+        : "No schedule or assignment conflicts detected."
+    : tone === "over"
       ? `${recurring ? "This series" : "This session"} exceeds the remaining authorized hours for at least one individual.`
       : tone === "warn"
         ? "You can still save with a reason, but check the flags below first."
@@ -793,7 +805,7 @@ export function SchedulePreflightSummary({
         </p>
       ) : null}
 
-      {!recurring && preview.forecast.length > 0 ? (
+      {showBudgetTracking && !recurring && preview.forecast.length > 0 ? (
         <div className="mt-2 border-t border-[var(--color-rule)] pt-2">
           <p className="eyebrow">Remaining after this session</p>
           <div className="mt-1 space-y-0.5">
@@ -815,8 +827,8 @@ export function SchedulePreflightSummary({
         </div>
       ) : null}
 
-      {cats.budget.length > 0 ? <WarnList color="var(--color-pace-over)" title="Authorization / budget" items={cats.budget} /> : null}
-      {seriesAuthorizationWarnings.length > 0 ? <WarnList color="var(--color-pace-over)" title="Series authorization" items={seriesAuthorizationWarnings} /> : null}
+      {showBudgetTracking && cats.budget.length > 0 ? <WarnList color="var(--color-pace-over)" title="Authorization / budget" items={cats.budget} /> : null}
+      {showBudgetTracking && seriesAuthorizationWarnings.length > 0 ? <WarnList color="var(--color-pace-over)" title="Series authorization" items={seriesAuthorizationWarnings} /> : null}
       {cats.conflict.length > 0 ? <WarnList color="var(--color-pace-near)" title="Conflicts" items={cats.conflict} /> : null}
       {individualSeriesWarnings.length > 0 ? <WarnList color="var(--color-pace-near)" title="Individual conflicts" items={individualSeriesWarnings} /> : null}
       {employeeSeriesWarnings.length > 0 ? <WarnList color="var(--color-pace-near)" title="Employee readiness" items={employeeSeriesWarnings} /> : null}

@@ -36,6 +36,12 @@ vi.mock("next/server", () => ({
 
 vi.mock("@/lib/auth/planning-access", () => ({
   apiPlanningUser: mocks.apiPlanningUser,
+  isBudgetPlanningWarningCode: (code: unknown) => [
+    "over_authorized_hours",
+    "missing_authorization",
+    "outside_authorization_dates",
+    "ambiguous_authorization",
+  ].includes(String(code)),
   planningSubjectsAllowed: mocks.planningSubjectsAllowed,
   planningEmployeeIdsAllowedForSubjects: mocks.planningEmployeeIdsAllowedForSubjects,
   planningProgramAllowed: mocks.planningProgramAllowed,
@@ -77,6 +83,7 @@ describe("agency planning route ranges", () => {
       user: { id: "user" },
       agencyIds: [SERIES_ID],
       canManageSchedules: true,
+      access: { canSeeBudgets: true },
     });
     mocks.getPool.mockReturnValue({ query: vi.fn() });
     mocks.planningSubjectsAllowed.mockReturnValue(true);
@@ -173,6 +180,49 @@ describe("agency planning route ranges", () => {
     expect(query).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps authorization details out of a staffing-only recurrence preview", async () => {
+    mocks.apiPlanningUser.mockResolvedValue({
+      user: { id: "user" },
+      agencyIds: [],
+      canManageSchedules: true,
+      access: { canSeeBudgets: false },
+    });
+    mocks.previewSession.mockResolvedValue({
+      durationHours: "2.0000",
+      warnings: [
+        { code: "over_authorized_hours", message: "Authorized hours would be exceeded." },
+        { code: "custom_note", message: "Review the service note." },
+      ],
+      forecast: [{ individualId: INDIVIDUAL_ID, remainingHours: "10" }],
+    });
+
+    const response = await previewSchedule(mutationRequest("/api/schedule/preview", {
+      employeeId: EMPLOYEE_ID,
+      programId: PROGRAM_ID,
+      individualIds: [INDIVIDUAL_ID],
+      sessionDate: "2026-08-03",
+      startTime: "09:00",
+      endTime: "11:00",
+      durationHours: "2",
+      recurrence: {
+        frequency: "weekly",
+        interval: 1,
+        weekdays: [1],
+        startDate: "2026-08-03",
+        endDate: "2026-08-31",
+      },
+    }));
+
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.data.warnings).toEqual([
+      { code: "custom_note", message: "Review the service note." },
+    ]);
+    expect(body.data.forecast).toEqual([]);
+    expect(body.data.seriesAuthorization).toBeNull();
+    expect(mocks.projectSeriesAuthorization).not.toHaveBeenCalled();
+  });
+
   it("authorizes both the existing and replacement series from applyFromDate", async () => {
     const request = mutationRequest(`/api/schedule/series/${SERIES_ID}`, {
       action: "update",
@@ -210,6 +260,7 @@ describe("agency planning route ranges", () => {
       expect.objectContaining({ applyFromDate: "2026-08-01", forceSplit: true }),
       "user",
       null,
+      { enforceBudgetWarnings: true },
     );
   });
 

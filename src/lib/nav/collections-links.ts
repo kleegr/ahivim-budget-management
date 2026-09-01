@@ -69,6 +69,23 @@ export function collectionsPayrollCheckHref(source: PayrollCheckLinkSource): str
   return `/masser?${params.toString()}`;
 }
 
+export function collectionsPayrollCheckFocusHref(input: {
+  payrollCheckId: string;
+  month: string;
+}): string {
+  const params = new URLSearchParams({
+    view: "checks",
+    month: input.month,
+    focusCheckId: input.payrollCheckId,
+  });
+  return `/masser?${params.toString()}`;
+}
+
+export function collectionsFocusedPayrollCheckId(search: SearchValues): string | null {
+  const candidate = first(search.focusCheckId);
+  return candidate && UUID.test(candidate) ? candidate : null;
+}
+
 /**
  * Resolve URL state only after the server has applied the user's visibility and
  * employee scope. This keeps a crafted query string from opening a sensitive

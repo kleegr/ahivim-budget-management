@@ -349,7 +349,14 @@ export function getVisibleWorkspaces(access: NavigationAccess): VisibleNavigatio
 }
 
 export function getVisibleAdminDestinations(access: NavigationAccess): NavigationDestination[] {
-  return ADMIN_DESTINATIONS.filter((destination) => allowed(destination.gate, access));
+  return ADMIN_DESTINATIONS
+    .filter((destination) => allowed(destination.gate, access))
+    .map((destination) => {
+      if (destination.id !== "settings" || access.role === "admin") return destination;
+      return access.role === "manager"
+        ? { ...destination, label: "Settings", hint: "Programs and account settings" }
+        : { ...destination, label: "My account", hint: "Password and account details" };
+    });
 }
 
 export function pathMatches(pathname: string, prefix: string): boolean {

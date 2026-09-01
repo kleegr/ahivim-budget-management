@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiPlanningUser, planningProgramAllowed, planningSubjectsAllowed } from "@/lib/auth/planning-access";
+import {
+  apiPlanningUser,
+  isBudgetPlanningWarningCode,
+  planningProgramAllowed,
+  planningSubjectsAllowed,
+} from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { createSession, type CreateSessionInput } from "@/lib/manage/schedule";
 import { listSessions, listSessionWarningFlags, type CalendarFilter } from "@/lib/data/schedule-queries";
@@ -99,9 +104,13 @@ export async function POST(request: NextRequest) {
     if (!await planningProgramAllowed(pool, planning, input.programId)) {
       return jsonError("Choose an active hours-based planning program.", 403);
     }
-    const result = await createSession(pool, input, user.id, reason);
+    const result = await createSession(pool, input, user.id, reason, {
+      enforceBudgetWarnings: planning.access.canSeeBudgets,
+    });
     if (result.ok) {
-      result.data.warnings = result.data.warnings.filter((warning) => warning.code !== "missing_rate");
+      result.data.warnings = result.data.warnings.filter((warning) =>
+        warning.code !== "missing_rate"
+        && (planning.access.canSeeBudgets || !isBudgetPlanningWarningCode(warning.code)));
     }
     return resultResponse(result, 201);
   } catch (error) {

@@ -16,6 +16,7 @@ import { listIndividualBudgetBoard } from "@/lib/data/queries";
 import { listCurrentProgramBudgets } from "@/lib/data/program-budgets";
 import { listTransactionsForGrid } from "@/lib/data/transactions-grid";
 import { listStrategies } from "@/lib/manage/calculation-strategies";
+import { listGridViews } from "@/lib/manage/grid-views";
 import {
   buildOwnerActivityFilterOptions,
   buildOwnerDashboardSummary,
@@ -132,11 +133,12 @@ export default async function DashboardPage({
       payrollPeriod: one(params.payrollPeriod) ?? null,
     });
     const ownerResult = await withDb(async (pool) => {
-      const [transactions, programBudgets, budgetBoard, strategyResult] = await Promise.all([
+      const [transactions, programBudgets, budgetBoard, strategyResult, savedViews] = await Promise.all([
         listTransactionsForGrid(pool),
         listCurrentProgramBudgets(pool, { asOf: today }),
         listIndividualBudgetBoard(pool, new Date(`${today}T12:00:00Z`)),
         listStrategies(pool),
+        listGridViews(pool, "owner_dashboard"),
       ]);
       return {
         summary: buildOwnerDashboardSummary({
@@ -147,6 +149,7 @@ export default async function DashboardPage({
           activitySelection,
         }),
         activityOptions: buildOwnerActivityFilterOptions(transactions),
+        savedViews,
       };
     });
 
@@ -167,6 +170,7 @@ export default async function DashboardPage({
         denied={Boolean(denied)}
         activitySelection={activitySelection}
         activityOptions={ownerResult.data.activityOptions}
+        savedViews={ownerResult.data.savedViews}
       />
     );
   }

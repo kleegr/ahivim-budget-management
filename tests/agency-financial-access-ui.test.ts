@@ -97,6 +97,7 @@ describe("owner agency financials access and interface", () => {
     expect(workspace).toContain("Google Sheet transactions and recorded payments");
     expect(workspace).toContain("Individual split included");
     expect(workspace).toContain("transactionId=${row.id}");
+    expect(workspace).toContain("serviceFrom=${report.periodStart}&serviceTo=${report.periodEnd}");
     expect(workspace).toContain("openPayRule({ employeeId: row.employeeId!");
     expect(workspace).toContain("openProgramSplit({ individualId: row.individualId");
     expect(workspace).toContain('className="touch-table min-w-full');

@@ -102,6 +102,17 @@ export function buildInitialFilters(
     }
   }
 
+  const serviceDateFrom = one(search.serviceFrom);
+  const serviceDateTo = one(search.serviceTo);
+  if (serviceDateFrom || serviceDateTo) {
+    filters.serviceDate = { from: serviceDateFrom ?? "", to: serviceDateTo ?? "" };
+    if (serviceDateFrom && serviceDateTo) {
+      labels.push(serviceDateFrom === serviceDateTo
+        ? `service date ${serviceDateFrom}`
+        : `service dates ${serviceDateFrom} to ${serviceDateTo}`);
+    }
+  }
+
   const periodFrom = one(search.pbFrom);
   const periodTo = one(search.pbTo);
   if (periodFrom || periodTo) {

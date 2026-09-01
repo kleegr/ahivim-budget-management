@@ -10,6 +10,7 @@ import type { PgLikePool } from "@/lib/import/commit";
 import { dec, toHours, toMoney } from "@/lib/money";
 
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface DirectPayTargetFinancialRow {
   id: string;
@@ -295,10 +296,16 @@ export async function listPayrollChecks(
   pool: PgLikePool,
   scope: AccessScope,
   limit = 100,
+  payrollCheckId?: string | null,
 ): Promise<PayrollCheckRow[]> {
   if (!scope.canSeeCheckNet && !scope.canSeeTaxes) return [];
   const params: unknown[] = [];
   const scopeClause = employeeFinancialClause(scope, "c.employee_id", params);
+  let checkClause = "";
+  if (payrollCheckId && UUID.test(payrollCheckId)) {
+    params.push(payrollCheckId);
+    checkClause = ` AND c.id = $${params.length}::uuid`;
+  }
   params.push(Math.max(1, Math.min(limit, 500)));
   const { rows } = await pool.query<{
     id: string; employee_id: string; employee_name: string; check_number: string | null;
@@ -319,7 +326,7 @@ export async function listPayrollChecks(
        FROM employee_payroll_checks c
        JOIN employees e ON e.id = c.employee_id
        LEFT JOIN payroll_transactions t ON t.payroll_check_id = c.id
-      WHERE TRUE${scopeClause}
+      WHERE TRUE${scopeClause}${checkClause}
       GROUP BY c.id, e.display_name
       ORDER BY CASE c.verification_status WHEN 'unverified' THEN 0 WHEN 'verified' THEN 1 ELSE 2 END,
                COALESCE(c.check_date, c.period_end, c.period_begin) DESC NULLS LAST,
@@ -352,6 +359,7 @@ export async function getCollectionsWorkspace(
   pool: PgLikePool,
   scope: AccessScope,
   requestedMonth: string,
+  options: { payrollCheckId?: string | null } = {},
 ): Promise<CollectionsWorkspaceData> {
   const month = MONTH.test(requestedMonth) ? requestedMonth : agencyMonth();
   const employeeParams: unknown[] = [month];
@@ -530,7 +538,7 @@ export async function getCollectionsWorkspace(
       individualParams,
     ),
     listDirectPayTargetFinancials(pool, scope, true),
-    listPayrollChecks(pool, scope),
+    listPayrollChecks(pool, scope, 100, options.payrollCheckId),
     (async () => {
       const params: unknown[] = [];
       const clause = employeeFinancialClause(scope, "e.id", params);

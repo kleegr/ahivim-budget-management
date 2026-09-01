@@ -47,6 +47,189 @@ export interface ProgramInput {
   notes?: string | null;
 }
 
+export interface ProgramSetupInput extends Omit<ProgramInput, "code"> {
+  code?: string;
+  requiredAuthType?: string;
+  serviceCategory?: string;
+  paymentRecipient?: string;
+  consumptionSource?: string;
+  rateScope?: string;
+  renewalPolicy?: string;
+  groupsAllowed?: boolean;
+  oneToOneRequired?: boolean;
+  maxGroupSize?: number | null;
+  allowMultipleEmployees?: boolean;
+  allowMultipleIndividuals?: boolean;
+  allowIndividualRateOverride?: boolean;
+  selfHireConverts?: boolean;
+  agencyAdditionalRate?: string | null;
+  effectiveFrom?: string | null;
+  internalRate?: string | null;
+  agencyRate?: string | null;
+}
+
+const AUTH_TYPES = new Set(["hours", "dollars", "both"]);
+const SERVICE_CATEGORIES = new Set(["direct_service", "self_hire", "group_service", "classes", "other"]);
+const PAYMENT_RECIPIENTS = new Set(["agency", "employee", "external", "not_applicable"]);
+const CONSUMPTION_SOURCES = new Set(["payroll", "invoice", "manual", "mixed"]);
+const RATE_SCOPES = new Set(["per_individual", "per_group", "flat"]);
+const RENEWAL_POLICIES = new Set(["individual", "calendar", "rolling", "custom"]);
+
+function normalizedProgramCode(value: string | undefined, fallbackName: string): string {
+  return (value?.trim() || fallbackName)
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40);
+}
+
+function uniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+}
+
+/**
+ * Create the program, its common operating rules, and an optional starting
+ * rate as one unit. The guided settings form uses this path so a later step
+ * can never leave a half-configured catalog entry behind.
+ */
+export async function createProgramSetup(
+  pool: PgLikePool,
+  input: ProgramSetupInput,
+  actorId: string | null,
+  reason?: string | null,
+): Promise<Result<ProgramRecord>> {
+  const name = input.name?.trim();
+  if (!name) return fail("validation", "Enter a program name.");
+  const code = normalizedProgramCode(input.code, name);
+  if (!code) return fail("validation", "Enter a program name or short code.");
+
+  const requiredAuthType = input.requiredAuthType ?? "hours";
+  const serviceCategory = input.serviceCategory ?? "direct_service";
+  const paymentRecipient = input.paymentRecipient ?? "agency";
+  const consumptionSource = input.consumptionSource ?? "payroll";
+  const groupsAllowed = input.groupsAllowed ?? input.isGroupCapable ?? false;
+  const rateScope = input.rateScope ?? (groupsAllowed ? "per_group" : "per_individual");
+  const renewalPolicy = input.renewalPolicy ?? "individual";
+
+  if (!AUTH_TYPES.has(requiredAuthType)) return fail("validation", "Choose whether this budget uses hours, dollars, or both.");
+  if (!SERVICE_CATEGORIES.has(serviceCategory)) return fail("validation", "Choose a valid service type.");
+  if (!PAYMENT_RECIPIENTS.has(paymentRecipient)) return fail("validation", "Choose who receives payment for this program.");
+  if (!CONSUMPTION_SOURCES.has(consumptionSource)) return fail("validation", "Choose how usage enters the system.");
+  if (!RATE_SCOPES.has(rateScope)) return fail("validation", "Choose how the rate applies.");
+  if (!RENEWAL_POLICIES.has(renewalPolicy)) return fail("validation", "Choose how the program renews.");
+  if (input.maxGroupSize !== undefined && input.maxGroupSize !== null
+      && (!Number.isInteger(input.maxGroupSize) || input.maxGroupSize < 1)) {
+    return fail("validation", "Maximum group size must be a whole number of at least 1, or blank.");
+  }
+
+  const hasInternalRate = typeof input.internalRate === "string" && input.internalRate.trim() !== "";
+  const hasAgencyRate = typeof input.agencyRate === "string" && input.agencyRate.trim() !== "";
+  const hasStartingRate = hasInternalRate || hasAgencyRate;
+  if (hasStartingRate && !hasInternalRate) {
+    return fail("validation", "Enter the employee base rate when adding a starting rate.");
+  }
+  if (hasStartingRate && !/^\d{4}-\d{2}-\d{2}$/.test(input.effectiveFrom ?? "")) {
+    return fail("validation", "Choose the date when the starting rate begins.");
+  }
+  if (hasInternalRate && (!Number.isFinite(Number(input.internalRate)) || Number(input.internalRate) < 0)) {
+    return fail("validation", "Enter a valid employee base rate.");
+  }
+  if (hasAgencyRate && (!Number.isFinite(Number(input.agencyRate)) || Number(input.agencyRate) < 0)) {
+    return fail("validation", "Enter a valid funder rate.");
+  }
+  if (input.agencyAdditionalRate != null && input.agencyAdditionalRate.trim() !== ""
+      && (!Number.isFinite(Number(input.agencyAdditionalRate)) || Number(input.agencyAdditionalRate) < 0)) {
+    return fail("validation", "Enter a valid agency spread rate, or leave it blank.");
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const duplicate = await client.query(`SELECT id FROM programs WHERE code = $1`, [code]);
+    if (duplicate.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail("conflict", "A program with that short code already exists.");
+    }
+
+    const { rows } = await client.query<Row>(
+      `INSERT INTO programs
+       (code, name, is_group_capable, notes, one_to_one_required, groups_allowed,
+        max_group_size, allow_multiple_employees, allow_multiple_individuals,
+        allow_individual_rate_override, self_hire_converts, agency_additional_rate,
+        required_auth_type, service_category, payment_recipient, consumption_source,
+        rate_scope, renewal_policy)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+               $13, $14, $15, $16, $17, $18)
+       RETURNING ${COLS}`,
+      [
+        code,
+        name,
+        groupsAllowed,
+        input.notes?.trim() || null,
+        input.oneToOneRequired ?? !groupsAllowed,
+        groupsAllowed,
+        groupsAllowed ? input.maxGroupSize ?? null : null,
+        input.allowMultipleEmployees ?? false,
+        input.allowMultipleIndividuals ?? groupsAllowed,
+        input.allowIndividualRateOverride ?? true,
+        input.selfHireConverts ?? false,
+        input.agencyAdditionalRate?.trim() ? toMoney(input.agencyAdditionalRate) : null,
+        requiredAuthType,
+        serviceCategory,
+        paymentRecipient,
+        consumptionSource,
+        rateScope,
+        renewalPolicy,
+      ],
+    );
+    const record = toRecord(rows[0]!);
+
+    if (hasStartingRate) {
+      await client.query(
+        `INSERT INTO program_rate_schedules
+         (program_id, effective_from, agency_rate, internal_rate, notes, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          record.id,
+          input.effectiveFrom,
+          hasAgencyRate ? toMoney(input.agencyRate!) : null,
+          toMoney(input.internalRate!),
+          "Starting rate from guided program setup.",
+          actorId,
+        ],
+      );
+    }
+
+    await recordChange(client, {
+      actorId,
+      action: "program_created",
+      entityType: "program",
+      entityId: record.id,
+      next: {
+        ...record,
+        requiredAuthType,
+        serviceCategory,
+        paymentRecipient,
+        consumptionSource,
+        rateScope,
+        renewalPolicy,
+        startingRate: hasStartingRate
+          ? { effectiveFrom: input.effectiveFrom, internalRate: toMoney(input.internalRate!), agencyRate: hasAgencyRate ? toMoney(input.agencyRate!) : null }
+          : null,
+      },
+      reason,
+    });
+    await client.query("COMMIT");
+    return ok(record);
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    if (uniqueViolation(error)) return fail("conflict", "A program with that short code already exists.");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function createProgram(
   pool: PgLikePool,
   input: ProgramInput,

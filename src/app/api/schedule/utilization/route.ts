@@ -16,6 +16,9 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   const planning = await apiPlanningUser();
   if (!planning) return jsonError("Planning access required", 403);
+  if (!planning.access.canSeeBudgets) {
+    return jsonError("Budget planning access required", 403);
+  }
 
   const individualId = request.nextUrl.searchParams.get("individualId");
   if (!individualId || !/^[0-9a-f-]{36}$/i.test(individualId)) {

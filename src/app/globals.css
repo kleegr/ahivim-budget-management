@@ -472,6 +472,9 @@ body {
     min-width: 2.75rem;
     min-height: 2.75rem;
   }
+  [role="dialog"] :where(button, select, input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"])) {
+    min-height: 2.75rem;
+  }
 }
 
 /* Dense data tables stay compact on desktop, but every table action gets a

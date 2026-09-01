@@ -92,7 +92,7 @@ export default function SignInForm({
           type="email"
           autoComplete="username"
           required
-          className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-2 text-sm"
+          className="input mt-1 w-full text-sm"
         />
       </div>
 
@@ -106,14 +106,15 @@ export default function SignInForm({
           type="password"
           autoComplete="current-password"
           required
-          className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-2 text-sm"
+          className="input mt-1 w-full text-sm"
         />
       </div>
 
       <button
         type="submit"
         disabled={busy}
-        className="w-full rounded bg-[var(--color-primary)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+        aria-busy={busy}
+        className="btn btn-primary w-full"
       >
         {busy ? "Signing in…" : "Sign in"}
       </button>

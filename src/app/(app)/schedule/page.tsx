@@ -1,4 +1,8 @@
-import { canViewPlannerDirectPayTargets, requirePlanningUser } from "@/lib/auth/planning-access";
+import {
+  canViewPlannerDirectPayTargets,
+  requirePlanningUser,
+  withoutPlanningBudgetDetails,
+} from "@/lib/auth/planning-access";
 import { withDb } from "@/lib/data/pool";
 import {
   filterPlanningWorkspaceForAgency,
@@ -25,6 +29,7 @@ export default async function SchedulePage({
 }) {
   const planningAccess = await requirePlanningUser();
   const canManage = planningAccess.canManageSchedules;
+  const showBudgetTracking = planningAccess.access.canSeeBudgets;
   const today = agencyDate();
   const sp = await searchParams;
   const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
@@ -45,6 +50,10 @@ export default async function SchedulePage({
     status: one(sp.status),
     unassigned: sp.unassigned === "true",
   };
+  const requestedSessionId = one(sp.sessionId);
+  const initialSessionId = requestedSessionId && /^[0-9a-f-]{36}$/i.test(requestedSessionId)
+    ? requestedSessionId
+    : undefined;
 
   const result = await withDb(async (pool) => {
     const [reference, planning, directPayTargets] = await Promise.all([
@@ -56,7 +65,11 @@ export default async function SchedulePage({
     ]);
     return {
       reference,
-      planning: filterPlanningWorkspaceForAgency(planning, planningAccess.agencyRosters),
+      planning: showBudgetTracking
+        ? filterPlanningWorkspaceForAgency(planning, planningAccess.agencyRosters)
+        : withoutPlanningBudgetDetails(
+            filterPlanningWorkspaceForAgency(planning, planningAccess.agencyRosters),
+          ),
       directPayTargets,
     };
   });
@@ -66,7 +79,9 @@ export default async function SchedulePage({
       <PageHeader
         eyebrow="Schedule"
         title="Scheduling"
-        description="Plan hours, assignments, employee availability, and budget coverage."
+        description={showBudgetTracking
+          ? "Plan hours, assignments, employee availability, and budget coverage."
+          : "Manage employee availability, assignments, and schedules."}
       />
 
       {!result.ok ? (
@@ -81,6 +96,7 @@ export default async function SchedulePage({
             initialView={initialView}
             initialCalendarDate={initialCalendarDate}
             initialCalendarView={initialCalendarView}
+            initialSessionId={initialSessionId}
             initialFilters={initialFilters}
             individuals={result.data.reference.individuals}
             employees={result.data.reference.employees}
@@ -92,6 +108,7 @@ export default async function SchedulePage({
             }))}
             directPayTargets={result.data.directPayTargets}
             showDirectPayTargets={canViewPlannerDirectPayTargets(planningAccess)}
+            showBudgetTracking={showBudgetTracking}
           />
         </>
       )}

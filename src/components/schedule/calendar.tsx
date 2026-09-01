@@ -29,6 +29,8 @@ export interface ScheduleCalendarProps {
   programs: ProgramPicker[];
   initialDate?: string;
   initialView?: View;
+  initialSessionId?: string;
+  showBudgetTracking?: boolean;
   initialFilters?: {
     employeeId?: string;
     individualId?: string;
@@ -44,7 +46,8 @@ export interface ScheduleCalendarProps {
 export default function ScheduleCalendar(props: ScheduleCalendarProps) {
   const {
     canManage, today, employees, individuals, programs,
-    initialDate, initialView, initialFilters,
+    initialDate, initialView, initialSessionId, initialFilters,
+    showBudgetTracking = true,
   } = props;
   const startingDate = initialDate && /^\d{4}-\d{2}-\d{2}$/.test(initialDate) ? initialDate : today;
 
@@ -71,6 +74,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [summaryRetryKey, setSummaryRetryKey] = useState(0);
   const loadRequestId = useRef(0);
+  const initialSessionIdRef = useRef(initialSessionId ?? null);
 
   const range = useMemo(() => {
     if (view === "day") return { from: anchor, to: anchor };
@@ -102,8 +106,13 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
       return;
     }
     const data = res.data as { sessions: CalendarSession[]; warningFlags?: SessionWarningFlags[] };
-    setSessions(data.sessions ?? []);
+    const nextSessions = data.sessions ?? [];
+    setSessions(nextSessions);
     setFlags(new Map<string, SessionFlags>((data.warningFlags ?? []).map((f) => [f.id, f])));
+    if (initialSessionIdRef.current) {
+      setSelected(nextSessions.find((session) => session.id === initialSessionIdRef.current) ?? null);
+      initialSessionIdRef.current = null;
+    }
   }, [range, filters]);
 
   useEffect(() => {
@@ -115,7 +124,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
   // the individual currently in focus. Only meaningful for a single individual.
   useEffect(() => {
     const individualId = filters.individualId;
-    if (!individualId) {
+    if (!showBudgetTracking || !individualId) {
       setSummary(null);
       setSummaryLoading(false);
       setSummaryError(null);
@@ -137,7 +146,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
       setSummary((res.data as ScheduleUtilizationSummary | null) ?? null);
     })();
     return () => { cancelled = true; };
-  }, [filters.individualId, summaryRetryKey]);
+  }, [filters.individualId, showBudgetTracking, summaryRetryKey]);
 
   const byDate = useMemo(() => {
     const map = new Map<string, CalendarSession[]>();
@@ -300,13 +309,14 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
               : label
         }
         perspective={perspective}
+        showBudgetTracking={showBudgetTracking}
         onReview={rangeSummary.flaggedSessions > 0
           ? () => setSelected(sessions.find((session) => session.warningCount > 0) ?? null)
           : undefined}
       />
 
       {/* Utilization strip: budget headroom for the individual in focus. */}
-      {filters.individualId ? (
+      {showBudgetTracking && filters.individualId ? (
         summaryError ? (
           <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-4 py-3 text-sm">
             <p className="min-w-0 flex-1 text-[var(--color-ink-soft)]">{summaryError}</p>
@@ -355,6 +365,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
           initialEmployeeId={filters.employeeId}
           initialIndividualId={filters.individualId}
           initialProgramId={filters.programId}
+          showBudgetTracking={showBudgetTracking}
           onClose={() => setCreating(null)}
           onCreated={() => { setCreating(null); void load(); }}
         />
@@ -367,6 +378,7 @@ function RangeSummary({
   summary,
   label,
   perspective,
+  showBudgetTracking,
   onReview,
 }: {
   summary: {
@@ -380,6 +392,7 @@ function RangeSummary({
   };
   label: string;
   perspective: Perspective;
+  showBudgetTracking: boolean;
   onReview?: () => void;
 }) {
   const hours = perspective === "employee" ? summary.serviceHours : summary.budgetHours;
@@ -391,10 +404,22 @@ function RangeSummary({
         ? `${label}; ${summary.excludedSessions} cancelled/no-show excluded`
         : label,
     },
-    { label: "Scheduled hours", value: `${hours} h`, detail: perspective === "employee" ? "employee time" : "individual budget hours" },
+    {
+      label: "Scheduled hours",
+      value: `${hours} h`,
+      detail: perspective === "employee"
+        ? "employee time"
+        : showBudgetTracking
+          ? "individual budget hours"
+          : "individual scheduled hours",
+    },
     { label: "Individuals", value: String(summary.individuals), detail: "receiving service" },
     { label: "Employees", value: String(summary.employees), detail: "scheduled to work" },
-    { label: "Needs review", value: String(summary.flaggedSessions), detail: "conflict or budget risk" },
+    {
+      label: "Needs review",
+      value: String(summary.flaggedSessions),
+      detail: showBudgetTracking ? "conflict or budget risk" : "schedule or assignment conflict",
+    },
   ];
   return (
     <dl className="grid divide-y divide-[var(--color-rule)] border-b border-[var(--color-rule)] sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-5">
