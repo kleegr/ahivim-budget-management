@@ -32,6 +32,7 @@ import {
   matchesPeopleStatus,
   matchesProgram,
   matchesRenewal,
+  selectedPeopleActualsHref,
   type PeopleStatusFilter,
   type RenewalFilter,
 } from "@/components/individuals/people-budget-table";
@@ -72,6 +73,17 @@ export type IndividualRow = {
   hasBilling: boolean;
   lastBilledOn: string | null;
   insightsVisible: boolean;
+  staffingVisible: boolean;
+  canPlan: boolean;
+  assignedEmployees: Array<{ id: string; name: string }>;
+  nextScheduledService: {
+    id: string;
+    date: string;
+    startTime: string | null;
+    programName: string;
+    employeeId: string | null;
+    employeeName: string | null;
+  } | null;
 };
 
 type PortfolioFilter = PortfolioView;
@@ -343,9 +355,7 @@ function HealthCell({ row }: { row: IndividualRow }) {
 
 function NextActionCell({ row }: { row: IndividualRow }) {
   const action = individualNextAction(row);
-  const href = action.destination === "budget"
-    ? individualBudgetHref(row.id)
-    : `/individuals/${encodeURIComponent(row.id)}`;
+  const href = individualNextActionHref(row, action.destination);
   const tone = action.tone === "danger"
     ? "text-[var(--color-danger)]"
     : action.tone === "warn"
@@ -358,6 +368,29 @@ function NextActionCell({ row }: { row: IndividualRow }) {
       {action.label}
     </Link>
   );
+}
+
+function individualNextActionHref(
+  row: IndividualRow,
+  destination: ReturnType<typeof individualNextAction>["destination"],
+): string {
+  const individualId = encodeURIComponent(row.id);
+  if (destination === "budget") return individualBudgetHref(row.id);
+  if (destination === "schedule") {
+    const date = row.nextScheduledService?.date;
+    return `/schedule?view=calendar&individualId=${individualId}${date ? `&date=${encodeURIComponent(date)}` : ""}`;
+  }
+  if (destination === "assignments") return `/schedule?view=future&individualId=${individualId}`;
+  return `/individuals/${individualId}`;
+}
+
+function formatTime(value: string | null): string | null {
+  if (!value) return null;
+  const [hourText, minuteText] = value.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return value;
+  return `${hour % 12 || 12}:${String(minute).padStart(2, "0")} ${hour >= 12 ? "PM" : "AM"}`;
 }
 
 function SortHead({ column, sort, onSort }: {
@@ -396,10 +429,11 @@ export default function IndividualsList({
   initialFilter?: PortfolioView;
   canManage?: boolean;
 }) {
-  const [statusFilter, setStatusFilter] = useState<PeopleStatusFilter>("active");
+  const [statusFilter, setStatusFilter] = useState<PeopleStatusFilter>("all");
   const [programFilter, setProgramFilter] = useState("");
   const [renewalFilter, setRenewalFilter] = useState<RenewalFilter>("all");
   const [filter, setFilter] = useState<PortfolioFilter>(initialFilter);
+  const [scheduleIssueOnly, setScheduleIssueOnly] = useState(false);
   const [moreOpen, setMoreOpen] = useState(isDetailedPortfolioView(initialFilter));
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
 
@@ -409,9 +443,10 @@ export default function IndividualsList({
   }, []);
 
   const resetExternalFilters = useCallback(() => {
-    setStatusFilter("active");
+    setStatusFilter("all");
     setProgramFilter("");
     setRenewalFilter("all");
+    setScheduleIssueOnly(false);
     chooseFilter("all");
   }, [chooseFilter]);
 
@@ -421,9 +456,6 @@ export default function IndividualsList({
   );
   const hasPortfolioVisibility = rows.some((row) => row.insightsVisible);
   const counts = useMemo(() => ({
-    all: activeRows.length,
-    with_budget: activeRows.filter((row) => row.insightsVisible && row.hasCanonicalBudget).length,
-    without_budget: activeRows.filter((row) => row.insightsVisible && !row.hasCanonicalBudget).length,
     attention: activeRows.filter(needsAttention).length,
     over: activeRows.filter(isOver).length,
     at_limit: activeRows.filter(isAtLimit).length,
@@ -431,7 +463,22 @@ export default function IndividualsList({
     renewing: activeRows.filter(isRenewing).length,
     billing_without_budget: activeRows.filter(hasBillingWithoutBudget).length,
     no_activity: activeRows.filter(hasNoActivity).length,
+    renewal_missing: activeRows.filter((row) => row.insightsVisible && row.budget?.missingRenewal).length,
+    renewal_overdue: activeRows.filter((row) => row.insightsVisible && row.budget?.expired).length,
+    schedule_over: activeRows.filter((row) => row.insightsVisible && (row.budget?.hoursAfterScheduled ?? 0) < 0).length,
   }), [activeRows]);
+
+  const budgetViewCounts = useMemo(() => {
+    const currentScope = rows
+      .filter((row) => matchesPeopleStatus(row, statusFilter))
+      .filter((row) => matchesProgram(row, programFilter))
+      .filter((row) => matchesRenewal(row, renewalFilter));
+    return {
+      all: currentScope.length,
+      with_budget: currentScope.filter((row) => row.insightsVisible && row.hasCanonicalBudget).length,
+      without_budget: currentScope.filter((row) => row.insightsVisible && !row.hasCanonicalBudget).length,
+    };
+  }, [programFilter, renewalFilter, rows, statusFilter]);
 
   const programOptions = useMemo(
     () => [...new Set(rows.flatMap((row) => row.programs))].sort((left, right) => left.localeCompare(right)),
@@ -443,12 +490,13 @@ export default function IndividualsList({
     program: programFilter,
     renewal: renewalFilter,
     portfolio: filter,
-  }), [filter, programFilter, renewalFilter, statusFilter]);
+    scheduleIssue: scheduleIssueOnly ? "true" : "false",
+  }), [filter, programFilter, renewalFilter, scheduleIssueOnly, statusFilter]);
 
   const applyExternalConfig = useCallback((config: Record<string, string>) => {
     setStatusFilter(STATUS_FILTER_VALUES.has(config.status as PeopleStatusFilter)
       ? config.status as PeopleStatusFilter
-      : "active");
+      : "all");
     setProgramFilter(programOptions.includes(config.program) ? config.program : "");
     setRenewalFilter(RENEWAL_FILTER_VALUES.has(config.renewal as RenewalFilter)
       ? config.renewal as RenewalFilter
@@ -456,6 +504,7 @@ export default function IndividualsList({
     chooseFilter(PORTFOLIO_FILTER_VALUES.has(config.portfolio as PortfolioFilter)
       ? config.portfolio as PortfolioFilter
       : "all");
+    setScheduleIssueOnly(config.scheduleIssue === "true");
   }, [chooseFilter, programOptions]);
 
   const portfolioRows = useMemo(
@@ -463,8 +512,9 @@ export default function IndividualsList({
       .filter((row) => matchesPeopleStatus(row, statusFilter))
       .filter((row) => matchesProgram(row, programFilter))
       .filter((row) => matchesRenewal(row, renewalFilter))
-      .filter((row) => matchesFilter(row, filter)),
-    [filter, programFilter, renewalFilter, rows, statusFilter],
+      .filter((row) => matchesFilter(row, filter))
+      .filter((row) => !scheduleIssueOnly || (row.insightsVisible && (row.budget?.hoursAfterScheduled ?? 0) < 0)),
+    [filter, programFilter, renewalFilter, rows, scheduleIssueOnly, statusFilter],
   );
   const canShowTransactionCounts = rows.some((row) => row.budget?.transactionCount !== null && row.budget?.transactionCount !== undefined);
   const canShowBilledAmounts = rows.some((row) => row.budget?.billedAmount !== null && row.budget?.billedAmount !== undefined);
@@ -550,6 +600,49 @@ export default function IndividualsList({
       render: (row) => <HealthCell row={row} />,
     },
     {
+      key: "billingWithoutBudget", label: "Billing without budget", kind: "badge", width: 155,
+      accessor: (row) => row.insightsVisible ? (hasBillingWithoutBudget(row) ? "Needs budget" : "No") : null,
+      render: (row) => !row.insightsVisible
+        ? <span className="text-[var(--color-ink-faint)]">-</span>
+        : hasBillingWithoutBudget(row)
+          ? <span className="badge bg-[var(--color-danger-soft)] text-[var(--color-danger)]">Needs budget</span>
+          : <span className="text-[var(--color-ink-faint)]">No</span>,
+    },
+    {
+      key: "assignedEmployees", label: "Assigned employees", kind: "text", width: 190,
+      accessor: (row) => row.staffingVisible ? row.assignedEmployees.map((employee) => employee.name).join(", ") || null : null,
+      render: (row) => {
+        if (!row.staffingVisible) return <span className="text-[var(--color-ink-faint)]">-</span>;
+        if (row.assignedEmployees.length === 0) return <span className="font-medium text-[var(--color-warn)]">Not assigned</span>;
+        return (
+          <div className="space-y-0.5">
+            {row.assignedEmployees.slice(0, 2).map((employee) => (
+              <Link key={employee.id} href={`/employees/${encodeURIComponent(employee.id)}`} className="block font-medium text-[var(--color-primary)] hover:underline">
+                {employee.name}
+              </Link>
+            ))}
+            {row.assignedEmployees.length > 2 ? <span className="text-xs text-[var(--color-ink-faint)]">+{row.assignedEmployees.length - 2} more</span> : null}
+          </div>
+        );
+      },
+    },
+    {
+      key: "nextScheduledService", label: "Next scheduled service", kind: "date", width: 195,
+      accessor: (row) => row.staffingVisible ? row.nextScheduledService?.date ?? null : null,
+      sortAccessor: (row) => row.nextScheduledService?.date ?? "9999-12-31",
+      render: (row) => {
+        if (!row.staffingVisible) return <span className="text-[var(--color-ink-faint)]">-</span>;
+        const service = row.nextScheduledService;
+        if (!service) return <span className="text-[var(--color-ink-faint)]">No upcoming visit</span>;
+        const time = formatTime(service.startTime);
+        const detail = `${service.programName} · ${service.employeeName ?? "Unassigned"}`;
+        const content = <><span className="tnum block font-medium">{formatDate(service.date)}{time ? ` · ${time}` : ""}</span><span className={`mt-0.5 block text-xs ${service.employeeName ? "text-[var(--color-ink-faint)]" : "font-medium text-[var(--color-warn)]"}`}>{detail}</span></>;
+        return row.canPlan
+          ? <Link href={`/schedule?view=calendar&individualId=${encodeURIComponent(row.id)}&date=${encodeURIComponent(service.date)}`} className="block hover:text-[var(--color-primary)] hover:underline">{content}</Link>
+          : <>{content}</>;
+      },
+    },
+    {
       key: "nextAction", label: "Next action", kind: "text", width: 190,
       accessor: (row) => individualNextAction(row).label,
       render: (row) => <NextActionCell row={row} />,
@@ -616,9 +709,18 @@ export default function IndividualsList({
 
   const filteredIds = useMemo(() => grid.filtered.map((row) => row.id), [grid.filtered]);
   const selectedRows = useMemo(
-    () => grid.filtered.filter((row) => selectedIds.has(row.id)),
-    [grid.filtered, selectedIds],
+    () => grid.sorted.filter((row) => selectedIds.has(row.id)),
+    [grid.sorted, selectedIds],
   );
+  const selectedActivityRows = useMemo(
+    () => selectedRows.filter((row) => row.hasBilling),
+    [selectedRows],
+  );
+  const nextSelectedRow = useMemo(
+    () => selectedRows.find(needsAttention) ?? selectedRows[0] ?? null,
+    [selectedRows],
+  );
+  const nextSelectedAction = nextSelectedRow ? individualNextAction(nextSelectedRow) : null;
   const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id));
   const someFilteredSelected = filteredIds.some((id) => selectedIds.has(id));
   const toggleAllFiltered = useCallback(() => {
@@ -643,12 +745,38 @@ export default function IndividualsList({
 
   const hasActiveFilters = grid.anyFilter
     || filter !== "all"
-    || statusFilter !== "active"
+    || statusFilter !== "all"
     || programFilter !== ""
-    || renewalFilter !== "all";
+    || renewalFilter !== "all"
+    || scheduleIssueOnly;
   const resetFilters = () => {
     grid.clearFilters();
     resetExternalFilters();
+  };
+
+  const focusDetailedException = (view: DetailedPortfolioView) => {
+    grid.clearFilters();
+    setStatusFilter("active");
+    setProgramFilter("");
+    setRenewalFilter("all");
+    setScheduleIssueOnly(false);
+    chooseFilter(view);
+  };
+  const focusRenewalException = (renewal: "missing" | "overdue" | "next_60") => {
+    grid.clearFilters();
+    setStatusFilter("active");
+    setProgramFilter("");
+    setScheduleIssueOnly(false);
+    chooseFilter("all");
+    setRenewalFilter(renewal);
+  };
+  const focusScheduleException = () => {
+    grid.clearFilters();
+    setStatusFilter("active");
+    setProgramFilter("");
+    setRenewalFilter("all");
+    chooseFilter("all");
+    setScheduleIssueOnly(true);
   };
 
   return (
@@ -687,7 +815,7 @@ export default function IndividualsList({
           exportTitle="People and budgets"
           exportFilename="people-and-budgets"
           showColumnChooser={false}
-          hasExternalFilters={filter !== "all" || statusFilter !== "active" || programFilter !== "" || renewalFilter !== "all"}
+          hasExternalFilters={filter !== "all" || statusFilter !== "all" || programFilter !== "" || renewalFilter !== "all" || scheduleIssueOnly}
           onResetFilters={resetExternalFilters}
           extraActions={selectedIds.size > 0 ? (
             <span role="status" aria-live="polite" className="text-xs font-medium text-[var(--color-primary)]">
@@ -695,6 +823,35 @@ export default function IndividualsList({
             </span>
           ) : null}
         />
+
+        {hasPortfolioVisibility ? (
+          <section aria-label="Portfolio exceptions" className="rounded-md border border-[var(--color-rule)] bg-[var(--color-surface-muted)] px-3 py-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">Needs attention</span>
+              {([
+                { label: "All follow-up", count: counts.attention, active: filter === "attention", onClick: () => focusDetailedException("attention") },
+                { label: "Billing, no budget", count: counts.billing_without_budget, active: filter === "billing_without_budget", onClick: () => focusDetailedException("billing_without_budget") },
+                { label: "Renewal missing", count: counts.renewal_missing, active: renewalFilter === "missing", onClick: () => focusRenewalException("missing") },
+                { label: "Renewal overdue", count: counts.renewal_overdue, active: renewalFilter === "overdue", onClick: () => focusRenewalException("overdue") },
+                { label: "Due in 60 days", count: counts.renewing, active: renewalFilter === "next_60", onClick: () => focusRenewalException("next_60") },
+                { label: "Schedule over", count: counts.schedule_over, active: scheduleIssueOnly, onClick: focusScheduleException },
+                { label: "At / over limit", count: counts.at_limit, active: filter === "at_limit", onClick: () => focusDetailedException("at_limit") },
+                { label: "Behind pace", count: counts.behind, active: filter === "behind", onClick: () => focusDetailedException("behind") },
+              ] as const).map((item) => (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={item.onClick}
+                  aria-pressed={item.active}
+                  disabled={item.count === 0}
+                  className={`btn btn-sm ${item.active ? "btn-primary" : "btn-secondary"}`}
+                >
+                  {item.label} <span className="tnum opacity-75">{item.count}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         <div className="flex flex-wrap items-end gap-3" aria-label="People and budget filters">
           <label className="block min-w-36 text-sm">
@@ -739,14 +896,17 @@ export default function IndividualsList({
         {hasPortfolioVisibility ? (
           <div className="segmented-control w-fit max-w-full overflow-x-auto" role="group" aria-label="Show people by budget setup">
             {([
-              { key: "all", label: "All", count: counts.all },
-              { key: "with_budget", label: "With budget", count: counts.with_budget },
-              { key: "without_budget", label: "No budget", count: counts.without_budget },
+              { key: "all", label: "All", count: budgetViewCounts.all },
+              { key: "with_budget", label: "With budget", count: budgetViewCounts.with_budget },
+              { key: "without_budget", label: "No budget", count: budgetViewCounts.without_budget },
             ] as const).map((option) => (
               <button
                 key={option.key}
                 type="button"
-                onClick={() => chooseFilter(option.key)}
+                onClick={() => {
+                  setScheduleIssueOnly(false);
+                  chooseFilter(option.key);
+                }}
                 aria-pressed={filter === option.key}
                 className="whitespace-nowrap"
               >
@@ -795,6 +955,30 @@ export default function IndividualsList({
           </div>
         </details>
       </div>
+
+      {selectedIds.size > 0 ? (
+        <section aria-label="Selected people actions" className="flex flex-wrap items-center gap-2 rounded-md border border-[var(--color-primary)] bg-[var(--color-primary-tint)] px-3 py-2.5">
+          <p className="mr-auto text-sm font-semibold text-[var(--color-ink)]">
+            {selectedRows.length.toLocaleString()} selected in this view
+          </p>
+          {selectedActivityRows.length > 0 ? (
+            <Link
+              href={selectedPeopleActualsHref(selectedActivityRows.map((row) => row.id))}
+              className="btn btn-sm btn-secondary"
+            >
+              Open recorded activity{selectedActivityRows.length !== selectedRows.length ? ` (${selectedActivityRows.length})` : ""}
+            </Link>
+          ) : (
+            <span className="text-xs text-[var(--color-ink-soft)]">No recorded activity in this selection</span>
+          )}
+          {nextSelectedRow && nextSelectedAction ? (
+            <Link href={individualNextActionHref(nextSelectedRow, nextSelectedAction.destination)} className="btn btn-sm btn-primary">
+              Work next: {nextSelectedRow.name}
+            </Link>
+          ) : null}
+          <button type="button" onClick={() => setSelectedIds(new Set())} className="btn btn-sm btn-ghost">Clear</button>
+        </section>
+      ) : null}
 
       <div className="scroll-thin max-h-[62vh] overflow-auto rounded-md border border-[var(--color-rule-strong)]">
         <table className="touch-table w-full border-collapse text-sm">
