@@ -11,6 +11,7 @@
     "pretypecheck": "node --import tsx scripts/embed-migrations.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "pree2e": "node --import tsx scripts/embed-migrations.ts",
     "e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
     "db:embed": "node --import tsx scripts/embed-migrations.ts",
