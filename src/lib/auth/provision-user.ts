@@ -38,6 +38,7 @@ export interface ProvisionUserInput {
   relationship?: string;
   employeeId?: string;
   agencyId?: string;
+  internalAccess?: unknown;
   capabilityGrants?: string[];
   capabilityDenials?: string[];
   reason?: string | null;
@@ -70,6 +71,17 @@ function optionalStringArray(
     return fail("validation", `${label} must be a list of permission names.`);
   }
   return ok([...new Set(value.map((item) => item.trim()).filter(Boolean))]);
+}
+
+function optionalRecord(
+  value: unknown,
+  label: string,
+): Result<Record<string, unknown> | undefined> {
+  if (value === undefined) return ok(undefined);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return fail("validation", `${label} must be an object.`);
+  }
+  return ok({ ...value });
 }
 
 function abortOnFailure<T>(result: Result<T>): T {
@@ -113,6 +125,16 @@ export async function provisionUser(
   if (!denialsResult.ok) return denialsResult;
   const requestedGrants = grantsResult.data;
   const capabilityDenials = denialsResult.data ?? [];
+  const internalAccessResult = optionalRecord(input.internalAccess, "Internal access");
+  if (!internalAccessResult.ok) return internalAccessResult;
+  const internalAccess = internalAccessResult.data;
+  const acceptsInternalAccess = preset.binding.kind === "none" && preset.role === "viewer";
+  if (internalAccess !== undefined && !acceptsInternalAccess) {
+    return fail(
+      "validation",
+      "Internal permission adjustments apply only to internal viewer accounts.",
+    );
+  }
 
   let individualId: string | null = null;
   let relationship: IndividualRelationship | null = null;
@@ -137,7 +159,13 @@ export async function provisionUser(
   }
 
   const passwordHash = await hashPassword(input.password);
-  const access = preset.access ?? userAccessConfigFromInput({}, preset.role);
+  const baseAccess = preset.access ?? userAccessConfigFromInput({}, preset.role);
+  const access = internalAccess === undefined
+    ? baseAccess
+    : userAccessConfigFromInput(
+        { ...baseAccess, ...internalAccess, accessScope: "scoped" },
+        preset.role,
+      );
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -146,6 +174,7 @@ export async function provisionUser(
       displayName: input.displayName?.trim() || email,
       passwordHash,
       role: preset.role,
+      accountPreset: preset.id,
     }, access, actorId);
     if (!created.ok) {
       throw new ProvisioningAbort("conflict", "An account with that email address already exists.");
@@ -172,8 +201,12 @@ export async function provisionUser(
           actorId,
           reason,
         ));
-        const capabilityGrants = requestedGrants ?? preset.binding.defaultCapabilityGrants
-          .filter((capability) => !capabilityDenials.includes(capability));
+        const capabilityGrants = [
+          ...new Set([
+            ...preset.binding.defaultCapabilityGrants,
+            ...(requestedGrants ?? []),
+          ]),
+        ].filter((capability) => !capabilityDenials.includes(capability));
         abortOnFailure(await setIndividualPortalAssignmentQuery(
           client,
           {

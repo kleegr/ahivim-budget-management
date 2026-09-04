@@ -66,6 +66,8 @@ describe("admin preset provisioning API", () => {
       password: "temporary password",
       individualId: "00000000-0000-4000-8000-000000000002",
       relationship: "guardian",
+      capabilityGrants: ["dollar_budgets.self.read"],
+      capabilityDenials: ["financials.self.billed_totals.read"],
     }));
 
     expect(response.status).toBe(201);
@@ -73,8 +75,45 @@ describe("admin preset provisioning API", () => {
       preset: "individual_parent",
       individualId: "00000000-0000-4000-8000-000000000002",
       relationship: "guardian",
+      capabilityGrants: ["dollar_budgets.self.read"],
+      capabilityDenials: ["financials.self.billed_totals.read"],
     }), ACTOR);
     expect(mocks.createUser).not.toHaveBeenCalled();
+  });
+
+  it("passes nested internal adjustments without promoting them to top-level flags", async () => {
+    mocks.provisionUser.mockResolvedValue({
+      ok: true,
+      data: {
+        id: "user-id",
+        email: "planner@example.test",
+        displayName: "Planner",
+        role: "viewer",
+        isActive: true,
+        preset: "budget_planner",
+      },
+    });
+    const internalAccess = {
+      accessScope: "scoped",
+      canSeeHours: true,
+      canSeeBudgets: false,
+      canPlan: true,
+    };
+
+    const response = await POST(request({
+      preset: "budget_planner",
+      displayName: "Planner",
+      email: "planner@example.test",
+      password: "temporary password",
+      internalAccess,
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mocks.provisionUser).toHaveBeenCalledWith(
+      pool,
+      expect.objectContaining({ preset: "budget_planner", internalAccess }),
+      ACTOR,
+    );
   });
 
   it("maps typed provisioning failures to their HTTP status", async () => {

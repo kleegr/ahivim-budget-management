@@ -223,6 +223,56 @@ suite("phase 3 — reconciliation + import corrections (real PostgreSQL)", () =>
     expect(await scalar<string>(`SELECT matched_transaction_id FROM scheduled_sessions WHERE id=$1`, [s2.id])).toBe(tx);
   });
 
+  it("rejects manual matches across an individual, program, or service period", async () => {
+    const { dayHab, ind, emp } = await fixture();
+    const otherIndividual = unwrap(await createIndividual(pool, { displayName: "Other Individual" }, ACTOR));
+    const otherProgram = await programId("COM_HAB");
+    const session = unwrap(await createSession(pool, {
+      employeeId: emp.id,
+      programId: dayHab,
+      individualIds: [ind.id],
+      sessionDate: "2025-04-10",
+      durationHours: "2",
+      startTime: null,
+      endTime: null,
+    }, ACTOR));
+    const wrongIndividual = await insertTransaction({
+      individualId: otherIndividual.id,
+      programId: dayHab,
+      periodBegin: "2025-04-01",
+      periodEnd: "2025-04-30",
+      hours: "2",
+      amount: "34",
+    });
+    const wrongProgram = await insertTransaction({
+      individualId: ind.id,
+      programId: otherProgram,
+      periodBegin: "2025-04-01",
+      periodEnd: "2025-04-30",
+      hours: "2",
+      amount: "34",
+    });
+    const wrongPeriod = await insertTransaction({
+      individualId: ind.id,
+      programId: dayHab,
+      periodBegin: "2025-05-01",
+      periodEnd: "2025-05-31",
+      hours: "2",
+      amount: "34",
+    });
+
+    for (const transactionId of [wrongIndividual, wrongProgram, wrongPeriod]) {
+      await expect(manualMatch(pool, session.id, transactionId, ACTOR)).resolves.toMatchObject({
+        ok: false,
+        code: "validation",
+      });
+    }
+    expect(await scalar<string | null>(
+      `SELECT matched_transaction_id FROM scheduled_sessions WHERE id = $1`,
+      [session.id],
+    )).toBeNull();
+  });
+
   it("allows only one winner when two manual matches race for one transaction", async () => {
     const { dayHab, ind, emp } = await fixture();
     const first = unwrap(await createSession(pool, { employeeId: emp.id, programId: dayHab, individualIds: [ind.id], sessionDate: "2025-04-20", durationHours: "2", startTime: null, endTime: null }, ACTOR));

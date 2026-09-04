@@ -13,6 +13,7 @@ export { PORTAL_ONLY_ACCESS } from "./access-presets";
 
 export const ACCOUNT_PRESET_IDS = [
   "owner",
+  "office_manager",
   "budget_planner",
   "staffing_manager",
   "money_collector",
@@ -23,6 +24,7 @@ export const ACCOUNT_PRESET_IDS = [
   "agency_scheduler",
   "agency_staffing_manager",
   "agency_collector",
+  "custom_access",
 ] as const;
 
 export type AccountPresetId = (typeof ACCOUNT_PRESET_IDS)[number];
@@ -53,6 +55,13 @@ export const ACCOUNT_PRESETS: readonly AccountPresetDefinition[] = [
     description: "Everything in the agency, including portals, users, and system settings.",
     role: "admin",
     binding: { kind: "owner" },
+  },
+  {
+    id: "office_manager",
+    label: "Office manager",
+    description: "All everyday work, reports, budgets, and financials. Cannot manage user accounts.",
+    role: "manager",
+    binding: { kind: "none" },
   },
   {
     id: "budget_planner",
@@ -110,7 +119,7 @@ export const ACCOUNT_PRESETS: readonly AccountPresetDefinition[] = [
   },
   {
     id: "agency",
-    label: "Agency",
+    label: "Agency or provider",
     description: "Approved agency rollups for the agency's linked roster.",
     role: "viewer",
     access: PORTAL_ONLY_ACCESS,
@@ -139,6 +148,14 @@ export const ACCOUNT_PRESETS: readonly AccountPresetDefinition[] = [
     role: "viewer",
     access: PORTAL_ONLY_ACCESS,
     binding: { kind: "agency", role: "collector" },
+  },
+  {
+    id: "custom_access",
+    label: "Custom access",
+    description: "Starts with no access and can be tailored for an unusual internal responsibility.",
+    role: "viewer",
+    access: PORTAL_ONLY_ACCESS,
+    binding: { kind: "none" },
   },
 ];
 

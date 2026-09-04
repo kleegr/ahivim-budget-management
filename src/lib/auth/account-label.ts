@@ -10,7 +10,7 @@ import { getAccountPreset, type AccountPresetId } from "./account-presets";
 import type { PortalAccessContext } from "./portal-access";
 import type { UserAccessConfig } from "./users";
 
-export type AccountProfileId = AccountPresetId | "manager" | "portal" | "custom";
+export type AccountProfileId = AccountPresetId | "portal";
 
 export interface AccountProfile {
   id: AccountProfileId;
@@ -113,9 +113,7 @@ function portalProfile(portal: PortalAccessContext): AccountProfileId | null {
 }
 
 function profileLabel(id: AccountProfileId) {
-  if (id === "manager") return "Office manager";
   if (id === "portal") return "Portal account";
-  if (id === "custom") return "Custom access";
   return getAccountPreset(id)?.label ?? "Custom access";
 }
 
@@ -124,21 +122,24 @@ export function resolveAccountProfile(
   role: string,
   scope: AccessScope | null,
   portal: PortalAccessContext | null,
+  storedPreset?: AccountPresetId | null,
 ): AccountProfile {
+  const selected = storedPreset ? getAccountPreset(storedPreset) : null;
+  if (selected?.role === role) return { id: selected.id, label: selected.label };
   if (role === "admin") return { id: "owner", label: profileLabel("owner") };
-  if (role === "manager") return { id: "manager", label: profileLabel("manager") };
+  if (role === "manager") return { id: "office_manager", label: profileLabel("office_manager") };
 
   if (scope) {
     const access = resolvedAccess(scope);
     if (accessMatches(access, PORTAL_ONLY_ACCESS)) {
       const portalId = portal ? portalProfile(portal) : null;
       if (portalId) return { id: portalId, label: profileLabel(portalId) };
-      return { id: "custom", label: profileLabel("custom") };
+      return { id: "custom_access", label: profileLabel("custom_access") };
     }
 
     const preset = INTERNAL_PRESETS.find((candidate) => accessMatches(access, candidate.access));
     if (preset) return { id: preset.id, label: profileLabel(preset.id) };
   }
 
-  return { id: "custom", label: profileLabel("custom") };
+  return { id: "custom_access", label: profileLabel("custom_access") };
 }

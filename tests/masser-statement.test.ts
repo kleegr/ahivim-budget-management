@@ -40,6 +40,7 @@ describe("individual Masser statement", () => {
     )).resolves.toEqual({
       individualId: INDIVIDUAL_ID,
       individualName: "Example Individual",
+      setupHistoryAvailable: true,
       approvedMonthlyPlan: "1200.0000",
       activePlans: 2,
       trackedPlans: 1,
@@ -55,9 +56,13 @@ describe("individual Masser statement", () => {
 
     const statementSql = query.mock.calls.map(([sql]) => sql).join("\n");
     expect(statementSql).toContain("AS month_end");
-    expect(statementSql).toContain("sum(abs(strategy.after_all))");
-    expect(statementSql).toContain("strategy.after_all IS NOT NULL");
-    expect(statementSql).toContain("strategy.status = 'active'");
+    expect(statementSql).toContain("strategy_state_candidates AS");
+    expect(statementSql).toContain("calculation_strategy_revisions");
+    expect(statementSql).toContain("sum(abs(state.after_all))");
+    expect(statementSql).toContain("state.after_all IS NOT NULL");
+    expect(statementSql).toContain("state.status = 'active'");
+    expect(statementSql).toContain("requested.month_end_exclusive >= DATE '2026-09-01'");
+    expect(statementSql).toContain("candidate.effective_from < (requested.month_end_exclusive AT TIME ZONE 'America/New_York')");
     expect(statementSql).toContain("o.period_begin <= requested.month_end");
     expect(statementSql).toContain("o.period_end > requested.month_end");
     expect(statementSql).toContain("selected_plans AS");
@@ -97,6 +102,7 @@ describe("individual Masser statement", () => {
     );
 
     expect(workspace.summary.approvedMonthlySetAside).toBe("33930.0000");
+    expect(workspace.setupHistoryAvailable).toBe(true);
     expect(workspace.individualSetAsides).toEqual([{
       individualId: INDIVIDUAL_ID,
       individualName: "Example Individual",
@@ -109,10 +115,27 @@ describe("individual Masser statement", () => {
     }]);
 
     const boardSql = query.mock.calls.map(([sql]) => sql).find((sql) => sql.includes("strategy_plans AS"))!;
-    expect(boardSql).toContain("sum(abs(strategy.after_all))");
-    expect(boardSql).toContain("strategy.status = 'active'");
-    expect(boardSql).toContain("strategy.after_all IS NOT NULL");
+    expect(boardSql).toContain("strategy_state_candidates AS");
+    expect(boardSql).toContain("calculation_strategy_revisions");
+    expect(boardSql).toContain("sum(abs(state.after_all))");
+    expect(boardSql).toContain("state.status = 'active'");
+    expect(boardSql).toContain("state.after_all IS NOT NULL");
     expect(boardSql).toContain("DISTINCT ON (individual_id, calculation_strategy_id)");
-    expect(boardSql).toContain("strategy.renewal_date IS NULL");
+    expect(boardSql).toContain("state.renewal_date IS NULL");
+  });
+
+  it("does not borrow today's setup for months before reliable revision history", async () => {
+    const query = vi.fn(async (_sql: string) => ({ rows: [] }));
+    const pool = { query } as unknown as PgLikePool;
+
+    const workspace = await getCollectionsWorkspace(
+      pool,
+      fullAccess("owner", "admin"),
+      "2026-07",
+    );
+
+    expect(workspace.setupHistoryAvailable).toBe(false);
+    const boardSql = query.mock.calls.map(([sql]) => sql).find((sql) => sql.includes("strategy_plans AS"))!;
+    expect(boardSql).toContain("requested.month_end_exclusive >= DATE '2026-09-01'");
   });
 });

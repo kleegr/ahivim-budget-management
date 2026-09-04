@@ -417,6 +417,11 @@ export default function CollectionsWorkspace({
           {checksToReview.length.toLocaleString()} imported {checksToReview.length === 1 ? "check needs" : "checks need"} confirmation. No employee collection is created until the whole-check net is verified.
         </Notice>
       ) : null}
+      {!data.setupHistoryAvailable ? (
+        <Notice tone="warning" title="Approved setup history unavailable">
+          Historical Financial Setup revisions are reliable from August 2026. Recorded ledger activity is shown for {data.month}, but the approved monthly plan is unavailable and is not estimated from today&apos;s setup.
+        </Notice>
+      ) : null}
       {missingRenewalPlans > 0 ? (
         <Notice tone="warning" title="Renewal dates needed">
           {missingRenewalPlans.toLocaleString()} approved monthly {missingRenewalPlans === 1 ? "setup is" : "setups are"} included in the plan total but cannot be recorded yet. {canManageFinancialPlans ? "Use the renewal link beside each affected individual." : "Ask an owner or manager to add the renewal date."}
@@ -427,7 +432,9 @@ export default function CollectionsWorkspace({
           <SummaryMetric label="Give-backs from checks" value={data.summary.dueFromChecks} />
           <SummaryMetric label="Collected this month" value={data.summary.collectedThisMonth} tone="good" />
           <SummaryMetric label="Employee balance" value={data.summary.remainingReceivable} tone="warn" />
-          <SummaryMetric label="Approved monthly set-aside" value={data.summary.approvedMonthlySetAside} />
+          {data.setupHistoryAvailable
+            ? <SummaryMetric label="Approved monthly set-aside" value={data.summary.approvedMonthlySetAside} />
+            : <div className="min-w-0 border-r border-[var(--color-rule)] px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Approved monthly set-aside</p><p className="mt-1 text-lg font-semibold text-[var(--color-warn)]">Unavailable</p></div>}
           <SummaryMetric label="Recorded this month" value={data.summary.setAsideThisMonth} tone="good" />
         </div>
       </div>
@@ -457,7 +464,9 @@ export default function CollectionsWorkspace({
               <div className="overflow-x-auto"><table className="touch-table w-full min-w-[720px] text-sm"><thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]"><tr><th className="px-4 py-2.5 text-left">Employee</th><th className="px-3 py-2.5 text-right">Due</th><th className="px-3 py-2.5 text-right">Collected</th><th className="px-3 py-2.5 text-right">Remaining</th><th className="px-3 py-2.5 text-right">Credit</th>{canManage ? <th className="px-3 py-2.5 text-right">Action</th> : null}</tr></thead><tbody className="divide-y divide-[var(--color-rule)]">{data.employeeCollections.map((row) => <tr key={row.employeeId}><td className="px-4 py-3"><p className="font-medium">{row.employeeName}</p>{canSeeEmployeeDeals ? <><Link className="text-xs font-medium text-[var(--color-primary)] hover:underline" href={`/employees/${row.employeeId}?view=deal`}>{canManageEmployeeDeals ? "View or change deal" : "View deal"}</Link>{!canManageEmployeeDeals ? <span className="ml-1 text-xs text-[var(--color-ink-faint)]">(manager changes)</span> : null}</> : null}</td><td className="tnum px-3 py-3 text-right">{formatMoney(row.dueFromChecks)}</td><td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.collectedThisMonth)}</td><td className="tnum px-3 py-3 text-right font-semibold">{formatMoney(row.remainingReceivable)}</td><td className="tnum px-3 py-3 text-right">{formatMoney(row.availableCredit)}</td>{canManage ? <td className="px-3 py-3 text-right"><Link className="btn btn-sm btn-ghost whitespace-nowrap" href={`/settlements?employeeId=${row.employeeId}&queue=receivable`}>Record collection</Link></td> : null}</tr>)}</tbody></table></div>
             )}
           </Card>
-          <Card title="Individual set-asides" description={`Approved monthly amounts use every active setup. Recorded and remaining amounts show the ledger position for ${data.month}.`}>
+          <Card title="Individual set-asides" description={data.setupHistoryAvailable
+            ? `Approved monthly amounts use the Financial Setup revision effective at the end of ${data.month}. Recorded and remaining amounts show the selected plan-period ledger position.`
+            : `Recorded ledger activity is shown for ${data.month}; approved setup history is unavailable before August 2026.`}>
             {data.individualSetAsides.length === 0 ? <EmptyState compact title="No individual set-aside activity" /> : (
               <div className="overflow-x-auto">
                 <table className="touch-table w-full min-w-[820px] text-sm">
@@ -483,11 +492,13 @@ export default function CollectionsWorkspace({
                               {row.activePlans.toLocaleString()} approved {row.activePlans === 1 ? "setup" : "setups"}
                             </p>
                           </td>
-                          <td className="tnum px-3 py-3 text-right">{formatMoney(row.approvedMonthlyPlan)}</td>
+                          <td className="tnum px-3 py-3 text-right">{data.setupHistoryAvailable ? formatMoney(row.approvedMonthlyPlan) : <span className="text-[var(--color-warn)]">Unavailable</span>}</td>
                           <td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.setAsideThisMonth)}</td>
                           <td className="tnum px-3 py-3 text-right font-semibold">{formatMoney(row.remainingSetAside)}</td>
                           <td className="px-3 py-3">
-                            {row.missingRenewalPlans > 0 ? (
+                            {!data.setupHistoryAvailable ? (
+                              <span className="font-semibold text-[var(--color-warn)]">History unavailable</span>
+                            ) : row.missingRenewalPlans > 0 ? (
                               canManageFinancialPlans ? (
                                 <Link className="font-semibold text-[var(--color-warn)] underline" href={`/individuals/${row.individualId}?view=financial`}>
                                   Add renewal date

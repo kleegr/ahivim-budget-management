@@ -339,7 +339,15 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
       ) : null}
 
       {view === "month" ? (
-        <MonthGrid anchor={anchor} today={today} byDate={byDate} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d, mode: "one_time" }) : undefined} />
+        <MonthGrid
+          anchor={anchor}
+          today={today}
+          byDate={byDate}
+          flags={flags}
+          onSelect={setSelected}
+          onOpenDay={(date) => { setAnchor(date); setView("day"); }}
+          onAdd={canManage ? (d) => setCreating({ date: d, mode: "one_time" }) : undefined}
+        />
       ) : view === "week" ? (
         <WeekList anchor={anchor} today={today} byDate={byDate} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d, mode: "one_time" }) : undefined} />
       ) : (
@@ -444,13 +452,14 @@ function RangeSummary({
  * Month grid.
  * ========================================================================= */
 function MonthGrid({
-  anchor, today, byDate, flags, onSelect, onAdd,
+  anchor, today, byDate, flags, onSelect, onOpenDay, onAdd,
 }: {
   anchor: string;
   today: string;
   byDate: Map<string, CalendarSession[]>;
   flags: FlagMap;
   onSelect: (s: CalendarSession) => void;
+  onOpenDay: (date: string) => void;
   onAdd?: (date: string) => void;
 }) {
   const gridStart = monthGridStart(anchor);
@@ -483,7 +492,16 @@ function MonthGrid({
                 </div>
                 <div className="space-y-0.5">
                   {list.slice(0, 4).map((s) => <SessionChip key={s.id} s={s} flags={flags.get(s.id)} onSelect={onSelect} />)}
-                  {list.length > 4 ? <span className="block px-1 text-[10px] text-[var(--color-ink-faint)]">+{list.length - 4} more</span> : null}
+                  {list.length > 4 ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenDay(d)}
+                      className="block min-h-6 w-full rounded px-1 text-left text-[10px] font-semibold text-[var(--color-primary)] hover:bg-[var(--color-primary-soft)] hover:underline"
+                      aria-label={`Open all ${list.length} sessions on ${d}`}
+                    >
+                      +{list.length - 4} more
+                    </button>
+                  ) : null}
                 </div>
               </div>
             );

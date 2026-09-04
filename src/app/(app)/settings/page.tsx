@@ -125,7 +125,7 @@ export default async function SettingsPage({
       canSeeBudgets: scope.canSeeBudgets,
       canSeeSettlements: scope.canSeeSettlements,
       canSeeClassFinancials: scope.canSeeClassFinancials,
-      accountLabel: resolveAccountProfile(user.role, scope, portal).label,
+      accountLabel: resolveAccountProfile(user.role, scope, portal, user.accountPreset).label,
     };
   });
 
@@ -164,7 +164,7 @@ export default async function SettingsPage({
             <dt className="text-[var(--color-ink-faint)]">Email</dt>
             <dd>{user.email}</dd>
             <dt className="text-[var(--color-ink-faint)]">Role</dt>
-            <dd><Badge value={user.role === "admin" ? "committed" : "pending"} label={result.ok ? result.data.accountLabel : resolveAccountProfile(user.role, null, null).label} /></dd>
+            <dd><Badge value={user.role === "admin" ? "committed" : "pending"} label={result.ok ? result.data.accountLabel : resolveAccountProfile(user.role, null, null, user.accountPreset).label} /></dd>
             <dt className="text-[var(--color-ink-faint)]">Permissions</dt>
             <dd className="text-[var(--color-ink-soft)]">
               {result.ok

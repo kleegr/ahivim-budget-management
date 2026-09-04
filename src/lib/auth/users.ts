@@ -5,7 +5,11 @@ import { fail, ok, type Result, type ResultCode } from "@/lib/manage/errors";
 import { hashPassword, verifyPassword } from "./crypto";
 import type { Role } from "./session";
 import type { VisibilityPermissions } from "./access";
-import type { AccountPresetId } from "./account-presets";
+import {
+  getAccountPreset,
+  isAccountPresetId,
+  type AccountPresetId,
+} from "./account-presets";
 import { resolveAuditAttribution } from "./audit-attribution";
 
 /**
@@ -21,12 +25,30 @@ export function isRole(value: string): value is Role {
   return (ROLES as string[]).includes(value);
 }
 
+export function defaultAccountPresetForRole(role: Role): AccountPresetId {
+  if (role === "admin") return "owner";
+  if (role === "manager") return "office_manager";
+  return "custom_access";
+}
+
+export function accountPresetMatchesRole(
+  preset: AccountPresetId,
+  role: Role,
+): boolean {
+  return getAccountPreset(preset)?.role === role;
+}
+
+function storedAccountPreset(value: unknown): AccountPresetId | null {
+  return typeof value === "string" && isAccountPresetId(value) ? value : null;
+}
+
 export interface UserRecord {
   id: string;
   email: string;
   displayName: string;
   passwordHash: string;
   role: Role;
+  accountPreset: AccountPresetId | null;
   isActive: boolean;
   lastLoginAt: string | null;
   createdAt: string;
@@ -38,12 +60,13 @@ interface UserRow {
   display_name: string;
   password_hash: string;
   role: string;
+  account_preset?: string | null;
   is_active: boolean;
   last_login_at: string | null;
   created_at: string;
 }
 
-const SELECT_USER = `SELECT id, email, display_name, password_hash, role, is_active,
+const SELECT_USER = `SELECT id, email, display_name, password_hash, role, account_preset, is_active,
                             last_login_at::text AS last_login_at, created_at::text AS created_at
                      FROM users`;
 
@@ -54,6 +77,7 @@ function toUser(row: UserRow): UserRecord {
     displayName: row.display_name,
     passwordHash: row.password_hash,
     role: isRole(row.role) ? row.role : "viewer",
+    accountPreset: storedAccountPreset(row.account_preset),
     isActive: row.is_active,
     lastLoginAt: row.last_login_at,
     createdAt: row.created_at,
@@ -188,10 +212,10 @@ async function tryBootstrapAdmin(
 
   const passwordHash = await hashPassword(password);
   const { rows } = await pool.query<UserRow>(
-    `INSERT INTO users (email, display_name, password_hash, role)
-     VALUES ($1, $2, $3, 'admin')
+    `INSERT INTO users (email, display_name, password_hash, role, account_preset)
+     VALUES ($1, $2, $3, 'admin', 'owner')
      ON CONFLICT (email) DO NOTHING
-     RETURNING id, email, display_name, password_hash, role, is_active,
+     RETURNING id, email, display_name, password_hash, role, account_preset, is_active,
                last_login_at::text AS last_login_at, created_at::text AS created_at`,
     [email, "Administrator", passwordHash],
   );
@@ -254,6 +278,7 @@ export interface PreparedUserInput {
   displayName: string;
   passwordHash: string;
   role: Role;
+  accountPreset?: AccountPresetId | null;
 }
 
 /**
@@ -271,17 +296,22 @@ export async function createUserWithAccessQuery(
   actorId: string | null,
 ): Promise<CreateUserOutcome> {
   const trustedStaff = input.role !== "viewer";
+  const accountPreset = input.accountPreset ?? defaultAccountPresetForRole(input.role);
+  if (!accountPresetMatchesRole(accountPreset, input.role)) {
+    throw new Error("Account preset is not compatible with the selected role.");
+  }
   const { rows } = await queryable.query<UserRow>(
     `INSERT INTO users (
        email, display_name, password_hash, role, access_scope,
        can_see_transactions, can_see_money, can_see_hours, can_see_billed_amounts,
        can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
        can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements,
-       can_see_class_financials, can_manage_class_invoices, can_edit_documents, can_plan
+       can_see_class_financials, can_manage_class_invoices, can_edit_documents, can_plan,
+       account_preset
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
      ON CONFLICT (email) DO NOTHING
-     RETURNING id, email, display_name, password_hash, role, is_active,
+     RETURNING id, email, display_name, password_hash, role, account_preset, is_active,
                last_login_at::text AS last_login_at, created_at::text AS created_at`,
     [
       input.email,
@@ -304,6 +334,7 @@ export async function createUserWithAccessQuery(
       trustedStaff,
       trustedStaff,
       trustedStaff,
+      accountPreset,
     ],
   );
   if (!rows[0]) return { ok: false, reason: "duplicate_email" };
@@ -315,7 +346,7 @@ export async function createUserWithAccessQuery(
     action: "user_created",
     entityType: "user",
     entityId: rows[0].id,
-    metadata: { email: input.email, role: input.role },
+    metadata: { email: input.email, role: input.role, accountPreset },
   });
   await writeUserAccessAuditQuery(queryable, rows[0].id, access, actorId);
   return { ok: true, user: toUser(rows[0]) };
@@ -343,6 +374,7 @@ export async function createUser(
       displayName: input.displayName.trim() || email,
       passwordHash,
       role: input.role,
+      accountPreset: defaultAccountPresetForRole(input.role),
     }, access, actorId);
     if (!created.ok) {
       await client.query("ROLLBACK");
@@ -495,7 +527,7 @@ export interface UserWithAccess extends UserRecord, VisibilityPermissions {
   canEditDocuments: boolean;
   individualCount: number;
   employeeCount: number;
-  /** Server-derived identity preset for owner and external portal accounts. */
+  /** Persisted preset identity, with legacy portal assignments as a read fallback. */
   accountPreset: AccountPresetId | null;
   /** True when non-owner portal assignments must be managed in Portal administration. */
   portalManaged: boolean;
@@ -591,7 +623,7 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
       employee_count: number;
     }
   >(
-    `SELECT u.id, u.email, u.display_name, u.password_hash, u.role, u.is_active,
+    `SELECT u.id, u.email, u.display_name, u.password_hash, u.role, u.account_preset, u.is_active,
             u.last_login_at::text AS last_login_at, u.created_at::text AS created_at,
             u.access_scope, u.see_all_individuals, u.see_all_employees, u.can_see_transactions,
             u.can_see_money, u.can_see_hours, u.can_see_billed_amounts,
@@ -629,7 +661,7 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
     ...storedVisibility(r),
     individualCount: Number(r.individual_count ?? 0),
     employeeCount: Number(r.employee_count ?? 0),
-    accountPreset: accountPresetFromPortal(r),
+    accountPreset: storedAccountPreset(r.account_preset) ?? accountPresetFromPortal(r),
     portalManaged: portalManagedFromPortal(r),
   }));
 }
@@ -827,6 +859,7 @@ async function writeUserAccessAuditQuery(
 
 export interface ManagedUserUpdateInput {
   role?: Role;
+  accountPreset?: AccountPresetId;
   access?: UserAccessConfig;
   isActive?: boolean;
   password?: string;
@@ -856,6 +889,9 @@ export async function updateManagedUser(
   input: ManagedUserUpdateInput,
   actorId: string,
 ): Promise<Result<{ id: string }>> {
+  if (input.accountPreset !== undefined && !isAccountPresetId(input.accountPreset)) {
+    return fail("validation", "Choose a valid account role.");
+  }
   const hasPassword = typeof input.password === "string" && input.password.length > 0;
   if (hasPassword && input.password!.length < MIN_PASSWORD_LENGTH) {
     return fail("validation", `Choose a password of at least ${MIN_PASSWORD_LENGTH} characters.`);
@@ -869,8 +905,12 @@ export async function updateManagedUser(
       // Serialize the last-administrator check with all competing user writes.
       await client.query("LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE");
     }
-    const target = await client.query<{ role: string; is_active: boolean }>(
-      `SELECT role, is_active FROM users WHERE id = $1 FOR UPDATE`,
+    const target = await client.query<{
+      role: string;
+      account_preset: string | null;
+      is_active: boolean;
+    }>(
+      `SELECT role, account_preset, is_active FROM users WHERE id = $1 FOR UPDATE`,
       [userId],
     );
     if (!target.rows[0]) {
@@ -878,9 +918,24 @@ export async function updateManagedUser(
     }
 
     const previousRole = isRole(target.rows[0].role) ? target.rows[0].role : "viewer";
+    const previousAccountPreset = storedAccountPreset(target.rows[0].account_preset);
     const previousActive = target.rows[0].is_active;
     const nextRole = input.role ?? previousRole;
     const nextActive = input.isActive ?? previousActive;
+    const roleChanged = nextRole !== previousRole;
+    const nextAccountPreset = input.accountPreset
+      ?? (roleChanged
+        ? previousAccountPreset && accountPresetMatchesRole(previousAccountPreset, nextRole)
+          ? previousAccountPreset
+          : defaultAccountPresetForRole(nextRole)
+        : previousAccountPreset);
+    if (input.accountPreset !== undefined && !accountPresetMatchesRole(input.accountPreset, nextRole)) {
+      throw new ManagedUserUpdateAbort(
+        "validation",
+        "That account preset is not compatible with the selected role.",
+      );
+    }
+    const changesIdentity = nextAccountPreset !== previousAccountPreset;
 
     if (previousRole === "admin" && previousActive && (nextRole !== "admin" || !nextActive)) {
       const remaining = await client.query<{ active_admin_count: number | string }>(
@@ -916,12 +971,12 @@ export async function updateManagedUser(
           : undefined;
     }
 
-    if (changesAuthority) {
+    if (changesAuthority || changesIdentity) {
       const updated = await client.query(
         `UPDATE users
-            SET role = $2, is_active = $3, updated_at = now()
+            SET role = $2, is_active = $3, account_preset = $4, updated_at = now()
           WHERE id = $1`,
-        [userId, nextRole, nextActive],
+        [userId, nextRole, nextActive, nextAccountPreset],
       );
       if (!updated.rowCount) throw new Error("User disappeared while its account was being updated.");
     }
@@ -958,6 +1013,18 @@ export async function updateManagedUser(
         entityType: "user",
         entityId: userId,
         metadata: { previousRole, role: nextRole },
+      });
+    }
+    if (changesIdentity) {
+      await writeAuditQuery(client, {
+        userId: actorId,
+        action: "user_account_preset_changed",
+        entityType: "user",
+        entityId: userId,
+        metadata: {
+          previousAccountPreset,
+          accountPreset: nextAccountPreset,
+        },
       });
     }
     if (input.isActive !== undefined) {
@@ -1006,8 +1073,8 @@ export async function setUserRoleAndAccess(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const { rows } = await client.query<{ role: string }>(
-      `SELECT role FROM users WHERE id = $1 FOR UPDATE`,
+    const { rows } = await client.query<{ role: string; account_preset: string | null }>(
+      `SELECT role, account_preset FROM users WHERE id = $1 FOR UPDATE`,
       [userId],
     );
     if (!rows[0]) {
@@ -1015,14 +1082,21 @@ export async function setUserRoleAndAccess(
       return false;
     }
 
+    const previousRole = isRole(rows[0].role) ? rows[0].role : "viewer";
+    const previousAccountPreset = storedAccountPreset(rows[0].account_preset);
+    const accountPreset = previousRole === role
+      ? previousAccountPreset
+      : previousAccountPreset && accountPresetMatchesRole(previousAccountPreset, role)
+        ? previousAccountPreset
+        : defaultAccountPresetForRole(role);
     const normalizedAccess = role === "viewer"
       ? normalizeAccessConfigForRole(config, role)
       : config
         ? normalizeAccessConfigForRole(config, role)
         : undefined;
     const { rowCount } = await client.query(
-      `UPDATE users SET role = $1, updated_at = now() WHERE id = $2`,
-      [role, userId],
+      `UPDATE users SET role = $1, account_preset = $2, updated_at = now() WHERE id = $3`,
+      [role, accountPreset, userId],
     );
     if (!rowCount) throw new Error("User disappeared while its role was being updated.");
     if (normalizedAccess) {
@@ -1035,7 +1109,7 @@ export async function setUserRoleAndAccess(
       action: "user_role_changed",
       entityType: "user",
       entityId: userId,
-      metadata: { previousRole: rows[0].role, role },
+      metadata: { previousRole: rows[0].role, role, accountPreset },
     });
     if (normalizedAccess) {
       await writeUserAccessAuditQuery(client, userId, normalizedAccess, actorId);

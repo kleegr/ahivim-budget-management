@@ -32,7 +32,8 @@ describe("owner view-as interface", () => {
   });
 
   it("shows the effective preset throughout the preview instead of the generic database role", () => {
-    expect(layout).toContain("resolveAccountProfile(user.role, scope, portal).label");
+    expect(layout).toContain("resolveAccountProfile(user.role, scope, portal, user.accountPreset).label");
+    expect(settings).toContain("resolveAccountProfile(user.role, scope, portal, user.accountPreset).label");
     expect(nav).toContain("<UserFooter user={user} accountLabel={accountLabel}");
     expect(nav).not.toContain('viewer: "Viewer"');
     expect(settings).toContain("label={result.ok ? result.data.accountLabel");

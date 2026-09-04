@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, Clock3 } from "lucide-react";
+import { ArrowRight, Clock3, FileDown, ShieldCheck } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
 import { REPORTS } from "@/lib/data/report-queries";
 import { PageHeader } from "@/components/ui";
@@ -47,11 +47,22 @@ export default async function ReportsPage() {
                           <Icon size={18} strokeWidth={1.8} aria-hidden />
                         </span>
                         <div className="min-w-0">
-                          <h3 className="display text-base font-semibold text-[var(--color-ink)] group-hover:text-[var(--color-primary)]">
-                            {report.title}
+                          <p className="eyebrow text-[var(--color-ink-faint)]">{report.title}</p>
+                          <h3 className="display mt-1 text-base font-semibold leading-5 text-[var(--color-ink)] group-hover:text-[var(--color-primary)]">
+                            {report.question}
                           </h3>
-                          <p className="mt-1 text-sm leading-5 text-[var(--color-ink-soft)]">{report.question}</p>
                         </div>
+                      </div>
+
+                      <div className="mt-4 grid gap-1.5 border-t border-[var(--color-rule)] pt-3 text-xs text-[var(--color-ink-soft)]">
+                        <span className="flex items-center gap-1.5">
+                          <ShieldCheck size={13} className="shrink-0 text-[var(--color-primary)]" aria-hidden />
+                          {report.ownerOnly ? "Owner only" : "Managers and owners"}
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          <FileDown size={13} className="shrink-0 text-[var(--color-primary)]" aria-hidden />
+                          Exports current view to CSV or Excel
+                        </span>
                       </div>
 
                       <div className="mt-auto flex items-end justify-between gap-3 border-t border-[var(--color-rule)] pt-3">

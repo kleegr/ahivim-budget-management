@@ -13,9 +13,16 @@ import {
 import {
   ACCOUNT_PRESETS,
   getAccountPreset,
-  isAccountPresetId,
   type AccountPresetId,
 } from "@/lib/auth/account-presets";
+import {
+  PORTAL_CAPABILITIES,
+  portalCapabilitiesForRole,
+  portalCapabilityAllowedForRole,
+  type PortalCapability,
+  type PortalRole,
+} from "@/lib/auth/portal-access";
+import { ROLE_PREVIEW_DETAILS } from "@/lib/auth/role-preview";
 import type { UserAccessConfig } from "@/lib/auth/users";
 
 /**
@@ -197,7 +204,7 @@ const accessToBody = (a: AccessState) => ({
   employeeIds: [...a.employeeIds],
 });
 
-type AccountProfileId = AccountPresetId | "manager" | "custom";
+type AccountProfileId = AccountPresetId;
 
 interface AccountProfile {
   id: AccountProfileId;
@@ -215,18 +222,6 @@ const ACCOUNT_PROFILES: AccountProfile[] = [
     role: preset.role,
     access: preset.access,
   })),
-  {
-    id: "manager",
-    label: "Office manager",
-    description: "All everyday work, reports, budgets, and financials. Cannot manage user accounts.",
-    role: "manager",
-  },
-  {
-    id: "custom",
-    label: "Custom access",
-    description: "Starts with no access. Open Advanced permissions only for an unusual combination.",
-    role: "viewer",
-  },
 ];
 
 const ACCESS_PROFILE_KEYS = [
@@ -265,12 +260,12 @@ function matchesPreset(value: AccessWithPeople, preset: UserAccessConfig) {
 
 function profileForAccess(role: string, access: AccessWithPeople): AccountProfileId {
   if (role === "admin") return "owner";
-  if (role === "manager") return "manager";
+  if (role === "manager") return "office_manager";
   if (matchesPreset(access, BUDGET_PLANNER_ACCESS)) return "budget_planner";
   if (matchesPreset(access, STAFFING_MANAGER_ACCESS)) return "staffing_manager";
   if (matchesPreset(access, COLLECTIONS_ACCESS)) return "money_collector";
   if (matchesPreset(access, CLASS_BILLING_ACCESS)) return "class_billing";
-  return "custom";
+  return "custom_access";
 }
 
 function accountProfile(id: AccountProfileId) {
@@ -281,6 +276,88 @@ function isExternalPortalPreset(id: AccountPresetId | null): boolean {
   if (!id) return false;
   const kind = getAccountPreset(id)?.binding.kind;
   return kind === "individual" || kind === "employee" || kind === "agency";
+}
+
+function portalRoleForPreset(id: AccountPresetId, relationship: string): PortalRole | null {
+  const binding = getAccountPreset(id)?.binding;
+  if (!binding) return null;
+  if (binding.kind === "individual") return relationship === "self" ? "individual" : "parent";
+  if (binding.kind === "employee") return "employee";
+  if (binding.kind === "agency") return binding.role;
+  if (binding.kind === "owner") return "owner";
+  return null;
+}
+
+function capabilityLabel(capability: PortalCapability): string {
+  return capability
+    .replaceAll(".", " · ")
+    .replaceAll("_", " ")
+    .replace(/\b(?:self|agency)\b/g, (word) => word === "self" ? "linked person" : "linked agency")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function PortalPermissionAdjustments({
+  presetId,
+  relationship,
+  grants,
+  denials,
+  onChange,
+}: {
+  presetId: AccountPresetId;
+  relationship: string;
+  grants: Set<PortalCapability>;
+  denials: Set<PortalCapability>;
+  onChange: (grants: Set<PortalCapability>, denials: Set<PortalCapability>) => void;
+}) {
+  const preset = getAccountPreset(presetId);
+  const role = portalRoleForPreset(presetId, relationship);
+  if (!preset || !role || role === "owner") return null;
+
+  const roleDefaults = new Set(portalCapabilitiesForRole(role));
+  const presetDefaults = new Set<PortalCapability>(roleDefaults);
+  if (preset.binding.kind === "individual") {
+    for (const capability of preset.binding.defaultCapabilityGrants) presetDefaults.add(capability);
+  }
+  const available = PORTAL_CAPABILITIES.filter((capability) =>
+    portalCapabilityAllowedForRole(role, capability));
+
+  function setMode(capability: PortalCapability, mode: "default" | "grant" | "deny") {
+    const nextGrants = new Set(grants);
+    const nextDenials = new Set(denials);
+    nextGrants.delete(capability);
+    nextDenials.delete(capability);
+    if (mode === "grant") nextGrants.add(capability);
+    if (mode === "deny") nextDenials.add(capability);
+    onChange(nextGrants, nextDenials);
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-[var(--color-ink-soft)]">
+        Keep the preset default, explicitly show an optional item, or hide an item. Hiding always wins.
+      </p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {available.map((capability) => {
+          const mode = denials.has(capability) ? "deny" : grants.has(capability) ? "grant" : "default";
+          return (
+            <label key={capability} className="rounded border border-[var(--color-rule)] bg-[var(--color-surface-muted)] px-2.5 py-2 text-xs">
+              <span className="block font-medium text-[var(--color-ink)]">{capabilityLabel(capability)}</span>
+              <select
+                value={mode}
+                onChange={(event) => setMode(capability, event.target.value as "default" | "grant" | "deny")}
+                className="input mt-1 w-full text-xs"
+                aria-label={`${capabilityLabel(capability)} permission`}
+              >
+                <option value="default">Preset: {presetDefaults.has(capability) ? "shown" : "hidden"}</option>
+                <option value="grant">Show</option>
+                <option value="deny">Hide</option>
+              </select>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function generateTemporaryPassword() {
@@ -628,14 +705,16 @@ export default function UserAccessAdmin({
   const [addRelationship, setAddRelationship] = useState("parent");
   const [addEmployeeId, setAddEmployeeId] = useState("");
   const [addAgencyId, setAddAgencyId] = useState("");
+  const [addCapabilityGrants, setAddCapabilityGrants] = useState<Set<PortalCapability>>(() => new Set());
+  const [addCapabilityDenials, setAddCapabilityDenials] = useState<Set<PortalCapability>>(() => new Set());
   const [temporaryPassword, setTemporaryPassword] = useState("");
-  const [createdCredential, setCreatedCredential] = useState<{ email: string; password: string } | null>(null);
+  const [createdCredential, setCreatedCredential] = useState<{ id: string; email: string; password: string; preset: AccountPresetId } | null>(null);
   const [copiedCredential, setCopiedCredential] = useState(false);
 
   // Per-user edit panel.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editAccess, setEditAccess] = useState<AccessState | null>(null);
-  const [editProfile, setEditProfile] = useState<AccountProfileId>("custom");
+  const [editProfile, setEditProfile] = useState<AccountProfileId>("custom_access");
   const [newPassword, setNewPassword] = useState("");
   const [loadingEdit, setLoadingEdit] = useState(false);
   const accessLoadRequest = useRef(0);
@@ -690,7 +769,7 @@ export default function UserAccessAdmin({
       setLoadingEdit(false);
       return;
     }
-    loadAccess(u.id, u.role);
+    loadAccess(u.id, u.role, u.accountPreset);
   }
 
   function toggleAdd() {
@@ -709,6 +788,8 @@ export default function UserAccessAdmin({
     setAddRelationship("parent");
     setAddEmployeeId("");
     setAddAgencyId("");
+    setAddCapabilityGrants(new Set());
+    setAddCapabilityDenials(new Set());
     setTemporaryPassword(generateTemporaryPassword());
     setAddOpen(true);
   }
@@ -718,25 +799,27 @@ export default function UserAccessAdmin({
     setAddIndividualId("");
     setAddEmployeeId("");
     setAddAgencyId("");
+    setAddCapabilityGrants(new Set());
+    setAddCapabilityDenials(new Set());
     const profile = accountProfile(id);
     if (profile.access) setAddAccess(accessFromPreset(profile.access));
-    else if (id === "custom") setAddAccess(emptyAccess());
+    else if (id === "custom_access") setAddAccess(emptyAccess());
   }
 
   function chooseEditProfile(id: AccountProfileId) {
-    if (editProfile === "custom" && editAccess) {
+    if (editProfile === "custom_access" && editAccess) {
       customAccessSnapshot.current = cloneAccess(editAccess);
     }
     setEditProfile(id);
     const profile = accountProfile(id);
     if (profile.access) {
       setEditAccess(accessFromPreset(profile.access));
-    } else if (id === "custom") {
+    } else if (id === "custom_access") {
       setEditAccess(customAccessSnapshot.current ? cloneAccess(customAccessSnapshot.current) : emptyAccess());
     }
   }
 
-  async function loadAccess(userId: string, role: string) {
+  async function loadAccess(userId: string, role: string, storedPreset?: AccountPresetId | null) {
     const requestId = ++accessLoadRequest.current;
     setNewPassword("");
     setEditAccess(null);
@@ -797,10 +880,14 @@ export default function UserAccessAdmin({
           individualIds: new Set(data.access.individualIds),
           employeeIds: new Set(data.access.employeeIds),
         };
-        const loadedProfile = profileForAccess(role, loadedAccess);
+        const selectedPreset = storedPreset ? getAccountPreset(storedPreset) : null;
+        let loadedProfile = profileForAccess(role, loadedAccess);
+        if (storedPreset && selectedPreset?.role === role && !isExternalPortalPreset(storedPreset)) {
+          loadedProfile = storedPreset;
+        }
         setEditAccess(loadedAccess);
         setEditProfile(loadedProfile);
-        if (loadedProfile === "custom") customAccessSnapshot.current = cloneAccess(loadedAccess);
+        if (loadedProfile === "custom_access") customAccessSnapshot.current = cloneAccess(loadedAccess);
       } else {
         // Loading failed — do NOT default to full access; block saving instead.
         setEditAccess(null);
@@ -825,9 +912,9 @@ export default function UserAccessAdmin({
       return;
     }
     const profile = accountProfile(editProfile);
-    const body: Record<string, unknown> = { role: profile.role };
+    const body: Record<string, unknown> = { role: profile.role, preset: editProfile };
     if (profile.role === "viewer") {
-      Object.assign(body, accessToBody(profile.access ? accessFromPreset(profile.access) : editAccess));
+      Object.assign(body, accessToBody(editAccess));
     }
     if (newPassword.trim().length > 0) body.password = newPassword.trim();
     const ok = await patch(id, body, "Access updated.");
@@ -845,33 +932,36 @@ export default function UserAccessAdmin({
     setBusy(true);
     try {
       const password = temporaryPassword || generateTemporaryPassword();
-      let body: Record<string, unknown>;
-      if (isAccountPresetId(addProfile)) {
-        const preset = getAccountPreset(addProfile)!;
-        body = { ...form, password, preset: addProfile };
-        if (preset.binding.kind === "individual") {
-          Object.assign(body, { individualId: addIndividualId, relationship: addRelationship });
-        } else if (preset.binding.kind === "employee") {
-          Object.assign(body, { employeeId: addEmployeeId });
-        } else if (preset.binding.kind === "agency") {
-          Object.assign(body, { agencyId: addAgencyId });
-        }
-      } else {
-        const profile = accountProfile(addProfile);
-        body = { ...form, password, role: profile.role };
-        if (profile.role === "viewer") {
-          Object.assign(body, accessToBody(profile.access ? accessFromPreset(profile.access) : addAccess));
-        }
+      const preset = getAccountPreset(addProfile)!;
+      const body: Record<string, unknown> = { ...form, password, preset: addProfile };
+      if (preset.binding.kind === "individual") {
+        Object.assign(body, { individualId: addIndividualId, relationship: addRelationship });
+      } else if (preset.binding.kind === "employee") {
+        Object.assign(body, { employeeId: addEmployeeId });
+      } else if (preset.binding.kind === "agency") {
+        Object.assign(body, { agencyId: addAgencyId });
+      }
+      if (preset.role === "viewer" && preset.binding.kind === "none") {
+        Object.assign(body, { internalAccess: accessToBody(addAccess) });
+      }
+      if (isExternalPortalPreset(addProfile)) {
+        if (addCapabilityGrants.size > 0) body.capabilityGrants = [...addCapabilityGrants];
+        if (addCapabilityDenials.size > 0) body.capabilityDenials = [...addCapabilityDenials];
       }
       const res = await fetch("/api/admin/users", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        user?: { id: string };
+      };
       if (!res.ok || !data.ok) setError(data.error ?? "The account could not be created.");
+      else if (!data.user?.id) setError("The login was created, but it could not be opened for preview yet. Refresh and use Sign in as.");
       else {
-        setCreatedCredential({ email: form.email.trim(), password });
+        setCreatedCredential({ id: data.user.id, email: form.email.trim(), password, preset: addProfile });
         setCopiedCredential(false);
         setForm({ email: "", displayName: "" });
         setAddOpen(false);
@@ -906,9 +996,9 @@ export default function UserAccessAdmin({
     }
   }
 
-  const addBinding = isAccountPresetId(addProfile)
-    ? getAccountPreset(addProfile)?.binding.kind ?? "none"
-    : "none";
+  const addPreset = getAccountPreset(addProfile)!;
+  const addBinding = addPreset.binding.kind;
+  const addPreview = ROLE_PREVIEW_DETAILS[addProfile];
 
   return (
     <section className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)]">
@@ -954,6 +1044,13 @@ export default function UserAccessAdmin({
               {copiedCredential ? <Check aria-hidden className="h-4 w-4" /> : <Copy aria-hidden className="h-4 w-4" />}
               {copiedCredential ? "Copied" : "Copy password"}
             </button>
+            <form method="post" action="/api/auth/impersonation/start" onSubmit={() => setImpersonatingId(createdCredential.id)}>
+              <input type="hidden" name="targetUserId" value={createdCredential.id} />
+              <button type="submit" className="btn btn-sm btn-primary" disabled={impersonatingId !== null}>
+                <LogIn aria-hidden className="h-4 w-4" />
+                {isExternalPortalPreset(createdCredential.preset) ? "Preview this portal" : "Preview / Sign in as"}
+              </button>
+            </form>
           </div>
           <p className="mt-2 text-xs text-[var(--color-ink-soft)]">This temporary password is shown once. Send it to the person privately.</p>
         </div>
@@ -976,7 +1073,7 @@ export default function UserAccessAdmin({
               <select value={addProfile} onChange={(e) => chooseAddProfile(e.target.value as AccountProfileId)} className="input mt-1 w-full text-sm">
                 <optgroup label="Agency team">
                   {ACCOUNT_PROFILES.filter((profile) => [
-                    "owner", "manager", "budget_planner", "staffing_manager", "money_collector", "class_billing",
+                    "owner", "office_manager", "budget_planner", "staffing_manager", "money_collector", "class_billing",
                   ].includes(profile.id)).map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
                 </optgroup>
                 <optgroup label="Portals">
@@ -986,7 +1083,7 @@ export default function UserAccessAdmin({
                   ].includes(profile.id)).map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
                 </optgroup>
                 <optgroup label="Advanced">
-                  {ACCOUNT_PROFILES.filter((profile) => profile.id === "custom")
+                  {ACCOUNT_PROFILES.filter((profile) => profile.id === "custom_access")
                     .map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
                 </optgroup>
               </select>
@@ -1031,14 +1128,43 @@ export default function UserAccessAdmin({
               </select>
             </label>
           ) : null}
-          {addProfile === "custom" ? (
-            <details className="mt-4 rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2">
-              <summary className="cursor-pointer text-sm font-medium">Advanced permissions</summary>
-              <div className="mt-3">
+          <section className="mt-4 grid gap-3 rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-3 sm:grid-cols-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">Main home</p>
+              <p className="mt-1 text-sm font-medium">{addPreview.landingLabel}</p>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">Visible</p>
+              <p className="mt-1 text-xs leading-relaxed text-[var(--color-ink-soft)]">{addPreview.visible}</p>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">Hidden</p>
+              <p className="mt-1 text-xs leading-relaxed text-[var(--color-ink-soft)]">{addPreview.hidden}</p>
+            </div>
+          </section>
+          <details className="mt-3 rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2">
+            <summary className="cursor-pointer text-sm font-medium">Adjust permissions</summary>
+            <div className="mt-3">
+              {addPreset.role === "viewer" && addBinding === "none" ? (
                 <AccessConfig value={addAccess} onChange={setAddAccess} individuals={individuals} employees={employees} role="viewer" />
-              </div>
-            </details>
-          ) : null}
+              ) : isExternalPortalPreset(addProfile) ? (
+                <PortalPermissionAdjustments
+                  presetId={addProfile}
+                  relationship={addRelationship}
+                  grants={addCapabilityGrants}
+                  denials={addCapabilityDenials}
+                  onChange={(grants, denials) => {
+                    setAddCapabilityGrants(grants);
+                    setAddCapabilityDenials(denials);
+                  }}
+                />
+              ) : (
+                <p className="text-xs text-[var(--color-ink-soft)]">
+                  This trusted role has a fixed security boundary. Choose Custom access for a narrower account.
+                </p>
+              )}
+            </div>
+          </details>
           <button type="submit" disabled={actionBusy} aria-busy={actionBusy && busyAction === "create"} className="btn btn-primary mt-4">
             {actionBusy && busyAction === "create" ? "Creating…" : "Create login"}
           </button>
@@ -1137,7 +1263,7 @@ export default function UserAccessAdmin({
                   ) : editLoadFailed || !editAccess ? (
                     <div className="text-sm">
                       <p className="text-[var(--color-danger)]">Couldn&rsquo;t load this person&rsquo;s current access.</p>
-                      <button type="button" onClick={() => loadAccess(u.id, u.role)} className="btn btn-sm btn-secondary mt-2">Try again</button>
+                      <button type="button" onClick={() => loadAccess(u.id, u.role, u.accountPreset)} className="btn btn-sm btn-secondary mt-2">Try again</button>
                     </div>
                   ) : (
                     <div className="space-y-4">
@@ -1146,16 +1272,16 @@ export default function UserAccessAdmin({
                           <span className="text-xs font-medium">What does this person do?</span>
                           <select value={editProfile} onChange={(e) => chooseEditProfile(e.target.value as AccountProfileId)} className="input mt-1 w-full text-sm">
                             {ACCOUNT_PROFILES
-                              .filter((profile) => !isAccountPresetId(profile.id) || !isExternalPortalPreset(profile.id))
+                              .filter((profile) => !isExternalPortalPreset(profile.id))
                               .map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
                           </select>
                         </label>
                         <p className="mt-2 text-sm text-[var(--color-ink-soft)]">{accountProfile(editProfile).description}</p>
                       </div>
 
-                      {editProfile === "custom" ? (
+                      {accountProfile(editProfile).role === "viewer" ? (
                         <details className="rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2">
-                          <summary className="cursor-pointer text-sm font-medium">Advanced permissions</summary>
+                          <summary className="cursor-pointer text-sm font-medium">Adjust permissions</summary>
                           <div className="mt-3">
                             <AccessConfig value={editAccess} onChange={setEditAccess} individuals={individuals} employees={employees} role="viewer" />
                           </div>

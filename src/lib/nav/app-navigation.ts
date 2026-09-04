@@ -1,4 +1,4 @@
-export type NavigationGate = "manager" | "owner" | "manager-transactions" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents" | "portal" | "agencies";
+export type NavigationGate = "resolved" | "manager" | "owner" | "activity-transactions" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents" | "portal" | "agencies";
 
 export interface NavigationAccess {
   role: string;
@@ -52,7 +52,7 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         href: "/home",
         hint: "Start here",
         keywords: "home dashboard start",
-        gate: "manager",
+        gate: "resolved",
       },
     ],
   },
@@ -126,7 +126,7 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         href: "/transactions",
         hint: "Actual billing and payroll history",
         keywords: "transactions billing payroll checks ledger source actual activity",
-        gate: "manager-transactions",
+        gate: "activity-transactions",
       },
       {
         id: "schedule",
@@ -344,10 +344,12 @@ const REPORT_COMMANDS: readonly NavigationDestination[] = [
 function allowed(gate: NavigationGate | undefined, access: NavigationAccess): boolean {
   if (!gate) return true;
   if (!access.accessResolved) return false;
+  if (gate === "resolved") return true;
   if (gate === "owner") return access.role === "admin";
   if (gate === "manager") return access.role === "manager" || access.role === "admin";
-  if (gate === "manager-transactions") {
-    return (access.role === "manager" || access.role === "admin") && access.canSeeTransactions;
+  if (gate === "activity-transactions") {
+    return access.canSeeTransactions
+      && (access.role === "manager" || access.role === "admin" || !access.canSeeSettlements);
   }
   if (gate === "transactions") return access.canSeeTransactions;
   if (gate === "settlements") return access.canSeeSettlements;

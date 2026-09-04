@@ -1,4 +1,5 @@
 import {
+  degrees,
   PDFDocument,
   rgb,
   type PDFFont,
@@ -217,10 +218,13 @@ function drawFooter(page: PDFPage, pageNumber: number, pageCount: number, regula
   if (pageCount > 1) drawRight(page, `Page ${pageNumber} of ${pageCount}`, PAGE_WIDTH - MARGIN, 22, 7, regular, MUTED);
 }
 
-/** Build a clean, searchable invoice PDF from the immutable invoice snapshot. */
-export async function buildClassInvoicePdf(invoice: ClassInvoiceRecord): Promise<Uint8Array> {
+/** Build a clean, searchable invoice PDF from the invoice snapshot. */
+export async function buildClassInvoicePdf(
+  invoice: ClassInvoiceRecord,
+  options: { draft?: boolean } = {},
+): Promise<Uint8Array> {
   const document = await PDFDocument.create();
-  document.setTitle(`Invoice ${invoice.invoiceNumber}`);
+  document.setTitle(`${options.draft ? "DRAFT - " : ""}Invoice ${invoice.invoiceNumber}`);
   document.setAuthor(BRAND.name);
   document.setSubject(`${invoice.purpose} - ${invoice.billToName}`);
   document.setCreator("Ahivim Budget Management");
@@ -253,6 +257,18 @@ export async function buildClassInvoicePdf(invoice: ClassInvoiceRecord): Promise
     const bottom = drawTableRows(page, rows, 511, regular);
     if (pageIndex === chunks.length - 1) drawTotal(page, invoice, Math.max(92, bottom - 8), regular, bold);
     drawFooter(page, pageIndex + 1, chunks.length, regular, bold);
+    if (options.draft) {
+      const label = "DRAFT - NOT ISSUED";
+      page.drawText(label, {
+        x: 92,
+        y: 310,
+        size: 44,
+        font: bold,
+        color: rgb(0.72, 0.12, 0.12),
+        opacity: 0.18,
+        rotate: degrees(35),
+      });
+    }
   });
 
   return document.save();

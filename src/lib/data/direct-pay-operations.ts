@@ -11,6 +11,72 @@ import { dec, toHours, toMoney } from "@/lib/money";
 
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export const FIRST_RELIABLE_MASSER_SETUP_MONTH = "2026-08";
+
+/**
+ * Reconstruct each Financial Setup line as it existed at the end of a selected
+ * month. Strategy edits snapshot the prior row before changing it, so the
+ * latest current-or-saved state before the month boundary is authoritative.
+ * Months before August 2026 deliberately return no approved plan rather than
+ * borrowing today's setup and rewriting historical statements.
+ */
+function effectiveStrategyPlansCtes(monthParameter: "$1" | "$2"): string {
+  return `requested AS (
+          SELECT month_start,
+                 (month_start + interval '1 month')::date AS month_end_exclusive,
+                 (month_start + interval '1 month' - interval '1 day')::date AS month_end
+            FROM (
+              SELECT make_date(
+                split_part(${monthParameter}, '-', 1)::int,
+                split_part(${monthParameter}, '-', 2)::int,
+                1
+              ) AS month_start
+            ) value
+        ), strategy_state_candidates AS (
+          SELECT strategy.id AS strategy_id, strategy.individual_id,
+                 strategy.after_all, strategy.renewal_date, strategy.status,
+                 strategy.created_at,
+                 strategy.updated_at AS effective_from,
+                 1 AS current_state, 2147483647 AS candidate_revision
+            FROM calculation_strategies strategy
+          UNION ALL
+          SELECT strategy.id AS strategy_id, strategy.individual_id,
+                 NULLIF(revision.snapshot->>'after_all', '')::numeric AS after_all,
+                 NULLIF(revision.snapshot->>'renewal_date', '')::date AS renewal_date,
+                 COALESCE(NULLIF(revision.snapshot->>'status', ''), 'active') AS status,
+                 strategy.created_at,
+                 COALESCE(
+                   NULLIF(revision.snapshot->>'updated_at', '')::timestamptz,
+                   strategy.created_at
+                 ) AS effective_from,
+                 0 AS current_state, revision.revision AS candidate_revision
+            FROM calculation_strategies strategy
+            JOIN calculation_strategy_revisions revision ON revision.strategy_id = strategy.id
+        ), effective_strategy_states AS (
+          SELECT DISTINCT ON (candidate.strategy_id)
+                 candidate.strategy_id, candidate.individual_id,
+                 candidate.after_all, candidate.renewal_date, candidate.status
+            FROM strategy_state_candidates candidate
+            CROSS JOIN requested
+           WHERE requested.month_end_exclusive >= DATE '2026-09-01'
+             AND candidate.created_at < (requested.month_end_exclusive AT TIME ZONE 'America/New_York')
+             AND candidate.effective_from < (requested.month_end_exclusive AT TIME ZONE 'America/New_York')
+           ORDER BY candidate.strategy_id, candidate.effective_from DESC,
+                    candidate.current_state DESC, candidate.candidate_revision DESC
+        ), strategy_plans AS (
+          SELECT state.individual_id,
+                 COALESCE(sum(abs(state.after_all))
+                   FILTER (WHERE state.after_all IS NOT NULL), 0) AS approved_monthly_plan,
+                 count(*) FILTER (WHERE state.after_all IS NOT NULL) AS active_plans,
+                 count(*) FILTER (
+                   WHERE state.after_all IS NOT NULL
+                     AND state.renewal_date IS NULL
+                 ) AS missing_renewal_plans
+            FROM effective_strategy_states state
+           WHERE state.status = 'active'
+           GROUP BY state.individual_id
+        )`;
+}
 
 export interface DirectPayTargetFinancialRow {
   id: string;
@@ -88,6 +154,7 @@ export interface IndividualSetAsideMonthRow {
 
 export interface CollectionsWorkspaceData {
   month: string;
+  setupHistoryAvailable: boolean;
   employees: Array<{ id: string; name: string }>;
   employeeCollections: EmployeeCollectionMonthRow[];
   individualSetAsides: IndividualSetAsideMonthRow[];
@@ -111,6 +178,7 @@ export interface CollectionsWorkspaceData {
 export interface IndividualMasserStatementData {
   individualId: string;
   individualName: string;
+  setupHistoryAvailable: boolean;
   approvedMonthlyPlan: string;
   activePlans: number;
   trackedPlans: number;
@@ -415,24 +483,7 @@ export async function getCollectionsWorkspace(
       set_aside_this_month: string; remaining_set_aside: string; active_plans: string;
       tracked_plans: string; missing_renewal_plans: string;
     }>(
-       `WITH requested AS (
-          SELECT (month_start + interval '1 month' - interval '1 day')::date AS month_end
-            FROM (
-              SELECT make_date(split_part($1, '-', 1)::int, split_part($1, '-', 2)::int, 1) AS month_start
-            ) value
-        ), strategy_plans AS (
-          SELECT strategy.individual_id,
-                 COALESCE(sum(abs(strategy.after_all))
-                   FILTER (WHERE strategy.after_all IS NOT NULL), 0) AS approved_monthly_plan,
-                 count(*) FILTER (WHERE strategy.after_all IS NOT NULL) AS active_plans,
-                 count(*) FILTER (
-                   WHERE strategy.after_all IS NOT NULL
-                     AND strategy.renewal_date IS NULL
-                 ) AS missing_renewal_plans
-            FROM calculation_strategies strategy
-           WHERE strategy.status = 'active'
-           GROUP BY strategy.individual_id
-        ), plan_candidates AS (
+       `WITH ${effectiveStrategyPlansCtes("$1")}, plan_candidates AS (
           SELECT o.individual_id, o.calculation_strategy_id, o.period_begin, o.period_end,
                  max(o.created_at) AS latest_root_at
             FROM settlement_obligations o
@@ -573,6 +624,7 @@ export async function getCollectionsWorkspace(
   const sum = <T,>(rows: T[], pick: (row: T) => string) => toMoney(rows.reduce((total, row) => total.plus(pick(row)), dec(0)));
   return {
     month,
+    setupHistoryAvailable: month >= FIRST_RELIABLE_MASSER_SETUP_MONTH,
     employees: employeeOptions.rows,
     employeeCollections,
     individualSetAsides,
@@ -619,22 +671,12 @@ export async function getIndividualMasserStatement(
       missing_renewal_plans: string; recorded_reserve: string;
       remaining_reserve: string; available_credit: string;
     }>(
-      `WITH requested AS (
-         SELECT (month_start + interval '1 month' - interval '1 day')::date AS month_end
-           FROM (
-             SELECT make_date(split_part($2, '-', 1)::int, split_part($2, '-', 2)::int, 1) AS month_start
-           ) value
-       ), strategy_plan AS (
-         SELECT COALESCE(sum(abs(strategy.after_all))
-                  FILTER (WHERE strategy.after_all IS NOT NULL), 0) AS approved_monthly_plan,
-                count(*) FILTER (WHERE strategy.after_all IS NOT NULL) AS active_plans,
-                count(*) FILTER (
-                  WHERE strategy.after_all IS NOT NULL
-                    AND strategy.renewal_date IS NULL
-                ) AS missing_renewal_plans
-           FROM calculation_strategies strategy
-          WHERE strategy.individual_id = $1
-            AND strategy.status = 'active'
+      `WITH ${effectiveStrategyPlansCtes("$2")}, strategy_plan AS (
+         SELECT COALESCE(max(plan.approved_monthly_plan), 0) AS approved_monthly_plan,
+                COALESCE(max(plan.active_plans), 0) AS active_plans,
+                COALESCE(max(plan.missing_renewal_plans), 0) AS missing_renewal_plans
+           FROM strategy_plans plan
+          WHERE plan.individual_id = $1
        ), plan_candidates AS (
          SELECT o.calculation_strategy_id, o.period_begin, o.period_end,
                 max(o.created_at) AS latest_root_at
@@ -785,6 +827,7 @@ export async function getIndividualMasserStatement(
   return {
     individualId,
     individualName: person.rows[0].display_name,
+    setupHistoryAvailable: month >= FIRST_RELIABLE_MASSER_SETUP_MONTH,
     approvedMonthlyPlan: toMoney(plan?.approved_monthly_plan ?? 0),
     activePlans: Number(plan?.active_plans ?? 0),
     trackedPlans: Number(plan?.tracked_plans ?? 0),

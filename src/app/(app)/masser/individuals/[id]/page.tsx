@@ -53,7 +53,7 @@ export default async function IndividualMasserStatementPage({
       <PageHeader
         eyebrow="Masser statement"
         title={statement?.individualName ?? "Individual statement"}
-        description={`Approved monthly plan and recorded set-aside position for ${monthLabel(month)}.`}
+        description={`Approved monthly plan as of ${monthLabel(month)} and the selected plan-period ledger position.`}
         action={statement ? <PrintStatementButton /> : undefined}
       />
       <div className="mb-4 print:hidden">
@@ -62,6 +62,11 @@ export default async function IndividualMasserStatementPage({
       {!result.ok ? <ErrorPanel title="Could not load the statement">{result.error}</ErrorPanel>
         : !statement ? null
         : <div className="space-y-4">
+            {!statement.setupHistoryAvailable ? (
+              <Notice tone="warning" title="Approved setup history unavailable">
+                Historical Financial Setup revisions are reliable from August 2026. Ledger activity remains visible, but this statement does not estimate an older approved plan from today&apos;s setup.
+              </Notice>
+            ) : null}
             {statement.missingRenewalPlans > 0 ? (
               <Notice
                 tone="warning"
@@ -76,9 +81,9 @@ export default async function IndividualMasserStatementPage({
               </Notice>
             ) : null}
             <div className="grid grid-cols-2 border-y border-[var(--color-rule-strong)] bg-[var(--color-surface)] sm:grid-cols-4 sm:divide-x sm:divide-[var(--color-rule)]">
-              <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Approved monthly plan</p><p className="tnum mt-1 text-xl font-semibold">{formatMoney(statement.approvedMonthlyPlan)}</p><p className="mt-1 text-xs text-[var(--color-ink-faint)]">{statement.activePlans.toLocaleString()} active {statement.activePlans === 1 ? "setup" : "setups"}</p></div>
-              <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Recorded in ledger</p><p className="tnum mt-1 text-xl font-semibold text-[var(--color-success)]">{formatMoney(statement.recordedReserve)}</p><p className="mt-1 text-xs text-[var(--color-ink-faint)]">{statement.trackedPlans.toLocaleString()} {statement.trackedPlans === 1 ? "setup" : "setups"} tracked</p></div>
-              <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Ledger remaining</p><p className="tnum mt-1 text-xl font-semibold">{formatMoney(statement.remainingReserve)}</p></div>
+              <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Approved monthly plan</p><p className={`mt-1 text-xl font-semibold ${statement.setupHistoryAvailable ? "tnum" : "text-[var(--color-warn)]"}`}>{statement.setupHistoryAvailable ? formatMoney(statement.approvedMonthlyPlan) : "Unavailable"}</p><p className="mt-1 text-xs text-[var(--color-ink-faint)]">{statement.setupHistoryAvailable ? `${statement.activePlans.toLocaleString()} active ${statement.activePlans === 1 ? "setup" : "setups"} as of month-end` : "Reliable history begins August 2026"}</p></div>
+              <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Recorded over plan period</p><p className="tnum mt-1 text-xl font-semibold text-[var(--color-success)]">{formatMoney(statement.recordedReserve)}</p><p className="mt-1 text-xs text-[var(--color-ink-faint)]">{statement.trackedPlans.toLocaleString()} {statement.trackedPlans === 1 ? "setup" : "setups"} tracked</p></div>
+              <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Remaining in plan period</p><p className="tnum mt-1 text-xl font-semibold">{formatMoney(statement.remainingReserve)}</p></div>
               <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Credit</p><p className="tnum mt-1 text-xl font-semibold text-[var(--color-info)]">{formatMoney(statement.availableCredit)}</p></div>
             </div>
             <Card title="Monthly history" description="This is aggregate set-aside ledger activity only. Employee and payroll details are excluded.">

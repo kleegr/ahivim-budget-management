@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, FilePenLine, Save } from "lucide-react";
+import { Download, Eye, FilePenLine, Save } from "lucide-react";
 import { ModalShell } from "@/components/schedule/shared";
 import type { ClassInvoiceRecord } from "@/lib/data/class-invoices";
 import type { ClassReimbursementProfile } from "@/lib/data/class-reimbursement-profiles";
@@ -153,6 +153,27 @@ export default function ClassCoverSheetDialog({
     link.remove();
   };
 
+  const saveAndPreview = async () => {
+    const previewWindow = window.open("about:blank", "_blank");
+    if (previewWindow) previewWindow.opener = null;
+    if (!(await save())) {
+      previewWindow?.close();
+      return;
+    }
+    const href = `/api/classes/invoices/${invoice.id}/cover-sheet?preview=1`;
+    if (previewWindow) {
+      previewWindow.location.href = href;
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
   const disabled = loading || !canManage;
 
   return (
@@ -227,6 +248,12 @@ export default function ClassCoverSheetDialog({
             </button>
           ) : <span />}
           <div className="flex flex-wrap justify-end gap-2">
+            {canManage ? (
+              <button type="button" className="btn btn-secondary" disabled={loading || saving} onClick={() => void saveAndPreview()}>
+                <Eye className="h-4 w-4" aria-hidden />
+                {saving ? "Saving..." : "Preview cover"}
+              </button>
+            ) : null}
             {canManage ? (
               <button type="button" className="btn btn-secondary" disabled={loading || saving} onClick={() => void save()}>
                 <Save className="h-4 w-4" aria-hidden />

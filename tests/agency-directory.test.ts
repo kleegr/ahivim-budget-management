@@ -84,28 +84,29 @@ describe("owner agency directory", () => {
     expect(source).not.toContain('"Actual activity"');
   });
 
-  it("keeps both agency routes owner-only and presentation-only", () => {
-    for (const path of [
-      "src/app/(app)/agencies/page.tsx",
-      "src/app/(app)/agencies/[id]/page.tsx",
-    ]) {
-      const source = readFileSync(path, "utf8");
-      expect(source).toContain('requireUser("viewer")');
-      expect(source).toContain("isPortalOwner(portal)");
-      expect(source).toContain('hasPortalCapability(portal, "agencies.read")');
-      expect(source).toContain("getPortalHomeReadModel");
-      expect(source).not.toContain("listAgencyIndividualMemberships");
-      expect(source).not.toContain("getAgencyFinancialReport");
-    }
+  it("keeps the directory owner-only while allowing capability-scoped profile access", () => {
+    const directory = readFileSync("src/app/(app)/agencies/page.tsx", "utf8");
+    const profile = readFileSync("src/app/(app)/agencies/[id]/page.tsx", "utf8");
+    expect(directory).toContain('requireUser("viewer")');
+    expect(directory).toContain("isPortalOwner(portal)");
+    expect(directory).toContain('hasPortalCapability(portal, "agencies.read")');
+    expect(directory).toContain("getPortalHomeReadModel");
+    expect(profile).toContain('requireUser("viewer")');
+    expect(profile).toContain("canAccessPortalAgency(portal, id)");
+    expect(profile).toContain("getAgencyProfileReadModel");
+    expect(profile).not.toContain("listAgencyIndividualMemberships");
+    expect(profile).not.toContain("getAgencyFinancialReport");
   });
 
   it("keeps the directory lightweight and scopes a profile read to one agency", () => {
     const directoryRoute = readFileSync("src/app/(app)/agencies/page.tsx", "utf8");
     const profileRoute = readFileSync("src/app/(app)/agencies/[id]/page.tsx", "utf8");
     const readModel = readFileSync("src/lib/data/portal-read-model.ts", "utf8");
+    const profileReadModel = readFileSync("src/lib/data/agency-profile.ts", "utf8");
 
     expect(directoryRoute).toContain("{ agencySummaryOnly: true }");
-    expect(profileRoute).toContain("{ agencyIds: [id] }");
+    expect(profileRoute).toContain("getAgencyProfileReadModel");
+    expect(profileReadModel).toContain("{ agencyIds: [agencyId] }");
     expect(readModel).toContain("($3::uuid[] IS NULL OR a.id = ANY($3::uuid[]))");
     expect(readModel).toContain("membership.effective_from < ($4::date + interval '1 month')");
     expect(readModel).toContain("agencySummaryOnly ? [] : peopleAgencyIds");

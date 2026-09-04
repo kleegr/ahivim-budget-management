@@ -18,7 +18,7 @@ function filename(value: string): string {
 }
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   const { id } = await params;
@@ -28,14 +28,22 @@ export async function GET(
     if (found.invoice.status !== "issued") {
       return jsonError("Only issued class invoices can have reimbursement cover sheets.", 409);
     }
-    const profile = await getClassCoverSheetSnapshot(found.access.pool, found.invoice.id);
-    if (!profile) return jsonError("Finalize this cover sheet before downloading it.", 409);
+    const preview = new URL(request.url).searchParams.get("preview") === "1";
+    const profile = preview
+      ? await getClassReimbursementProfile(found.access.pool, found.invoice.individualId)
+      : await getClassCoverSheetSnapshot(found.access.pool, found.invoice.id);
+    if (!profile) {
+      return jsonError(
+        preview ? "Save the reimbursement profile before previewing it." : "Finalize this cover sheet before downloading it.",
+        409,
+      );
+    }
     const bytes = await buildClassCoverSheetPdf(found.invoice, profile);
     return new Response(Buffer.from(bytes), {
       status: 200,
       headers: {
         "content-type": "application/pdf",
-        "content-disposition": `attachment; filename="${filename(found.invoice.invoiceNumber)}"`,
+        "content-disposition": `${preview ? "inline" : "attachment"}; filename="${filename(found.invoice.invoiceNumber)}"`,
         "cache-control": "private, no-store, max-age=0",
         "x-content-type-options": "nosniff",
       },

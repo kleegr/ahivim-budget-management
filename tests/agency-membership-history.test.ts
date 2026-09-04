@@ -121,6 +121,24 @@ describe("effective-dated agency membership history", () => {
       .toBe("agency_individual_membership_started");
   });
 
+  it("allows a dated roster-only relationship without assigning budget or billing responsibility", async () => {
+    const { pool, statements } = membershipPool();
+
+    const result = await setAgencyIndividualMembership(pool, AGENCY, {
+      individualId: INDIVIDUAL,
+      managesBudget: false,
+      billsServices: false,
+      isActive: true,
+      effectiveFrom: "2026-09-01",
+    }, ACTOR);
+
+    expect(result.ok).toBe(true);
+    const insert = statements.find((entry) => entry.sql.includes("INSERT INTO agency_individuals"));
+    expect(insert?.params?.slice(0, 4)).toEqual([AGENCY, INDIVIDUAL, false, false]);
+    expect(statements.find((entry) => entry.sql.includes("INSERT INTO audit_logs"))?.params?.[1])
+      .toBe("agency_individual_membership_started");
+  });
+
   it("uses the validity flag only to cancel a future interval", async () => {
     const { pool, statements } = membershipPool();
 
@@ -154,7 +172,11 @@ describe("effective-dated agency membership history", () => {
 
   it("keeps the migration and Drizzle mirror on the surrogate interval model", () => {
     const migration = readFileSync("drizzle/0029_agencies_portal_access.sql", "utf8");
-    const schema = readFileSync("src/lib/db/schema.ts", "utf8");
+    const rosterOnlyMigration = readFileSync("drizzle/0039_agency_roster_only.sql", "utf8");
+    const schema = [
+      readFileSync("src/lib/db/schema-access.ts", "utf8"),
+      readFileSync("src/lib/db/schema.ts", "utf8"),
+    ].join("\n");
 
     for (const table of ["agency_individuals", "agency_employees"]) {
       const create = migration.slice(migration.indexOf(`CREATE TABLE "${table}"`));
@@ -172,6 +194,8 @@ describe("effective-dated agency membership history", () => {
     expect(migration).not.toContain('t."created_at"::date');
     expect(schema).toMatch(/agencyIndividuals = pgTable\([\s\S]*?id: uuid\("id"\)\.primaryKey\(\)\.defaultRandom\(\)/);
     expect(schema).toMatch(/agencyEmployees = pgTable\([\s\S]*?id: uuid\("id"\)\.primaryKey\(\)\.defaultRandom\(\)/);
+    expect(rosterOnlyMigration).toContain('DROP CONSTRAINT IF EXISTS "agency_individuals_purpose_check"');
+    expect(schema).not.toContain("agency_individuals_purpose_check");
   });
 
   it("moves nonoverlapping interval rows during identity merges instead of collapsing history", () => {

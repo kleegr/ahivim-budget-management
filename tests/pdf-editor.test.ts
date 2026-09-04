@@ -234,12 +234,15 @@ describe("PDF editor history", () => {
     expect(hasPdfEditorChanges([createCoverOverlay(1)], {})).toBe(true);
   });
 
-  it("only accepts generated class cover sheets for editor handoff", () => {
-    const source = "/api/classes/invoices/123e4567-e89b-42d3-a456-426614174000/cover-sheet";
-    expect(normalizePdfEditorSourcePath(source)).toBe(source);
+  it("only accepts generated class PDFs for editor handoff", () => {
+    const cover = "/api/classes/invoices/123e4567-e89b-42d3-a456-426614174000/cover-sheet";
+    const invoice = "/api/classes/invoices/123e4567-e89b-42d3-a456-426614174000/pdf";
+    expect(normalizePdfEditorSourcePath(cover)).toBe(cover);
+    expect(normalizePdfEditorSourcePath(invoice)).toBe(invoice);
     expect(normalizePdfEditorSourcePath("https://example.com/document.pdf")).toBeNull();
     expect(normalizePdfEditorSourcePath("/api/classes/invoices/../../admin/cover-sheet")).toBeNull();
     expect(normalizePdfEditorSourcePath("/api/classes/invoices/not-a-uuid/cover-sheet")).toBeNull();
+    expect(normalizePdfEditorSourcePath(`${invoice}?preview=1`)).toBeNull();
   });
 });
 

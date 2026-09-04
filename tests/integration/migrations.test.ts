@@ -16,8 +16,8 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`CREATE SCHEMA public`);
 
     const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
-    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 39]);
-    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 39]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 41]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 41]);
   }, 60_000);
 
   it("creates the ledger and every expected table", async () => {
@@ -60,7 +60,7 @@ suite("migration runner (real PostgreSQL)", () => {
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(39);
+    expect(again.skipped).toBe(41);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -68,7 +68,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(39);
+    expect(rows).toHaveLength(41);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -108,7 +108,45 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[36].name).toBe("0036_agency_financial_actuals.sql");
     expect(rows[37].name).toBe("0037_current_authorization_truth.sql");
     expect(rows[38].name).toBe("0038_unique_schedule_transaction_match.sql");
+    expect(rows[39].name).toBe("0039_agency_roster_only.sql");
+    expect(rows[40].name).toBe("0040_user_account_preset.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("supports roster-only agency memberships and constrained account presets", async () => {
+    const purposeConstraint = await testPool().query<{ constraint_name: string }>(
+      `SELECT constraint_name
+         FROM information_schema.table_constraints
+        WHERE table_schema = 'public'
+          AND table_name = 'agency_individuals'
+          AND constraint_name = 'agency_individuals_purpose_check'`,
+    );
+    expect(purposeConstraint.rows).toHaveLength(0);
+
+    const presetColumn = await testPool().query<{
+      data_type: string;
+      is_nullable: string;
+    }>(
+      `SELECT data_type, is_nullable
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'users'
+          AND column_name = 'account_preset'`,
+    );
+    expect(presetColumn.rows).toEqual([{ data_type: "text", is_nullable: "YES" }]);
+
+    const presetConstraint = await testPool().query<{ definition: string }>(
+      `SELECT pg_get_constraintdef(oid) AS definition
+         FROM pg_constraint
+        WHERE conrelid = 'users'::regclass
+          AND conname = 'users_account_preset_check'`,
+    );
+    expect(presetConstraint.rows).toHaveLength(1);
+    expect(presetConstraint.rows[0]!.definition).toContain("custom_access");
+    await expect(testPool().query(
+      `INSERT INTO users (email, display_name, password_hash, role, account_preset)
+       VALUES ('invalid-preset@example.test', 'Invalid preset', 'not-a-real-hash', 'viewer', 'not_a_preset')`,
+    )).rejects.toThrow(/users_account_preset_check/i);
   });
 
   it("enforces one planned visit per recorded transaction at the database boundary", async () => {

@@ -70,6 +70,7 @@ describe("atomic preset user provisioning", () => {
         displayName: "Portal User",
         passwordHash: "stored-hash",
         role: "viewer",
+        accountPreset: null,
         isActive: true,
         lastLoginAt: null,
         createdAt: "2026-08-31T00:00:00Z",
@@ -93,7 +94,90 @@ describe("atomic preset user provisioning", () => {
       ACTOR,
       null,
     );
+    expect(mocks.createUserWithAccessQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ role: "admin", accountPreset: "owner" }),
+      expect.anything(),
+      ACTOR,
+    );
     expect(query.mock.calls.map(([sql]) => sql)).toEqual(["BEGIN", "COMMIT"]);
+  });
+
+  it("normalizes internal permission adjustments from the selected viewer preset", async () => {
+    const { pool } = mockPool();
+    const normalized = { accessScope: "scoped", canSeeMoney: true, normalized: true };
+    mocks.userAccessConfigFromInput.mockReturnValueOnce(normalized);
+
+    const result = await provisionUser(pool, {
+      ...base("budget_planner"),
+      internalAccess: { accessScope: "full", canSeeMoney: true },
+    }, ACTOR);
+
+    expect(result.ok).toBe(true);
+    expect(mocks.userAccessConfigFromInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accessScope: "scoped",
+        canPlan: true,
+        canSeeHours: true,
+        canSeeMoney: true,
+      }),
+      "viewer",
+    );
+    expect(mocks.createUserWithAccessQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        role: "viewer",
+        accountPreset: "budget_planner",
+      }),
+      normalized,
+      ACTOR,
+    );
+  });
+
+  it("rejects internal permission adjustments for trusted staff presets", async () => {
+    for (const preset of ["owner", "office_manager"] as const) {
+      const { pool } = mockPool();
+      const result = await provisionUser(pool, {
+        ...base(preset),
+        internalAccess: { accessScope: "scoped", canSeeMoney: false },
+      }, ACTOR);
+
+      expect(result).toMatchObject({ ok: false, code: "validation" });
+      expect(pool.connect).not.toHaveBeenCalled();
+    }
+  });
+
+  it("provisions Office manager and Custom access as canonical stored identities", async () => {
+    for (const [preset, role] of [
+      ["office_manager", "manager"],
+      ["custom_access", "viewer"],
+    ] as const) {
+      vi.clearAllMocks();
+      mocks.hashPassword.mockResolvedValue("stored-hash");
+      mocks.userAccessConfigFromInput.mockReturnValue({ accessScope: role === "viewer" ? "scoped" : "full" });
+      mocks.createUserWithAccessQuery.mockResolvedValue({
+        ok: true,
+        user: {
+          id: USER,
+          email: "role@example.test",
+          displayName: "Role",
+          role,
+          accountPreset: preset,
+          isActive: true,
+        },
+      });
+      const { pool } = mockPool();
+
+      const result = await provisionUser(pool, base(preset), ACTOR);
+
+      expect(result).toMatchObject({ ok: true, data: { preset, role } });
+      expect(mocks.createUserWithAccessQuery).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ role, accountPreset: preset }),
+        expect.anything(),
+        ACTOR,
+      );
+    }
   });
 
   it("creates both the account role and direct individual relationship", async () => {
@@ -125,6 +209,66 @@ describe("atomic preset user provisioning", () => {
       ACTOR,
       null,
     );
+  });
+
+  it("keeps parent preset defaults when an owner adds one visibility exception", async () => {
+    const { pool } = mockPool();
+    const result = await provisionUser(pool, {
+      ...base("individual_parent"),
+      individualId: SUBJECT,
+      relationship: "parent",
+      capabilityGrants: ["dollar_budgets.self.read"],
+      capabilityDenials: ["financials.self.billed_totals.read"],
+    }, ACTOR);
+
+    expect(result.ok).toBe(true);
+    expect(mocks.setIndividualPortalAssignmentQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        capabilityGrants: expect.arrayContaining([
+          "financials.self.cuts_set_asides.read",
+          "dollar_budgets.self.read",
+        ]),
+        capabilityDenials: ["financials.self.billed_totals.read"],
+      }),
+      ACTOR,
+      null,
+    );
+    const policy = mocks.setIndividualPortalAssignmentQuery.mock.calls[0]?.[1];
+    expect(policy.capabilityGrants).not.toContain("financials.self.billed_totals.read");
+  });
+
+  it("can narrow one parent default without silently removing the other", async () => {
+    const { pool } = mockPool();
+    const result = await provisionUser(pool, {
+      ...base("individual_parent"),
+      individualId: SUBJECT,
+      relationship: "guardian",
+      capabilityDenials: ["financials.self.billed_totals.read"],
+    }, ACTOR);
+
+    expect(result.ok).toBe(true);
+    expect(mocks.setIndividualPortalAssignmentQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        capabilityGrants: ["financials.self.cuts_set_asides.read"],
+        capabilityDenials: ["financials.self.billed_totals.read"],
+      }),
+      ACTOR,
+      null,
+    );
+  });
+
+  it("rejects portal capability overrides on an internal preset before creating a login", async () => {
+    const { pool } = mockPool();
+    const result = await provisionUser(pool, {
+      ...base("budget_planner"),
+      capabilityGrants: ["dollar_budgets.self.read"],
+    }, ACTOR);
+
+    expect(result).toMatchObject({ ok: false, code: "validation" });
+    expect(pool.connect).not.toHaveBeenCalled();
+    expect(mocks.createUserWithAccessQuery).not.toHaveBeenCalled();
   });
 
   it("maps each agency preset to the requested agency role", async () => {

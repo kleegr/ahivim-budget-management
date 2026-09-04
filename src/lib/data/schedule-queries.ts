@@ -110,8 +110,8 @@ export async function listSessions(pool: PgLikePool, filter: CalendarFilter, sco
             END AS status,
             (s.matched_transaction_id IS NULL) AS can_change_schedule,
             s.warnings,
-            array_agg(i.display_name ORDER BY i.display_name) AS individual_names,
-            array_agg(a.individual_id::text) AS individual_ids
+            array_agg(i.display_name ORDER BY i.display_name, a.individual_id) AS individual_names,
+            array_agg(a.individual_id::text ORDER BY i.display_name, a.individual_id) AS individual_ids
      FROM scheduled_sessions s
      LEFT JOIN employees e ON e.id = s.employee_id
      JOIN programs p ON p.id = s.program_id

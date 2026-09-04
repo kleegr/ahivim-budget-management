@@ -32,6 +32,20 @@ describe("role-specific workspaces", () => {
     expect(getCommandDestinations(access).some((item) => item.href === "/individuals")).toBe(false);
   });
 
+  it("keeps a transactions-only custom account inside a visible Activity workspace", () => {
+    const workspaces = getVisibleWorkspaces({
+      role: "viewer",
+      accessResolved: true,
+      canSeeTransactions: true,
+      canSeeSettlements: false,
+      canSeeBudgets: false,
+      canPlan: false,
+      canEditDocuments: false,
+    });
+
+    expect(workspaces.find((workspace) => workspace.id === "activity")?.href).toBe("/transactions");
+  });
+
   it("keeps the budget portfolio available to a budget viewer", () => {
     const workspaces = getVisibleWorkspaces({
       role: "viewer",
@@ -43,6 +57,22 @@ describe("role-specific workspaces", () => {
       canEditDocuments: false,
     });
     expect(workspaces.find((workspace) => workspace.id === "people")?.href).toBe("/individuals");
+    expect(workspaces.find((workspace) => workspace.id === "overview")?.href).toBe("/home");
+  });
+
+  it("gives every resolved account a stable Home without exposing another workspace", () => {
+    const workspaces = getVisibleWorkspaces({
+      role: "viewer",
+      accessResolved: true,
+      canSeeTransactions: false,
+      canSeeSettlements: false,
+      canSeeBudgets: false,
+      canPlan: false,
+      canEditDocuments: false,
+    });
+
+    expect(workspaces.map((workspace) => workspace.id)).toEqual(["overview"]);
+    expect(workspaces[0]?.href).toBe("/home");
   });
 
   it("gives a budget planner Schedule and People & budgets without transaction navigation", () => {
