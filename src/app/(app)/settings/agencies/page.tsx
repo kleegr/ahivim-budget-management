@@ -600,7 +600,9 @@ export default async function AgencySettingsPage({
                                 ? "Budget + billing"
                                 : entry.managesBudget
                                   ? "Budget management"
-                                  : "Billing only"}
+                                  : entry.billsServices
+                                    ? "Billing only"
+                                    : "Roster only"}
                             />
                           </Td>
                           <Td><span className="text-xs">{entry.effectiveFrom}{entry.effectiveTo ? ` to ${entry.effectiveTo}` : " onward"}</span></Td>
