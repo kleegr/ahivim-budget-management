@@ -3,7 +3,8 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { dec, formatMoney, formatHours } from "@/lib/money";
-import type { ReportCellRow, ReportTable } from "@/lib/data/report-queries";
+import { computeGridTotals } from "@/lib/business/transaction-totals";
+import type { ReportCell, ReportCellRow, ReportTable } from "@/lib/data/report-queries";
 import { type ColumnDef, isNumericKind } from "@/components/data-grid/types";
 import { formatCell } from "@/components/data-grid/engine";
 import { useGrid } from "@/components/data-grid/use-grid";
@@ -21,14 +22,59 @@ import { FilterBar, HeaderFilter } from "@/components/data-grid/filter-bar";
 
 const INDIVIDUAL_KEYS = new Set(["individual", "individualName", "name"]);
 const EMPLOYEE_KEYS = new Set(["employee", "employeeName"]);
+const SOURCE_KEYS = new Set(["transactionId", "statementSource"]);
 
-const isEntityKey = (key: string): boolean => INDIVIDUAL_KEYS.has(key) || EMPLOYEE_KEYS.has(key);
+const isEntityKey = (key: string): boolean =>
+  INDIVIDUAL_KEYS.has(key) || EMPLOYEE_KEYS.has(key) || SOURCE_KEYS.has(key);
 
 /** Reproduces the original `idFor(row, col)`: link a name cell to its entity. */
 function entityHref(row: ReportCellRow, key: string): string | null {
   if (INDIVIDUAL_KEYS.has(key) && row.individualId) return `/individuals/${String(row.individualId)}`;
   if (EMPLOYEE_KEYS.has(key) && row.employeeId) return `/employees/${String(row.employeeId)}`;
+  if (key === "transactionId" && row.transactionId) {
+    return `/transactions?transactionId=${encodeURIComponent(String(row.transactionId))}`;
+  }
+  if (key === "statementSource" && row.statementSource) {
+    const month = row.reportMonth ? `?month=${encodeURIComponent(String(row.reportMonth))}` : "";
+    return `/masser/individuals/${encodeURIComponent(String(row.statementSource))}${month}`;
+  }
   return null;
+}
+
+function sourceCellLabel(key: string, fallback: string): string {
+  if (key === "transactionId") return "Open transaction";
+  if (key === "statementSource") return "View statement";
+  return fallback;
+}
+
+function totalsSource(rows: ReportCellRow[], reportKey: string, tableKey: string): { href: string; label: string } | null {
+  if (rows.length === 0) return null;
+  if (reportKey === "payroll-checks") {
+    const ids = [...new Set(rows.map((row) => row.transactionId).filter((id): id is string => typeof id === "string"))];
+    if (ids.length === rows.length && ids.length <= 75) {
+      const query = new URLSearchParams();
+      for (const id of ids) query.append("transactionId", id);
+      return { href: `/transactions?${query}`, label: `Open ${ids.length.toLocaleString()} exact source row${ids.length === 1 ? "" : "s"}` };
+    }
+    return { href: `#report-source-${tableKey}`, label: "Review the filtered source rows below" };
+  }
+  if (reportKey === "individual-put-away") {
+    if (rows.length === 1 && typeof rows[0]?.statementSource === "string") {
+      return {
+        href: entityHref(rows[0], "statementSource")!,
+        label: "Open the source statement",
+      };
+    }
+    const month = rows.find((row) => typeof row.reportMonth === "string")?.reportMonth;
+    return {
+      href: `/masser${month ? `?month=${encodeURIComponent(String(month))}` : ""}`,
+      label: "Open the source Money workspace",
+    };
+  }
+  // For aggregate and operational reports, the filtered table is the canonical
+  // source set for its visible totals. Keep every total drillable even when no
+  // narrower record-level destination exists.
+  return { href: `#report-source-${tableKey}`, label: "Review the filtered source rows below" };
 }
 
 /* ---------------------------------------------------------------- totals type */
@@ -36,6 +82,7 @@ function entityHref(row: ReportCellRow, key: string): string | null {
 interface ReportTotals {
   tiles: { key: string; header: string; label: string }[];
   rowCount: number;
+  source: { href: string; label: string } | null;
 }
 
 /* -------------------------------------------------------------- component */
@@ -65,7 +112,7 @@ export default function ReportGrid({
             const href = entityHref(row, c.key);
             return href ? (
               <Link href={href} className="font-medium text-[var(--color-primary)] hover:underline">
-                {text}
+                {sourceCellLabel(c.key, text)}
               </Link>
             ) : (
               text
@@ -85,36 +132,74 @@ export default function ReportGrid({
     initialSort: [],
     initialHidden: [],
     computeTotals: (filtered) => {
+      if (reportKey === "payroll-checks") {
+        const text = (value: ReportCell) => typeof value === "string" ? value : null;
+        const exact = computeGridTotals(filtered.map((row) => ({
+          id: text(row.transactionId) ?? "",
+          gross: text(row.gross),
+          internalAmount: text(row.internalAmount),
+          agencyAdditional: text(row.agencyAdditional),
+          hours: text(row.hours),
+          totalNetPay: text(row.totalNetPay),
+          payTo: text(row.payTo),
+          checkNumber: text(row.checkNumber),
+          checkDate: text(row.checkDate),
+          periodBegin: text(row.periodBegin),
+          periodEnd: text(row.periodEnd),
+          individualId: text(row.individualId),
+          individual: text(row.individual),
+          employeeId: text(row.employeeId),
+          employee: text(row.employee),
+        })));
+        return {
+          tiles: [
+            { key: "funderBilled", header: "Funder billed", label: formatMoney(exact.gross) },
+            { key: "employeeBase", header: "Employee base", label: formatMoney(exact.internal) },
+            { key: "agencySpread", header: "Agency spread", label: formatMoney(exact.agencyAdditional) },
+            { key: "checkNet", header: "Deduplicated check net", label: formatMoney(exact.netPerCheck) },
+            { key: "hours", header: "Hours", label: formatHours(exact.hours) },
+            { key: "checks", header: "Checks", label: exact.checks.toLocaleString() },
+            { key: "individuals", header: "Individuals", label: exact.individuals.toLocaleString() },
+            { key: "employees", header: "Employees", label: exact.employees.toLocaleString() },
+          ],
+          rowCount: filtered.length,
+          source: totalsSource(filtered, reportKey, table.key),
+        };
+      }
       const tiles = table.columns
         // Money and hours are additive. Generic integer and percentage columns
         // are not: summing days-left, rates, or percentages creates a confident
         // looking number with no business meaning.
-        .filter((c) => c.type === "money" || c.type === "hours")
-        .map((c) => {
+        .filter((c) => (c.type === "money" && c.key !== "checkNet") || c.type === "hours")
+        .flatMap((c) => {
           let sum = dec(0);
+          let hasValue = false;
           for (const r of filtered) {
             const v = r[c.key];
             if (v === null || v === undefined || v === "") continue;
             try {
               sum = sum.plus(dec(v));
+              hasValue = true;
             } catch {
               /* skip an unparseable cell, exactly as before */
             }
           }
+          if (!hasValue) return [];
           const label =
             c.type === "money"
               ? formatMoney(sum.toFixed(2))
               : c.type === "hours"
                 ? formatHours(sum.toFixed(2))
                 : sum.toDecimalPlaces(0).toNumber().toLocaleString();
-          return { key: c.key, header: c.header, label };
+          return [{ key: c.key, header: c.header, label }];
         });
-      return { tiles, rowCount: filtered.length };
+      return { tiles, rowCount: filtered.length, source: totalsSource(filtered, reportKey, table.key) };
     },
     serializeHidden: true,
   });
 
   const tileCls = "min-w-0 px-4 py-3";
+  const totals = grid.totals;
 
   return (
     <div className="space-y-3">
@@ -134,23 +219,39 @@ export default function ReportGrid({
       <FilterBar grid={grid} />
 
       {/* filtered totals */}
-      {grid.totals ? (
+      {totals ? (
         <div className="grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)] sm:grid-cols-3 lg:grid-cols-5">
-          {grid.totals.tiles.map((t) => (
-            <div key={t.key} className={tileCls}>
-              <div className="eyebrow text-[var(--color-ink-faint)]">{t.header}</div>
-              <div className="tnum text-lg font-semibold">{t.label}</div>
+          {totals.tiles.map((t) => {
+            const content = (
+              <>
+                <div className="eyebrow text-[var(--color-ink-faint)]">{t.header}</div>
+                <div className="tnum text-lg font-semibold">{t.label}</div>
+                {totals.source ? <div className="mt-1 text-[11px] font-medium text-[var(--color-primary)]">{totals.source.label}</div> : null}
+              </>
+            );
+            return totals.source ? (
+              <Link key={t.key} href={totals.source.href} className={`${tileCls} hover:bg-black/[0.03]`}>
+                {content}
+              </Link>
+            ) : <div key={t.key} className={tileCls}>{content}</div>;
+          })}
+          {totals.source ? (
+            <Link href={totals.source.href} className={`${tileCls} hover:bg-black/[0.03]`}>
+              <div className="eyebrow text-[var(--color-ink-faint)]">Rows</div>
+              <div className="tnum text-lg font-semibold">{totals.rowCount.toLocaleString()}</div>
+              <div className="mt-1 text-[11px] font-medium text-[var(--color-primary)]">{totals.source.label}</div>
+            </Link>
+          ) : (
+            <div className={tileCls}>
+              <div className="eyebrow text-[var(--color-ink-faint)]">Rows</div>
+              <div className="tnum text-lg font-semibold">{totals.rowCount.toLocaleString()}</div>
             </div>
-          ))}
-          <div className={tileCls}>
-            <div className="eyebrow text-[var(--color-ink-faint)]">Rows</div>
-            <div className="tnum text-lg font-semibold">{grid.totals.rowCount.toLocaleString()}</div>
-          </div>
+          )}
         </div>
       ) : null}
 
       {/* grid */}
-      <div className="scroll-thin max-h-[62vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
+      <div id={`report-source-${table.key}`} className="scroll-thin max-h-[62vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
         <table className="min-w-full border-collapse text-sm">
           <thead className="sticky top-0 z-20">
             <tr>

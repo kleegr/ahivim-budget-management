@@ -9,12 +9,14 @@ import {
   HandCoins,
   History,
   Landmark,
+  PiggyBank,
   ReceiptText,
   Scale,
   TriangleAlert,
   UserRoundCheck,
   Users,
   Wrench,
+  WalletCards,
 } from "lucide-react";
 
 export interface ReportPresentation {
@@ -88,6 +90,24 @@ export const REPORT_LIBRARY: ReportLibraryGroup[] = [
     heading: "Money and planning",
     description: "Keep Funder billed, Employee base, Agency spread, and budget calculations distinct.",
     reports: [
+      {
+        key: "payroll-checks",
+        title: "Payroll & checks",
+        question: "Which payroll rows belong to each check, person, program, and payment recipient?",
+        description: "Shows committed transaction detail with payroll-period and check filters, additive totals, and an exact source-ledger link on every row.",
+        timeBasis: "Payroll period and check date",
+        note: "Check net repeats on source rows; the total counts each payment identity once, using the same deduplication rule as Transactions.",
+        icon: WalletCards,
+      },
+      {
+        key: "individual-put-away",
+        title: "Individual put-away",
+        question: "What should be put away for each individual, what was recorded, and what remains?",
+        description: "Uses the same dated plan state, corrections, and settlement events as Money operations for the selected month.",
+        timeBasis: "Selected calendar month and the setup revision effective then",
+        note: "Setup history begins in August 2026; earlier months disclose it as unavailable while retaining recorded ledger activity.",
+        icon: PiggyBank,
+      },
       {
         key: "agency-financials",
         title: "Agency financials",
