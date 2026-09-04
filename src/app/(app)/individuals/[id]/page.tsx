@@ -1,10 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/session";
-import { canViewEmployee, canViewIndividual, hasDirectIndividualAccess, resolveAccessScope } from "@/lib/auth/access";
+import { canAccessPlanning, canViewEmployee, canViewIndividual, hasDirectIndividualAccess, resolveAccessScope } from "@/lib/auth/access";
 import { canManageHourAuthorizations } from "@/lib/auth/hour-authorization-access";
 import { withDb } from "@/lib/data/pool";
-import { getIndividualBudgetView, getIndividualPeriodActivity } from "@/lib/data/queries";
+import {
+  getIndividualBudgetView,
+  getIndividualPeriodActivity,
+  type PeriodEmployee,
+} from "@/lib/data/queries";
 import { BUDGET_STATUS_PRESENT, type BudgetLineStatus } from "@/lib/business/budget-status";
 import { isUuid, listPrograms } from "@/lib/data/app-queries";
 import { getIndividual } from "@/lib/manage/individuals";
@@ -12,8 +16,15 @@ import { listAuthorizationsForIndividual } from "@/lib/manage/authorizations";
 import { listStrategies } from "@/lib/manage/calculation-strategies";
 import { listAssignments } from "@/lib/manage/assignments";
 import { listAliases } from "@/lib/manage/aliases";
-import { scheduledByProgramForIndividual } from "@/lib/data/schedule-queries";
+import { type CalendarSession } from "@/lib/data/schedule-queries";
 import { getPersonSettlementBalance } from "@/lib/data/settlements";
+import { getIndividualMasserStatement } from "@/lib/data/direct-pay-operations";
+import {
+  getIndividualProfileContext,
+  individualProfileMainAction,
+  type IndividualAgencyResponsibility,
+  type IndividualProfileAction,
+} from "@/lib/data/individual-profile";
 import { listClassBudgets, listClassInvoices } from "@/lib/data/class-invoices";
 import {
   listProgramBudgetEvents,
@@ -23,7 +34,7 @@ import {
 } from "@/lib/data/program-budgets";
 import { summarizeAuthorizationPortfolio } from "@/lib/data/authorization-portfolio";
 import {
-  Card, Table, Th, Td, Tr, Money, Hours, ErrorPanel, PageHeader, ButtonLink,
+  Card, Table, Th, Td, Tr, Money, ErrorPanel, PageHeader, ButtonLink,
 } from "@/components/ui";
 import { TabPanels } from "@/components/ui-client";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
@@ -84,6 +95,27 @@ function renewLine(active: boolean, daysToRenewal: number | null, effectiveRenew
   return `Renews in ${daysToRenewal} day${daysToRenewal === 1 ? "" : "s"} (${effectiveRenewal})`;
 }
 
+const PROFILE_DATE = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+function profileDate(value: string | null): string {
+  return value ? PROFILE_DATE.format(new Date(`${value}T00:00:00.000Z`)) : "Not set";
+}
+
+function profileTime(value: string | null): string | null {
+  if (!value) return null;
+  const [hourText, minuteText] = value.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return value;
+  const suffix = hour >= 12 ? "PM" : "AM";
+  return `${hour % 12 || 12}:${String(minute).padStart(2, "0")} ${suffix}`;
+}
+
 export default async function IndividualDetailPage({
   params,
   searchParams,
@@ -97,7 +129,10 @@ export default async function IndividualDetailPage({
     params,
     searchParams ?? Promise.resolve<{ view?: string | string[] }>({}),
   ]);
-  const initialView = typeof query.view === "string" ? query.view : undefined;
+  const requestedView = typeof query.view === "string" ? query.view : undefined;
+  const initialView = requestedView === "financial" || requestedView === "classes" || requestedView === "details"
+    ? "more"
+    : requestedView;
   if (!isUuid(id)) notFound();
 
   const result = await withDb(async (pool) => {
@@ -115,16 +150,14 @@ export default async function IndividualDetailPage({
     const canSeeSettlements = scope.canSeeSettlements && directAccess;
     const canSeeClasses = scope.canSeeClassFinancials && directAccess;
     const canManageHours = canManageHourAuthorizations(scope) && directAccess;
+    const canPlan = canAccessPlanning(scope);
     const budget = await getIndividualBudgetView(pool, id, undefined, scope);
-    const [strategies, assignments, aliasesAll, scheduledByProgram, activity, settlement, classBudgets, classInvoices, programBudgetsRaw, programCatalogRaw, authorizationHistoryRaw] = await Promise.all([
+    const [strategies, assignments, aliasesAll, activity, settlement, masserStatement, profileContext, classBudgets, classInvoices, programBudgetsRaw, programCatalogRaw, authorizationHistoryRaw] = await Promise.all([
       canSeeBudgets
         ? listStrategies(pool, { individualId: id, withAnalytics: true })
         : Promise.resolve({ rows: [], programs: [] }),
       listAssignments(pool, { individualId: id, includeInactive: true }),
       listAliases(pool, { kind: "individual" }),
-      directAccess
-        ? scheduledByProgramForIndividual(pool, id)
-        : Promise.resolve<Record<string, { hours: string; internal: string }>>({}),
       canSeeBudgets
         ? getIndividualPeriodActivity(
             pool,
@@ -138,6 +171,11 @@ export default async function IndividualDetailPage({
           )
         : Promise.resolve({ periods: [], byEmployee: [] }),
       canSeeSettlements ? getPersonSettlementBalance(pool, { individualId: id }) : Promise.resolve({ payable: "0", receivable: "0", reserve: "0", credit: "0", openItems: 0 }),
+      canSeeSettlements ? getIndividualMasserStatement(pool, scope, id) : Promise.resolve(null),
+      getIndividualProfileContext(pool, id, scope, {
+        canPreviewPortal: user.role === "admin",
+        canViewSchedule: canPlan,
+      }),
       canSeeClasses ? listClassBudgets(pool, scope, { individualId: id }) : Promise.resolve([]),
       canSeeClasses ? listClassInvoices(pool, scope, { individualId: id }) : Promise.resolve([]),
       canSeeProgramBudgets ? Promise.all([
@@ -310,7 +348,8 @@ export default async function IndividualDetailPage({
       })),
     };
     return {
-      individual, budget, operationalBudget, activity: visibleActivity, settlement,
+      individual, budget, operationalBudget, activity: visibleActivity, settlement, masserStatement,
+      profileContext,
       strategy,
       otherPlans,
       canSeeHours: scope.canSeeHours,
@@ -342,16 +381,10 @@ export default async function IndividualDetailPage({
           allowIndividualRateOverride: program.allowIndividualRateOverride,
         })),
       canSeeTransactions: scope.canSeeTransactions,
+      canPlan,
       programs: strategies.programs, // program list with default per-hour rates, for the editor
       assignments: assignments.filter((a) => a.status === "active" && canViewEmployee(scope, a.employeeId)),
       aliases: aliasesAll.filter((a) => a.canonicalId === id),
-      scheduled: Object.entries(scheduledByProgram).map(([code, scheduled]) => [
-        code,
-        {
-          hours: scope.canSeeHours ? scheduled.hours : "0",
-          internal: scope.canSeeEmployeeAmounts ? scheduled.internal : "0",
-        },
-      ] as [string, { hours: string; internal: string }]),
     };
   });
 
@@ -366,13 +399,14 @@ export default async function IndividualDetailPage({
   if (!result.data) notFound();
 
   const {
-    individual, budget, operationalBudget, activity, settlement, strategy, otherPlans,
+    individual, budget, operationalBudget, activity, settlement, masserStatement, profileContext,
+    strategy, otherPlans,
     canSeeHours, canSeeBilledAmounts, canSeeEmployeeAmounts, canSeeAgencySpread,
     canSeeBudgets, canSeeProgramBudgets,
-    canSeeSettlements, canSeeTransactions, canSeeClasses, canManageClasses,
+    canSeeSettlements, canSeeTransactions, canPlan, canSeeClasses, canManageClasses,
     canManageHourAuthorizations: canManageHours,
     classBudgets, classInvoices, programBudgets, programCatalog,
-    programs, assignments, aliases, scheduled,
+    programs, assignments, aliases,
   } = result.data;
   const operationalHeadline = operationalBudget
     ? BUDGET_STATUS_PRESENT[operationalBudget.plainStatus]
@@ -380,6 +414,19 @@ export default async function IndividualDetailPage({
   const operationalAuthorized = operationalBudget
     ? dec(operationalBudget.usedHours).plus(operationalBudget.hoursLeft ?? 0)
     : dec(0);
+  const nextSession = profileContext.upcomingSessions[0] ?? null;
+  const profileAction = individualProfileMainAction({
+    individualId: id,
+    status: individual.status,
+    canManage: canEdit || canManageHours,
+    canViewBudget: canSeeBudgets,
+    canPlan,
+    hasBudget: operationalBudget !== null,
+    missingRenewal: operationalBudget?.missingRenewal ?? false,
+    hoursAfterScheduled: operationalBudget?.hoursAfterScheduled ?? null,
+    assignmentCount: assignments.length,
+    remainingReserve: canSeeSettlements ? masserStatement?.remainingReserve ?? settlement.reserve : null,
+  });
 
   // Months left until the (rolled) renewal, for the financial plan's remaining pace.
   const monthsToRenewal = budget.daysToRenewal !== null && budget.daysToRenewal > 0 ? budget.daysToRenewal / 30.4375 : null;
@@ -408,8 +455,44 @@ export default async function IndividualDetailPage({
 
   /* ---- header action: edit the person's name/notes. Active/inactive is a
      switch inside the budget below, not an outside button. ---- */
+  const portalPreviewAction = user.role === "admin" ? (
+    profileContext.previewAccounts.length > 0 ? (
+      <form
+        action="/api/auth/impersonation/start"
+        method="post"
+        className="flex flex-wrap items-center gap-2"
+        title="Open the actual server-authorized individual or parent portal"
+      >
+        {profileContext.previewAccounts.length === 1 ? (
+          <input type="hidden" name="targetUserId" value={profileContext.previewAccounts[0]!.userId} />
+        ) : (
+          <>
+            <label className="sr-only" htmlFor="individual-portal-preview-account">Portal account</label>
+            <select id="individual-portal-preview-account" name="targetUserId" className="input h-9 min-w-44 text-sm">
+              {profileContext.previewAccounts.map((account) => (
+                <option key={account.userId} value={account.userId}>
+                  {account.displayName} · {account.relationship}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+        <button type="submit" className="btn btn-sm btn-primary">Preview this person&apos;s portal</button>
+      </form>
+    ) : (
+      <button
+        type="button"
+        className="btn btn-sm btn-secondary"
+        disabled
+        title="Link an active individual, parent, guardian, or representative account first"
+      >
+        Preview this person&apos;s portal
+      </button>
+    )
+  ) : null;
   const headerActions = canEdit ? (
     <div className="flex flex-wrap items-center gap-2">
+      {portalPreviewAction}
       <MergePanel individualId={id} individualName={individual.displayName} />
       <CreateButton
         label="Edit name"
@@ -434,6 +517,26 @@ export default async function IndividualDetailPage({
   return (
     <>
       <PageHeader eyebrow="Individual" title={individual.displayName} action={headerActions} />
+      <ProfileHeaderSummary
+        individualId={id}
+        status={individual.status}
+        renewal={canSeeBudgets ? operationalBudget?.renews ?? budget.effectiveRenewal : null}
+        budgetStatus={operationalHeadline?.label ?? (canSeeBudgets ? "Not configured" : "Restricted")}
+        budgetStatusColor={operationalHeadline?.color ?? "var(--color-ink-faint)"}
+        authorized={canSeeBudgets && operationalBudget ? formatHours(operationalAuthorized.toString()) : null}
+        actual={canSeeBudgets && operationalBudget ? formatHours(operationalBudget.usedHours) : null}
+        scheduled={canSeeBudgets && operationalBudget ? formatHours(operationalBudget.scheduledHours) : null}
+        remainingAfterSchedule={canSeeBudgets && operationalBudget ? formatHours(operationalBudget.hoursAfterScheduled ?? 0) : null}
+        remainingAfterScheduleIsNegative={(operationalBudget?.hoursAfterScheduled ?? 0) < 0}
+        assignments={assignments}
+        agencies={profileContext.agencies}
+        outstandingPutAway={canSeeSettlements
+          ? formatMoney(masserStatement?.remainingReserve ?? settlement.reserve)
+          : null}
+        nextSession={nextSession}
+        canOpenSchedule={canPlan}
+        action={profileAction}
+      />
       <TabPanels
         initialId={initialView}
         paramKey="view"
@@ -441,7 +544,8 @@ export default async function IndividualDetailPage({
           {
             id: "overview",
             label: "Overview",
-            content: canSeeBudgets && operationalBudget ? (
+            content: <div className="space-y-5">
+              {canSeeBudgets && operationalBudget ? (
               <section className="card fade-in-up px-5 py-5" style={{ borderTop: `3px solid ${operationalHeadline?.color ?? "var(--color-primary)"}` }}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
@@ -504,11 +608,32 @@ export default async function IndividualDetailPage({
                 <p className="eyebrow">Current profile</p>
                 <p className="mt-1 text-lg font-semibold">{assignments.length} active employee assignment{assignments.length === 1 ? "" : "s"}</p>
               </section>
-            ),
+            )}
+              <OverviewSnapshot
+                individualId={id}
+                programNames={canSeeBudgets
+                  ? operationalBudget
+                    ? [...new Set(programBudgets
+                        .filter((row) => row.periodStatus === "active" && row.requiredAuthType !== "dollars")
+                        .map((row) => row.programName))]
+                    : budget.lines.filter((line) => line.inPlan).map((line) => line.programName)
+                  : []}
+                actualWorkers={activity.byEmployee}
+                assignments={assignments}
+                upcomingSessions={profileContext.upcomingSessions}
+                strategyLabel={canSeeFinancialSetup ? strategy?.label ?? null : null}
+                approvedMonthlyPutAway={canSeeFinancialSetup ? strategy?.afterAll ?? null : null}
+                recordedPutAway={canSeeSettlements ? masserStatement?.recordedReserve ?? "0" : null}
+                remainingPutAway={canSeeSettlements ? masserStatement?.remainingReserve ?? settlement.reserve : null}
+                canSeeTransactions={canSeeTransactions}
+                transactionFrom={canSeeBudgets ? budget.periodStart : null}
+                transactionTo={canSeeBudgets ? budget.periodEnd : null}
+              />
+            </div>,
           },
           ...(canSeeProgramBudgets ? [{
             id: "budget",
-            label: "Budget",
+            label: "Budgets",
             badge: programBudgets.length || undefined,
             content: (
               <ProgramBudgetWorkspace
@@ -522,56 +647,18 @@ export default async function IndividualDetailPage({
               />
             ),
           }] : []),
-          ...(canSeeClasses ? [{
-            id: "classes",
-            label: "Classes",
-            content: (
-              <div className="space-y-5">
-                {classBudgets.map((classBudget) => (
-                  <section key={classBudget.id} className="rounded-md border border-[var(--color-rule)] bg-[var(--color-surface)] p-5">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <p className="eyebrow">{classBudget.label}</p>
-                        <h2 className="mt-1 text-lg font-semibold">{classBudget.startDate} - {classBudget.endDate}</h2>
-                      </div>
-                      <span className="badge">{classBudget.status === "active" ? "Active" : "Closed"}</span>
-                    </div>
-                    <div className="mt-5 grid gap-4 border-t border-[var(--color-rule)] pt-4 sm:grid-cols-3">
-                      <div><p className="eyebrow">Authorized</p><p className="tnum mt-1 text-xl font-semibold">{formatMoney(classBudget.authorizedAmount)}</p></div>
-                      <div><p className="eyebrow">Issued</p><p className="tnum mt-1 text-xl font-semibold">{formatMoney(classBudget.consumedAmount)}</p></div>
-                      <div><p className="eyebrow">Remaining</p><p className={`tnum mt-1 text-xl font-semibold ${dec(classBudget.remainingAmount).isNegative() ? "text-[var(--color-danger)]" : ""}`}>{formatMoney(classBudget.remainingAmount)}</p></div>
-                    </div>
-                  </section>
-                ))}
-
-                <Card
-                  title="Class invoices"
-                  action={canManageClasses ? <ButtonLink href="/classes">Open Classes</ButtonLink> : undefined}
-                >
-                  {classInvoices.length > 0 ? (
-                    <Table head={<><Th>Invoice</Th><Th>Date</Th><Th>Status</Th><Th numeric>Amount</Th><Th numeric>PDF</Th></>}>
-                      {classInvoices.map((invoice) => (
-                        <Tr key={invoice.id}>
-                          <Td><span className="font-semibold">{invoice.invoiceNumber}</span></Td>
-                          <Td><span className="tnum">{invoice.invoiceDate}</span></Td>
-                          <Td><span className="badge">{invoice.status === "void" ? "Voided" : invoice.status === "issued" ? "Issued" : "Draft"}</span></Td>
-                          <Td numeric><Money value={invoice.totalAmount} /></Td>
-                          <Td numeric>{invoice.status === "issued" ? <ButtonLink href={`/api/classes/invoices/${invoice.id}/pdf`} variant="secondary">Download</ButtonLink> : null}</Td>
-                        </Tr>
-                      ))}
-                    </Table>
-                  ) : (
-                    <p className="py-8 text-center text-sm text-[var(--color-ink-faint)]">No class invoices yet.</p>
-                  )}
-                </Card>
-              </div>
-            ),
-          }] : []),
-          ...(canSeeBudgets ? [{
+          ...(canSeeBudgets || canPlan || assignments.length > 0 || profileContext.upcomingSessions.length > 0 ? [{
             id: "activity",
-            label: "Activity",
+            label: "Activity & Schedule",
             content: (
               <div className="space-y-6">
+                <StaffingAndSchedule
+                  individualId={id}
+                  assignments={assignments}
+                  upcomingSessions={profileContext.upcomingSessions}
+                  canSeeHours={canSeeHours}
+                  canOpenSchedule={canPlan}
+                />
                 {activity.periods.some((period) => period.byProgramMonth.length > 0) ? (
                   <Card
                     title={canSeeTransactions ? "Transaction history" : "Service history"}
@@ -650,11 +737,12 @@ export default async function IndividualDetailPage({
               </div>
             ),
           }] : []),
-          ...(canSeeFinancialSetup && (canEdit || strategy || otherPlans.length > 0) ? [{
-            id: "financial",
-            label: "Financial setup",
+          {
+            id: "more",
+            label: "More",
             content: (
               <div className="space-y-6">
+                {canSeeFinancialSetup && (canEdit || strategy || otherPlans.length > 0) ? <>
                 <section className="border-y border-[var(--color-rule)] bg-[var(--color-surface)] px-5 py-4">
                   <h2 className="text-base font-semibold text-[var(--color-ink)]">Financial projection assumptions</h2>
                   <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
@@ -732,21 +820,21 @@ export default async function IndividualDetailPage({
                   </section>
                 ))}
                 {canEdit && strategy ? <AddPlanButton individualId={id} nextLabel={String(otherPlans.length + 2)} /> : null}
+                </> : null}
+                {canSeeClasses ? (
+                  <ClassesProfileSection
+                    classBudgets={classBudgets}
+                    classInvoices={classInvoices}
+                    canManageClasses={canManageClasses}
+                  />
+                ) : null}
+                <MoreDetails
+                  aliases={aliases}
+                  agencies={profileContext.agencies}
+                  canOpenAgency={user.role !== "viewer"}
+                  notes={individual.notes}
+                />
               </div>
-            ),
-          }] : []),
-          {
-            id: "details",
-            label: "Details",
-            content: (
-              <MoreDetails
-                assignments={assignments}
-                aliases={aliases}
-                scheduled={scheduled}
-                canSeeHours={canSeeHours}
-                canSeeEmployeeAmounts={canSeeEmployeeAmounts}
-                notes={individual.notes}
-              />
             ),
           },
         ]}
@@ -756,6 +844,298 @@ export default async function IndividualDetailPage({
 }
 
 /* ---------------------------------------------------------------- pieces */
+
+function ProfileFact({
+  label,
+  value,
+  href,
+  danger = false,
+}: {
+  label: string;
+  value: string;
+  href?: string;
+  danger?: boolean;
+}) {
+  const content = (
+    <>
+      <span className="block text-xs font-medium text-[var(--color-ink-faint)]">{label}</span>
+      <span className={`mt-1 block text-sm font-semibold ${danger ? "text-[var(--color-danger)]" : "text-[var(--color-ink)]"}`}>
+        {value}
+      </span>
+    </>
+  );
+  return href ? (
+    <Link href={href} className="block rounded-md px-3 py-2 outline-none hover:bg-[var(--color-surface-muted)] focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]">
+      {content}
+    </Link>
+  ) : (
+    <div className="px-3 py-2">{content}</div>
+  );
+}
+
+function agencyResponsibility(agencies: IndividualAgencyResponsibility[]): string {
+  if (agencies.length === 0) return "No active agency responsibility";
+  return agencies.map((agency) => {
+    const responsibility = agency.managesBudget && agency.billsServices
+      ? "budget + billing"
+      : agency.managesBudget
+        ? "budget"
+        : agency.billsServices
+          ? "billing"
+          : "roster";
+    return `${agency.agencyName} · ${responsibility}`;
+  }).join("; ");
+}
+
+function ProfileHeaderSummary({
+  individualId,
+  status,
+  renewal,
+  budgetStatus,
+  budgetStatusColor,
+  authorized,
+  actual,
+  scheduled,
+  remainingAfterSchedule,
+  remainingAfterScheduleIsNegative,
+  assignments,
+  agencies,
+  outstandingPutAway,
+  nextSession,
+  canOpenSchedule,
+  action,
+}: {
+  individualId: string;
+  status: string;
+  renewal: string | null;
+  budgetStatus: string;
+  budgetStatusColor: string;
+  authorized: string | null;
+  actual: string | null;
+  scheduled: string | null;
+  remainingAfterSchedule: string | null;
+  remainingAfterScheduleIsNegative: boolean;
+  assignments: Awaited<ReturnType<typeof listAssignments>>;
+  agencies: IndividualAgencyResponsibility[];
+  outstandingPutAway: string | null;
+  nextSession: CalendarSession | null;
+  canOpenSchedule: boolean;
+  action: IndividualProfileAction;
+}) {
+  const budgetHref = `/individuals/${individualId}?view=budget`;
+  const activityHref = `/individuals/${individualId}?view=activity`;
+  const nextVisitTime = nextSession ? profileTime(nextSession.startTime) : null;
+  const nextVisit = nextSession
+    ? `${profileDate(nextSession.sessionDate)}${nextVisitTime ? ` · ${nextVisitTime}` : ""}${nextSession.employeeName ? ` · ${nextSession.employeeName}` : " · Unassigned"}`
+    : "No visit in the next 60 days";
+
+  return (
+    <section aria-label="Individual at a glance" className="mb-5 overflow-hidden rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)]">
+      <div className="grid divide-y divide-[var(--color-rule)] sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
+        <ProfileFact label="Status" value={status} />
+        <div className="px-3 py-2">
+          <span className="block text-xs font-medium text-[var(--color-ink-faint)]">Budget status</span>
+          <span className="mt-1 flex items-center gap-2 text-sm font-semibold text-[var(--color-ink)]">
+            <span className="h-2 w-2 rounded-full" style={{ background: budgetStatusColor }} aria-hidden />
+            {budgetStatus}
+          </span>
+        </div>
+        <ProfileFact label="Current renewal" value={profileDate(renewal)} href={budgetHref} />
+        <ProfileFact label="Main action" value={action.label} href={action.href} danger={action.tone === "danger"} />
+      </div>
+      <div className="grid border-t border-[var(--color-rule)] sm:grid-cols-2 lg:grid-cols-4">
+        <ProfileFact label="Authorized" value={authorized ? `${authorized} h` : "Restricted or not configured"} href={authorized ? budgetHref : undefined} />
+        <ProfileFact label="Actual used" value={actual ? `${actual} h` : "Restricted or not configured"} href={actual ? activityHref : undefined} />
+        <ProfileFact label="Future scheduled" value={scheduled ? `${scheduled} h` : "Restricted or not configured"} href={scheduled ? (canOpenSchedule ? `/schedule?view=calendar&individualId=${individualId}` : activityHref) : undefined} />
+        <ProfileFact
+          label="Remaining after schedule"
+          value={remainingAfterSchedule ? `${remainingAfterSchedule} h` : "Restricted or not configured"}
+          href={remainingAfterSchedule ? budgetHref : undefined}
+          danger={remainingAfterScheduleIsNegative}
+        />
+      </div>
+      <div className="grid border-t border-[var(--color-rule)] sm:grid-cols-2 lg:grid-cols-4">
+        <ProfileFact
+          label="Assigned staffing"
+          value={assignments.length > 0
+            ? assignments.slice(0, 2).map((assignment) => assignment.employeeName).join(", ") + (assignments.length > 2 ? ` +${assignments.length - 2}` : "")
+            : "No active employee assignment"}
+          href={`${activityHref}`}
+          danger={assignments.length === 0}
+        />
+        <ProfileFact label="Agency responsibility" value={agencyResponsibility(agencies)} href={`/individuals/${individualId}?view=more`} />
+        <ProfileFact label="Outstanding put-away" value={outstandingPutAway ?? "Restricted"} href={outstandingPutAway ? `/masser/individuals/${individualId}` : undefined} />
+        <ProfileFact label="Next scheduled visit" value={nextVisit} href={canOpenSchedule ? `/schedule?view=calendar&individualId=${individualId}` : activityHref} danger={Boolean(nextSession && !nextSession.employeeId)} />
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-rule-strong)] bg-[var(--color-surface-muted)] px-4 py-3">
+        <p className="text-sm text-[var(--color-ink-soft)]">{action.detail}</p>
+        <ButtonLink href={action.href} variant={action.tone === "neutral" ? "secondary" : "primary"}>{action.label}</ButtonLink>
+      </div>
+    </section>
+  );
+}
+
+function OverviewSnapshot({
+  individualId,
+  programNames,
+  actualWorkers,
+  assignments,
+  upcomingSessions,
+  strategyLabel,
+  approvedMonthlyPutAway,
+  recordedPutAway,
+  remainingPutAway,
+  canSeeTransactions,
+  transactionFrom,
+  transactionTo,
+}: {
+  individualId: string;
+  programNames: string[];
+  actualWorkers: PeriodEmployee[];
+  assignments: Awaited<ReturnType<typeof listAssignments>>;
+  upcomingSessions: CalendarSession[];
+  strategyLabel: string | null;
+  approvedMonthlyPutAway: string | null;
+  recordedPutAway: string | null;
+  remainingPutAway: string | null;
+  canSeeTransactions: boolean;
+  transactionFrom: string | null;
+  transactionTo: string | null;
+}) {
+  const transactionHref = txLink({
+    individualId,
+    pbFrom: transactionFrom ?? undefined,
+    pbTo: transactionTo ?? undefined,
+  });
+  const scheduledEmployees = [...new Set(upcomingSessions.map((session) => session.employeeName).filter((name): name is string => Boolean(name)))];
+  return (
+    <section className="card px-5 py-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="eyebrow">Operational snapshot</p>
+          <h2 className="mt-1 text-lg font-semibold text-[var(--color-ink)]">People, programs, and money in context</h2>
+        </div>
+        {canSeeTransactions ? <ButtonLink href={transactionHref} variant="secondary">Open exact activity</ButtonLink> : null}
+      </div>
+      <dl className="mt-4 grid gap-4 border-t border-[var(--color-rule)] pt-4 md:grid-cols-2 xl:grid-cols-3">
+        <div><dt className="eyebrow">Active programs</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{programNames.length ? programNames.join(", ") : "None configured"}</dd></div>
+        <div><dt className="eyebrow">Actual workers</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{canSeeTransactions
+          ? actualWorkers.length ? actualWorkers.map((worker) => worker.name).join(", ") : "No recorded worker activity this period"
+          : "Employee identity is not included in this view"}</dd></div>
+        <div><dt className="eyebrow">Assigned employees</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{assignments.length ? assignments.map((assignment) => assignment.employeeName).join(", ") : "No active assignments"}</dd></div>
+        <div><dt className="eyebrow">Scheduled next</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{scheduledEmployees.length ? scheduledEmployees.join(", ") : upcomingSessions.length ? "Upcoming visit is unassigned" : "No visit in the next 60 days"}</dd></div>
+        {strategyLabel || approvedMonthlyPutAway !== null ? (
+          <div><dt className="eyebrow">Active financial setup</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{strategyLabel ?? "Current plan"}{approvedMonthlyPutAway !== null ? ` · ${formatMoney(approvedMonthlyPutAway)} approved monthly` : ""}</dd></div>
+        ) : null}
+        {recordedPutAway !== null || remainingPutAway !== null ? (
+          <div><dt className="eyebrow">Put-away position</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{formatMoney(recordedPutAway ?? "0")} recorded · {formatMoney(remainingPutAway ?? "0")} remaining</dd></div>
+        ) : null}
+      </dl>
+    </section>
+  );
+}
+
+function StaffingAndSchedule({
+  individualId,
+  assignments,
+  upcomingSessions,
+  canSeeHours,
+  canOpenSchedule,
+}: {
+  individualId: string;
+  assignments: Awaited<ReturnType<typeof listAssignments>>;
+  upcomingSessions: CalendarSession[];
+  canSeeHours: boolean;
+  canOpenSchedule: boolean;
+}) {
+  return (
+    <section className="card overflow-hidden">
+      <div className="flex flex-wrap items-start justify-between gap-3 px-5 py-4">
+        <div>
+          <p className="eyebrow">Plan</p>
+          <h2 className="mt-1 text-lg font-semibold">Assignments and upcoming visits</h2>
+          <p className="mt-1 text-sm text-[var(--color-ink-soft)]">Assignments authorize staffing; scheduled visits are the current plan.</p>
+        </div>
+        {canOpenSchedule ? <ButtonLink href={`/schedule?view=calendar&individualId=${individualId}`} variant="secondary">Open schedule</ButtonLink> : null}
+      </div>
+      <div className="grid border-t border-[var(--color-rule)] lg:grid-cols-2 lg:divide-x lg:divide-[var(--color-rule)]">
+        <div className="px-5 py-4">
+          <h3 className="text-sm font-semibold">Active assignments</h3>
+          {assignments.length ? (
+            <ul className="mt-2 space-y-2 text-sm">
+              {assignments.map((assignment) => (
+                <li key={assignment.id} className="flex items-start justify-between gap-3">
+                  <span><Link href={`/employees/${assignment.employeeId}`} className="font-medium text-[var(--color-primary)] hover:underline">{assignment.employeeName}</Link><span className="block text-xs text-[var(--color-ink-faint)]">{assignment.programName ?? "Any program"}</span></span>
+                  {canSeeHours && assignment.allowedHours ? <span className="tnum text-[var(--color-ink-soft)]">{formatHours(assignment.allowedHours)} h</span> : null}
+                </li>
+              ))}
+            </ul>
+          ) : <p className="mt-2 text-sm text-[var(--color-warn)]">No active employee assignment.</p>}
+        </div>
+        <div className="border-t border-[var(--color-rule)] px-5 py-4 lg:border-t-0">
+          <h3 className="text-sm font-semibold">Next 60 days</h3>
+          {upcomingSessions.length ? (
+            <ul className="mt-2 space-y-2 text-sm">
+              {upcomingSessions.slice(0, 6).map((session) => (
+                <li key={session.id} className="flex items-start justify-between gap-3">
+                  <span><span className="font-medium">{profileDate(session.sessionDate)}{profileTime(session.startTime) ? ` · ${profileTime(session.startTime)}` : ""}</span><span className="block text-xs text-[var(--color-ink-faint)]">{session.programName} · {session.employeeName ?? "Unassigned"}</span></span>
+                  {canSeeHours ? <span className="tnum text-[var(--color-ink-soft)]">{formatHours(session.durationHours)} h</span> : null}
+                </li>
+              ))}
+            </ul>
+          ) : <p className="mt-2 text-sm text-[var(--color-ink-soft)]">No upcoming visits are scheduled.</p>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ClassesProfileSection({
+  classBudgets,
+  classInvoices,
+  canManageClasses,
+}: {
+  classBudgets: Awaited<ReturnType<typeof listClassBudgets>>;
+  classInvoices: Awaited<ReturnType<typeof listClassInvoices>>;
+  canManageClasses: boolean;
+}) {
+  return (
+    <section className="space-y-5">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold">Classes</h2>
+        {canManageClasses ? <ButtonLink href="/classes" variant="secondary">Open Classes</ButtonLink> : null}
+      </div>
+      {classBudgets.map((classBudget) => (
+        <section key={classBudget.id} className="rounded-md border border-[var(--color-rule)] bg-[var(--color-surface)] p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div><p className="eyebrow">{classBudget.label}</p><h3 className="mt-1 text-base font-semibold">{classBudget.startDate} - {classBudget.endDate}</h3></div>
+            <span className="badge">{classBudget.status === "active" ? "Active" : "Closed"}</span>
+          </div>
+          <dl className="mt-4 grid gap-4 border-t border-[var(--color-rule)] pt-4 sm:grid-cols-3">
+            <div><dt className="eyebrow">Authorized</dt><dd className="tnum mt-1 text-xl font-semibold">{formatMoney(classBudget.authorizedAmount)}</dd></div>
+            <div><dt className="eyebrow">Issued</dt><dd className="tnum mt-1 text-xl font-semibold">{formatMoney(classBudget.consumedAmount)}</dd></div>
+            <div><dt className="eyebrow">Remaining</dt><dd className={`tnum mt-1 text-xl font-semibold ${dec(classBudget.remainingAmount).isNegative() ? "text-[var(--color-danger)]" : ""}`}>{formatMoney(classBudget.remainingAmount)}</dd></div>
+          </dl>
+        </section>
+      ))}
+      <Card title="Class invoices">
+        {classInvoices.length > 0 ? (
+          <Table head={<><Th>Invoice</Th><Th>Date</Th><Th>Status</Th><Th numeric>Amount</Th><Th numeric>PDF</Th></>}>
+            {classInvoices.map((invoice) => (
+              <Tr key={invoice.id}>
+                <Td><span className="font-semibold">{invoice.invoiceNumber}</span></Td>
+                <Td><span className="tnum">{invoice.invoiceDate}</span></Td>
+                <Td><span className="badge">{invoice.status === "void" ? "Voided" : invoice.status === "issued" ? "Issued" : "Draft"}</span></Td>
+                <Td numeric><Money value={invoice.totalAmount} /></Td>
+                <Td numeric>{invoice.status === "issued" ? <ButtonLink href={`/api/classes/invoices/${invoice.id}/pdf`} variant="secondary">Download</ButtonLink> : null}</Td>
+              </Tr>
+            ))}
+          </Table>
+        ) : <p className="py-8 text-center text-sm text-[var(--color-ink-faint)]">No class invoices yet.</p>}
+      </Card>
+    </section>
+  );
+}
 
 function MoneyTile({ label, value, plain }: { label: string; value: string; plain?: boolean }) {
   return (
@@ -768,16 +1148,14 @@ function MoneyTile({ label, value, plain }: { label: string; value: string; plai
 
 /* Supporting profile details, shown in their own workspace tab. */
 function MoreDetails({
-  assignments, aliases, scheduled, canSeeHours, canSeeEmployeeAmounts, notes,
+  aliases, agencies, canOpenAgency, notes,
 }: {
-  assignments: Awaited<ReturnType<typeof listAssignments>>;
   aliases: { id: string; importedName: string; status: string }[];
-  scheduled: [string, { hours: string; internal: string }][];
-  canSeeHours: boolean;
-  canSeeEmployeeAmounts: boolean;
+  agencies: IndividualAgencyResponsibility[];
+  canOpenAgency: boolean;
   notes: string | null;
 }) {
-  const hasAnything = assignments.length > 0 || scheduled.length > 0 || aliases.length > 0 || !!notes;
+  const hasAnything = agencies.length > 0 || aliases.length > 0 || !!notes;
   if (!hasAnything) {
     return (
       <section className="card px-5 py-5">
@@ -790,27 +1168,17 @@ function MoreDetails({
     <section className="card px-5 py-5">
       <h2 className="text-base font-semibold text-[var(--color-ink)]">Profile details</h2>
       <div className="mt-5 space-y-6">
-        {assignments.length > 0 ? (
+        {agencies.length > 0 ? (
           <div>
-            <p className="eyebrow mb-2">Assigned employees</p>
-            <Table head={<><Th>Employee</Th><Th>Program</Th>{canSeeHours ? <Th numeric>Allowed hours</Th> : null}</>}>
-              {assignments.map((a) => (
-                <Tr key={a.id}>
-                  <Td><Link className="font-medium text-[var(--color-primary)] hover:underline" href={`/employees/${a.employeeId}`}>{a.employeeName}</Link></Td>
-                  <Td>{a.programName ?? "Any"}</Td>
-                  {canSeeHours ? <Td numeric>{a.allowedHours ? <Hours value={a.allowedHours} /> : "—"}</Td> : null}
+            <p className="eyebrow mb-2">Agency responsibility</p>
+            <Table head={<><Th>Agency</Th><Th>Responsibility</Th></>}>
+              {agencies.map((agency) => (
+                <Tr key={agency.agencyId}>
+                  <Td>{canOpenAgency
+                    ? <Link className="font-medium text-[var(--color-primary)] hover:underline" href={`/agencies/${agency.agencyId}`}>{agency.agencyName}</Link>
+                    : <span className="font-medium">{agency.agencyName}</span>}</Td>
+                  <Td>{agency.managesBudget && agency.billsServices ? "Budget and billing" : agency.managesBudget ? "Budget" : agency.billsServices ? "Billing" : "Roster only"}</Td>
                 </Tr>
-              ))}
-            </Table>
-          </div>
-        ) : null}
-
-        {scheduled.length > 0 ? (
-          <div>
-            <p className="eyebrow mb-2">Scheduled hours</p>
-            <Table head={<><Th>Program</Th>{canSeeHours ? <Th numeric>Hours</Th> : null}{canSeeEmployeeAmounts ? <Th numeric>Expected employee base</Th> : null}</>}>
-              {scheduled.map(([code, sc]) => (
-                <Tr key={code}><Td>{code}</Td>{canSeeHours ? <Td numeric><Hours value={sc.hours} /></Td> : null}{canSeeEmployeeAmounts ? <Td numeric><Money value={sc.internal} /></Td> : null}</Tr>
               ))}
             </Table>
           </div>

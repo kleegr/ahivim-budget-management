@@ -107,7 +107,12 @@ export default async function IndividualsPage({
           </EmptyState>
         </Card>
       ) : (
-        <IndividualsList key={initialView} rows={result.data} initialFilter={initialView} />
+        <IndividualsList
+          key={initialView}
+          rows={result.data}
+          initialFilter={initialView}
+          canManage={canEdit}
+        />
       )}
     </>
   );
