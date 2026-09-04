@@ -506,6 +506,11 @@ export interface IndividualBudgetSummary {
   usedPct: number | null; // 0–100, total billed ÷ total authorized (period-scoped)
   elapsedPct: number | null; // 0–100
   renews: string | null; // period end / renewal date
+  /** Start/end of the period paired with the next renewal shown on the roster. */
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  /** Distinct program authorization periods represented in this portfolio row. */
+  periodCount?: number;
   missingRenewal: boolean; // at least one represented program has no renewal date
   renewalCount: number; // distinct program renewal dates represented in this row
   usedHours: number; // billed hours inside each program's current budget period
@@ -732,6 +737,9 @@ export async function listIndividualBudgetBoard(
     let budget: IndividualBudgetSummary | null = null;
     if (acc.auths.length > 0) {
       const renewal = acc.auths.map((auth) => auth.periodEnd).sort()[0] ?? null;
+      const primaryPeriod = acc.auths
+        .slice()
+        .sort((left, right) => left.periodEnd.localeCompare(right.periodEnd) || left.periodStart.localeCompare(right.periodStart))[0] ?? null;
       let totalAuth = dec(0);
       let totalBilled = dec(0);
       let totalBilledAmount = dec(0);
@@ -788,6 +796,9 @@ export async function listIndividualBudgetBoard(
         usedPct,
         elapsedPct,
         renews: renewal,
+        periodStart: primaryPeriod?.periodStart ?? null,
+        periodEnd: primaryPeriod?.periodEnd ?? null,
+        periodCount: new Set(acc.auths.map((auth) => `${auth.periodStart}:${auth.periodEnd}`)).size,
         missingRenewal: false,
         renewalCount: new Set(acc.auths.map((auth) => auth.periodEnd)).size,
         usedHours: totalBilled.toNumber(),
