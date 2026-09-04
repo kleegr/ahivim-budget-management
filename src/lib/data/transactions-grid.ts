@@ -47,6 +47,11 @@ export interface GridTransaction {
   importBatchId: string | null;
   importRowId: string | null;
   sourceFileId: string | null;
+  /** Human-readable origin retained for exact source evidence. */
+  sourceName?: string | null;
+  sourceSheet?: string | null;
+  sourceRowNumber?: number | null;
+  hasOpenRateReview?: boolean;
   matchStatus: string | null; // duplicate_status: new | possible | confirmed
   isGroup: boolean; // group status
   serviceSessionId: string | null; // reconciliation link (matched scheduled session)
@@ -115,6 +120,10 @@ export async function listTransactionsForGrid(
     import_batch_id: string | null;
     import_row_id: string | null;
     source_file_id: string | null;
+    source_name: string | null;
+    source_sheet: string | null;
+    source_row_number: number | null;
+    has_open_rate_review: boolean;
     match_status: string | null;
     is_group: boolean;
     service_session_id: string | null;
@@ -150,7 +159,16 @@ export async function listTransactionsForGrid(
       t.payment_recipient,
       t.import_batch_id,
       t.import_row_id,
-      t.source_file_id,
+      COALESCE(t.source_file_id, b.imported_file_id)           AS source_file_id,
+      f.original_filename                                     AS source_name,
+      ir.sheet_name                                           AS source_sheet,
+      COALESCE(t.source_row_number, ir.source_row_number)      AS source_row_number,
+      EXISTS (
+        SELECT 1
+          FROM rate_exceptions rx
+         WHERE rx.payroll_transaction_id = t.id
+           AND rx.resolution = 'open'
+      )                                                       AS has_open_rate_review,
       t.duplicate_status                                      AS match_status,
       t.is_group_service                                      AS is_group,
       t.service_session_id,
@@ -162,6 +180,9 @@ export async function listTransactionsForGrid(
     LEFT JOIN individuals i ON i.id = t.individual_id
     LEFT JOIN employees   e ON e.id = t.employee_id
     LEFT JOIN programs    p ON p.id = t.program_id
+    LEFT JOIN import_batches b ON b.id = t.import_batch_id
+    LEFT JOIN imported_files f ON f.id = COALESCE(t.source_file_id, b.imported_file_id)
+    LEFT JOIN import_rows ir ON ir.id = t.import_row_id
     LEFT JOIN service_sessions ss ON ss.id = t.service_session_id
     WHERE TRUE${scopeClause}${employeeClause}${transactionClause}
     ORDER BY t.check_date DESC NULLS LAST, t.check_number, t.source_row_number NULLS LAST
@@ -200,6 +221,10 @@ export async function listTransactionsForGrid(
     importBatchId: r.import_batch_id,
     importRowId: r.import_row_id,
     sourceFileId: r.source_file_id,
+    sourceName: r.source_name,
+    sourceSheet: r.source_sheet,
+    sourceRowNumber: r.source_row_number,
+    hasOpenRateReview: r.has_open_rate_review,
     matchStatus: r.match_status,
     isGroup: r.is_group,
     serviceSessionId: r.service_session_id,
