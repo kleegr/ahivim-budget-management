@@ -7,7 +7,7 @@ const layout = readFileSync("src/app/(app)/layout.tsx", "utf8");
 const transactionPage = readFileSync("src/app/(app)/transactions/page.tsx", "utf8");
 const transactionGrid = readFileSync("src/components/transactions/transactions-grid.tsx", "utf8");
 const masserPage = readFileSync("src/app/(app)/masser/page.tsx", "utf8");
-const settlementDashboard = readFileSync("src/components/settlements/settlement-dashboard.tsx", "utf8");
+const settlementCheckIssues = readFileSync("src/components/settlements/settlement-check-issues.tsx", "utf8");
 const users = readFileSync("src/components/settings/user-access-admin.tsx", "utf8");
 const ui = readFileSync("src/components/ui.tsx", "utf8");
 
@@ -34,32 +34,32 @@ describe("primary workflow clarity", () => {
     expect(layout).toContain("md:[--shell-header-height:var(--impersonation-bar-height)]");
   });
 
-  it("takes an empty transaction ledger to the Sheet refresh workflow", () => {
+  it("takes empty Activity to the update workflow in plain language", () => {
     expect(transactionPage).toContain('<ButtonLink href="/sync" variant="primary">');
-    expect(transactionPage).toContain("Open Google Sheet sync");
+    expect(transactionPage).toContain("Update activity");
   });
 
   it("opens Money-operation source rows through a compact server-scoped key", () => {
     expect(transactionPage).toContain("listSettlementSourceTransactions");
-    expect(transactionPage).toContain("source transaction");
+    expect(transactionPage).toContain("recorded service");
     expect(transactionPage).toContain('href="/settlements?focus=check-issues"');
     expect(masserPage).toContain("resolveSettlementSourceTransactions");
     expect(masserPage).toContain("Source rows are no longer available");
   });
 
   it("keeps large payroll-review queues searchable and incrementally rendered", () => {
-    expect(settlementDashboard).toContain("const CHECK_ISSUE_PAGE_SIZE = 25");
-    expect(settlementDashboard).toContain("Find a payroll source");
-    expect(settlementDashboard).toContain("const visibleIssueStart = currentIssuePage * CHECK_ISSUE_PAGE_SIZE");
-    expect(settlementDashboard).toContain("filteredIssues.slice(visibleIssueStart, visibleIssueStart + CHECK_ISSUE_PAGE_SIZE)");
-    expect(settlementDashboard).toContain("Page {currentIssuePage + 1} of {issuePageCount}");
-    expect(settlementDashboard).not.toContain("{data.checkIssues.map((issue) => {");
+    expect(settlementCheckIssues).toContain("const CHECK_ISSUE_PAGE_SIZE = 25");
+    expect(settlementCheckIssues).toContain("Find a payroll source");
+    expect(settlementCheckIssues).toContain("const visibleIssueStart = currentIssuePage * CHECK_ISSUE_PAGE_SIZE");
+    expect(settlementCheckIssues).toContain("filteredIssues.slice(visibleIssueStart, visibleIssueStart + CHECK_ISSUE_PAGE_SIZE)");
+    expect(settlementCheckIssues).toContain("Page {currentIssuePage + 1} of {issuePageCount}");
+    expect(settlementCheckIssues).not.toContain("{data.checkIssues.map((issue) => {");
   });
 
   it("opens the actual individual budget from transaction details", () => {
     expect(transactionGrid).toContain("individualBudgetHref(row.individualId)");
     expect(transactionGrid).not.toContain("/calculations?individualId=${row.individualId}");
-    expect(transactionGrid).toContain('label: "Review state"');
+    expect(transactionGrid).toContain('label: "Next step"');
   });
 
   it("does not let the all-time period control erase a deep-linked check date", () => {

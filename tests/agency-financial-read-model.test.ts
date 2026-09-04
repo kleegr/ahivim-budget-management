@@ -92,6 +92,32 @@ describe("agency financial report read model", () => {
     expect(report.totals.income).toEqual({
       transactions: "2000.0000", classes: "0.0000", manual: "50.0000", total: "2050.0000",
     });
+    expect(report.transactionBreakdown).toEqual({
+      completeRows: 2,
+      excludedRows: 0,
+      funderBilled: "2000.0000",
+      employeeBase: "1600.0000",
+      agencySpread: "400.0000",
+      agencyRouted: {
+        completeRows: 1,
+        excludedRows: 0,
+        funderBilled: "1000.0000",
+        employeeBase: "800.0000",
+        agencySpread: "200.0000",
+        employeeShareOfBase: "600.0000",
+        agencyShareOfBase: "200.0000",
+      },
+    });
+    expect(report.transactions[0]).toMatchObject({
+      agencySpread: "200.0000",
+      employeeExpense: "600.0000",
+      agencyShareOfBase: "200.0000",
+    });
+    expect(report.transactions[1]).toMatchObject({
+      agencySpread: "200.0000",
+      employeeExpense: null,
+      agencyShareOfBase: null,
+    });
     expect(report.totals.expenses).toEqual({
       approvedSetAsides: "1500.0000",
       taxes: "200.0000",
