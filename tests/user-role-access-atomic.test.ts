@@ -30,8 +30,19 @@ function fakeTransactionalPool(options: {
       pendingRole = null;
       return { rows: [], rowCount: null };
     }
-    if (sql.includes("SELECT role FROM users")) {
-      return { rows: [{ role: pendingRole ?? committedRole }], rowCount: 1 };
+    if (sql.includes("SELECT role, account_preset FROM users")) {
+      const role = pendingRole ?? committedRole;
+      return {
+        rows: [{
+          role,
+          account_preset: role === "admin"
+            ? "owner"
+            : role === "manager"
+              ? "office_manager"
+              : "custom_access",
+        }],
+        rowCount: 1,
+      };
     }
     if (sql.includes("UPDATE users SET role")) {
       pendingRole = String(params?.[0]);
@@ -59,7 +70,7 @@ describe("atomic user role and access changes", () => {
 
     const roleUpdate = db.query.mock.calls.find(([sql]) => sql.includes("UPDATE users SET role"));
     const accessUpdate = db.query.mock.calls.find(([sql]) => sql.includes("SET access_scope"));
-    expect(roleUpdate?.[1]).toEqual(["viewer", USER_ID]);
+    expect(roleUpdate?.[1]).toEqual(["viewer", "custom_access", USER_ID]);
     expect(accessUpdate?.[1]).toEqual(["scoped", ...Array(18).fill(false), USER_ID]);
     expect(db.query.mock.calls[0]?.[0]).toBe("BEGIN");
     expect(db.query.mock.calls.at(-1)?.[0]).toBe("COMMIT");
