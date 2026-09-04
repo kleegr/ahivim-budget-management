@@ -584,6 +584,8 @@ function IndividualAccess({
 
 function EmployeeAccess({ employee }: { employee: PortalEmployeeSummary }) {
   const selectedMonth = monthLabel(employee.month);
+  const showCheckSettlement = employee.checks?.some((check) =>
+    check.giveBackDue !== undefined || check.employeeKeeps !== undefined) ?? false;
   return (
     <Card className="h-full">
       <div className="flex items-start justify-between gap-4 border-b border-[var(--color-rule)] px-5 py-4">
@@ -599,8 +601,9 @@ function EmployeeAccess({ employee }: { employee: PortalEmployeeSummary }) {
       />
       {employee.giveBack ? <SummaryGrid items={[
         { label: `Give-back due (${selectedMonth})`, value: <Money value={employee.giveBack.dueThisMonth} /> },
-        { label: `Collected (${selectedMonth})`, value: <Money value={employee.giveBack.collectedThisMonth} /> },
+        { label: `Recorded (${selectedMonth})`, value: <Money value={employee.giveBack.collectedThisMonth} /> },
         { label: "Give-back remaining", value: <Money value={employee.giveBack.remaining} /> },
+        { label: "Available credit", value: <Money value={employee.giveBack.credit} /> },
       ]} /> : null}
       {employee.directPay !== null ? employee.directPay.length === 0 ? (
         <EmptyState compact title={`No direct-pay services linked to verified checks for ${selectedMonth}`} icon={<ReceiptText aria-hidden className="h-5 w-5" />} />
@@ -640,6 +643,8 @@ function EmployeeAccess({ employee }: { employee: PortalEmployeeSummary }) {
             {employee.checkVisibility.gross ? <Th numeric>Gross</Th> : null}
             {employee.checkVisibility.net ? <Th numeric>Net</Th> : null}
             {employee.checkVisibility.tax ? <Th numeric>Tax withheld</Th> : null}
+            {showCheckSettlement ? <Th numeric>Give-back</Th> : null}
+            {showCheckSettlement ? <Th numeric>You keep</Th> : null}
           </>}>
             {employee.checks.map((check) => (
               <Tr key={check.id}>
@@ -650,10 +655,38 @@ function EmployeeAccess({ employee }: { employee: PortalEmployeeSummary }) {
                 ) : null}
                 {employee.checkVisibility.net ? <Td numeric><Money value={check.actualNet} /></Td> : null}
                 {employee.checkVisibility.tax ? <Td numeric><Money value={check.taxWithheld} /></Td> : null}
+                {showCheckSettlement ? (
+                  <Td numeric>{check.giveBackDue === undefined ? <Plain value="Not available" /> : <Money value={check.giveBackDue} />}</Td>
+                ) : null}
+                {showCheckSettlement ? (
+                  <Td numeric>{check.employeeKeeps === undefined ? <Plain value="Not available" /> : <Money value={check.employeeKeeps} />}</Td>
+                ) : null}
               </Tr>
             ))}
           </Table>
         </div>
+      ) : null}
+      {employee.giveBack && employee.giveBack.recentActivity.length > 0 ? (
+        <section className="border-t border-[var(--color-rule)]" aria-label="Recent give-back activity">
+          <div className="border-b border-[var(--color-rule)] px-5 py-3">
+            <p className="text-sm font-semibold">Recent give-back activity</p>
+            <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
+              Payments, credits, adjustments, and reversals recorded on your balance.
+            </p>
+          </div>
+          <ul className="divide-y divide-[var(--color-rule)]">
+            {employee.giveBack.recentActivity.map((activity, index) => (
+              <li
+                key={`${activity.occurredOn}:${activity.label}:${activity.amount}:${index}`}
+                className="grid gap-1 px-5 py-3 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_auto] sm:items-center"
+              >
+                <span className="text-[var(--color-ink-soft)]">{scheduleDateLabel(activity.occurredOn)}</span>
+                <span className="font-medium">{activity.label}</span>
+                <span className="tnum sm:text-right"><Money value={activity.amount} /></span>
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
     </Card>
   );
@@ -669,20 +702,41 @@ export default function PortalHome({
   individualStatements?: PortalIndividualStatement[];
 }) {
   const owner = model.globalRoles.some((role) => role.key === "owner");
+  const employeePortal = model.globalRoles.some((role) => role.key === "employee");
+  const individualPortal = model.globalRoles.some((role) => role.key === "individual" || role.key === "parent");
+  const agencyRoles = new Set(model.agencies.flatMap((agency) => agency.roles.map((role) => role.key)));
+  const agencyPlanning = agencyRoles.has("scheduler") || agencyRoles.has("staffing_manager");
   const hasPortalIdentity = model.globalRoles.length > 0 || model.agencies.length > 0;
+  const description = employeePortal
+    ? "Your verified direct-pay checks, amount kept, give-back balance, recorded payments, and upcoming visits."
+    : individualPortal
+      ? "Approved budget use, put-away totals, monthly history, and upcoming visits for the people linked to you."
+      : agencyRoles.has("collector")
+        ? "Read-only collection, set-aside, and payment summaries for your agency’s dated roster."
+        : agencyPlanning
+          ? "Your agency’s dated roster and hour coverage. Open Scheduling to manage the work in scope."
+          : model.agencies.length > 0
+            ? "Approved roster, budget, and financial rollups for your organization."
+            : "Your profiles, organizations, and current access in one place.";
+  const headerAction = owner ? (
+    <Link href="/settings/agencies" className="btn btn-secondary btn-sm">
+      <Settings2 aria-hidden className="h-4 w-4" />
+      Manage agencies
+    </Link>
+  ) : agencyPlanning ? (
+    <Link href="/schedule" className="btn btn-primary btn-sm">
+      <CalendarDays aria-hidden className="h-4 w-4" />
+      Open scheduling
+    </Link>
+  ) : undefined;
 
   return (
     <>
       <PageHeader
         eyebrow="My portal"
         title={`Welcome, ${displayName}`}
-        description="Your profiles, organizations, and current access in one place."
-        action={owner ? (
-          <Link href="/settings/agencies" className="btn btn-secondary btn-sm">
-            <Settings2 aria-hidden className="h-4 w-4" />
-            Manage agencies
-          </Link>
-        ) : undefined}
+        description={description}
+        action={headerAction}
       />
 
       <form action="/portal" method="get" className="mb-6 flex flex-wrap items-end justify-between gap-3 border-y border-[var(--color-rule)] py-3">
@@ -742,7 +796,7 @@ export default function PortalHome({
             <section aria-labelledby="portal-individuals-heading">
               <div className="mb-3 flex items-center gap-2">
                 <BadgeDollarSign aria-hidden className="h-4 w-4 text-[var(--color-primary)]" />
-                <h2 id="portal-individuals-heading" className="display text-base font-semibold">Individual budgets</h2>
+                <h2 id="portal-individuals-heading" className="display text-base font-semibold">Budget, activity, and put-away</h2>
               </div>
               <div className="grid gap-4 lg:grid-cols-2">
                 {model.individuals.map((individual) => (
@@ -758,7 +812,7 @@ export default function PortalHome({
 
           {model.employees.length > 0 ? (
             <section aria-labelledby="portal-employees-heading">
-              <h2 id="portal-employees-heading" className="display mb-3 text-base font-semibold">Employee payroll</h2>
+              <h2 id="portal-employees-heading" className="display mb-3 text-base font-semibold">My direct-pay statement</h2>
               <div className="grid gap-4 xl:grid-cols-2">
                 {model.employees.map((employee) => <EmployeeAccess key={employee.id} employee={employee} />)}
               </div>
