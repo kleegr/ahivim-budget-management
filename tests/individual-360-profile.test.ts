@@ -61,7 +61,10 @@ describe("individual 360 profile", () => {
       tone: "danger",
       href: `/schedule?view=calendar&individualId=${individualId}`,
     });
-    expect(action({ assignmentCount: 0 }).label).toBe("Assign an employee");
+    expect(action({ assignmentCount: 0 })).toMatchObject({
+      label: "Assign an employee",
+      href: `/schedule?view=future&individualId=${individualId}`,
+    });
     expect(action({ remainingReserve: "25.00" }).label).toBe("Record put-away");
     expect(action()).toMatchObject({ label: "Review activity", tone: "neutral" });
   });
