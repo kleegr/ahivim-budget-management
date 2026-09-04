@@ -36,8 +36,10 @@ const REPORT: AgencyFinancialReport = {
     paymentRecipient: "excellent_staffing",
     grossAmount: "100.0000",
     baseAmount: "60.0000",
+    agencySpread: "40.0000",
     employeeSharePercent: "50.0000",
     employeeExpense: "30.0000",
+    agencyShareOfBase: "30.0000",
     payRuleSource: "person_rule",
   }],
   directChecks: [{
@@ -118,6 +120,22 @@ const REPORT: AgencyFinancialReport = {
     countedInIncome: true,
     countedSplitExpense: true,
   }],
+  transactionBreakdown: {
+    completeRows: 1,
+    excludedRows: 0,
+    funderBilled: "100.0000",
+    employeeBase: "60.0000",
+    agencySpread: "40.0000",
+    agencyRouted: {
+      completeRows: 1,
+      excludedRows: 0,
+      funderBilled: "100.0000",
+      employeeBase: "60.0000",
+      agencySpread: "40.0000",
+      employeeShareOfBase: "30.0000",
+      agencyShareOfBase: "30.0000",
+    },
+  },
   totals: {
     income: {
       transactions: "100.0000",
@@ -181,6 +199,12 @@ describe("Agency Financial export", () => {
       records: null,
       amount: REPORT.totals.agencyResult,
     });
+    expect(table("Summary totals").rows).toContainEqual({
+      section: "Agency-routed deal",
+      metric: "Agency spread - outside deal",
+      records: 1,
+      amount: "40.0000",
+    });
     expect(table("Transaction actuals").rows).toHaveLength(REPORT.transactions.length);
     expect(table("Verified direct-pay checks").rows).toHaveLength(REPORT.directChecks.length);
     expect(table("Approved monthly set-asides").rows).toHaveLength(REPORT.setAsides.length);
@@ -189,7 +213,9 @@ describe("Agency Financial export", () => {
     expect(table("Transaction actuals").rows[0]).toMatchObject({
       serviceDate: REPORT.transactions[0]!.serviceDate,
       gross: REPORT.transactions[0]!.grossAmount,
+      agencySpread: REPORT.transactions[0]!.agencySpread,
       employeeExpense: REPORT.transactions[0]!.employeeExpense,
+      agencyShareOfBase: REPORT.transactions[0]!.agencyShareOfBase,
     });
   });
 

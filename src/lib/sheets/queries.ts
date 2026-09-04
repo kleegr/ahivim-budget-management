@@ -31,6 +31,12 @@ export interface SyncStatus {
   totalRuns: number;
 }
 
+export interface OpenSyncConflictCounts {
+  changed: number;
+  missing: number;
+  total: number;
+}
+
 export interface SyncConflictRow {
   id: string;
   type: string;
@@ -93,6 +99,29 @@ export async function listSyncRuns(pool: PgLikePool, limit = 50): Promise<SyncRu
   return (rows as Parameters<typeof mapRun>[0][]).map(mapRun);
 }
 
+/**
+ * Canonical count of source changes that still need a person's decision.
+ *
+ * Keep this separate from failed runs and resolved history: only open changes
+ * and missing rows can alter the relationship between the original source and
+ * Ahivim's recorded activity. Both the Activity review inbox and the advanced
+ * sync console use this same definition so neither can incorrectly show an
+ * all-clear state while the other still has work waiting.
+ */
+export async function getOpenSyncConflictCounts(pool: PgLikePool): Promise<OpenSyncConflictCounts> {
+  const { rows } = await pool.query<{ type: string; c: string }>(
+    `SELECT type, count(*)::text AS c
+       FROM sheet_sync_conflicts
+      WHERE status = 'open'
+        AND type IN ('changed', 'missing')
+      GROUP BY type`,
+  );
+  const byType = new Map(rows.map((row) => [row.type, Number(row.c)]));
+  const changed = byType.get("changed") ?? 0;
+  const missing = byType.get("missing") ?? 0;
+  return { changed, missing, total: changed + missing };
+}
+
 export async function getSyncStatus(pool: PgLikePool): Promise<SyncStatus> {
   const { rows: successRows } = await pool.query<{ finished_at: string | null }>(
     `SELECT finished_at::text AS finished_at FROM sheet_sync_runs
@@ -109,9 +138,7 @@ export async function getSyncStatus(pool: PgLikePool): Promise<SyncStatus> {
        LEFT JOIN users u ON u.id = r.triggered_by_user_id
       ORDER BY r.started_at DESC LIMIT 1`,
   );
-  const { rows: conflictCounts } = await pool.query<{ type: string; c: string }>(
-    `SELECT type, count(*)::text AS c FROM sheet_sync_conflicts WHERE status = 'open' GROUP BY type`,
-  );
+  const conflictCounts = await getOpenSyncConflictCounts(pool);
   const { rows: tracked } = await pool.query<{ c: string }>(
     `SELECT count(*)::text AS c FROM sheet_sync_rows WHERE payroll_transaction_id IS NOT NULL`,
   );
@@ -119,12 +146,11 @@ export async function getSyncStatus(pool: PgLikePool): Promise<SyncStatus> {
     `SELECT count(*)::text AS c FROM sheet_sync_runs`,
   );
 
-  const byType = new Map(conflictCounts.map((r) => [r.type, Number(r.c)]));
   return {
     lastSuccessAt: successRows[0]?.finished_at ?? null,
     lastRun: lastRows[0] ? mapRun((lastRows as Parameters<typeof mapRun>[0][])[0]) : null,
-    openChanged: byType.get("changed") ?? 0,
-    openMissing: byType.get("missing") ?? 0,
+    openChanged: conflictCounts.changed,
+    openMissing: conflictCounts.missing,
     trackedRows: Number(tracked[0]?.c ?? 0),
     totalRuns: Number(totalRuns[0]?.c ?? 0),
   };
