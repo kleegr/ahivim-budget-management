@@ -275,35 +275,115 @@ export async function manualMatch(
 ): Promise<Result<{ id: string }>> {
   if (!isUuid(scheduledSessionId)) return fail("not_found", "That session no longer exists.");
   if (!isUuid(transactionId)) return fail("validation", "Choose a transaction to match.");
-  const s = await pool.query(`SELECT id FROM scheduled_sessions WHERE id = $1`, [scheduledSessionId]);
-  if (!s.rows[0]) return fail("not_found", "That session no longer exists.");
-  const t = await pool.query(`SELECT id FROM payroll_transactions WHERE id = $1`, [transactionId]);
-  if (!t.rows[0]) return fail("not_found", "That transaction no longer exists.");
-  const other = await pool.query<{ id: string }>(
-    `SELECT id FROM scheduled_sessions WHERE matched_transaction_id = $1 AND id <> $2`,
-    [transactionId, scheduledSessionId],
-  );
-  if (other.rows[0]) return fail("conflict", "That transaction is already matched to another session.");
-
+  const client = await pool.connect();
   try {
-    await pool.query(
+    await client.query("BEGIN");
+    const sessionResult = await client.query<{
+      id: string;
+      program_id: string;
+      session_date: string;
+      is_group: boolean;
+      matched_transaction_id: string | null;
+    }>(
+      `SELECT id, program_id, session_date::text, is_group, matched_transaction_id
+         FROM scheduled_sessions
+        WHERE id = $1
+        FOR UPDATE`,
+      [scheduledSessionId],
+    );
+    const session = sessionResult.rows[0];
+    if (!session) {
+      await client.query("ROLLBACK");
+      return fail("not_found", "That session no longer exists.");
+    }
+    if (session.matched_transaction_id && session.matched_transaction_id !== transactionId) {
+      await client.query("ROLLBACK");
+      return fail("conflict", "Remove the session's current match before choosing another transaction.");
+    }
+
+    const allocations = await client.query<{ individual_id: string }>(
+      `SELECT individual_id
+         FROM scheduled_allocations
+        WHERE scheduled_session_id = $1
+        ORDER BY individual_id`,
+      [scheduledSessionId],
+    );
+    if (session.is_group || allocations.rows.length !== 1) {
+      await client.query("ROLLBACK");
+      return fail("validation", "Group visits stay in Group review and cannot be linked to one transaction.");
+    }
+
+    // Lock the source row before checking ownership. This makes concurrent
+    // manual matches serialize on the transaction; the unique index remains
+    // the final protection against auto-match races.
+    const transactionResult = await client.query<{
+      id: string;
+      individual_id: string | null;
+      program_id: string | null;
+      period_begin: string | null;
+      period_end: string | null;
+    }>(
+      `SELECT id, individual_id, program_id, period_begin::text, period_end::text
+         FROM payroll_transactions
+        WHERE id = $1
+        FOR UPDATE`,
+      [transactionId],
+    );
+    const transaction = transactionResult.rows[0];
+    if (!transaction) {
+      await client.query("ROLLBACK");
+      return fail("not_found", "That transaction no longer exists.");
+    }
+
+    const individualId = allocations.rows[0]!.individual_id;
+    if (transaction.individual_id !== individualId || transaction.program_id !== session.program_id) {
+      await client.query("ROLLBACK");
+      return fail("validation", "Choose a transaction for this visit's individual and program.");
+    }
+    if (
+      !transaction.period_begin
+      || !transaction.period_end
+      || session.session_date < transaction.period_begin
+      || session.session_date > transaction.period_end
+    ) {
+      await client.query("ROLLBACK");
+      return fail("validation", "Choose a transaction whose service period includes this visit date.");
+    }
+
+    const other = await client.query<{ id: string }>(
+      `SELECT id
+         FROM scheduled_sessions
+        WHERE matched_transaction_id = $1 AND id <> $2
+        FOR UPDATE`,
+      [transactionId, scheduledSessionId],
+    );
+    if (other.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail("conflict", "That transaction is already matched to another session.");
+    }
+
+    await client.query(
       `UPDATE scheduled_sessions
          SET matched_transaction_id = $2, reconciliation_status = 'matched',
              reconciled_by_user_id = $3, reconciled_at = now(), reconciliation_reason = $4, updated_at = now()
        WHERE id = $1`,
       [scheduledSessionId, transactionId, actorId, reason ?? null],
     );
+    await recordChange(client, {
+      actorId, action: "reconciliation_matched", entityType: "scheduled_session", entityId: scheduledSessionId,
+      next: { transactionId }, reason,
+    });
+    await client.query("COMMIT");
+    return ok({ id: scheduledSessionId });
   } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
     if (isTransactionMatchConflict(error)) {
       return fail("conflict", "That transaction is already matched to another session.");
     }
     throw error;
+  } finally {
+    client.release();
   }
-  await recordChange(pool, {
-    actorId, action: "reconciliation_matched", entityType: "scheduled_session", entityId: scheduledSessionId,
-    next: { transactionId }, reason,
-  });
-  return ok({ id: scheduledSessionId });
 }
 
 /** Break an existing match. Manager or admin. */
