@@ -87,6 +87,7 @@ function formatDate(value: string): string {
 export default function DocumentLibrary() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const loadSequenceRef = useRef(0);
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [status, setStatus] = useState<"active" | "uploading" | "archived">("active");
   const [query, setQuery] = useState("");
@@ -94,23 +95,34 @@ export default function DocumentLibrary() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [menuId, setMenuId] = useState<string | null>(null);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
 
   const loadDocuments = useCallback(async () => {
+    const sequence = ++loadSequenceRef.current;
     setLoading(true);
     setError(null);
+    setLoadFailed(false);
     try {
       const params = new URLSearchParams({ status });
       if (query.trim()) params.set("query", query.trim());
-      setDocuments(await api<DocumentRecord[]>(`/api/documents?${params}`));
+      const nextDocuments = await api<DocumentRecord[]>(`/api/documents?${params}`);
+      if (sequence === loadSequenceRef.current) setDocuments(nextDocuments);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "The document library could not be loaded.");
+      if (sequence === loadSequenceRef.current) {
+        setLoadFailed(true);
+        setError(loadError instanceof Error ? loadError.message : "The document library could not be loaded.");
+      }
     } finally {
-      setLoading(false);
+      if (sequence === loadSequenceRef.current) setLoading(false);
     }
   }, [query, status]);
 
   useEffect(() => {
+    // Invalidate a request for the previous filter immediately, including
+    // during the short search debounce before the replacement request starts.
+    loadSequenceRef.current += 1;
     const timeout = window.setTimeout(() => void loadDocuments(), query ? 250 : 0);
     return () => window.clearTimeout(timeout);
   }, [loadDocuments, query]);
@@ -122,7 +134,9 @@ export default function DocumentLibrary() {
   }), [documents.length, status]);
 
   const openFile = async (file: File) => {
+    if (uploading) return;
     setError(null);
+    setLoadFailed(false);
     if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
       setError("Choose a PDF file.");
       return;
@@ -191,7 +205,10 @@ export default function DocumentLibrary() {
   };
 
   const setArchived = async (document: DocumentRecord, archived: boolean) => {
-    setMenuId(null);
+    if (updatingId !== null) return;
+    setUpdatingId(document.id);
+    setError(null);
+    setLoadFailed(false);
     try {
       await api(`/api/documents/${document.id}`, {
         method: "PATCH",
@@ -201,8 +218,11 @@ export default function DocumentLibrary() {
         }),
       });
       await loadDocuments();
+      setMenuId(null);
     } catch (archiveError) {
       setError(archiveError instanceof Error ? archiveError.message : "The document could not be updated.");
+    } finally {
+      setUpdatingId(null);
     }
   };
 
@@ -214,7 +234,7 @@ export default function DocumentLibrary() {
           <h1 className="display mt-1 text-2xl text-[var(--color-ink)] sm:text-3xl">Document library</h1>
           <p className="mt-2 text-sm text-[var(--color-ink-soft)]">PDF originals, edited versions, and recoverable history.</p>
         </div>
-        <button type="button" className="btn btn-primary" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
+        <button type="button" className="btn btn-primary" disabled={uploading} aria-busy={uploading} onClick={() => fileInputRef.current?.click()}>
           {uploading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <Upload className="h-4 w-4" aria-hidden />}
           {uploading ? `Uploading ${uploadProgress}%` : "Upload PDF"}
         </button>
@@ -231,7 +251,10 @@ export default function DocumentLibrary() {
       </header>
 
       {error ? (
-        <div className="rounded-md border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-4 py-3 text-sm text-[var(--color-danger)]" role="alert">{error}</div>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-4 py-3 text-sm text-[var(--color-danger)]" role="alert">
+          <span>{error}</span>
+          {loadFailed ? <button type="button" className="btn btn-sm btn-secondary" disabled={loading} onClick={() => void loadDocuments()}>{loading ? "Retrying..." : "Retry"}</button> : null}
+        </div>
       ) : null}
 
       <section aria-label="Document filters" className="flex min-w-0 flex-wrap items-center gap-3 border-b border-[var(--color-rule)] pb-4">
@@ -260,7 +283,7 @@ export default function DocumentLibrary() {
               </div>
               <h2 className="mt-4 text-lg font-semibold">{status === "archived" ? "No archived documents" : status === "uploading" ? "No incomplete uploads" : "Your document library is ready"}</h2>
               <p className="mt-2 text-sm text-[var(--color-ink-soft)]">{status === "archived" ? "Archived PDFs will remain recoverable here." : status === "uploading" ? "Interrupted uploads appear here so they can be removed and uploaded again." : "Upload a PDF to preserve its original and begin a tracked editing history."}</p>
-              {status === "active" ? <button type="button" className="btn btn-secondary mt-5" onClick={() => fileInputRef.current?.click()}><Upload className="h-4 w-4" aria-hidden /> Upload PDF</button> : null}
+              {status === "active" ? <button type="button" className="btn btn-secondary mt-5" disabled={uploading} aria-busy={uploading} onClick={() => fileInputRef.current?.click()}>{uploading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <Upload className="h-4 w-4" aria-hidden />} {uploading ? `Uploading ${uploadProgress}%` : "Upload PDF"}</button> : null}
             </div>
           </div>
         ) : (
@@ -272,7 +295,7 @@ export default function DocumentLibrary() {
                     <button
                       type="button"
                       className="flex min-h-11 min-w-0 flex-1 items-start gap-3 text-left disabled:cursor-default"
-                      disabled={!document.currentVersionId}
+                      disabled={!document.currentVersionId || updatingId === document.id}
                       onClick={() => router.push(`/documents/pdf-editor?document=${document.id}`)}
                     >
                       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-[var(--color-primary-tint)] text-[var(--color-primary)]"><FileText className="h-4 w-4" aria-hidden /></span>
@@ -288,16 +311,18 @@ export default function DocumentLibrary() {
                         aria-label={`Actions for ${document.title}`}
                         aria-expanded={menuId === document.id}
                         aria-haspopup="menu"
+                        aria-busy={updatingId === document.id}
+                        disabled={updatingId === document.id}
                         title="Document actions"
                         onClick={() => setMenuId((current) => current === document.id ? null : document.id)}
                       >
-                        <MoreHorizontal className="h-4 w-4" aria-hidden />
+                        {updatingId === document.id ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <MoreHorizontal className="h-4 w-4" aria-hidden />}
                       </button>
                       {menuId === document.id ? (
                         <div className="absolute right-0 top-11 z-20 w-44 rounded-md border border-[var(--color-rule-strong)] bg-white p-1 text-left shadow-lg" role="menu">
-                          {document.currentVersionId ? <button type="button" role="menuitem" className="w-full rounded px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-muted)]" onClick={() => router.push(`/documents/pdf-editor?document=${document.id}`)}>Open editor</button> : null}
+                          {document.currentVersionId ? <button type="button" role="menuitem" disabled={updatingId === document.id} className="w-full rounded px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-muted)] disabled:cursor-not-allowed disabled:opacity-60" onClick={() => router.push(`/documents/pdf-editor?document=${document.id}`)}>Open editor</button> : null}
                           {status === "archived" && !document.currentVersionId ? null : (
-                            <button type="button" role="menuitem" className="w-full rounded px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-muted)]" onClick={() => void setArchived(document, status !== "archived")}>{status === "archived" ? "Restore to library" : status === "uploading" ? "Archive incomplete upload" : "Archive"}</button>
+                            <button type="button" role="menuitem" disabled={updatingId === document.id} aria-busy={updatingId === document.id} className="w-full rounded px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-muted)] disabled:cursor-not-allowed disabled:opacity-60" onClick={() => void setArchived(document, status !== "archived")}>{updatingId === document.id ? status === "archived" ? "Restoring..." : "Archiving..." : status === "archived" ? "Restore to library" : status === "uploading" ? "Archive incomplete upload" : "Archive"}</button>
                           )}
                         </div>
                       ) : null}
@@ -342,7 +367,7 @@ export default function DocumentLibrary() {
                       <button
                         type="button"
                         className="flex min-w-0 items-center gap-3 text-left disabled:cursor-default"
-                        disabled={!document.currentVersionId}
+                        disabled={!document.currentVersionId || updatingId === document.id}
                         onClick={() => router.push(`/documents/pdf-editor?document=${document.id}`)}
                       >
                         <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-[var(--color-primary-tint)] text-[var(--color-primary)]"><FileText className="h-4 w-4" aria-hidden /></span>
@@ -357,12 +382,12 @@ export default function DocumentLibrary() {
                     <td className="px-3 py-3 text-[var(--color-ink-soft)]"><span className="flex items-center gap-1.5"><Clock3 className="h-3.5 w-3.5" aria-hidden />{formatDate(document.updatedAt)}</span></td>
                     <td className="tnum px-3 py-3 text-[var(--color-ink-soft)]">{formatBytes(document.currentByteSize)}</td>
                     <td className="relative px-2 py-3 text-right">
-                      <button type="button" className="btn btn-ghost btn-icon h-8 w-8" aria-label={`Actions for ${document.title}`} title="Document actions" onClick={() => setMenuId((current) => current === document.id ? null : document.id)}><MoreHorizontal className="h-4 w-4" aria-hidden /></button>
+                      <button type="button" className="btn btn-ghost btn-icon h-8 w-8" aria-label={`Actions for ${document.title}`} aria-expanded={menuId === document.id} aria-haspopup="menu" aria-busy={updatingId === document.id} disabled={updatingId === document.id} title="Document actions" onClick={() => setMenuId((current) => current === document.id ? null : document.id)}>{updatingId === document.id ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <MoreHorizontal className="h-4 w-4" aria-hidden />}</button>
                       {menuId === document.id ? (
-                        <div className="absolute right-2 top-11 z-20 w-40 rounded-md border border-[var(--color-rule-strong)] bg-white p-1 text-left shadow-lg">
-                          {document.currentVersionId ? <button type="button" className="w-full rounded px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-muted)]" onClick={() => router.push(`/documents/pdf-editor?document=${document.id}`)}>Open editor</button> : null}
+                        <div className="absolute right-2 top-11 z-20 w-40 rounded-md border border-[var(--color-rule-strong)] bg-white p-1 text-left shadow-lg" role="menu">
+                          {document.currentVersionId ? <button type="button" role="menuitem" disabled={updatingId === document.id} className="w-full rounded px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-muted)] disabled:cursor-not-allowed disabled:opacity-60" onClick={() => router.push(`/documents/pdf-editor?document=${document.id}`)}>Open editor</button> : null}
                           {status === "archived" && !document.currentVersionId ? null : (
-                            <button type="button" className="w-full rounded px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-muted)]" onClick={() => void setArchived(document, status !== "archived")}>{status === "archived" ? "Restore to library" : status === "uploading" ? "Archive incomplete upload" : "Archive"}</button>
+                            <button type="button" role="menuitem" disabled={updatingId === document.id} aria-busy={updatingId === document.id} className="w-full rounded px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-muted)] disabled:cursor-not-allowed disabled:opacity-60" onClick={() => void setArchived(document, status !== "archived")}>{updatingId === document.id ? status === "archived" ? "Restoring..." : "Archiving..." : status === "archived" ? "Restore to library" : status === "uploading" ? "Archive incomplete upload" : "Archive"}</button>
                           )}
                         </div>
                       ) : null}

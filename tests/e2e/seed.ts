@@ -19,6 +19,7 @@ import { runMigrations } from "../../src/lib/db/migrate";
 import { hashPassword } from "../../src/lib/auth/crypto";
 import { provisionUser, type ProvisionUserInput } from "../../src/lib/auth/provision-user";
 import { seedReleaseAcceptanceData } from "./release-data";
+import { seedClassDocumentAcceptanceData } from "./class-document-data";
 import {
   TEST_DB_URL,
   EXPECTED_DISPOSABLE_DB_HOST,
@@ -154,6 +155,7 @@ async function main(): Promise<void> {
       pool as unknown as PgLikePool,
       actorId,
     );
+    await seedClassDocumentAcceptanceData(pool as unknown as PgLikePool, actorId);
 
     const { rows } = await pool.query<{ c: string }>(
       "SELECT count(*)::text AS c FROM users",
@@ -162,7 +164,8 @@ async function main(): Promise<void> {
       `[e2e-seed] migrations applied=${result.applied} skipped=${result.skipped}; ` +
         `users=${rows[0]?.c}; representative-presets=${REPRESENTATIVE_ACCOUNTS.length}; ` +
         `transactions=${releaseData.transactions}; strategies=${releaseData.strategies}; ` +
-        `sessions=${releaseData.sessions}; obligations=${releaseData.obligations}`,
+        `sessions=${releaseData.sessions}; obligations=${releaseData.obligations}; ` +
+        "class-invoices=2",
     );
   } finally {
     await pool.end();

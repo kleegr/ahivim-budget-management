@@ -685,7 +685,7 @@ export default function ClassesWorkspace({
                         <>
                           <button type="button" className="btn btn-sm btn-secondary" disabled={loadingInvoiceId === current.id} onClick={() => void editInvoice(current)}><FilePenLine className="h-4 w-4" aria-hidden /> {loadingInvoiceId === current.id ? "Opening..." : "Edit"}</button>
                           <InvoicePdfActions invoice={current} canManage={canManage} canEditDocuments={canEditDocuments} />
-                          <button type="button" className="btn btn-sm btn-primary" disabled={busyId === current.id} onClick={() => void issue(current).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not issue invoice."))}>Issue</button>
+                          <button type="button" className="btn btn-sm btn-primary" disabled={busyId === current.id} aria-busy={busyId === current.id} onClick={() => void issue(current).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not issue invoice."))}>{busyId === current.id ? "Issuing..." : "Issue"}</button>
                           <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === current.id} onClick={() => setDiscardInvoice(current)} aria-label="Discard draft" title="Discard draft"><Trash2 className="h-4 w-4" aria-hidden /></button>
                         </>
                       ) : null}
@@ -757,7 +757,7 @@ export default function ClassesWorkspace({
                               <>
                                 <button type="button" className="btn btn-sm btn-secondary" disabled={loadingInvoiceId === current.id} onClick={() => void editInvoice(current)}><FilePenLine className="h-4 w-4" aria-hidden /> {loadingInvoiceId === current.id ? "Opening..." : "Edit"}</button>
                                 <InvoicePdfActions invoice={current} canManage={canManage} canEditDocuments={canEditDocuments} />
-                                <button type="button" className="btn btn-sm btn-primary" disabled={busyId === current.id} onClick={() => void issue(current).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not issue invoice."))}>Issue</button>
+                                <button type="button" className="btn btn-sm btn-primary" disabled={busyId === current.id} aria-busy={busyId === current.id} onClick={() => void issue(current).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not issue invoice."))}>{busyId === current.id ? "Issuing..." : "Issue"}</button>
                                 <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === current.id} onClick={() => setDiscardInvoice(current)} aria-label="Discard draft" title="Discard draft"><Trash2 className="h-4 w-4" aria-hidden /></button>
                               </>
                             ) : null}

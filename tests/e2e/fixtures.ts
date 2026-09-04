@@ -109,6 +109,11 @@ export const HISTORICAL_BUDGET_LABEL = "E2E Historical 2025";
 export const PRIMARY_CALCULATION_ACCOUNT = "Primary Reserve";
 export const SECONDARY_CALCULATION_ACCOUNT = "Secondary Reserve";
 export const FUTURE_SESSION_DATE = "2026-10-15";
+export const E2E_CLASS_MONTH = "2026-09";
+export const E2E_CLASS_ACTIVITY_NAME = "E2E Community Class";
+export const E2E_CLASS_BUDGET_LABEL = "E2E 2026 Community Classes";
+export const E2E_CLASS_ISSUED_INVOICE = "E2E-CLASS-ISSUED-001";
+export const E2E_CLASS_DRAFT_INVOICE = "E2E-CLASS-DRAFT-001";
 
 export const REPRESENTATIVE_PASSWORD = "e2e-role-password";
 
