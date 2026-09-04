@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import type { CalendarSession } from "@/lib/data/schedule-queries";
 import { send, ModalShell, humanDate, prettyTime, STATUS_STYLE, STATUS_LABEL } from "./shared";
@@ -40,8 +41,8 @@ export default function SessionDetail({
           <dt className="text-[var(--color-ink-faint)]">Date</dt><dd className="col-span-2">{humanDate(session.sessionDate)}</dd>
           <dt className="text-[var(--color-ink-faint)]">Time</dt><dd className="col-span-2 tnum">{session.startTime ? `${prettyTime(session.startTime)}${session.endTime ? `–${prettyTime(session.endTime)}` : ""}` : "—"} · {session.durationHours} h</dd>
           <dt className="text-[var(--color-ink-faint)]">Program</dt><dd className="col-span-2">{session.programName}</dd>
-          <dt className="text-[var(--color-ink-faint)]">Employee</dt><dd className="col-span-2">{session.employeeName ?? <span className="text-[var(--color-pace-near)]">Unassigned</span>}</dd>
-          <dt className="text-[var(--color-ink-faint)]">{session.isGroup ? `Individuals (group of ${session.groupSize})` : "Individual"}</dt><dd className="col-span-2">{session.individualNames.join(", ")}</dd>
+          <dt className="text-[var(--color-ink-faint)]">Employee</dt><dd className="col-span-2">{session.employeeId && session.employeeName ? <Link className="font-medium text-[var(--color-primary)] hover:underline" href={`/employees/${session.employeeId}`}>{session.employeeName}</Link> : <span className="text-[var(--color-pace-near)]">Unassigned</span>}</dd>
+          <dt className="text-[var(--color-ink-faint)]">{session.isGroup ? `Individuals (group of ${session.groupSize})` : "Individual"}</dt><dd className="col-span-2 flex flex-wrap gap-x-1">{session.individualIds.map((id, index) => <span key={id}><Link className="font-medium text-[var(--color-primary)] hover:underline" href={`/individuals/${id}`}>{session.individualNames[index] ?? "Individual"}</Link>{index < session.individualIds.length - 1 ? "," : ""}</span>)}</dd>
           <dt className="text-[var(--color-ink-faint)]">Status</dt><dd className="col-span-2"><span className={`rounded border-l-2 px-1.5 py-0.5 text-xs ${STATUS_STYLE[session.status]}`}>{STATUS_LABEL[session.status] ?? session.status}</span></dd>
           {session.warningCount > 0 ? (
             <>
