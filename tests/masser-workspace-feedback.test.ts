@@ -25,6 +25,13 @@ describe("Masser request feedback", () => {
     expect(source).not.toContain("syncImportedPayrollCheckReviews");
   });
 
+  it("makes the complete money workflow discoverable from Masser", () => {
+    const source = readFileSync(resolve("src/app/(app)/masser/page.tsx"), "utf8");
+    expect(source).toContain('title="Money to collect, pay, and put away"');
+    expect(source).toContain('href="/settlements"');
+    expect(source).toContain("agency payments, credits, corrections, reversals, and completed history");
+  });
+
   it("shows employee deal links only when that account can view deals", () => {
     expect(workspaceSource).toContain(
       'canManageEmployeeDeals ? "View or change deal" : "View deal"',
@@ -70,6 +77,18 @@ describe("Masser request feedback", () => {
     expect(workspaceSource).toContain("Ledger remaining");
     expect(workspaceSource).toContain("data.summary.approvedMonthlySetAside");
     expect(workspaceSource).toContain("canManage && row.trackedPlans > 0");
+  });
+
+  it("discloses unavailable historical setup state instead of displaying a false zero", () => {
+    const statementSource = readFileSync(
+      resolve("src/app/(app)/masser/individuals/[id]/page.tsx"),
+      "utf8",
+    );
+    expect(workspaceSource).toContain("!data.setupHistoryAvailable");
+    expect(workspaceSource).toContain("approved monthly plan is unavailable");
+    expect(statementSource).toContain("!statement.setupHistoryAvailable");
+    expect(statementSource).toContain('"Unavailable"');
+    expect(statementSource).toContain("Recorded over plan period");
   });
 
   it("makes a missing renewal actionable only for financial-plan managers", () => {
