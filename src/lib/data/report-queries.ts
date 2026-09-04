@@ -5,7 +5,10 @@ import {
   listScheduledForReconcile,
   listBilledNotScheduled,
 } from "@/lib/manage/reconciliation";
-import { agencyDate } from "@/lib/business/agency-time";
+import { agencyDate, agencyMonth } from "@/lib/business/agency-time";
+import { fullAccess } from "@/lib/auth/access";
+import { getCollectionsWorkspace } from "@/lib/data/direct-pay-operations";
+import { listTransactionsForGrid } from "@/lib/data/transactions-grid";
 import {
   listCurrentProgramBudgets,
   type ProgramBudgetRecord,
@@ -54,10 +57,96 @@ export interface ReportTable {
 export interface ReportFilterSpec {
   key: string;
   label: string;
-  type: "date" | "int" | "select" | "text";
+  type: "date" | "month" | "int" | "select" | "text";
   options?: { value: string; label: string }[];
   placeholder?: string;
   defaultValue?: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Payroll checks and individual put-away                                     */
+/* -------------------------------------------------------------------------- */
+
+export interface PayrollChecksReportOptions {
+  periodFrom?: string;
+  periodTo?: string;
+  checkDate?: string;
+  checkNumber?: string;
+  employee?: string;
+  individual?: string;
+  program?: string;
+  recipient?: string;
+}
+
+/**
+ * Transaction-level payroll/check detail composed from the same canonical
+ * ledger projection used by Transactions. Keeping one row per committed
+ * transaction makes every displayed amount traceable to its source record.
+ */
+export async function payrollChecksReport(
+  pool: PgLikePool,
+  opts: PayrollChecksReportOptions = {},
+) {
+  const rows = await listTransactionsForGrid(pool);
+  const periodFrom = asDate(opts.periodFrom);
+  const periodTo = asDate(opts.periodTo);
+  const checkDate = asDate(opts.checkDate);
+  const includes = (value: string | null | undefined, needle: string | undefined) =>
+    !needle?.trim() || (value ?? "").toLocaleLowerCase().includes(needle.trim().toLocaleLowerCase());
+
+  return rows.filter((row) => {
+    const rowStart = row.periodBegin ?? row.periodEnd;
+    const rowEnd = row.periodEnd ?? row.periodBegin;
+    if (periodFrom && (!rowEnd || rowEnd < periodFrom)) return false;
+    if (periodTo && (!rowStart || rowStart > periodTo)) return false;
+    if (checkDate && row.checkDate !== checkDate) return false;
+    if (!includes(row.checkNumber, opts.checkNumber)) return false;
+    if (!includes(row.employee, opts.employee)) return false;
+    if (!includes(row.individual, opts.individual)) return false;
+    if (!includes(`${row.programCode ?? ""} ${row.program ?? ""}`, opts.program)) return false;
+    if (opts.recipient?.trim() && row.paymentRecipient !== opts.recipient) return false;
+    return true;
+  });
+}
+
+export async function individualPutAwayReport(
+  pool: PgLikePool,
+  opts: { month?: string; individual?: string; status?: string } = {},
+) {
+  const requestedMonth = /^\d{4}-(0[1-9]|1[0-2])$/.test(opts.month ?? "")
+    ? opts.month!
+    : agencyMonth();
+  // Reports are manager-only, and managers/admins are full-access roles. Reuse
+  // the canonical Money-operations read model instead of duplicating its
+  // settlement and correction accounting here.
+  const workspace = await getCollectionsWorkspace(
+    pool,
+    fullAccess("reports", "manager"),
+    requestedMonth,
+  );
+  const individual = opts.individual?.trim().toLocaleLowerCase();
+  return {
+    month: workspace.month,
+    setupHistoryAvailable: workspace.setupHistoryAvailable,
+    rows: workspace.individualSetAsides
+      .filter((row) => {
+        if (individual && !row.individualName.toLocaleLowerCase().includes(individual)) return false;
+        if (opts.status === "outstanding" && !dec(row.remainingSetAside).gt(0)) return false;
+        if (
+          opts.status === "missing-renewal"
+          && workspace.setupHistoryAvailable
+          && row.missingRenewalPlans === 0
+        ) return false;
+        if (opts.status === "complete" && !dec(row.remainingSetAside).eq(0)) return false;
+        return true;
+      })
+      .map((row) => ({
+        ...row,
+        approvedMonthlyPlan: workspace.setupHistoryAvailable ? row.approvedMonthlyPlan : null,
+        activePlans: workspace.setupHistoryAvailable ? row.activePlans : null,
+        missingRenewalPlans: workspace.setupHistoryAvailable ? row.missingRenewalPlans : null,
+      })),
+  };
 }
 
 export interface ReportDefinition {
@@ -1231,6 +1320,145 @@ const DATE_FILTERS: ReportFilterSpec[] = [
 ];
 
 export const REPORTS: Record<string, ReportDefinition> = {
+  "payroll-checks": {
+    key: "payroll-checks",
+    title: "Payroll & checks",
+    description:
+      "Committed payroll transaction rows with check identity, people, program, recipient, hours, Funder billed, and Employee base kept traceable to the source ledger.",
+    filters: [
+      { key: "periodFrom", label: "Payroll period from", type: "date" },
+      { key: "periodTo", label: "Payroll period through", type: "date" },
+      { key: "checkDate", label: "Check date", type: "date" },
+      { key: "checkNumber", label: "Check number", type: "text", placeholder: "Number" },
+      { key: "employee", label: "Employee", type: "text", placeholder: "Name" },
+      { key: "individual", label: "Individual", type: "text", placeholder: "Name" },
+      { key: "program", label: "Program", type: "text", placeholder: "Code or name" },
+      {
+        key: "recipient",
+        label: "Recipient",
+        type: "select",
+        options: [
+          { value: "", label: "All recipients" },
+          { value: "employee", label: "Employee" },
+          { value: "excellent_staffing", label: "Excellent Staffing" },
+          { value: "unknown", label: "Unresolved" },
+        ],
+      },
+    ],
+    async run(pool, filters) {
+      const rows = await payrollChecksReport(pool, filters);
+      return [{
+        key: "payroll-checks",
+        emptyMessage: "No committed payroll transactions match this scope.",
+        columns: [
+          { key: "checkDate", header: "Check date", type: "date" },
+          { key: "checkNumber", header: "Check number", type: "text" },
+          { key: "periodBegin", header: "Period begin", type: "date" },
+          { key: "periodEnd", header: "Period end", type: "date" },
+          { key: "employeeName", header: "Employee", type: "text" },
+          { key: "individualName", header: "Individual", type: "text" },
+          { key: "programName", header: "Program", type: "text" },
+          { key: "paymentRecipient", header: "Recipient", type: "text" },
+          { key: "hours", header: "Hours", type: "hours" },
+          { key: "funderBilled", header: "Funder billed", type: "money" },
+          { key: "employeeBase", header: "Employee base", type: "money" },
+          { key: "agencySpread", header: "Agency spread", type: "money" },
+          { key: "checkNet", header: "Check net (repeated)", type: "money" },
+          { key: "paidStatus", header: "Paid status", type: "text" },
+          { key: "transactionId", header: "Source transaction", type: "text" },
+        ],
+        rows: rows.map((row) => ({
+          checkDate: row.checkDate,
+          checkNumber: row.checkNumber,
+          periodBegin: row.periodBegin,
+          periodEnd: row.periodEnd,
+          employeeName: row.employee,
+          employeeId: row.employeeId,
+          individualName: row.individual,
+          individualId: row.individualId,
+          programName: row.programCode
+            ? `${row.programCode} — ${row.program ?? ""}`.replace(/ — $/, "")
+            : row.program,
+          paymentRecipient: row.paymentRecipient === "excellent_staffing"
+            ? "Excellent Staffing"
+            : row.paymentRecipient === "employee"
+              ? "Employee"
+              : "Unresolved",
+          hours: row.hours,
+          funderBilled: row.gross,
+          employeeBase: row.internalAmount,
+          agencySpread: row.agencyAdditional,
+          checkNet: row.totalNetPay == null ? null : toMoney(row.totalNetPay),
+          gross: row.gross,
+          internalAmount: row.internalAmount,
+          agencyAdditional: row.agencyAdditional,
+          totalNetPay: row.totalNetPay,
+          payTo: row.payTo,
+          employee: row.employee,
+          individual: row.individual,
+          paidStatus: row.isPaid ? "Paid" : "Not paid",
+          transactionId: row.id,
+        })),
+      }];
+    },
+  },
+
+  "individual-put-away": {
+    key: "individual-put-away",
+    title: "Individual put-away",
+    description:
+      "Approved monthly plans, recorded put-away activity, and remaining reserve by individual from the canonical Money-operations ledger.",
+    filters: [
+      { key: "month", label: "Month", type: "month", defaultValue: agencyMonth() },
+      { key: "individual", label: "Individual", type: "text", placeholder: "Name" },
+      {
+        key: "status",
+        label: "Attention",
+        type: "select",
+        options: [
+          { value: "", label: "All" },
+          { value: "outstanding", label: "Outstanding reserve" },
+          { value: "missing-renewal", label: "Missing renewal date" },
+          { value: "complete", label: "No remaining reserve" },
+        ],
+      },
+    ],
+    async run(pool, filters) {
+      const data = await individualPutAwayReport(pool, filters);
+      return [{
+        key: "individual-put-away",
+        title: data.setupHistoryAvailable
+          ? undefined
+          : "Financial Setup history is unavailable before August 2026; recorded ledger activity remains shown.",
+        emptyMessage: "No individual put-away records match this month and filter.",
+        columns: [
+          { key: "individualName", header: "Individual", type: "text" },
+          { key: "approvedMonthlyPlan", header: "Approved monthly plan", type: "money" },
+          { key: "setupStatus", header: "Setup history", type: "text" },
+          { key: "setAsideThisMonth", header: "Put away this month", type: "money" },
+          { key: "remainingSetAside", header: "Remaining reserve", type: "money" },
+          { key: "activePlans", header: "Active plans", type: "int" },
+          { key: "trackedPlans", header: "Tracked plans", type: "int" },
+          { key: "missingRenewalPlans", header: "Missing renewals", type: "int" },
+          { key: "statementSource", header: "Source statement", type: "text" },
+        ],
+        rows: data.rows.map((row) => ({
+          individualName: row.individualName,
+          individualId: row.individualId,
+          approvedMonthlyPlan: row.approvedMonthlyPlan,
+          setupStatus: data.setupHistoryAvailable ? "Available" : "Unavailable before Aug 2026",
+          setAsideThisMonth: row.setAsideThisMonth,
+          remainingSetAside: row.remainingSetAside,
+          activePlans: row.activePlans,
+          trackedPlans: row.trackedPlans,
+          missingRenewalPlans: row.missingRenewalPlans,
+          statementSource: row.individualId,
+          reportMonth: data.month,
+        })),
+      }];
+    },
+  },
+
   "budget-utilization": {
     key: "budget-utilization",
     title: "Budget utilization",
@@ -1296,9 +1524,9 @@ export const REPORTS: Record<string, ReportDefinition> = {
           emptyMessage: "No transactions fall in this date range.",
           columns: [
             { key: "programName", header: "Program", type: "text" },
-            { key: "agencyGross", header: "Agency gross", type: "money" },
-            { key: "internalAmount", header: "Internal amount", type: "money" },
-            { key: "agencyAdditional", header: "Agency additional", type: "money" },
+            { key: "agencyGross", header: "Funder billed", type: "money" },
+            { key: "internalAmount", header: "Employee base", type: "money" },
+            { key: "agencyAdditional", header: "Agency spread", type: "money" },
             { key: "transactionCount", header: "Transactions", type: "int" },
           ],
           rows: rows.map((r) => ({
@@ -1327,10 +1555,10 @@ export const REPORTS: Record<string, ReportDefinition> = {
           emptyMessage: "No employee payments fall in this date range.",
           columns: [
             { key: "employeeName", header: "Employee", type: "text" },
-            { key: "totalPayment", header: "Total payment", type: "money" },
-            { key: "paidToEmployee", header: "Paid to employee", type: "money" },
-            { key: "payableByAgency", header: "Payable by agency", type: "money" },
-            { key: "unknownRecipient", header: "Unresolved", type: "money" },
+            { key: "totalPayment", header: "Employee base", type: "money" },
+            { key: "paidToEmployee", header: "Paid directly", type: "money" },
+            { key: "payableByAgency", header: "Agency pays", type: "money" },
+            { key: "unknownRecipient", header: "Recipient unresolved", type: "money" },
             { key: "physicalHours", header: "Physical hours", type: "hours" },
             { key: "checkCount", header: "Checks", type: "int" },
           ],
@@ -1488,7 +1716,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "individuals", header: "Individuals", type: "text" },
             { key: "isGroup", header: "Group", type: "text" },
             { key: "hours", header: "Hours", type: "hours" },
-            { key: "expectedInternal", header: "Expected internal", type: "money" },
+            { key: "expectedInternal", header: "Expected Employee base", type: "money" },
           ],
           rows: lines.map((l) => ({
             sessionDate: l.sessionDate,
@@ -1525,7 +1753,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "programCode", header: "Program", type: "text" },
             { key: "individualName", header: "Individual", type: "text" },
             { key: "hours", header: "Hours", type: "hours" },
-            { key: "amount", header: "Agency gross", type: "money" },
+            { key: "amount", header: "Funder billed", type: "money" },
           ],
           rows: lines.map((l) => ({
             periodBegin: l.periodBegin,
@@ -1556,7 +1784,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "individualName", header: "Individual", type: "text" },
             { key: "setupName", header: "Setup", type: "text" },
             { key: "programCode", header: "Program", type: "text" },
-            { key: "annualGross", header: "Annual gross", type: "money" },
+            { key: "annualGross", header: "Yearly gross", type: "money" },
             { key: "monthlyGross", header: "Monthly gross", type: "money" },
             { key: "cut1Amount", header: "Cut 1", type: "money" },
             { key: "cut2Amount", header: "Cut 2", type: "money" },
@@ -1699,7 +1927,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "periodEnd", header: "Period end", type: "date" },
             { key: "groupSize", header: "Group size", type: "int" },
             { key: "memberCount", header: "Members", type: "int" },
-            { key: "combinedAmount", header: "Combined amount", type: "money" },
+            { key: "combinedAmount", header: "Funder billed", type: "money" },
             { key: "detectionStatus", header: "Detection", type: "text" },
           ],
           rows: data.sessions.map((r) => ({
