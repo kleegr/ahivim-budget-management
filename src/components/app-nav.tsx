@@ -4,16 +4,11 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BadgeDollarSign,
-  BarChart3,
-  Building2,
   CalendarDays,
   ChevronDown,
-  GraduationCap,
   LayoutDashboard,
   LogOut,
   Menu,
-  ReceiptText,
   Search,
   Settings2,
   ShieldCheck,
@@ -37,14 +32,9 @@ import CommandBar from "@/components/command-bar";
 const WORKSPACE_ICONS: Record<VisibleNavigationWorkspace["id"], LucideIcon> = {
   overview: LayoutDashboard,
   portal: ShieldCheck,
-  transactions: ReceiptText,
-  budgets: WalletCards,
-  payroll: BadgeDollarSign,
+  people: Users,
   activity: CalendarDays,
-  employees: Users,
-  agencies: Building2,
-  classes: GraduationCap,
-  reports: BarChart3,
+  money: WalletCards,
 };
 
 const FOCUSABLE = [
@@ -88,6 +78,9 @@ function WorkspaceNavigation({
           const landingActive = destinationIsActive(pathname, workspace.destinations[0]);
           const Icon = WORKSPACE_ICONS[workspace.id];
           const secondary = workspace.destinations.filter((destination) => destination.href !== workspace.href);
+          const activeSecondaryId = secondary
+            .filter((destination) => destinationIsActive(pathname, destination))
+            .sort((left, right) => right.href.length - left.href.length)[0]?.id;
 
           return (
             <li key={workspace.id}>
@@ -109,7 +102,7 @@ function WorkspaceNavigation({
               {active && secondary.length > 0 ? (
                 <ul className="ml-[1.8rem] mt-1 space-y-0.5 border-l border-[var(--color-rule-strong)] pl-3">
                   {secondary.map((destination) => {
-                    const childActive = destinationIsActive(pathname, destination);
+                    const childActive = destination.id === activeSecondaryId;
                     return (
                       <li key={destination.id}>
                         <Link
@@ -150,7 +143,10 @@ function AdministrationNavigation({
   controlId: string;
 }) {
   const items = useMemo(() => getVisibleAdminDestinations(access), [access]);
-  const active = items.some((item) => destinationIsActive(pathname, item));
+  const activeItemId = items
+    .filter((item) => destinationIsActive(pathname, item))
+    .sort((left, right) => right.href.length - left.href.length)[0]?.id;
+  const active = Boolean(activeItemId);
   const [open, setOpen] = useState(active);
   const isManager = access.role === "manager" || access.role === "admin";
 
@@ -178,7 +174,7 @@ function AdministrationNavigation({
 
       <ul id={controlId} hidden={!open} className="ml-[1.8rem] mt-1 space-y-0.5 border-l border-[var(--color-rule-strong)] pl-3">
         {items.map((item) => {
-          const itemActive = destinationIsActive(pathname, item);
+          const itemActive = item.id === activeItemId;
           return (
             <li key={item.id}>
               <Link
