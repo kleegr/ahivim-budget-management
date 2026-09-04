@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type KeyboardEvent } from "react";
 import Link from "next/link";
-import { ListChecks, RotateCcw, Search, TableProperties } from "lucide-react";
+import { CheckCircle2, ListChecks, RefreshCw, RotateCcw, Search, ShieldAlert, TableProperties } from "lucide-react";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
+import type { ActivityReviewSummary } from "@/lib/data/activity-overview";
 import type { TransactionFieldVisibility } from "@/lib/auth/money-redaction";
 import type { FilterState } from "@/components/data-grid/types";
 import PeriodControl, { type PeriodRange } from "@/components/period-control";
@@ -18,11 +19,16 @@ import TransactionsGrid from "@/components/transactions/transactions-grid";
 
 type WorkspaceView = "checks" | "rows";
 
-const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" });
+const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
 
 const dateLabel = (value: string | null): string => {
   if (!value) return "Date missing";
-  return DATE_FORMATTER.format(new Date(`${value}T00:00:00`));
+  return DATE_FORMATTER.format(new Date(`${value}T00:00:00Z`));
 };
 
 const routingLabel = (routing: CheckRouting) => {
@@ -33,6 +39,11 @@ const routingLabel = (routing: CheckRouting) => {
 
 function checkRowsHref(check: CheckSummary): string {
   const params = new URLSearchParams({ view: "rows" });
+  if (!check.checkNumber) {
+    const transactionId = check.transactionIds[0];
+    if (transactionId) params.set("transactionId", transactionId);
+    return `/transactions?${params.toString()}`;
+  }
   if (check.checkNumber) params.set("checkNumber", check.checkNumber);
   if (check.payTo) params.set("payToKey", check.payTo.trim().toLocaleLowerCase());
   else if (check.employeeId) params.set("employeeId", check.employeeId);
@@ -136,12 +147,12 @@ function ChecksView({
                   <RotateCcw aria-hidden className="h-4 w-4" /> Clear period and search
                 </button>
                 <button type="button" className="btn btn-sm btn-ghost" onClick={onShowRows}>
-                  <TableProperties aria-hidden className="h-4 w-4" /> View transaction rows
+                  <TableProperties aria-hidden className="h-4 w-4" /> View recorded services
                 </button>
               </div>
             )}
           >
-            {rows.length.toLocaleString()} committed transaction {rows.length === 1 ? "row is" : "rows are"} loaded, but the current period or search hides them.
+            {rows.length.toLocaleString()} recorded {rows.length === 1 ? "service is" : "services are"} loaded, but the current period or search hides them.
           </EmptyState>
         ) : (
           <Table
@@ -157,6 +168,7 @@ function ChecksView({
               {visibility.canSeeEmployeeAmounts ? <Th numeric>Employee base</Th> : null}
               {visibility.canSeeAgencySpread ? <Th numeric>Agency spread</Th> : null}
               {visibility.canSeeCheckNet ? <Th numeric>Check net</Th> : null}
+              <Th>Status</Th>
               <Th><span className="sr-only">Open</span></Th>
             </>}
           >
@@ -186,13 +198,13 @@ function ChecksView({
                 {visibility.canSeeAgencySpread ? <Td numeric>{formatMoney(check.agencySpread)}</Td> : null}
                 {visibility.canSeeCheckNet ? <Td numeric>{check.netPay ? formatMoney(check.netPay) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
                 <Td>
-                  {check.checkNumber ? (
-                    <Link href={checkRowsHref(check)} className="btn btn-sm btn-ghost whitespace-nowrap">
-                      {check.rows.toLocaleString()} {check.rows === 1 ? "row" : "rows"}
-                    </Link>
-                  ) : (
-                    <span className="text-xs text-[var(--color-ink-faint)]">{check.rows.toLocaleString()} row</span>
-                  )}
+                  <StatusBadge tone={check.needsReview ? "warn" : "good"} label={check.needsReview ? "Needs review" : "Ready"} />
+                  {check.needsReview ? <div className="mt-1 max-w-44 text-xs text-[var(--color-ink-faint)]">{check.reviewReasons.join(" · ")}</div> : null}
+                </Td>
+                <Td>
+                  <Link href={checkRowsHref(check)} className="btn btn-sm btn-ghost whitespace-nowrap">
+                    {check.needsReview ? "Review" : "Open"} {check.rows.toLocaleString()} {check.rows === 1 ? "service" : "services"}
+                  </Link>
                 </Td>
               </Tr>
             ))}
@@ -212,6 +224,93 @@ function SummaryMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
+type DecisionLink = { key: string; count: number; label: string; href: string };
+
+function decisionLinks(summary: ActivityReviewSummary): DecisionLink[] {
+  const { decisions } = summary;
+  return [
+    {
+      key: "source",
+      count: decisions.changedSourceRecords + decisions.missingSourceRecords,
+      label: "source changes",
+      href: "/sync#sync-conflicts",
+    },
+    { key: "people", count: decisions.unmatchedNames, label: "names to identify", href: "/exceptions?kind=unmatched_name" },
+    { key: "programs", count: decisions.unknownPrograms, label: "programs to choose", href: "/exceptions?kind=unknown_program" },
+    { key: "aliases", count: decisions.pendingAliases, label: "names to approve", href: "/aliases?status=pending" },
+    { key: "duplicates", count: decisions.duplicatePeople, label: "possible duplicate people", href: "/matches" },
+    { key: "totals", count: decisions.totalDifferences, label: "totals to compare", href: "/imports?view=reconciliation" },
+  ].filter((item) => item.count > 0);
+}
+
+function ActivityStartingPoint({
+  rows,
+  canManage,
+  reviewSummary,
+}: {
+  rows: GridTransaction[];
+  canManage: boolean;
+  reviewSummary?: ActivityReviewSummary | null;
+}) {
+  if (!canManage) return null;
+  const checkCount = groupChecks(rows).length;
+  const latestService = rows.reduce<string | null>((latest, row) => (
+    row.serviceDate && (!latest || row.serviceDate > latest) ? row.serviceDate : latest
+  ), null);
+  const items = reviewSummary ? decisionLinks(reviewSummary) : [];
+  const hasDecisions = Boolean(reviewSummary && reviewSummary.decisionTotal > 0);
+
+  return (
+    <section aria-label="Activity status" className="rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)] px-4 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 gap-3">
+          <span className={`mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full ${hasDecisions ? "bg-[var(--color-warn-soft)] text-[var(--color-warn)]" : "bg-[var(--color-success-soft)] text-[var(--color-success)]"}`}>
+            {hasDecisions ? <ShieldAlert aria-hidden className="h-4 w-4" /> : <CheckCircle2 aria-hidden className="h-4 w-4" />}
+          </span>
+          <div>
+            <p className="font-semibold text-[var(--color-ink)]">
+              {reviewSummary
+                ? hasDecisions
+                  ? `${reviewSummary.decisionTotal.toLocaleString()} decision${reviewSummary.decisionTotal === 1 ? "" : "s"} need attention`
+                  : "Recorded activity is ready"
+                : "Recorded activity is available"}
+            </p>
+            <p className="mt-0.5 text-sm text-[var(--color-ink-soft)]">
+              {reviewSummary
+                ? hasDecisions
+                  ? "Resolve the questions below; services already recorded remain visible in the meantime."
+                  : "No source, identity, or program decisions are waiting."
+                : "Review status could not be checked, but the services below are still available."}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {hasDecisions ? <Link href="/review" className="btn btn-sm btn-primary">Review decisions</Link> : null}
+          <Link href="/sync" className={`btn btn-sm ${hasDecisions ? "btn-secondary" : "btn-primary"}`}>
+            <RefreshCw aria-hidden className="h-4 w-4" /> Update activity
+          </Link>
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t border-[var(--color-rule)] pt-2 text-xs text-[var(--color-ink-soft)]">
+        <span><strong className="tnum text-[var(--color-ink)]">{rows.length.toLocaleString()}</strong> recorded services</span>
+        <span><strong className="tnum text-[var(--color-ink)]">{checkCount.toLocaleString()}</strong> payroll checks</span>
+        <span>Latest service <strong className="text-[var(--color-ink)]">{dateLabel(latestService)}</strong></span>
+      </div>
+
+      {items.length > 0 ? (
+        <nav aria-label="Decisions waiting" className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          {items.map((item) => (
+            <Link key={item.key} href={item.href} className="font-medium text-[var(--color-primary)] underline-offset-2 hover:underline">
+              {item.count.toLocaleString()} {item.label} →
+            </Link>
+          ))}
+        </nav>
+      ) : null}
+    </section>
+  );
+}
+
 export default function BilledActivityWorkspace({
   rows,
   canManage,
@@ -220,6 +319,7 @@ export default function BilledActivityWorkspace({
   initialFilters,
   contextLabel,
   initialView = "checks",
+  reviewSummary,
 }: {
   rows: GridTransaction[];
   canManage: boolean;
@@ -228,6 +328,7 @@ export default function BilledActivityWorkspace({
   initialFilters?: FilterState;
   contextLabel?: string | null;
   initialView?: WorkspaceView;
+  reviewSummary?: ActivityReviewSummary | null;
 }) {
   const [view, setView] = useState<WorkspaceView>(contextLabel ? "rows" : initialView);
 
@@ -238,8 +339,23 @@ export default function BilledActivityWorkspace({
     window.history.replaceState(null, "", url.toString());
   };
 
+  const moveTabFocus = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const nextView = event.key === "ArrowLeft" || event.key === "Home"
+      ? "rows"
+      : event.key === "ArrowRight" || event.key === "End"
+        ? "checks"
+        : null;
+    if (!nextView) return;
+    event.preventDefault();
+    selectView(nextView);
+    window.requestAnimationFrame(() => {
+      document.getElementById(`transactions-${nextView}-tab`)?.focus();
+    });
+  };
+
   return (
     <div className="space-y-4">
+      {!contextLabel ? <ActivityStartingPoint rows={rows} canManage={canManage} reviewSummary={reviewSummary} /> : null}
       {!contextLabel ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="segmented-control" role="tablist" aria-label="Transaction views">
@@ -248,24 +364,28 @@ export default function BilledActivityWorkspace({
               type="button"
               role="tab"
               aria-selected={view === "rows"}
+              tabIndex={view === "rows" ? 0 : -1}
               aria-controls="transactions-workspace-panel"
+              onKeyDown={moveTabFocus}
               onClick={() => selectView("rows")}
             >
-              <TableProperties aria-hidden className="h-4 w-4" /> Transactions
+              <TableProperties aria-hidden className="h-4 w-4" /> Recorded services
             </button>
             <button
               id="transactions-checks-tab"
               type="button"
               role="tab"
               aria-selected={view === "checks"}
+              tabIndex={view === "checks" ? 0 : -1}
               aria-controls="transactions-workspace-panel"
+              onKeyDown={moveTabFocus}
               onClick={() => selectView("checks")}
             >
               <ListChecks aria-hidden className="h-4 w-4" /> Payroll checks
             </button>
           </div>
           <p className="text-xs text-[var(--color-ink-faint)]">
-            {view === "checks" ? "One line per check" : `${rows.length.toLocaleString()} transactions`}
+            {view === "checks" ? "One line per payroll check" : `${rows.length.toLocaleString()} recorded services`}
           </p>
         </div>
       ) : null}
