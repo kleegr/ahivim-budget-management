@@ -61,6 +61,7 @@ export function exceptionQueueHref(queue: ExceptionQueue): string {
 }
 
 export type ReviewQueue =
+  | "sync_conflicts"
   | "unmatched_names"
   | "pending_aliases"
   | "duplicate_people"
@@ -72,6 +73,7 @@ export type ReviewQueue =
   | "over_authorization";
 
 const REVIEW_QUEUE_HREFS: Record<ReviewQueue, string> = {
+  sync_conflicts: "/sync#sync-conflicts",
   unmatched_names: exceptionQueueHref("unmatched_name"),
   pending_aliases: "/aliases?status=pending",
   duplicate_people: "/matches",
