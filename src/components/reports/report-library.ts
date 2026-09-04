@@ -112,7 +112,7 @@ export const REPORT_LIBRARY: ReportLibraryGroup[] = [
         key: "agency-financials",
         title: "Agency financials",
         question: "What actual income came in, what actual expenses apply, and what remains for the agency?",
-        description: "Reconciles transaction income, issued class invoices, other income, approved monthly set-asides, taxes, employee shares, and individual shares.",
+        description: "Reconciles actual transaction and class receipts, other recorded income, approved monthly set-asides, verified withholding, employee shares, and individual shares. Issued but unpaid invoices remain receivables and are excluded.",
         timeBasis: "Selected month, using recorded actuals",
         note: "Owner only. Transaction income comes from imported actuals; projections never count as income.",
         icon: CircleDollarSign,

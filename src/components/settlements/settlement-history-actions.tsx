@@ -82,19 +82,34 @@ function personHref(personType: SettlementRow["personType"], personId: string): 
   return personType === "employee" ? `/employees/${personId}` : `/individuals/${personId}`;
 }
 
+function eventLabel(event: SettlementEventRow): string {
+  if (event.eventType === "reversal") return "Reversal";
+  if (event.batchAction === "correct_event") {
+    return event.eventType === "set_aside" ? "Corrected set-aside" : "Corrected payment";
+  }
+  if (event.eventType === "set_aside") return "Set aside";
+  if (event.eventType === "credit") return dec(event.amount).isNegative() ? "Credit used" : "Credit applied";
+  if (event.eventType === "adjustment") {
+    return event.batchAction === "refund_credit" ? "Credit refunded / released" : "Adjustment";
+  }
+  return "Payment";
+}
+
 export function HistoryTable({
   events,
   canManage,
+  onCorrect,
   onReverse,
 }: {
   events: SettlementEventRow[];
   canManage: boolean;
+  onCorrect: (event: SettlementEventRow) => void;
   onReverse: (event: SettlementEventRow) => void;
 }) {
   const columnCount = canManage ? 9 : 8;
   return (
     <div className="scroll-thin relative max-h-[62vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)]">
-      <table className={`w-full ${canManage ? "min-w-[1216px]" : "min-w-[1120px]"} table-fixed border-collapse text-sm`}>
+      <table className={`w-full ${canManage ? "min-w-[1280px]" : "min-w-[1120px]"} table-fixed border-collapse text-sm`}>
         <caption className="sr-only">Complete payment and reversal history</caption>
         <colgroup>
           <col className="w-32" />
@@ -105,7 +120,7 @@ export function HistoryTable({
           <col className="w-44" />
           <col className="w-56" />
           <col className="w-36" />
-          {canManage ? <col className="w-24" /> : null}
+          {canManage ? <col className="w-40" /> : null}
         </colgroup>
         <thead className="sticky top-0 z-10 bg-[var(--color-surface-strong)] text-left">
           <tr className="border-b border-[var(--color-rule-strong)]">
@@ -128,13 +143,7 @@ export function HistoryTable({
               <tr key={event.id} className="border-b border-[var(--color-rule)] last:border-0 hover:bg-[var(--color-surface-muted)]">
                 <td className="px-3 py-2 align-top">
                   <span className={`font-medium ${isReversal ? "text-[var(--color-danger)]" : ""}`}>
-                    {isReversal
-                      ? "Reversal"
-                      : event.eventType === "set_aside"
-                        ? "Set aside"
-                        : event.eventType === "credit"
-                          ? dec(event.amount).isNegative() ? "Credit used" : "Credit applied"
-                          : "Payment"}
+                    {eventLabel(event)}
                   </span>
                   {reversed ? <span className="mt-1 block text-xs font-medium text-[var(--color-danger)]">Reversed</span> : null}
                 </td>
@@ -161,9 +170,12 @@ export function HistoryTable({
                   <span className="text-[var(--color-ink-faint)]">{formatDate(event.createdAt.slice(0, 10))}</span>
                 </td>
                 {canManage ? <td className="px-3 py-2 text-right align-top">
-                  {!isReversal && !reversed ? (
+                  {!isReversal && !reversed ? <div className="flex justify-end gap-1">
+                    {event.eventType === "payment" || event.eventType === "set_aside" ? (
+                      <button type="button" className="btn btn-sm btn-ghost" onClick={() => onCorrect(event)}>Correct</button>
+                    ) : null}
                     <button type="button" className="btn btn-sm btn-secondary" onClick={() => onReverse(event)}>Reverse</button>
-                  ) : null}
+                  </div> : null}
                 </td> : null}
               </tr>
             );
@@ -470,6 +482,159 @@ export function CreditModal({
   );
 }
 
+export function RefundModal({
+  row,
+  onClose,
+  onDone,
+}: {
+  row: SettlementRow;
+  onClose: () => void;
+  onDone: (message: string) => void;
+}) {
+  const creditAvailable = dec(row.balance).abs();
+  const [operationKey] = useState(() => crypto.randomUUID());
+  const [amount, setAmount] = useState(creditAvailable.toString());
+  const [occurredOn, setOccurredOn] = useState(localToday);
+  const [reference, setReference] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const parsedAmount = parsePositiveAmount(amount);
+  const validAmount = parsedAmount !== null && parsedAmount.lessThanOrEqualTo(creditAvailable);
+  const isReserve = row.direction === "reserve";
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!parsedAmount || !validAmount) {
+      setError(`Enter an amount no greater than ${formatMoney(creditAvailable)}.`);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await postJson("/api/settlements/events", {
+        action: "refund",
+        obligationId: row.id,
+        amount: parsedAmount.toString(),
+        occurredOn,
+        operationKey,
+        reference,
+        note,
+      });
+      onDone(`${isReserve ? "Released" : "Refunded"} ${formatMoney(parsedAmount)} for ${row.personName}.`);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "The credit could not be resolved.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={`${isReserve ? "Release excess reserve" : "Record credit refund"} - ${row.personName}`} onClose={busy ? () => undefined : onClose}>
+      <form className="space-y-4" onSubmit={submit}>
+        {error ? <p role="alert" className="rounded border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-3 py-2 text-sm text-[var(--color-danger)]">{error}</p> : null}
+        <div>
+          <p className="text-sm font-medium">{row.label}</p>
+          <p className="mt-1 text-sm text-[var(--color-ink-soft)]">Available credit <strong className="tnum text-[var(--color-ink)]">{formatMoney(creditAvailable)}</strong></p>
+        </div>
+        <label className="block text-sm font-medium">
+          {isReserve ? "Amount released" : "Amount refunded"}
+          <input autoFocus required type="text" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} className="input tnum mt-1 w-full" aria-describedby="refund-credit-limit" />
+        </label>
+        <p id="refund-credit-limit" className="text-xs text-[var(--color-ink-soft)]">Up to {formatMoney(creditAvailable)} can be {isReserve ? "released" : "refunded"}. The ledger keeps the original activity and appends this adjustment.</p>
+        <label className="block text-sm font-medium">
+          Date
+          <input type="date" required value={occurredOn} onChange={(event) => setOccurredOn(event.target.value)} className="input mt-1 w-full" />
+        </label>
+        <label className="block text-sm font-medium">
+          Reference <span className="font-normal text-[var(--color-ink-faint)]">(optional)</span>
+          <input value={reference} onChange={(event) => setReference(event.target.value)} className="input mt-1 w-full" placeholder="Check or transfer reference" />
+        </label>
+        <label className="block text-sm font-medium">
+          Note <span className="font-normal text-[var(--color-ink-faint)]">(optional)</span>
+          <textarea value={note} onChange={(event) => setNote(event.target.value)} rows={2} className="input mt-1 w-full resize-y" />
+        </label>
+        <div className="flex justify-end gap-2">
+          <button type="button" disabled={busy} onClick={onClose} className="btn btn-sm btn-ghost">Cancel</button>
+          <button type="submit" disabled={busy || !validAmount || !occurredOn} className="btn btn-sm btn-primary">{busy ? "Recording..." : isReserve ? "Release reserve" : "Record refund"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+export function CorrectionModal({ event, onClose, onDone }: { event: SettlementEventRow; onClose: () => void; onDone: (message: string) => void }) {
+  const [operationKey] = useState(() => crypto.randomUUID());
+  const [amount, setAmount] = useState(() => dec(event.amount).abs().toString());
+  const [occurredOn, setOccurredOn] = useState(event.occurredOn);
+  const [reference, setReference] = useState(event.reference ?? "");
+  const [note, setNote] = useState(event.note ?? "");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const parsedAmount = parsePositiveAmount(amount);
+
+  const submit = async (formEvent: React.FormEvent<HTMLFormElement>) => {
+    formEvent.preventDefault();
+    if (!parsedAmount) {
+      setError("Enter a corrected amount greater than zero.");
+      return;
+    }
+    if (!reason.trim()) {
+      setError("Enter a reason for the correction.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await postJson(`/api/settlements/events/${encodeURIComponent(event.id)}/correct`, {
+        amount: parsedAmount.toString(),
+        occurredOn,
+        reference,
+        note,
+        reason,
+        operationKey,
+      });
+      onDone(`Corrected the entry for ${event.personName} to ${formatMoney(parsedAmount)}.`);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "The entry could not be corrected.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={`Correct ${event.eventType === "set_aside" ? "set-aside" : "payment"} entry`} onClose={busy ? () => undefined : onClose}>
+      <form className="space-y-4" onSubmit={submit}>
+        {error ? <p role="alert" className="rounded border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-3 py-2 text-sm text-[var(--color-danger)]">{error}</p> : null}
+        <p className="text-sm text-[var(--color-ink-soft)]">The original {formatMoney(event.amount)} entry remains in history. Saving adds its exact reversal and a corrected replacement in one operation.</p>
+        <label className="block text-sm font-medium">
+          Corrected amount
+          <input autoFocus required type="text" inputMode="decimal" value={amount} onChange={(changeEvent) => setAmount(changeEvent.target.value)} className="input tnum mt-1 w-full" />
+        </label>
+        <label className="block text-sm font-medium">
+          Corrected date
+          <input type="date" required value={occurredOn} onChange={(changeEvent) => setOccurredOn(changeEvent.target.value)} className="input mt-1 w-full" />
+        </label>
+        <label className="block text-sm font-medium">
+          Reference <span className="font-normal text-[var(--color-ink-faint)]">(optional)</span>
+          <input value={reference} onChange={(changeEvent) => setReference(changeEvent.target.value)} className="input mt-1 w-full" />
+        </label>
+        <label className="block text-sm font-medium">
+          Note <span className="font-normal text-[var(--color-ink-faint)]">(optional)</span>
+          <textarea value={note} onChange={(changeEvent) => setNote(changeEvent.target.value)} rows={2} className="input mt-1 w-full resize-y" />
+        </label>
+        <label className="block text-sm font-medium">
+          Correction reason
+          <textarea required value={reason} onChange={(changeEvent) => setReason(changeEvent.target.value)} rows={3} className="input mt-1 w-full resize-y" />
+        </label>
+        <div className="flex justify-end gap-2">
+          <button type="button" disabled={busy} onClick={onClose} className="btn btn-sm btn-ghost">Cancel</button>
+          <button type="submit" disabled={busy || !parsedAmount || !occurredOn || !reason.trim()} className="btn btn-sm btn-primary">{busy ? "Correcting..." : "Save correction"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 export function ReverseModal({ event, onClose, onDone }: { event: SettlementEventRow; onClose: () => void; onDone: (message: string) => void }) {
   const [operationKey] = useState(() => crypto.randomUUID());
   const [reason, setReason] = useState("");
@@ -497,7 +662,7 @@ export function ReverseModal({ event, onClose, onDone }: { event: SettlementEven
   };
 
   return (
-    <Modal title="Reverse payment entry" onClose={busy ? () => undefined : onClose}>
+    <Modal title="Reverse money entry" onClose={busy ? () => undefined : onClose}>
       <form className="space-y-4" onSubmit={submit}>
         {error ? <p role="alert" className="rounded border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-3 py-2 text-sm text-[var(--color-danger)]">{error}</p> : null}
         <p className="text-sm text-[var(--color-ink-soft)]">

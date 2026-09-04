@@ -159,6 +159,7 @@ const REPORT: AgencyFinancialReport = {
     agencyTransactionsMissingBase: 0,
     agencyTransactionsMissingPayRule: 0,
     directChecksMissingGross: 0,
+    directChecksMissingWithholding: 0,
     directChecksGrossBelowNet: 0,
     directChecksMissingDeal: 0,
     classInvoicesMissingProgram: 0,
@@ -200,6 +201,18 @@ describe("Agency Financial export", () => {
       amount: REPORT.totals.agencyResult,
     });
     expect(table("Summary totals").rows).toContainEqual({
+      section: "Expenses",
+      metric: "Verified payroll withholding",
+      records: null,
+      amount: REPORT.totals.expenses.taxes,
+    });
+    expect(table("Summary totals").rows).toContainEqual({
+      section: "Income exclusions",
+      metric: "Issued class invoices - receivables only",
+      records: REPORT.classInvoices.length,
+      amount: null,
+    });
+    expect(table("Summary totals").rows).toContainEqual({
       section: "Agency-routed deal",
       metric: "Agency spread - outside deal",
       records: 1,
@@ -207,15 +220,90 @@ describe("Agency Financial export", () => {
     });
     expect(table("Transaction actuals").rows).toHaveLength(REPORT.transactions.length);
     expect(table("Verified direct-pay checks").rows).toHaveLength(REPORT.directChecks.length);
+    expect(table("Verified direct-pay checks").columns).toContainEqual({
+      key: "taxes",
+      header: "Verified withholding",
+      type: "money",
+    });
     expect(table("Approved monthly set-asides").rows).toHaveLength(REPORT.setAsides.length);
     expect(table("Class invoice receivables").rows).toHaveLength(REPORT.classInvoices.length);
-    expect(table("Recorded other income").rows).toHaveLength(REPORT.manualIncome.length);
+    expect(table("Class invoice receivables").rows[0]).toMatchObject({
+      status: "Reference only - not actual cash income",
+    });
+    expect(table("Recorded receipts and other income").rows).toHaveLength(REPORT.manualIncome.length);
     expect(table("Transaction actuals").rows[0]).toMatchObject({
       serviceDate: REPORT.transactions[0]!.serviceDate,
       gross: REPORT.transactions[0]!.grossAmount,
       agencySpread: REPORT.transactions[0]!.agencySpread,
       employeeExpense: REPORT.transactions[0]!.employeeExpense,
       agencyShareOfBase: REPORT.transactions[0]!.agencyShareOfBase,
+    });
+  });
+
+  it("reports counted class receipts separately from same-payment Sheet matches and other income", () => {
+    const source = REPORT.manualIncome[0]!;
+    const report: AgencyFinancialReport = {
+      ...REPORT,
+      manualIncome: [
+        source,
+        {
+          ...source,
+          id: "income-class-counted",
+          sourceType: "class",
+          grossAmount: "50.0000",
+          individualAmount: "5.0000",
+          countedInIncome: true,
+        },
+        {
+          ...source,
+          id: "income-class-matched",
+          sourceType: "class",
+          grossAmount: "100.0000",
+          countedInIncome: false,
+          automaticSourceDuplicate: true,
+          matchedIncomeSource: {
+            sourceType: "google_sheet_transaction",
+            sourceId: "transaction-1",
+            sourceRef: "TX-1",
+          },
+        },
+      ],
+      totals: {
+        ...REPORT.totals,
+        income: {
+          transactions: "100.0000",
+          classes: "50.0000",
+          manual: "25.0000",
+          total: "175.0000",
+        },
+      },
+    };
+    const summary = agencyFinancialExportTables(report)
+      .find((table) => table.title === "Summary totals")!;
+
+    expect(summary.rows).toContainEqual({
+      section: "Income",
+      metric: "Actual class receipts",
+      records: 1,
+      amount: "50.0000",
+    });
+    expect(summary.rows).toContainEqual({
+      section: "Income deduplication",
+      metric: "Class receipts whose gross is already in Sheet income",
+      records: 1,
+      amount: null,
+    });
+    expect(summary.rows).toContainEqual({
+      section: "Income",
+      metric: "Reimbursements, custom programs, and other income",
+      records: 1,
+      amount: "25.0000",
+    });
+    expect(summary.rows).toContainEqual({
+      section: "Income",
+      metric: "Total income",
+      records: 3,
+      amount: "175.0000",
     });
   });
 

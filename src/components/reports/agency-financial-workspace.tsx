@@ -84,13 +84,22 @@ export default function AgencyFinancialWorkspace({
   const [actionError, setActionError] = useState<string | null>(null);
   const issueCount = Object.values(report.coverage).reduce((sum, value) => sum + value, 0);
   const manualIncomeById = new Map(report.manualIncome.map((row) => [row.id, row]));
-  const countedManualIncomeCount = report.manualIncome.filter((row) => row.countedInIncome).length;
+  const countedClassReceiptCount = report.manualIncome.filter((row) => (
+    row.sourceType === "class" && row.countedInIncome
+  )).length;
+  const matchedClassReceiptCount = report.manualIncome.filter((row) => (
+    row.sourceType === "class" && !row.countedInIncome && row.matchedIncomeSource !== null
+  )).length;
+  const countedOtherIncomeCount = report.manualIncome.filter((row) => (
+    row.sourceType !== "class" && row.countedInIncome
+  )).length;
   const resultNegative = dec(report.totals.agencyResult).isNegative();
   const firstMissingTransactionAmount = report.transactions.find((row) => row.grossAmount === null);
   const firstMissingEmployeeBase = report.transactions.find((row) => row.paymentRecipient === "excellent_staffing" && row.baseAmount === null);
   const firstMissingPayRule = report.transactions.find((row) => row.payRuleSource === "missing");
   const firstUnknownRecipient = report.transactions.find((row) => !["excellent_staffing", "employee"].includes(row.paymentRecipient));
   const firstMissingCheckGross = report.directChecks.find((row) => row.grossAmount === null);
+  const firstMissingCheckWithholding = report.directChecks.find((row) => row.taxes === null);
   const firstCheckGrossBelowNet = report.directChecks.find((row) => row.grossAmount !== null && dec(row.grossAmount).lt(row.netAmount));
   const firstMissingDirectDeal = report.directChecks.find((row) => row.dealLabel === null);
   const firstMissingClassSplit = report.classInvoices.find((row) => row.splitSource === "missing");
@@ -176,8 +185,8 @@ export default function AgencyFinancialWorkspace({
       {view === "summary" ? (
         <div className="space-y-5">
           <div className="grid gap-3 sm:grid-cols-3">
-            <SummaryMetric label="Actual income" value={report.totals.income.total} detail="Google Sheet transactions and recorded payments" />
-            <SummaryMetric label="Expenses" value={report.totals.expenses.total} detail="Set-asides, taxes, employee shares, and individual shares" />
+            <SummaryMetric label="Actual income" value={report.totals.income.total} detail="Google Sheet transactions, class receipts, and other recorded payments" />
+            <SummaryMetric label="Expenses" value={report.totals.expenses.total} detail="Set-asides, verified withholding, employee shares, and individual shares" />
             <SummaryMetric label="Agency result" value={report.totals.agencyResult} detail="Actual income minus the listed expenses" tone={resultNegative ? "negative" : "positive"} />
           </div>
 
@@ -188,6 +197,7 @@ export default function AgencyFinancialWorkspace({
                 {report.coverage.agencyTransactionsMissingBase && firstMissingEmployeeBase ? <Link className="touch-target inline-flex items-center px-1 underline" href={`/transactions?transactionId=${firstMissingEmployeeBase.id}`}>{report.coverage.agencyTransactionsMissingBase} missing employee base</Link> : null}
                 {report.coverage.agencyTransactionsMissingPayRule && firstMissingPayRule ? firstMissingPayRule.employeeId && firstMissingPayRule.individualId ? <button className="touch-target inline-flex items-center px-1 underline" type="button" onClick={() => openPayRule({ employeeId: firstMissingPayRule.employeeId!, individualId: firstMissingPayRule.individualId!, effectiveFrom: firstMissingPayRule.serviceDate })}>{report.coverage.agencyTransactionsMissingPayRule} missing agency-routed pay rule</button> : <Link className="touch-target inline-flex items-center px-1 underline" href={`/transactions?transactionId=${firstMissingPayRule.id}`}>{report.coverage.agencyTransactionsMissingPayRule} missing agency-routed pay rule</Link> : null}
                 {report.coverage.directChecksMissingGross && firstMissingCheckGross ? <Link className="touch-target inline-flex items-center px-1 underline" href={collectionsPayrollCheckFocusHref({ payrollCheckId: firstMissingCheckGross.id, month: report.month })}>{report.coverage.directChecksMissingGross} missing check gross</Link> : null}
+                {report.coverage.directChecksMissingWithholding && firstMissingCheckWithholding ? <Link className="touch-target inline-flex items-center px-1 underline" href={collectionsPayrollCheckFocusHref({ payrollCheckId: firstMissingCheckWithholding.id, month: report.month })}>{report.coverage.directChecksMissingWithholding} missing verified withholding</Link> : null}
                 {report.coverage.directChecksGrossBelowNet && firstCheckGrossBelowNet ? <Link className="touch-target inline-flex items-center px-1 underline" href={collectionsPayrollCheckFocusHref({ payrollCheckId: firstCheckGrossBelowNet.id, month: report.month })}>{report.coverage.directChecksGrossBelowNet} check gross below net</Link> : null}
                 {report.coverage.directChecksMissingDeal && firstMissingDirectDeal ? <Link className="touch-target inline-flex items-center px-1 underline" href={`/employees/${firstMissingDirectDeal.employeeId}?view=deal&effectiveFrom=${firstMissingDirectDeal.serviceDate}`}>{report.coverage.directChecksMissingDeal} missing direct-pay deal</Link> : null}
                 {report.coverage.classInvoicesMissingSplit && firstMissingClassSplit ? firstMissingClassSplit.programId ? <button className="touch-target inline-flex items-center px-1 underline" type="button" onClick={() => openProgramSplit({ individualId: firstMissingClassSplit.individualId, programId: firstMissingClassSplit.programId!, effectiveFrom: firstMissingClassSplit.invoiceDate })}>{report.coverage.classInvoicesMissingSplit} missing class split</button> : <Link className="touch-target inline-flex items-center px-1 underline" href={`/classes?month=${report.month}`}>{report.coverage.classInvoicesMissingSplit} missing class split</Link> : null}
@@ -209,8 +219,9 @@ export default function AgencyFinancialWorkspace({
               <header className="border-b border-[var(--color-rule)] px-5 py-3.5"><h2 className="display text-base font-semibold">Income</h2></header>
               <SimpleTable caption="Income summary" headers={[{ label: "Source" }, { label: "Records", numeric: true }, { label: "Gross income", numeric: true }]}>
                 <Tr><Td><button type="button" className="font-medium text-[var(--color-primary)] hover:underline" onClick={() => setView("transactions")}>Google Sheet transactions</button></Td><Td numeric>{report.transactions.length}</Td><Td numeric><Money value={report.totals.income.transactions} /></Td></Tr>
-                <Tr><Td><button type="button" className="text-left font-medium text-[var(--color-primary)] hover:underline" onClick={() => setView("other-income")}>Recorded other income{report.coverage.manualIncomeDuplicatesExcluded ? <span className="block text-xs font-normal text-[var(--color-danger)]">{report.coverage.manualIncomeDuplicatesExcluded} not counted</span> : null}</button></Td><Td numeric>{countedManualIncomeCount}</Td><Td numeric><Money value={report.totals.income.manual} /></Td></Tr>
-                <tr className="border-t border-[var(--color-rule-strong)] font-semibold"><Td>Total income</Td><Td numeric>{report.transactions.length + countedManualIncomeCount}</Td><Td numeric><Money value={report.totals.income.total} /></Td></tr>
+                <Tr><Td><button type="button" className="text-left font-medium text-[var(--color-primary)] hover:underline" onClick={() => setView("other-income")}>Actual class receipts{matchedClassReceiptCount ? <span className="block text-xs font-normal text-[var(--color-ink-soft)]">{matchedClassReceiptCount} same-payment gross {matchedClassReceiptCount === 1 ? "is" : "are"} already in Sheet income</span> : null}</button></Td><Td numeric>{countedClassReceiptCount}</Td><Td numeric><Money value={report.totals.income.classes} /></Td></Tr>
+                <Tr><Td><button type="button" className="text-left font-medium text-[var(--color-primary)] hover:underline" onClick={() => setView("other-income")}>Reimbursements, custom programs, and other income{report.coverage.manualIncomeDuplicatesExcluded ? <span className="block text-xs font-normal text-[var(--color-danger)]">{report.coverage.manualIncomeDuplicatesExcluded} not counted</span> : null}</button></Td><Td numeric>{countedOtherIncomeCount}</Td><Td numeric><Money value={report.totals.income.manual} /></Td></Tr>
+                <tr className="border-t border-[var(--color-rule-strong)] font-semibold"><Td>Total income</Td><Td numeric>{report.transactions.length + countedClassReceiptCount + countedOtherIncomeCount}</Td><Td numeric><Money value={report.totals.income.total} /></Td></tr>
               </SimpleTable>
             </section>
 
@@ -218,10 +229,11 @@ export default function AgencyFinancialWorkspace({
               <header className="border-b border-[var(--color-rule)] px-5 py-3.5"><h2 className="display text-base font-semibold">Expenses</h2></header>
               <SimpleTable caption="Expense summary" headers={[{ label: "Expense" }, { label: "Amount", numeric: true }]}>
                 <Tr><Td><button type="button" className="text-left font-medium text-[var(--color-primary)] hover:underline" onClick={() => setView("set-asides")}>Approved monthly set-asides</button></Td><Td numeric><Money value={report.totals.expenses.approvedSetAsides} /></Td></Tr>
-                <Tr><Td><button type="button" className="text-left font-medium text-[var(--color-primary)] hover:underline" onClick={() => setView("checks")}>Payroll taxes (gross - net)</button></Td><Td numeric><Money value={report.totals.expenses.taxes} /></Td></Tr>
+                <Tr><Td><button type="button" className="text-left font-medium text-[var(--color-primary)] hover:underline" onClick={() => setView("checks")}>Verified payroll withholding</button></Td><Td numeric><Money value={report.totals.expenses.taxes} /></Td></Tr>
                 <Tr><Td><button type="button" className="text-left font-medium text-[var(--color-primary)] hover:underline" onClick={() => setView("checks")}>Direct-pay employee keeps</button></Td><Td numeric><Money value={report.totals.expenses.directEmployeeKeeps} /></Td></Tr>
                 <Tr><Td><button type="button" className="text-left font-medium text-[var(--color-primary)] hover:underline" onClick={() => setView("transactions")}>Agency-routed employee share</button></Td><Td numeric><Money value={report.totals.expenses.agencyRoutedEmployeeShare} /></Td></Tr>
-                <Tr><Td><button type="button" className="text-left font-medium text-[var(--color-primary)] hover:underline" onClick={() => setView("other-income")}>Recorded income individual share</button></Td><Td numeric><Money value={report.totals.expenses.manualIndividualShare} /></Td></Tr>
+                <Tr><Td><button type="button" className="text-left font-medium text-[var(--color-primary)] hover:underline" onClick={() => setView("other-income")}>Class receipt individual share</button></Td><Td numeric><Money value={report.totals.expenses.classIndividualShare} /></Td></Tr>
+                <Tr><Td><button type="button" className="text-left font-medium text-[var(--color-primary)] hover:underline" onClick={() => setView("other-income")}>Other recorded income individual share</button></Td><Td numeric><Money value={report.totals.expenses.manualIndividualShare} /></Td></Tr>
                 <tr className="border-t border-[var(--color-rule-strong)] font-semibold"><Td>Total expenses</Td><Td numeric><Money value={report.totals.expenses.total} /></Td></tr>
               </SimpleTable>
             </section>
@@ -258,8 +270,8 @@ export default function AgencyFinancialWorkspace({
 
       {view === "checks" ? (
         <section className="card overflow-hidden">
-          <header className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3.5"><div><h2 className="display text-base font-semibold">Verified direct-pay checks</h2><p className="mt-1 text-sm text-[var(--color-ink-soft)]">Each check is counted once. Taxes are gross minus net; employee share is calculated from net.</p></div><Link className="btn btn-sm btn-secondary" href="/masser?view=checks"><HandCoins className="h-4 w-4" aria-hidden /> Open checks</Link></header>
-          {report.directChecks.length ? <SimpleTable caption="Verified direct-pay checks" headers={[{ label: "Date" }, { label: "Employee" }, { label: "Check" }, { label: "Gross", numeric: true }, { label: "Net", numeric: true }, { label: "Taxes", numeric: true }, { label: "Deal" }, { label: "Employee keeps", numeric: true }, { label: "Agency receives", numeric: true }, { label: "" }]}>
+          <header className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3.5"><div><h2 className="display text-base font-semibold">Verified direct-pay checks</h2><p className="mt-1 text-sm text-[var(--color-ink-soft)]">Each check is counted once. Withholding comes from its separately verified check field; missing values are disclosed and excluded, never inferred from gross minus net. Employee share is calculated from net.</p></div><Link className="btn btn-sm btn-secondary" href="/masser?view=checks"><HandCoins className="h-4 w-4" aria-hidden /> Open checks</Link></header>
+          {report.directChecks.length ? <SimpleTable caption="Verified direct-pay checks" headers={[{ label: "Date" }, { label: "Employee" }, { label: "Check" }, { label: "Gross", numeric: true }, { label: "Net", numeric: true }, { label: "Withholding", numeric: true }, { label: "Deal" }, { label: "Employee keeps", numeric: true }, { label: "Agency receives", numeric: true }, { label: "" }]}>
             {report.directChecks.map((row) => <Tr key={row.id}><Td>{row.serviceDate}</Td><Td>{row.employeeName}</Td><Td>{row.checkNumber ?? "No number"}</Td><Td numeric><Money value={row.grossAmount} /></Td><Td numeric><Money value={row.netAmount} /></Td><Td numeric><Money value={row.taxes} /></Td><Td>{row.dealLabel ?? <Link className="font-semibold text-[var(--color-danger)] underline" href={`/employees/${row.employeeId}?view=deal&effectiveFrom=${row.serviceDate}`}>Set employee deal</Link>}</Td><Td numeric><Money value={row.employeeKeeps} /></Td><Td numeric><Money value={row.employeeOwesAgency} /></Td><Td><Link className="text-xs font-semibold text-[var(--color-primary)] hover:underline" href={collectionsPayrollCheckFocusHref({ payrollCheckId: row.id, month: report.month })}>View</Link></Td></Tr>)}
           </SimpleTable> : <p className="px-5 py-10 text-center text-sm text-[var(--color-ink-faint)]">No verified direct-pay checks in this month.</p>}
         </section>
@@ -294,8 +306,8 @@ export default function AgencyFinancialWorkspace({
           </section>
 
           <section className="card overflow-hidden">
-            <header className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3.5"><div><h2 className="display text-base font-semibold">Recorded other income</h2><p className="mt-1 text-sm text-[var(--color-ink-soft)]">These are actual payments entered outside the Google Sheet. Matching Sheet transactions stay visible without duplicating gross income; the recorded individual split still counts.</p></div><button type="button" className="btn btn-sm btn-primary" onClick={() => setModal("income")}><Plus className="h-4 w-4" aria-hidden /> Add income</button></header>
-            {incomeHistory.length ? <SimpleTable caption="Recorded other income" headers={[{ label: "Date" }, { label: "Type" }, { label: "Individual / program" }, { label: "Reference" }, { label: "Gross", numeric: true }, { label: "Agency", numeric: true }, { label: "Individual expense", numeric: true }, { label: "Status" }, { label: "" }]}>
+            <header className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3.5"><div><h2 className="display text-base font-semibold">Recorded receipts and other income</h2><p className="mt-1 text-sm text-[var(--color-ink-soft)]">These are actual class receipts, reimbursements, custom-program receipts, and other payments entered outside the Google Sheet. Matching Sheet transactions stay visible without duplicating gross income; the recorded individual split still counts.</p></div><button type="button" className="btn btn-sm btn-primary" onClick={() => setModal("income")}><Plus className="h-4 w-4" aria-hidden /> Add income</button></header>
+            {incomeHistory.length ? <SimpleTable caption="Recorded receipts and other income" headers={[{ label: "Date" }, { label: "Type" }, { label: "Individual / program" }, { label: "Reference" }, { label: "Gross", numeric: true }, { label: "Agency", numeric: true }, { label: "Individual expense", numeric: true }, { label: "Status" }, { label: "" }]}>
               {incomeHistory.map((row) => {
                 const reportRow = manualIncomeById.get(row.id);
                 const status = row.status === "void"
@@ -309,7 +321,7 @@ export default function AgencyFinancialWorkspace({
                       : "Active";
                 return <Tr key={row.id}><Td>{row.serviceDate}</Td><Td>{SOURCE_LABEL[row.sourceType]}</Td><Td>{[row.individualName, row.programName].filter(Boolean).join(" / ") || "General"}</Td><Td>{row.sourceRef ?? "-"}</Td><Td numeric><Money value={row.grossAmount} /></Td><Td numeric><Money value={row.agencyAmount} /></Td><Td numeric><Money value={row.individualAmount} /></Td><Td>{status}</Td><Td>{row.status === "active" ? <button type="button" className="btn btn-icon btn-ghost text-[var(--color-danger)]" aria-label="Void income" title="Void income" onClick={() => setVoidEntry(row)}><Trash2 className="h-4 w-4" aria-hidden /></button> : null}</Td></Tr>;
               })}
-            </SimpleTable> : <p className="px-5 py-10 text-center text-sm text-[var(--color-ink-faint)]">No other income recorded in this month.</p>}
+            </SimpleTable> : <p className="px-5 py-10 text-center text-sm text-[var(--color-ink-faint)]">No receipts or other income recorded in this month.</p>}
           </section>
         </div>
       ) : null}

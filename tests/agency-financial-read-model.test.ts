@@ -55,7 +55,7 @@ describe("agency financial report read model", () => {
         if (statement.includes("FROM employee_payroll_checks check_fact")) {
           return { rows: [{
             id: "check-1", service_date: "2026-08-06", employee_id: "employee-1", employee_name: "Employee One",
-            check_number: "101", actual_gross: "1000", actual_net: "800",
+            check_number: "101", actual_gross: "1000", actual_net: "800", tax_withheld: "125",
             direct_rule: "giveback_percent", direct_percent: "0.2",
           }] };
         }
@@ -120,14 +120,14 @@ describe("agency financial report read model", () => {
     });
     expect(report.totals.expenses).toEqual({
       approvedSetAsides: "1500.0000",
-      taxes: "200.0000",
+      taxes: "125.0000",
       directEmployeeKeeps: "640.0000",
       agencyRoutedEmployeeShare: "600.0000",
       classIndividualShare: "0.0000",
       manualIndividualShare: "10.0000",
-      total: "2950.0000",
+      total: "2875.0000",
     });
-    expect(report.totals.agencyResult).toBe("-900.0000");
+    expect(report.totals.agencyResult).toBe("-825.0000");
     expect(Object.values(report.coverage).reduce((sum, value) => sum + value, 0)).toBe(0);
 
     const sql = statements.join("\n");
@@ -135,6 +135,7 @@ describe("agency financial report read model", () => {
     expect(sql).toContain("t.imported_amount::text AS gross_amount");
     expect(sql).toContain("employee_individual_compensation_terms");
     expect(sql).toContain("FROM employee_payroll_checks check_fact");
+    expect(sql).toContain("check_fact.tax_withheld::text");
     expect(sql).toContain("invoice.status = 'issued'");
   });
 
@@ -429,7 +430,8 @@ describe("agency financial report read model", () => {
       manual: "0.0000",
       total: "50.0000",
     });
-    expect(report.totals.expenses.manualIndividualShare).toBe("10.0000");
+    expect(report.totals.expenses.classIndividualShare).toBe("10.0000");
+    expect(report.totals.expenses.manualIndividualShare).toBe("0.0000");
     expect(report.coverage.manualIncomeDuplicatesExcluded).toBe(0);
   });
 
@@ -513,11 +515,12 @@ describe("agency financial report read model", () => {
     ]));
     expect(report.totals.income).toEqual({
       transactions: "0.0000",
-      classes: "0.0000",
-      manual: "150.0000",
+      classes: "150.0000",
+      manual: "0.0000",
       total: "150.0000",
     });
-    expect(report.totals.expenses.manualIndividualShare).toBe("30.0000");
+    expect(report.totals.expenses.classIndividualShare).toBe("30.0000");
+    expect(report.totals.expenses.manualIndividualShare).toBe("0.0000");
     expect(report.coverage.manualIncomeDuplicatesExcluded).toBe(0);
     expect(statements.join("\n")).toContain("{next,automaticSourceOverride,reason}");
   });
@@ -780,19 +783,19 @@ describe("agency financial report read model", () => {
       total: "200.0000",
     });
     expect(sheetHeavy.manualIncome.every((entry) => !entry.countedInIncome)).toBe(true);
-    expect(sheetHeavy.totals.expenses.classIndividualShare).toBe("0.0000");
-    expect(sheetHeavy.totals.expenses.manualIndividualShare).toBe("40.0000");
+    expect(sheetHeavy.totals.expenses.classIndividualShare).toBe("40.0000");
+    expect(sheetHeavy.totals.expenses.manualIndividualShare).toBe("0.0000");
 
     const invoiceHeavy = await scenario({ sheetCount: 1, invoiceCount: 2, manualCount: 2 });
     expect(invoiceHeavy.totals.income).toMatchObject({
       transactions: "100.0000",
-      classes: "0.0000",
-      manual: "100.0000",
+      classes: "100.0000",
+      manual: "0.0000",
       total: "200.0000",
     });
     expect(invoiceHeavy.manualIncome.filter((entry) => entry.countedInIncome)).toHaveLength(1);
-    expect(invoiceHeavy.totals.expenses.classIndividualShare).toBe("0.0000");
-    expect(invoiceHeavy.totals.expenses.manualIndividualShare).toBe("40.0000");
+    expect(invoiceHeavy.totals.expenses.classIndividualShare).toBe("40.0000");
+    expect(invoiceHeavy.totals.expenses.manualIndividualShare).toBe("0.0000");
 
     const auditedSeparate = await scenario({
       sheetCount: 1,
@@ -802,13 +805,13 @@ describe("agency financial report read model", () => {
     });
     expect(auditedSeparate.totals.income).toMatchObject({
       transactions: "100.0000",
-      classes: "0.0000",
-      manual: "100.0000",
+      classes: "100.0000",
+      manual: "0.0000",
       total: "200.0000",
     });
     expect(auditedSeparate.manualIncome.filter((entry) => entry.countedInIncome)).toHaveLength(1);
-    expect(auditedSeparate.totals.expenses.classIndividualShare).toBe("0.0000");
-    expect(auditedSeparate.totals.expenses.manualIndividualShare).toBe("40.0000");
+    expect(auditedSeparate.totals.expenses.classIndividualShare).toBe("40.0000");
+    expect(auditedSeparate.totals.expenses.manualIndividualShare).toBe("0.0000");
   });
 
   it("does not let an issued invoice suppress recorded cash receipts or their splits", async () => {
@@ -858,12 +861,12 @@ describe("agency financial report read model", () => {
       matchedSplitSource: null,
     });
     expect(report.totals.income).toMatchObject({
-      classes: "0.0000",
-      manual: "200.0000",
+      classes: "200.0000",
+      manual: "0.0000",
       total: "200.0000",
     });
-    expect(report.totals.expenses.classIndividualShare).toBe("0.0000");
-    expect(report.totals.expenses.manualIndividualShare).toBe("40.0000");
+    expect(report.totals.expenses.classIndividualShare).toBe("40.0000");
+    expect(report.totals.expenses.manualIndividualShare).toBe("0.0000");
     expect(report.coverage.manualIncomeDuplicatesExcluded).toBe(0);
   });
 });

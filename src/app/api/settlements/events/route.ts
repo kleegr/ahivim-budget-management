@@ -1,7 +1,12 @@
 import { type NextRequest } from "next/server";
 import { canOperateSettlementObligations, getSettlementOperator } from "@/lib/auth/settlement-operator";
 import { jsonError, readJson, redactError, resultResponse, sameOriginOrFail } from "@/lib/http";
-import { applySettlementCredit, recordObligationPayment, settleObligations } from "@/lib/manage/settlements";
+import {
+  applySettlementCredit,
+  recordObligationPayment,
+  refundSettlementCredit,
+  settleObligations,
+} from "@/lib/manage/settlements";
 import { agencyDate } from "@/lib/business/agency-time";
 
 export const runtime = "nodejs";
@@ -54,6 +59,20 @@ export async function POST(request: NextRequest) {
       return resultResponse(await applySettlementCredit(pool, {
         sourceObligationId,
         targetObligationId,
+        amount: String(body.amount ?? ""),
+        occurredOn,
+        operationKey: String(body.operationKey ?? ""),
+        reference: body.reference ? String(body.reference) : null,
+        note: body.note ? String(body.note) : null,
+      }, user.id));
+    }
+    if (body.action === "refund") {
+      const obligationId = String(body.obligationId ?? "");
+      if (!await canOperateSettlementObligations(pool, scope, [obligationId])) {
+        return jsonError("You do not have permission to refund that credit.", 403);
+      }
+      return resultResponse(await refundSettlementCredit(pool, {
+        obligationId,
         amount: String(body.amount ?? ""),
         occurredOn,
         operationKey: String(body.operationKey ?? ""),

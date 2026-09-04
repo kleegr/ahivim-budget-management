@@ -226,6 +226,12 @@ function calculationForClient(
   const result: Record<string, unknown> = {};
   for (const key of keys) if (source[key] !== undefined) result[key] = source[key];
   if (scope) {
+    // During the permission-granularity rollout, scopes created before the new
+    // flag existed retain the prior taxes-based gross visibility. New scopes
+    // carry the independent gross permission explicitly.
+    const canSeeCheckGross = "canSeeCheckGross" in scope
+      ? scope.canSeeCheckGross === true
+      : scope.canSeeTaxes;
     if (!scope.canSeeCheckNet) {
       delete result.checkNet;
       delete result.employeeKeeps;
@@ -234,6 +240,8 @@ function calculationForClient(
     if (!scope.canSeeTaxes) {
       delete result.taxWithheldDisplayOnly;
       delete result.totalDeductionsDisplayOnly;
+    }
+    if (!canSeeCheckGross) {
       delete result.checkGross;
     }
     if (!scope.canSeeBilledAmounts) delete result.billedAmount;
@@ -563,21 +571,14 @@ export async function getSettlementDashboard(pool: Queryable, scope?: AccessScop
                     THEN concat(employee_id::text, ':payroll-check:', verified_payroll_check_id::text)
                   WHEN check_number IS NOT NULL
                     THEN concat(
-                      employee_id::text, ':check:', check_number, ':',
-                      CASE
-                        WHEN check_date IS NOT NULL THEN concat('date:', check_date::text)
-                        WHEN period_begin IS NOT NULL OR period_end IS NOT NULL
-                          THEN concat('period:', COALESCE(period_begin::text, ''), ':', COALESCE(period_end::text, ''))
-                        ELSE 'undated'
-                      END
+                      employee_id::text, ':check:', check_number,
+                      ':date:', COALESCE(check_date::text, ''),
+                      ':period:', COALESCE(period_begin::text, ''), ':', COALESCE(period_end::text, '')
                     )
                   ELSE concat(
-                    employee_id::text, ':',
-                    CASE
-                      WHEN period_begin IS NOT NULL OR period_end IS NOT NULL
-                        THEN concat('period:', COALESCE(period_begin::text, ''), ':', COALESCE(period_end::text, ''))
-                      ELSE concat('date:', check_date::text)
-                    END
+                    employee_id::text,
+                    ':date:', COALESCE(check_date::text, ''),
+                    ':period:', COALESCE(period_begin::text, ''), ':', COALESCE(period_end::text, '')
                   )
                 END AS source_id
            FROM direct_facts

@@ -94,7 +94,7 @@ suite("Money operations compact transaction sources (real PostgreSQL)", () => {
     const scope = employeeScope(employee.id);
     const dashboard = await getSettlementDashboard(pool, scope);
     const ordinary = dashboard.checkIssues.find((issue) =>
-      issue.sourceId === `${employee.id}:check:ORD-100:date:2026-08-15`
+      issue.sourceId === `${employee.id}:check:ORD-100:date:2026-08-15:period:2026-08-01:2026-08-14`
     );
     const ambiguous = dashboard.checkIssues.find((issue) =>
       issue.sourceId === `${employee.id}:ambiguous-check:AMB-200`
@@ -123,7 +123,7 @@ suite("Money operations compact transaction sources (real PostgreSQL)", () => {
     await expect(resolveSettlementSourceTransactions(
       pool,
       scope,
-      `${hiddenEmployee.id}:check:HIDDEN-400:date:2026-08-31`,
+      `${hiddenEmployee.id}:check:HIDDEN-400:date:2026-08-31:period:2026-08-16:2026-08-31`,
     )).resolves.toEqual({ transactionIds: [], tooLarge: false });
   });
 });

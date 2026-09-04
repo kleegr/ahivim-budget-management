@@ -62,21 +62,14 @@ export async function resolveSettlementSourceTransactions(
                   THEN concat(employee_id::text, ':payroll-check:', verified_payroll_check_id::text)
                 WHEN check_number IS NOT NULL
                   THEN concat(
-                    employee_id::text, ':check:', check_number, ':',
-                    CASE
-                      WHEN check_date IS NOT NULL THEN concat('date:', check_date::text)
-                      WHEN period_begin IS NOT NULL OR period_end IS NOT NULL
-                        THEN concat('period:', COALESCE(period_begin::text, ''), ':', COALESCE(period_end::text, ''))
-                      ELSE 'undated'
-                    END
+                    employee_id::text, ':check:', check_number,
+                    ':date:', COALESCE(check_date::text, ''),
+                    ':period:', COALESCE(period_begin::text, ''), ':', COALESCE(period_end::text, '')
                   )
                 ELSE concat(
-                  employee_id::text, ':',
-                  CASE
-                    WHEN period_begin IS NOT NULL OR period_end IS NOT NULL
-                      THEN concat('period:', COALESCE(period_begin::text, ''), ':', COALESCE(period_end::text, ''))
-                    ELSE concat('date:', check_date::text)
-                  END
+                  employee_id::text,
+                  ':date:', COALESCE(check_date::text, ''),
+                  ':period:', COALESCE(period_begin::text, ''), ':', COALESCE(period_end::text, '')
                 )
               END AS source_id
          FROM direct_facts

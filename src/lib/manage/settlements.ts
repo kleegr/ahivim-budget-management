@@ -281,16 +281,16 @@ export function directSettlementCheckIdentity(input: {
   periodEnd: string | null;
 }): string | null {
   const checkNumber = input.checkNumber?.trim() || null;
-  const numberedIdentity = input.checkDate
-    ? `date:${input.checkDate}`
-    : input.periodBegin || input.periodEnd
-      ? `period:${input.periodBegin ?? ""}:${input.periodEnd ?? ""}`
-      : null;
-  if (checkNumber) return `check:${checkNumber}:${numberedIdentity ?? "undated"}`;
-  if (input.periodBegin || input.periodEnd) {
-    return `period:${input.periodBegin ?? ""}:${input.periodEnd ?? ""}`;
-  }
-  return input.checkDate ? `date:${input.checkDate}` : null;
+  const checkDate = input.checkDate ?? "";
+  const periodBegin = input.periodBegin ?? "";
+  const periodEnd = input.periodEnd ?? "";
+  if (!checkNumber && !checkDate && !periodBegin && !periodEnd) return null;
+
+  // The fallback identity intentionally retains every check coordinate. Check
+  // numbers can be reused, while a date alone does not distinguish corrected
+  // or overlapping pay periods. Verified payroll checks use their canonical id.
+  const coordinates = `date:${checkDate}:period:${periodBegin}:${periodEnd}`;
+  return checkNumber ? `check:${checkNumber}:${coordinates}` : coordinates;
 }
 
 async function loadEmployeeTransactions(
@@ -1736,6 +1736,250 @@ export async function applySettlementCredit(
         amount,
         occurredOn: input.occurredOn,
       },
+    });
+    return ok({ batchId: batch.batchId, eventIds });
+  });
+}
+
+export async function refundSettlementCredit(
+  pool: PgLikePool,
+  input: {
+    obligationId: string;
+    amount: string;
+    occurredOn: string;
+    operationKey: string;
+    reference?: string | null;
+    note?: string | null;
+  },
+  actorId: string | null,
+): Promise<Result<SettlementEventResult>> {
+  if (!UUID.test(input.obligationId)) return fail("validation", "Choose a settlement credit.");
+  if (!validDate(input.occurredOn)) return fail("validation", "Enter a valid refund date.");
+  if (!UUID.test(input.operationKey)) return fail("validation", "This refund request is missing its operation key.");
+  let amount: string;
+  try {
+    amount = toMoney(input.amount);
+    if (!dec(amount).greaterThan(0)) return fail("validation", "The refund amount must be greater than zero.");
+  } catch {
+    return fail("validation", "Enter a valid refund amount.");
+  }
+  const reference = input.reference?.trim() || null;
+  const note = input.note?.trim() || null;
+  const requestFingerprint = stableKey([
+    "refund_credit",
+    input.obligationId,
+    amount,
+    input.occurredOn,
+    reference,
+    note,
+    actorId,
+  ]);
+
+  return inTransaction(pool, async (client) => {
+    const replay = await lookupBatch(client, input.operationKey, "refund_credit", requestFingerprint, actorId);
+    if (replay.state === "replay") return ok(replay.result!);
+    if (replay.state === "conflict") return fail("conflict", "That operation key was already used for a different refund.");
+    if ((await lockSettlementSources(client)).dirty) return staleSettlementLedger();
+    const obligations = await lockObligations(client, [input.obligationId]);
+    const replayAfterLock = await lookupBatch(client, input.operationKey, "refund_credit", requestFingerprint, actorId);
+    if (replayAfterLock.state === "replay") return ok(replayAfterLock.result!);
+    if (replayAfterLock.state === "conflict") return fail("conflict", "That operation key was already used for a different refund.");
+    const row = obligations[0];
+    if (!row) return fail("not_found", "That settlement credit no longer exists.");
+    if (row.status !== "active") return fail("conflict", "That settlement credit is void.");
+    const creditAvailable = dec(settlementBalance(row.original_amount, row.applied_amount)).negated();
+    if (!creditAvailable.greaterThan(0)) return fail("conflict", "That item no longer has a credit balance.");
+    if (dec(amount).greaterThan(creditAvailable)) {
+      return fail("conflict", "The refund amount is greater than the available credit.");
+    }
+
+    const batch = await createBatch(
+      client,
+      input.operationKey,
+      "refund_credit",
+      actorId,
+      requestFingerprint,
+      { obligationId: row.id, amount },
+    );
+    if (batch.state === "replay") return ok(batch.result!);
+    if (batch.state !== "created") return fail("conflict", "That operation key was already used for a different refund.");
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO settlement_events
+         (settlement_obligation_id, settlement_batch_id, employee_id, individual_id,
+          event_type, amount, occurred_on, reference, note, created_by_user_id)
+       VALUES ($1, $2, $3, $4, 'adjustment', $5, $6::date, $7, $8, $9)
+       RETURNING id`,
+      [
+        row.id,
+        batch.batchId,
+        row.employee_id,
+        row.individual_id,
+        toMoney(dec(amount).negated()),
+        input.occurredOn,
+        reference,
+        note,
+        actorId,
+      ],
+    );
+    await recordChange(client, {
+      actorId,
+      action: "settlement.credit_refunded",
+      entityType: "settlement_event",
+      entityId: inserted.rows[0].id,
+      next: { obligationId: row.id, amount, occurredOn: input.occurredOn },
+    });
+    return ok({ batchId: batch.batchId, eventIds: [inserted.rows[0].id] });
+  });
+}
+
+export async function correctSettlementEvent(
+  pool: PgLikePool,
+  eventId: string,
+  input: {
+    amount: string;
+    occurredOn: string;
+    reason: string;
+    operationKey: string;
+    reference?: string | null;
+    note?: string | null;
+  },
+  actorId: string | null,
+): Promise<Result<SettlementEventResult>> {
+  if (!UUID.test(eventId)) return fail("validation", "Choose a settlement event.");
+  if (!validDate(input.occurredOn)) return fail("validation", "Enter a valid corrected date.");
+  if (!UUID.test(input.operationKey)) return fail("validation", "This correction request is missing its operation key.");
+  const reason = input.reason.trim();
+  if (!reason) return fail("validation", "Enter a reason for the correction.");
+  let amount: string;
+  try {
+    amount = toMoney(input.amount);
+    if (!dec(amount).greaterThan(0)) return fail("validation", "The corrected amount must be greater than zero.");
+  } catch {
+    return fail("validation", "Enter a valid corrected amount.");
+  }
+  const reference = input.reference?.trim() || null;
+  const note = input.note?.trim() || null;
+  const requestFingerprint = stableKey([
+    "correct_event",
+    eventId,
+    amount,
+    input.occurredOn,
+    reference,
+    note,
+    reason,
+    actorId,
+  ]);
+
+  return inTransaction(pool, async (client) => {
+    const replay = await lookupBatch(client, input.operationKey, "correct_event", requestFingerprint, actorId);
+    if (replay.state === "replay") return ok(replay.result!);
+    if (replay.state === "conflict") return fail("conflict", "That operation key was already used for a different correction.");
+    if ((await lockSettlementSources(client)).dirty) return staleSettlementLedger();
+    const original = await client.query<{
+      id: string;
+      settlement_obligation_id: string;
+      employee_id: string | null;
+      individual_id: string | null;
+      event_type: "payment" | "set_aside" | "credit" | "adjustment" | "reversal";
+      amount: string;
+      occurred_on: string;
+      reference: string | null;
+      note: string | null;
+      obligation_status: "active" | "void";
+    }>(
+      `SELECT e.id, e.settlement_obligation_id, e.employee_id, e.individual_id,
+              e.event_type, e.amount::text,
+              to_char(e.occurred_on, 'YYYY-MM-DD') AS occurred_on,
+              e.reference, e.note, o.status AS obligation_status
+         FROM settlement_events e
+         JOIN settlement_obligations o ON o.id = e.settlement_obligation_id
+        WHERE e.id = $1
+        FOR UPDATE OF e, o`,
+      [eventId],
+    );
+    const row = original.rows[0];
+    if (!row) return fail("not_found", "That settlement event no longer exists.");
+    if (row.event_type !== "payment" && row.event_type !== "set_aside") {
+      return fail("validation", "Only payments and set-asides can be corrected. Reverse other entries instead.");
+    }
+    if (row.obligation_status !== "active") return fail("conflict", "That settlement item is void.");
+    const duplicate = await client.query<{ id: string }>(
+      `SELECT id FROM settlement_events WHERE reversal_of_event_id = $1 LIMIT 1`,
+      [eventId],
+    );
+    if (duplicate.rows[0]) return fail("conflict", "That event has already been reversed.");
+    const replayAfterLock = await lookupBatch(client, input.operationKey, "correct_event", requestFingerprint, actorId);
+    if (replayAfterLock.state === "replay") return ok(replayAfterLock.result!);
+    if (replayAfterLock.state === "conflict") return fail("conflict", "That operation key was already used for a different correction.");
+    const batch = await createBatch(
+      client,
+      input.operationKey,
+      "correct_event",
+      actorId,
+      requestFingerprint,
+      { eventId, amount, occurredOn: input.occurredOn, reason },
+    );
+    if (batch.state === "replay") return ok(batch.result!);
+    if (batch.state !== "created") return fail("conflict", "That operation key was already used for a different correction.");
+
+    const reversal = await client.query<{ id: string }>(
+      `INSERT INTO settlement_events
+         (settlement_obligation_id, settlement_batch_id, employee_id, individual_id,
+          event_type, amount, occurred_on, note, created_by_user_id, reversal_of_event_id)
+       VALUES ($1, $2, $3, $4, 'reversal', $5, CURRENT_DATE, $6, $7, $8)
+       RETURNING id`,
+      [
+        row.settlement_obligation_id,
+        batch.batchId,
+        row.employee_id,
+        row.individual_id,
+        toMoney(dec(row.amount).negated()),
+        reason,
+        actorId,
+        row.id,
+      ],
+    );
+    const replacement = await client.query<{ id: string }>(
+      `INSERT INTO settlement_events
+         (settlement_obligation_id, settlement_batch_id, employee_id, individual_id,
+          event_type, amount, occurred_on, reference, note, created_by_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8, $9, $10)
+       RETURNING id`,
+      [
+        row.settlement_obligation_id,
+        batch.batchId,
+        row.employee_id,
+        row.individual_id,
+        row.event_type,
+        amount,
+        input.occurredOn,
+        reference,
+        note,
+        actorId,
+      ],
+    );
+    const eventIds = [reversal.rows[0].id, replacement.rows[0].id].sort();
+    await recordChange(client, {
+      actorId,
+      action: "settlement.event_corrected",
+      entityType: "settlement_event",
+      entityId: replacement.rows[0].id,
+      previous: {
+        eventId: row.id,
+        amount: row.amount,
+        occurredOn: row.occurred_on,
+        reference: row.reference,
+        note: row.note,
+      },
+      next: {
+        eventId: replacement.rows[0].id,
+        reversalEventId: reversal.rows[0].id,
+        amount,
+        occurredOn: input.occurredOn,
+        reference,
+        note,
+      },
+      reason,
     });
     return ok({ batchId: batch.batchId, eventIds });
   });

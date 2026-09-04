@@ -17,7 +17,15 @@ import {
   type SettlementQueueFilter,
 } from "@/components/settlements/deep-links";
 import { CheckIssues } from "@/components/settlements/settlement-check-issues";
-import { CreditModal, HistoryTable, PaymentModal, ReverseModal, SettleModal } from "@/components/settlements/settlement-history-actions";
+import {
+  CorrectionModal,
+  CreditModal,
+  HistoryTable,
+  PaymentModal,
+  RefundModal,
+  ReverseModal,
+  SettleModal,
+} from "@/components/settlements/settlement-history-actions";
 import { EmptyState, PaceBar } from "@/components/ui";
 import type {
   SettlementDashboardData,
@@ -574,6 +582,7 @@ function ItemsTable({
   onToggleExpanded,
   onRecord,
   onUseCredit,
+  onRefundCredit,
   creditTargetsFor,
 }: {
   grid: UseGridResult<SettlementRow, unknown>;
@@ -586,11 +595,12 @@ function ItemsTable({
   onToggleExpanded: (id: string) => void;
   onRecord: (row: SettlementRow) => void;
   onUseCredit: (row: SettlementRow) => void;
+  onRefundCredit: (row: SettlementRow) => void;
   creditTargetsFor: (row: SettlementRow) => SettlementRow[];
 }) {
   const actionable = canManage ? rows.filter(isActionable) : [];
   const allSelected = actionable.length > 0 && actionable.every((row) => selected.has(row.id));
-  const utilityWidth = 36 + (canManage ? 40 + 128 : 0);
+  const utilityWidth = 36 + (canManage ? 40 + 200 : 0);
   const utilityColumns = 1 + (canManage ? 2 : 0);
   const tableWidth = utilityWidth + grid.visibleColumns.reduce((total, column) => total + (column.width ?? 120), 0);
 
@@ -602,7 +612,7 @@ function ItemsTable({
           {canManage ? <col style={{ width: 40 }} /> : null}
           <col style={{ width: 36 }} />
           {grid.visibleColumns.map((column) => <col key={column.key} style={{ width: column.width ?? 120 }} />)}
-          {canManage ? <col style={{ width: 128 }} /> : null}
+          {canManage ? <col style={{ width: 200 }} /> : null}
         </colgroup>
         <thead className="sticky top-0 z-10 bg-[var(--color-surface-strong)] text-left">
           <tr className="border-b border-[var(--color-rule-strong)]">
@@ -677,15 +687,20 @@ function ItemsTable({
                   })}
                   {canManage ? <td className="px-3 py-2 text-right align-top">
                     {row.state === "credit" ? (
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-secondary"
-                        disabled={creditTargetsFor(row).length === 0}
-                        onClick={() => onUseCredit(row)}
-                        title={creditTargetsFor(row).length === 0 ? "No compatible open balance yet" : undefined}
-                      >
-                        Use credit
-                      </button>
+                      <div className="flex flex-wrap justify-end gap-1">
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          disabled={creditTargetsFor(row).length === 0}
+                          onClick={() => onUseCredit(row)}
+                          title={creditTargetsFor(row).length === 0 ? "No compatible open balance yet" : undefined}
+                        >
+                          Use credit
+                        </button>
+                        <button type="button" className="btn btn-sm btn-secondary" onClick={() => onRefundCredit(row)}>
+                          {row.direction === "reserve" ? "Release" : "Refund"}
+                        </button>
+                      </div>
                     ) : row.state !== "void" ? (
                       <button type="button" className="btn btn-sm btn-secondary" onClick={() => onRecord(row)}>
                         Record amount
@@ -770,6 +785,8 @@ export default function SettlementDashboard({
   const [settleOpen, setSettleOpen] = useState(false);
   const [paymentRow, setPaymentRow] = useState<SettlementRow | null>(null);
   const [creditRow, setCreditRow] = useState<SettlementRow | null>(null);
+  const [refundRow, setRefundRow] = useState<SettlementRow | null>(null);
+  const [correctEvent, setCorrectEvent] = useState<SettlementEventRow | null>(null);
   const [reverseEvent, setReverseEvent] = useState<SettlementEventRow | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -887,6 +904,8 @@ export default function SettlementDashboard({
     setSettleOpen(false);
     setPaymentRow(null);
     setCreditRow(null);
+    setRefundRow(null);
+    setCorrectEvent(null);
     setReverseEvent(null);
     router.refresh();
   };
@@ -1062,6 +1081,7 @@ export default function SettlementDashboard({
                 onToggleExpanded={toggleExpanded}
                 onRecord={setPaymentRow}
                 onUseCredit={setCreditRow}
+                onRefundCredit={setRefundRow}
                 creditTargetsFor={creditTargetsFor}
               />
             )}
@@ -1088,7 +1108,7 @@ export default function SettlementDashboard({
                 </div>
               ) : null}
             </div>
-            <HistoryTable events={visibleHistoryEvents} canManage={canRecord} onReverse={setReverseEvent} />
+            <HistoryTable events={visibleHistoryEvents} canManage={canRecord} onCorrect={setCorrectEvent} onReverse={setReverseEvent} />
           </>
         )}
       </section>
@@ -1096,6 +1116,8 @@ export default function SettlementDashboard({
       {canRecord && settleOpen && selectedRows.length > 0 ? <SettleModal rows={selectedRows} onClose={() => setSettleOpen(false)} onDone={completeAction} /> : null}
       {canRecord && paymentRow ? <PaymentModal row={paymentRow} onClose={() => setPaymentRow(null)} onDone={completeAction} /> : null}
       {canRecord && creditRow ? <CreditModal source={creditRow} targets={creditTargetsFor(creditRow)} onClose={() => setCreditRow(null)} onDone={completeAction} /> : null}
+      {canRecord && refundRow ? <RefundModal row={refundRow} onClose={() => setRefundRow(null)} onDone={completeAction} /> : null}
+      {canRecord && correctEvent ? <CorrectionModal event={correctEvent} onClose={() => setCorrectEvent(null)} onDone={completeAction} /> : null}
       {canRecord && reverseEvent ? <ReverseModal event={reverseEvent} onClose={() => setReverseEvent(null)} onDone={completeAction} /> : null}
     </div>
   );

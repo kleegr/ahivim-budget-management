@@ -70,8 +70,8 @@ describe("settlement source identity", () => {
       periodEnd: "2026-01-30",
     });
 
-    expect(first).toBe("check:CHK-100:date:2026-01-15");
-    expect(second).toBe("check:CHK-100:date:2026-01-31");
+    expect(first).toBe("check:CHK-100:date:2026-01-15:period:2026-01-01:2026-01-14");
+    expect(second).toBe("check:CHK-100:date:2026-01-31:period:2026-01-15:2026-01-30");
     expect(first).not.toBe(second);
   });
 
@@ -98,7 +98,7 @@ describe("settlement source identity", () => {
     expect([...ambiguous.ambiguousTransactionIds].sort()).toEqual(["line-1", "line-2", "line-3"]);
   });
 
-  it("groups line items from the same check and falls back to pay-period dates", () => {
+  it("retains every available coordinate in the fallback check identity", () => {
     const sameCheck = {
       checkNumber: " CHK-200 ",
       checkDate: "2026-02-15",
@@ -106,6 +106,9 @@ describe("settlement source identity", () => {
       periodEnd: "2026-02-14",
     };
     expect(directSettlementCheckIdentity(sameCheck)).toBe(
+      "check:CHK-200:date:2026-02-15:period:2026-02-01:2026-02-14",
+    );
+    expect(directSettlementCheckIdentity(sameCheck)).not.toBe(
       directSettlementCheckIdentity({ ...sameCheck, periodBegin: null, periodEnd: null }),
     );
     expect(directSettlementCheckIdentity({
@@ -113,7 +116,7 @@ describe("settlement source identity", () => {
       checkDate: "2026-02-15",
       periodBegin: "2026-02-01",
       periodEnd: "2026-02-14",
-    })).toBe("period:2026-02-01:2026-02-14");
+    })).toBe("date:2026-02-15:period:2026-02-01:2026-02-14");
     expect(directSettlementCheckIdentity({
       checkNumber: null,
       checkDate: null,

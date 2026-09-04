@@ -124,6 +124,7 @@ export interface AgencyFinancialCoverage {
   agencyTransactionsMissingBase: number;
   agencyTransactionsMissingPayRule: number;
   directChecksMissingGross: number;
+  directChecksMissingWithholding: number;
   directChecksGrossBelowNet: number;
   directChecksMissingDeal: number;
   classInvoicesMissingProgram: number;
@@ -209,6 +210,7 @@ interface CheckRow {
   check_number: string | null;
   actual_gross: string | null;
   actual_net: string;
+  tax_withheld: string | null;
   direct_rule: "keep_all" | "giveback_percent" | "giveback_all" | null;
   direct_percent: string | null;
 }
@@ -295,8 +297,8 @@ export function agencyRoutedEmployeeShare(input: {
 }
 
 export function directPayCheckAmounts(input: {
-  grossAmount: string | null;
   netAmount: string;
+  taxWithheld: string | null;
   directRule: CheckRow["direct_rule"];
   directPercent: string | null;
 }): {
@@ -305,9 +307,10 @@ export function directPayCheckAmounts(input: {
   employeeOwesAgency: string | null;
 } {
   const net = dec(input.netAmount);
-  const taxes = input.grossAmount === null || dec(input.grossAmount).lessThan(net)
-    ? null
-    : toMoney(dec(input.grossAmount).minus(net));
+  // Withholding is an independently verified payroll fact. Gross minus net can
+  // also contain benefits, garnishments, reimbursements, or other deductions,
+  // so deriving tax from those two fields would silently guess an expense.
+  const taxes = input.taxWithheld === null ? null : toMoney(input.taxWithheld);
   if (input.directRule === null) {
     return { taxes, employeeKeeps: null, employeeOwesAgency: null };
   }
@@ -474,6 +477,7 @@ export async function getAgencyFinancialReport(
               check_fact.check_number,
               check_fact.actual_gross::text,
               check_fact.actual_net::text,
+              check_fact.tax_withheld::text,
               deal.direct_rule,
               deal.direct_percent::text
          FROM employee_payroll_checks check_fact
@@ -649,8 +653,8 @@ export async function getAgencyFinancialReport(
 
   const directChecks = checkResult.rows.map<DirectPayCheckActual>((row) => {
     const amounts = directPayCheckAmounts({
-      grossAmount: row.actual_gross,
       netAmount: row.actual_net,
+      taxWithheld: row.tax_withheld,
       directRule: row.direct_rule,
       directPercent: row.direct_percent,
     });
@@ -801,8 +805,18 @@ export async function getAgencyFinancialReport(
     ...entry,
     ...manualOutcomes.get(entry.id)!,
   }));
-  const countedManualIncome = manualIncome.filter((entry) => entry.countedInIncome);
-  const countedManualSplits = manualIncome.filter((entry) => entry.countedSplitExpense);
+  const countedClassIncome = manualIncome.filter((entry) => (
+    entry.sourceType === "class" && entry.countedInIncome
+  ));
+  const countedOtherIncome = manualIncome.filter((entry) => (
+    entry.sourceType !== "class" && entry.countedInIncome
+  ));
+  const countedClassSplits = manualIncome.filter((entry) => (
+    entry.sourceType === "class" && entry.countedSplitExpense
+  ));
+  const countedOtherSplits = manualIncome.filter((entry) => (
+    entry.sourceType !== "class" && entry.countedSplitExpense
+  ));
 
   const completeTransactionBreakdown = transactions.filter((row) => (
     row.grossAmount !== null && row.baseAmount !== null && row.agencySpread !== null
@@ -823,8 +837,8 @@ export async function getAgencyFinancialReport(
   ) => rows.reduce((sum, row) => sum.plus(row[field] ?? 0), dec(0));
 
   const transactionIncome = transactions.reduce((sum, row) => sum.plus(row.grossAmount ?? 0), dec(0));
-  const classIncome = dec(0);
-  const manualIncomeTotal = countedManualIncome.reduce((sum, row) => sum.plus(row.grossAmount), dec(0));
+  const classIncome = countedClassIncome.reduce((sum, row) => sum.plus(row.grossAmount), dec(0));
+  const manualIncomeTotal = countedOtherIncome.reduce((sum, row) => sum.plus(row.grossAmount), dec(0));
   const approvedSetAsides = setAsides.filter((row) => row.historyAvailable).reduce(
     (sum, row) => sum.plus(row.approvedMonthlyFinal ?? 0),
     dec(0),
@@ -838,8 +852,11 @@ export async function getAgencyFinancialReport(
     (sum, row) => sum.plus(row.employeeExpense ?? 0),
     dec(0),
   );
-  const classIndividualShare = dec(0);
-  const manualIndividualShare = countedManualSplits.reduce(
+  const classIndividualShare = countedClassSplits.reduce(
+    (sum, row) => sum.plus(row.individualAmount),
+    dec(0),
+  );
+  const manualIndividualShare = countedOtherSplits.reduce(
     (sum, row) => sum.plus(row.individualAmount),
     dec(0),
   );
@@ -903,6 +920,7 @@ export async function getAgencyFinancialReport(
         row.paymentRecipient === "excellent_staffing" && row.payRuleSource === "missing"
       )).length,
       directChecksMissingGross: directChecks.filter((row) => row.grossAmount === null).length,
+      directChecksMissingWithholding: directChecks.filter((row) => row.taxes === null).length,
       directChecksGrossBelowNet: directChecks.filter((row) => (
         row.grossAmount !== null && dec(row.grossAmount).lessThan(row.netAmount)
       )).length,

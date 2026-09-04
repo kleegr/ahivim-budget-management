@@ -7,6 +7,7 @@ import {
   directPayCheckAmounts,
   transactionAgencySpread,
 } from "@/lib/data/agency-financial-report";
+import { dec } from "@/lib/money";
 
 describe("agency financial report math", () => {
   it("uses a person rule before the employee default and never uses funder gross", () => {
@@ -32,20 +33,27 @@ describe("agency financial report math", () => {
     expect(agencyShareOfEmployeeBase("21.0000", null)).toBeNull();
   });
 
-  it("calculates direct-pay expenses from check net once and excludes negative taxes", () => {
+  it("calculates direct-pay expense from verified net and independent withholding", () => {
     expect(directPayCheckAmounts({
-      grossAmount: "1000.0000",
       netAmount: "800.0000",
+      taxWithheld: "125.0000",
       directRule: "giveback_percent",
       directPercent: "0.200000",
-    })).toEqual({ taxes: "200.0000", employeeKeeps: "640.0000", employeeOwesAgency: "160.0000" });
+    })).toEqual({ taxes: "125.0000", employeeKeeps: "640.0000", employeeOwesAgency: "160.0000" });
 
     expect(directPayCheckAmounts({
-      grossAmount: "750.0000",
       netAmount: "800.0000",
+      taxWithheld: null,
       directRule: "keep_all",
       directPercent: "0",
     })).toEqual({ taxes: null, employeeKeeps: "800.0000", employeeOwesAgency: "0.0000" });
+  });
+
+  it("preserves the documented August money-operation benchmark identities", () => {
+    expect(dec("47973.56").minus("43210.36").toFixed(2)).toBe("4763.20");
+    expect(dec("47658.81").minus("42940.77").toFixed(2)).toBe("4718.04");
+    expect(dec("47658.81").minus("33930.00").toFixed(2)).toBe("13728.81");
+    expect(dec("36290.00").minus("33930.00").toFixed(2)).toBe("2360.00");
   });
 
   it("normalizes a negative approved final into one positive monthly expense", () => {

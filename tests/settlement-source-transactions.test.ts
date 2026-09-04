@@ -8,7 +8,7 @@ import type { PgLikePool } from "@/lib/import/commit";
 
 const EMPLOYEE = "123e4567-e89b-42d3-a456-426614174000";
 const TRANSACTION = "123e4567-e89b-42d3-a456-426614174010";
-const SOURCE = `${EMPLOYEE}:check:9001:date:2026-08-15`;
+const SOURCE = `${EMPLOYEE}:check:9001:date:2026-08-15:period:2026-08-01:2026-08-14`;
 
 function restrictedScope(): AccessScope {
   return {
@@ -35,6 +35,7 @@ describe("compact settlement transaction sources", () => {
 
     const [sql, params] = query.mock.calls[0]!;
     expect(sql).toContain("effective_payment_recipient");
+    expect(sql).toContain(":period:");
     expect(sql).toContain("t.employee_id = ANY($2::uuid[])");
     expect(sql).toContain("ambiguous_numbered_checks");
     expect(params).toEqual([SOURCE, [EMPLOYEE]]);

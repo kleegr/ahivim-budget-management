@@ -179,6 +179,68 @@ describe("settlement history SQL scope", () => {
     );
     expect(missingDealSql).not.toContain("t.created_at::date");
   });
+
+  it("redacts check gross independently from withholding and deductions", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("SELECT o.id, o.kind")) {
+        return { rows: [{
+          id: "obligation-1",
+          kind: "direct_employee_collection",
+          direction: "receivable",
+          employee_id: EMPLOYEE_GRANTED,
+          individual_id: null,
+          employee_name: "Employee One",
+          individual_name: null,
+          original_amount: "100.0000",
+          applied_amount: "0.0000",
+          check_number: "CHK-1",
+          check_date: "2026-08-21",
+          period_begin: "2026-08-01",
+          period_end: "2026-08-15",
+          calculation_metadata: {
+            flow: "direct_employee",
+            checkGross: "1000.0000",
+            taxWithheldDisplayOnly: "125.0000",
+            totalDeductionsDisplayOnly: "200.0000",
+          },
+          status: "active",
+          void_reason: null,
+          transaction_count: "1",
+          event_count: "0",
+          last_action_at: null,
+          created_at: "2026-08-21T12:00:00.000Z",
+        }] };
+      }
+      return { rows: [] };
+    });
+    const pool = { query, connect: vi.fn() } as unknown as PgLikePool;
+
+    const grossOnlyScope = {
+      ...scoped({
+        grantedEmployeeIds: [EMPLOYEE_GRANTED],
+        canSeeTaxes: false,
+      }),
+      canSeeCheckGross: true,
+    };
+    const grossOnly = await getSettlementDashboard(pool, grossOnlyScope);
+    expect(grossOnly.rows[0]?.calculation).toMatchObject({ checkGross: "1000.0000" });
+    expect(grossOnly.rows[0]?.calculation).not.toHaveProperty("taxWithheldDisplayOnly");
+    expect(grossOnly.rows[0]?.calculation).not.toHaveProperty("totalDeductionsDisplayOnly");
+
+    const taxOnlyScope = {
+      ...scoped({
+        grantedEmployeeIds: [EMPLOYEE_GRANTED],
+        canSeeTaxes: true,
+      }),
+      canSeeCheckGross: false,
+    };
+    const taxOnly = await getSettlementDashboard(pool, taxOnlyScope);
+    expect(taxOnly.rows[0]?.calculation).not.toHaveProperty("checkGross");
+    expect(taxOnly.rows[0]?.calculation).toMatchObject({
+      taxWithheldDisplayOnly: "125.0000",
+      totalDeductionsDisplayOnly: "200.0000",
+    });
+  });
 });
 
 describe("live settlement pace", () => {

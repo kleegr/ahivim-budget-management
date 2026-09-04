@@ -18,6 +18,7 @@ const COVERAGE_LABEL: Record<keyof AgencyFinancialCoverage, string> = {
   agencyTransactionsMissingBase: "Agency transactions missing employee base",
   agencyTransactionsMissingPayRule: "Agency transactions missing pay rule",
   directChecksMissingGross: "Direct checks missing gross",
+  directChecksMissingWithholding: "Direct checks missing verified withholding (excluded, not inferred)",
   directChecksGrossBelowNet: "Direct checks with gross below net",
   directChecksMissingDeal: "Direct checks missing employee deal",
   classInvoicesMissingProgram: "Class invoices missing program",
@@ -50,7 +51,15 @@ function setAsideSourceLabel(report: AgencyFinancialReport["setAsides"][number])
 
 /** Convert the exact on-screen actual snapshot into the shared export shape. */
 export function agencyFinancialExportTables(report: AgencyFinancialReport): ExportTable[] {
-  const countedManualIncome = report.manualIncome.filter((row) => row.countedInIncome).length;
+  const countedClassReceipts = report.manualIncome.filter((row) => (
+    row.sourceType === "class" && row.countedInIncome
+  )).length;
+  const matchedClassReceipts = report.manualIncome.filter((row) => (
+    row.sourceType === "class" && !row.countedInIncome && row.matchedIncomeSource !== null
+  )).length;
+  const countedOtherIncome = report.manualIncome.filter((row) => (
+    row.sourceType !== "class" && row.countedInIncome
+  )).length;
   return [
     {
       title: "Report period",
@@ -71,9 +80,11 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
       ],
       rows: [
         { section: "Income", metric: "Google Sheet transactions", records: report.transactions.length, amount: report.totals.income.transactions },
-        { section: "Income", metric: "Class payments", records: null, amount: report.totals.income.classes },
-        { section: "Income", metric: "Recorded other income", records: countedManualIncome, amount: report.totals.income.manual },
-        { section: "Income", metric: "Total income", records: report.transactions.length + countedManualIncome, amount: report.totals.income.total },
+        { section: "Income", metric: "Actual class receipts", records: countedClassReceipts, amount: report.totals.income.classes },
+        { section: "Income deduplication", metric: "Class receipts whose gross is already in Sheet income", records: matchedClassReceipts, amount: null },
+        { section: "Income exclusions", metric: "Issued class invoices - receivables only", records: report.classInvoices.length, amount: null },
+        { section: "Income", metric: "Reimbursements, custom programs, and other income", records: countedOtherIncome, amount: report.totals.income.manual },
+        { section: "Income", metric: "Total income", records: report.transactions.length + countedClassReceipts + countedOtherIncome, amount: report.totals.income.total },
         { section: "Transaction composition", metric: "Funder billed - complete base rows", records: report.transactionBreakdown.completeRows, amount: report.transactionBreakdown.funderBilled },
         { section: "Transaction composition", metric: "Employee base - complete base rows", records: report.transactionBreakdown.completeRows, amount: report.transactionBreakdown.employeeBase },
         { section: "Transaction composition", metric: "Agency spread - complete base rows", records: report.transactionBreakdown.completeRows, amount: report.transactionBreakdown.agencySpread },
@@ -85,11 +96,11 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
         { section: "Agency-routed deal", metric: "Agency share of base", records: report.transactionBreakdown.agencyRouted.completeRows, amount: report.transactionBreakdown.agencyRouted.agencyShareOfBase },
         { section: "Agency-routed deal", metric: "Rows excluded from complete deal split", records: report.transactionBreakdown.agencyRouted.excludedRows, amount: null },
         { section: "Expenses", metric: "Approved monthly set-asides", records: null, amount: report.totals.expenses.approvedSetAsides },
-        { section: "Expenses", metric: "Payroll taxes", records: null, amount: report.totals.expenses.taxes },
+        { section: "Expenses", metric: "Verified payroll withholding", records: null, amount: report.totals.expenses.taxes },
         { section: "Expenses", metric: "Direct-pay employee keeps", records: null, amount: report.totals.expenses.directEmployeeKeeps },
         { section: "Expenses", metric: "Agency-routed employee share", records: null, amount: report.totals.expenses.agencyRoutedEmployeeShare },
-        { section: "Expenses", metric: "Class individual share", records: null, amount: report.totals.expenses.classIndividualShare },
-        { section: "Expenses", metric: "Recorded income individual share", records: null, amount: report.totals.expenses.manualIndividualShare },
+        { section: "Expenses", metric: "Class receipt individual share", records: null, amount: report.totals.expenses.classIndividualShare },
+        { section: "Expenses", metric: "Other recorded income individual share", records: null, amount: report.totals.expenses.manualIndividualShare },
         { section: "Expenses", metric: "Total expenses", records: null, amount: report.totals.expenses.total },
         { section: "Result", metric: "Agency result", records: null, amount: report.totals.agencyResult },
       ],
@@ -136,7 +147,7 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
         { key: "checkNumber", header: "Check", type: "text" },
         { key: "gross", header: "Gross", type: "money" },
         { key: "net", header: "Net", type: "money" },
-        { key: "taxes", header: "Taxes", type: "money" },
+        { key: "taxes", header: "Verified withholding", type: "money" },
         { key: "deal", header: "Deal", type: "text" },
         { key: "employeeKeeps", header: "Employee keeps", type: "money" },
         { key: "agencyReceives", header: "Agency receives", type: "money" },
@@ -203,7 +214,7 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
       emptyMessage: "No issued class invoices in this month.",
     },
     {
-      title: "Recorded other income",
+      title: "Recorded receipts and other income",
       columns: [
         { key: "serviceDate", header: "Date", type: "date" },
         { key: "sourceType", header: "Type", type: "text" },
@@ -232,7 +243,7 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
         duplicateSource: row.matchedIncomeSource?.sourceRef ?? null,
         decisionReason: row.countSeparatelyReason,
       })),
-      emptyMessage: "No other income recorded in this month.",
+      emptyMessage: "No receipts or other income recorded in this month.",
     },
     {
       title: "Coverage checks",
