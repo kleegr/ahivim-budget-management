@@ -5,6 +5,7 @@ import type { ProgramBudgetRecord } from "@/lib/data/program-budgets";
 import type { StrategyGridRow } from "@/lib/manage/calculation-strategies";
 import {
   buildOwnerActivityFilterOptions,
+  buildOwnerAttentionItems,
   buildOwnerDashboardSummary,
   normalizeOwnerActivitySelection,
 } from "@/lib/dashboard/owner-summary";
@@ -14,6 +15,7 @@ const ids = {
   latest2: "00000000-0000-4000-8000-000000000002",
   older: "00000000-0000-4000-8000-000000000003",
 };
+const AS_OF = new Date("2026-09-04T12:00:00Z");
 
 function transaction(overrides: Partial<GridTransaction>): GridTransaction {
   return {
@@ -143,6 +145,7 @@ function strategy(overrides: Partial<StrategyGridRow>): StrategyGridRow {
 describe("buildOwnerDashboardSummary", () => {
   it("keeps the latest check-date actuals, authorization budgets, and financial plans separate", () => {
     const summary = buildOwnerDashboardSummary({
+      asOf: AS_OF,
       transactions: [
         transaction({ id: ids.older, checkDate: "2026-08-08", checkNumber: "899", gross: "300", internalAmount: "200", agencyAdditional: "100" }),
         transaction({ id: ids.latest1 }),
@@ -221,6 +224,13 @@ describe("buildOwnerDashboardSummary", () => {
       usedHours: "240.00",
       remainingHours: "360.00",
       billingWithoutBudget: 1,
+      overLimit: 0,
+      atLimit: 0,
+      behindPace: 1,
+      scheduledOverLimit: 0,
+      renewalDueSoon: 0,
+      renewalMissing: 0,
+      renewalExpired: 0,
       source: "program_authorizations",
     });
 
@@ -232,6 +242,173 @@ describe("buildOwnerDashboardSummary", () => {
       approvedFinal: "650.00",
       approvedStrategies: 1,
     });
+  });
+
+  it("prioritizes current owner follow-up with direct budget, check, money, and setup links", () => {
+    const summary = buildOwnerDashboardSummary({
+      asOf: AS_OF,
+      transactions: [
+        transaction({
+          id: ids.latest2,
+          checkDate: "2026-08-23",
+          checkNumber: "901",
+          paymentRecipient: "unknown",
+          payTo: "Routing unclear",
+        }),
+        transaction({
+          id: ids.latest1,
+          totalNetPay: null,
+        }),
+      ],
+      programBudgets: [programBudget({})],
+      budgetBoard: [
+        boardRow({ hasBilling: true }),
+        boardRow({
+          id: "20000000-0000-4000-8000-000000000009",
+          name: "No Budget",
+          hasBilling: true,
+        }),
+      ],
+      strategies: [
+        strategy({}),
+        strategy({
+          id: "60000000-0000-4000-8000-000000000002",
+          afterAll: null,
+        }),
+      ],
+    });
+
+    const items = buildOwnerAttentionItems(summary, {
+      agencyOwes: "75.0000",
+      employeesOwe: "80.0000",
+      reservesToSetAside: "40.0000",
+      credits: "12.5000",
+      creditCount: 1,
+    }, 2);
+
+    expect(items.map((item) => item.key)).toEqual([
+      "budget-exceptions",
+      "check-verification",
+      "money-queues",
+      "financial-approvals",
+    ]);
+    expect(items[0]).toMatchObject({
+      href: "/individuals?view=attention",
+      action: "Review people & budgets",
+    });
+    expect(items[1]).toMatchObject({
+      detail: "2 check groups have missing or conflicting routing, net pay, identity, duplicate, or group-review data.",
+      href: "/settlements?focus=check-issues",
+    });
+    expect(items[2]).toMatchObject({
+      detail: "$75.00 to pay, $80.00 to collect, $40.00 to set aside, and $12.50 in 1 credit.",
+      href: "/settlements?queue=payable",
+    });
+    expect(items[3]).toMatchObject({
+      detail: "1 financial plan needs an approved final amount.",
+      href: "/calculations",
+    });
+  });
+
+  it("aggregates budget, renewal, schedule, check, money, and setup exceptions into six actions", () => {
+    const personId = (suffix: string) => `20000000-0000-4000-8000-0000000000${suffix}`;
+    const authorization = (
+      suffix: string,
+      overrides: Partial<ProgramBudgetRecord>,
+    ) => programBudget({
+      authorizationId: `40000000-0000-4000-8000-0000000000${suffix}`,
+      individualId: personId(suffix),
+      individualName: `Person ${suffix}`,
+      ...overrides,
+    });
+    const programBudgets = [
+      authorization("01", { consumedHours: "510", remainingHours: "-10", remainingAfterScheduledHours: "-10" }),
+      authorization("02", { consumedHours: "475", remainingHours: "25", remainingAfterScheduledHours: "25" }),
+      authorization("03", { consumedHours: "100", remainingHours: "400", remainingAfterScheduledHours: "400" }),
+      authorization("04", {
+        endDate: "2026-10-01",
+        renewalDate: "2026-10-02",
+        consumedHours: "100",
+        remainingHours: "400",
+        scheduledHours: "450",
+        remainingAfterScheduledHours: "-50",
+      }),
+      authorization("05", {
+        startDate: "2025-09-01",
+        endDate: "2026-08-31",
+        renewalDate: "2026-09-01",
+        consumedHours: "100",
+        remainingHours: "400",
+        remainingAfterScheduledHours: "400",
+      }),
+    ];
+    const summary = buildOwnerDashboardSummary({
+      asOf: AS_OF,
+      transactions: [transaction({ matchStatus: "possible" })],
+      programBudgets,
+      budgetBoard: programBudgets.map((row) => boardRow({ id: row.individualId, name: row.individualName })),
+      strategies: [strategy({
+        individualId: personId("06"),
+        renewalDate: null,
+        effectiveRenewal: null,
+        periodStart: null,
+        periodEnd: null,
+        afterAll: null,
+      })],
+    });
+
+    expect(summary.budgets).toMatchObject({
+      overLimit: 1,
+      atLimit: 1,
+      behindPace: 3,
+      scheduledOverLimit: 1,
+      renewalDueSoon: 1,
+      renewalMissing: 1,
+      renewalExpired: 1,
+    });
+
+    const items = buildOwnerAttentionItems(summary, {
+      agencyOwes: "25",
+      employeesOwe: "0",
+      reservesToSetAside: "0",
+      credits: "0",
+      creditCount: 0,
+    }, 1);
+    expect(items).toHaveLength(6);
+    expect(items.map((item) => item.key)).toEqual([
+      "budget-exceptions",
+      "renewal-exceptions",
+      "scheduled-over-limit",
+      "check-verification",
+      "money-queues",
+      "financial-approvals",
+    ]);
+    expect(items.map((item) => item.href)).toEqual([
+      "/individuals?view=attention",
+      "/individuals?view=attention",
+      "/schedule?view=coverage",
+      "/settlements?focus=check-issues",
+      "/settlements?queue=payable",
+      "/calculations",
+    ]);
+  });
+
+  it("omits cleared attention categories", () => {
+    const summary = buildOwnerDashboardSummary({
+      asOf: AS_OF,
+      transactions: [transaction({})],
+      programBudgets: [programBudget({ consumedHours: "340", remainingHours: "160" })],
+      budgetBoard: [boardRow({ hasBilling: true })],
+      strategies: [strategy({})],
+    });
+
+    expect(buildOwnerAttentionItems(summary, {
+      agencyOwes: "0",
+      employeesOwe: "0",
+      reservesToSetAside: "0",
+      credits: "0",
+      creditCount: 0,
+    })).toEqual([]);
   });
 
   it("never substitutes a legacy budget-board calculation for canonical authorizations", () => {
