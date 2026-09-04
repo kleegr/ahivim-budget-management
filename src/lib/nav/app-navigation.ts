@@ -1,7 +1,10 @@
+import type { AccountPresetId } from "@/lib/auth/account-presets";
+
 export type NavigationGate = "resolved" | "manager" | "owner" | "activity-transactions" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents" | "portal" | "agencies";
 
 export interface NavigationAccess {
   role: string;
+  accountPreset?: AccountPresetId | null;
   canSeeTransactions: boolean;
   canSeeSettlements: boolean;
   canSeeBudgets: boolean;
@@ -341,6 +344,30 @@ const REPORT_COMMANDS: readonly NavigationDestination[] = [
   },
 ];
 
+const EXTERNAL_ACCOUNT_PRESETS = new Set<AccountPresetId>([
+  "individual_parent",
+  "employee",
+  "agency",
+  "agency_scheduler",
+  "agency_staffing_manager",
+  "agency_collector",
+]);
+
+function usesExternalLanding(access: NavigationAccess): boolean {
+  if (access.role !== "viewer" || !access.canUsePortal) return false;
+  if (access.accountPreset) return EXTERNAL_ACCOUNT_PRESETS.has(access.accountPreset);
+
+  // Legacy portal accounts predate persisted presets. Treat a viewer with a
+  // portal identity and no internal money/budget/document workspace as an
+  // external account, including agency planners whose only extra area is the
+  // agency-scoped Schedule.
+  return !access.canSeeTransactions
+    && !access.canSeeSettlements
+    && !access.canSeeBudgets
+    && !(access.canSeeClassFinancials ?? false)
+    && !access.canEditDocuments;
+}
+
 function allowed(gate: NavigationGate | undefined, access: NavigationAccess): boolean {
   if (!gate) return true;
   if (!access.accessResolved) return false;
@@ -367,6 +394,7 @@ function allowed(gate: NavigationGate | undefined, access: NavigationAccess): bo
 
 export function getVisibleWorkspaces(access: NavigationAccess): VisibleNavigationWorkspace[] {
   return WORKSPACES.flatMap((workspace) => {
+    if (workspace.id === "overview" && usesExternalLanding(access)) return [];
     const destinations = workspace.destinations.filter((destination) => allowed(destination.gate, access));
     if (destinations.length === 0) return [];
     return [{ ...workspace, href: destinations[0].href, destinations }];

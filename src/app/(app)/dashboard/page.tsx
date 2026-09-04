@@ -181,6 +181,7 @@ export default async function DashboardPage({
         activityOptions={ownerResult.data.activityOptions}
         savedViews={ownerResult.data.savedViews}
         financialMonth={financialMonth}
+        today={today}
       />
     );
   }

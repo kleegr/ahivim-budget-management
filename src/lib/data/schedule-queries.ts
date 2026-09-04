@@ -38,6 +38,16 @@ function plannerWarnings(value: unknown): Array<{ code?: unknown }> {
   });
 }
 
+const AVAILABILITY_WARNING_CODES = new Set([
+  "employee_inactive",
+  "employee_unavailable",
+  "employee_outside_working_hours",
+]);
+
+function warningCode(warning: { code?: unknown }): string {
+  return typeof warning.code === "string" ? warning.code : "";
+}
+
 /** Elapsed placeholder for classification when an individual has no budget period. */
 const NOT_STARTED_ELAPSED: PeriodElapsed = {
   totalDays: 0,
@@ -655,8 +665,13 @@ export async function individualScheduleSummary(
 
 export interface SessionWarningFlags {
   id: string;
+  /** Backward-compatible roll-up used by calendar event tones. */
   hasConflict: boolean;
+  hasScheduleConflict?: boolean;
+  hasAvailabilityConflict?: boolean;
   hasBudgetRisk: boolean;
+  hasAssignmentGap?: boolean;
+  hasOtherWarning?: boolean;
   warningCount: number;
 }
 
@@ -845,15 +860,24 @@ export async function listSessionWarningFlags(
   );
 
   return rows.map((r) => {
-    const staticWarningCount = plannerWarnings(r.warnings).length;
+    const storedWarnings = plannerWarnings(r.warnings);
+    const storedAvailabilityWarningCount = storedWarnings
+      .filter((warning) => AVAILABILITY_WARNING_CODES.has(warningCode(warning))).length;
+    const storedOtherWarningCount = storedWarnings.length - storedAvailabilityWarningCount;
+    const hasAvailabilityConflict = r.has_availability_conflict || storedAvailabilityWarningCount > 0;
     const canSeeBudgetRisk = scope?.canSeeBudgets !== false;
-    const liveWarningCount = Number(r.has_conflict) + Number(r.has_availability_conflict)
+    const liveWarningCount = Number(r.has_conflict)
+      + Number(r.has_availability_conflict && storedAvailabilityWarningCount === 0)
       + Number(canSeeBudgetRisk && r.has_budget_risk) + Number(r.has_assignment_gap);
     return {
       id: r.id,
-      hasConflict: r.has_conflict || r.has_availability_conflict,
+      hasConflict: r.has_conflict || hasAvailabilityConflict,
+      hasScheduleConflict: r.has_conflict,
+      hasAvailabilityConflict,
       hasBudgetRisk: canSeeBudgetRisk && r.has_budget_risk,
-      warningCount: staticWarningCount + liveWarningCount,
+      hasAssignmentGap: r.has_assignment_gap,
+      hasOtherWarning: storedOtherWarningCount > 0,
+      warningCount: storedWarnings.length + liveWarningCount,
     };
   });
 }

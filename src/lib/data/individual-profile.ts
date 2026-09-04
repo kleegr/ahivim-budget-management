@@ -2,6 +2,7 @@ import type { AccessScope } from "@/lib/auth/access";
 import { agencyDate } from "@/lib/business/agency-time";
 import { listSessions, type CalendarSession } from "@/lib/data/schedule-queries";
 import type { PgLikePool } from "@/lib/import/commit";
+import { listAssignments } from "@/lib/manage/assignments";
 import { dec } from "@/lib/money";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -27,10 +28,77 @@ export interface IndividualProfileContext {
   previewAccounts: IndividualPortalPreviewAccount[];
 }
 
+export interface IndividualPortfolioStaffingContext {
+  assignedEmployees: Array<{ id: string; name: string }>;
+  nextSession: CalendarSession | null;
+}
+
 function addDays(value: string, days: number): string {
   const date = new Date(`${value}T00:00:00.000Z`);
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
+}
+
+function assignmentIsCurrent(
+  assignment: { startDate: string | null; endDate: string | null },
+  asOf: string,
+): boolean {
+  return (!assignment.startDate || assignment.startDate <= asOf)
+    && (!assignment.endDate || assignment.endDate >= asOf);
+}
+
+/**
+ * Current staffing and the next planned visit for the all-individual portfolio.
+ *
+ * This deliberately composes the canonical assignment and schedule readers
+ * instead of introducing another definition of either fact. The caller must
+ * explicitly opt into planning visibility; restricted profiles then perform no
+ * employee or schedule query at all.
+ */
+export async function getIndividualPortfolioStaffingContext(
+  pool: PgLikePool,
+  scope: AccessScope,
+  options: { canViewPlanning: boolean; from?: string; throughDays?: number },
+): Promise<Map<string, IndividualPortfolioStaffingContext>> {
+  if (!options.canViewPlanning) return new Map();
+
+  const from = options.from ?? agencyDate();
+  const through = addDays(from, options.throughDays ?? 366);
+  const [assignments, sessions] = await Promise.all([
+    listAssignments(pool, { scope, hoursOnlyPrograms: true }),
+    listSessions(pool, { from, to: through, status: "pending" }, scope),
+  ]);
+  const context = new Map<string, IndividualPortfolioStaffingContext>();
+  const ensure = (individualId: string) => {
+    let value = context.get(individualId);
+    if (!value) {
+      value = { assignedEmployees: [], nextSession: null };
+      context.set(individualId, value);
+    }
+    return value;
+  };
+
+  for (const assignment of assignments) {
+    if (!assignmentIsCurrent(assignment, from)) continue;
+    const value = ensure(assignment.individualId);
+    if (!value.assignedEmployees.some((employee) => employee.id === assignment.employeeId)) {
+      value.assignedEmployees.push({ id: assignment.employeeId, name: assignment.employeeName });
+    }
+  }
+  for (const value of context.values()) {
+    value.assignedEmployees.sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  // listSessions is date/time ordered. The first occurrence for each participant
+  // is therefore the exact next planned service for that individual.
+  for (const session of sessions) {
+    for (const individualId of session.individualIds) {
+      const value = ensure(individualId);
+      if (!value.nextSession) value.nextSession = session;
+    }
+  }
+
+  return context;
 }
 
 /** Profile-only context that is not part of the financial authorization read model. */
@@ -199,7 +267,7 @@ export function individualProfileMainAction(input: {
       label: input.canPlan ? "Assign an employee" : "Review staffing",
       detail: "No active employee assignment is on file.",
       href: input.canPlan
-        ? `/schedule?view=coverage&individualId=${input.individualId}`
+        ? `/schedule?view=future&individualId=${input.individualId}`
         : `${profile}?view=activity`,
       tone: "warning",
     };

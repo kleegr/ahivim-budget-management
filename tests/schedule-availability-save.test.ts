@@ -187,7 +187,11 @@ describe("save-time employee availability", () => {
     expect(result).toEqual([{
       id: SESSION_ID,
       hasConflict: true,
+      hasScheduleConflict: false,
+      hasAvailabilityConflict: true,
       hasBudgetRisk: false,
+      hasAssignmentGap: false,
+      hasOtherWarning: false,
       warningCount: 1,
     }]);
   });
@@ -223,7 +227,11 @@ describe("save-time employee availability", () => {
     expect(result).toEqual([{
       id: SESSION_ID,
       hasConflict: false,
+      hasScheduleConflict: false,
+      hasAvailabilityConflict: false,
       hasBudgetRisk: false,
+      hasAssignmentGap: false,
+      hasOtherWarning: false,
       warningCount: 0,
     }]);
   });

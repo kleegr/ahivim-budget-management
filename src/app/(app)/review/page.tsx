@@ -2,7 +2,7 @@ import { CheckCircle2, Eye, Inbox, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
 import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
-import { exceptionCounts } from "@/lib/data/queries";
+import { getActivityReviewSummary } from "@/lib/data/activity-overview";
 import { ButtonLink, Card, EmptyState, ErrorPanel, PageHeader, StatusBadge, Table, Td, Th, Tr } from "@/components/ui";
 import { reviewQueueHref } from "@/lib/nav/review-actions";
 
@@ -43,63 +43,72 @@ const statusFor = (tone: Section["tone"], monitoring = false) => {
 export default async function ReviewPage() {
   await requireUser("manager");
 
-  const result = await withDb((pool) => exceptionCounts(pool));
+  const result = await withDb((pool) => getActivityReviewSummary(pool));
 
   if (!result.ok) {
     return (
       <>
         <PageHeader
-          eyebrow="Inbox"
-          title="Review inbox"
+          eyebrow="Activity"
+          title="Activity review"
           description="Decisions waiting for a person."
+          action={<ButtonLink href="/transactions">Back to activity</ButtonLink>}
         />
         <ErrorPanel title="Review inbox is unavailable">{result.error}</ErrorPanel>
       </>
     );
   }
 
-  const c = result.data;
+  const { decisions: d, monitoring: m } = result.data;
 
   // Decisions: a person must act, and until they do something is unresolved.
   const decisions: Section[] = [
     {
+      key: "source",
+      question: "Did the original activity change?",
+      detail: "Compare changed or missing source records before choosing what Ahivim should keep.",
+      href: reviewQueueHref("sync_conflicts"),
+      count: d.changedSourceRecords + d.missingSourceRecords,
+      tone: "warn",
+    },
+    {
       key: "names",
-      question: "Imported names need a match",
-      detail: "Choose the correct individual or employee on each source row.",
+      question: "Who does this service belong to?",
+      detail: "Choose the correct individual or employee when a name was not recognized.",
       href: reviewQueueHref("unmatched_names"),
-      count: c.unmatchedNames,
+      count: d.unmatchedNames,
       tone: "warn",
     },
     {
       key: "aliases",
-      question: "Name spellings need approval",
-      detail: "Approve a spelling before the system reuses it on future imports.",
+      question: "Can this name be reused?",
+      detail: "Approve a spelling before Ahivim recognizes it automatically next time.",
       href: reviewQueueHref("pending_aliases"),
-      count: c.pendingAliases,
+      count: d.pendingAliases,
       tone: "warn",
     },
     {
       key: "duplicates",
-      question: "Possible duplicate people",
+      question: "Are these the same person?",
       detail: "Confirm whether two records belong to the same person.",
       href: reviewQueueHref("duplicate_people"),
-      count: c.duplicateIndividuals,
+      count: d.duplicatePeople,
       tone: "warn",
     },
     {
       key: "programs",
-      question: "Unknown programs",
-      detail: "Map source values to a program before they enter billed activity.",
+      question: "Which program was provided?",
+      detail: "Choose the correct program before the service can enter recorded activity.",
       href: reviewQueueHref("unknown_programs"),
-      count: c.unknownPrograms,
+      count: d.unknownPrograms,
       tone: "warn",
     },
     {
       key: "reconcile",
-      question: "Source totals do not reconcile",
-      detail: "Review a difference between imported control totals and committed activity.",
+      question: "Do these totals match the original record?",
+      detail: "Review a difference between the original totals and recorded activity.",
       href: reviewQueueHref("reconciliation"),
-      count: c.reconciliationDifferences,
+      count: d.totalDifferences,
       tone: "info",
     },
   ];
@@ -112,7 +121,7 @@ export default async function ReviewPage() {
       question: "Unexpected rates",
       detail: "Billed activity used a rate outside the configured schedule.",
       href: reviewQueueHref("rates"),
-      count: c.rateExceptions,
+      count: m.unexpectedRates,
       tone: "info",
     },
     {
@@ -120,15 +129,15 @@ export default async function ReviewPage() {
       question: "Group sessions to confirm",
       detail: "Confirm whether related rows represent one shared service session.",
       href: reviewQueueHref("groups"),
-      count: c.groupReviewIssues,
+      count: m.groupServices,
       tone: "info",
     },
     {
       key: "duprows",
-      question: "Possible duplicate rows",
-      detail: "Two committed rows share the same source details.",
+      question: "Possible duplicate services",
+      detail: "Two recorded services share the same original details.",
       href: reviewQueueHref("duplicate_rows"),
-      count: c.duplicateCandidates,
+      count: m.possibleDuplicateServices,
       tone: "info",
     },
     {
@@ -136,21 +145,22 @@ export default async function ReviewPage() {
       question: "Over authorization",
       detail: "Billed hours have passed the current authorization.",
       href: reviewQueueHref("over_authorization"),
-      count: c.overAuthorization,
+      count: m.overAuthorization,
       tone: "danger",
     },
   ];
 
-  const total = decisions.reduce((s, x) => s + x.count, 0);
+  const total = result.data.decisionTotal;
   const active = decisions.filter((s) => s.count > 0);
   const watching = monitoring.filter((s) => s.count > 0);
 
   return (
     <>
       <PageHeader
-        eyebrow="Inbox"
-        title="Review inbox"
-        description="Resolve imported identities, source mappings, and exceptions that require judgment."
+        eyebrow="Activity"
+        title="Activity review"
+        description="Answer the questions that keep recorded services and payroll from being fully ready."
+        action={<ButtonLink href="/transactions">Back to activity</ButtonLink>}
       />
 
       <div className="mb-5 grid grid-cols-3 divide-x divide-[var(--color-rule)] border-y border-[var(--color-rule)]">
@@ -162,7 +172,7 @@ export default async function ReviewPage() {
       {total === 0 ? (
         <Card>
           <EmptyState title="No decisions waiting" icon={<CheckCircle2 aria-hidden className="h-5 w-5" />}>
-            New items appear here when an import or sync needs review.
+            New items appear here when a name, program, source change, or total needs judgment.
           </EmptyState>
         </Card>
       ) : (
@@ -176,7 +186,7 @@ export default async function ReviewPage() {
                   <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">{section.detail}</p>
                 </Td>
                 <Td numeric><span className="text-lg font-semibold">{section.count.toLocaleString()}</span></Td>
-                <Td><ButtonLink href={section.href}>Review</ButtonLink></Td>
+                <Td><ButtonLink href={section.href}>Decide</ButtonLink></Td>
               </Tr>
             ))}
           </Table>

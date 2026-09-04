@@ -9,9 +9,10 @@ import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
 import { buildInitialFilters } from "@/lib/transactions/initial-filters";
 import { RefreshCw } from "lucide-react";
 import { listSettlementSourceTransactions } from "@/lib/data/settlement-source-transactions";
+import { getActivityReviewSummary } from "@/lib/data/activity-overview";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Transactions - Ahivim" };
+export const metadata = { title: "Activity - Ahivim" };
 
 type SP = Record<string, string | string[] | undefined>;
 const one = (v: string | string[] | undefined): string | undefined =>
@@ -28,6 +29,9 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   const requestedTransactionId = !requestedSettlementSource && requestedTransactionIdsFromUrl.length === 1
     ? requestedTransactionIdsFromUrl[0]
     : undefined;
+  const loadActivityOverview = canManage
+    && !requestedSettlementSource
+    && requestedTransactionIdsFromUrl.length === 0;
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
@@ -41,26 +45,35 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         canSeeBudgets: scope.canSeeBudgets,
         requestedTransactionIds: [] as string[],
         sourceSelection: null,
+        reviewSummary: null,
       };
     }
+    const reviewSummaryPromise = loadActivityOverview
+      ? getActivityReviewSummary(pool, { includeBudgetMonitoring: false }).catch(() => null)
+      : Promise.resolve(null);
     const sourceSelection = requestedSettlementSource
       ? await listSettlementSourceTransactions(pool, scope, requestedSettlementSource)
       : null;
     const requestedTransactionIds = sourceSelection
       ? sourceSelection.transactionIds
       : requestedTransactionIdsFromUrl;
+    const [rows, reviewSummary] = await Promise.all([
+      sourceSelection
+        ? Promise.resolve(sourceSelection.rows)
+        : listTransactionsForGrid(pool, scope, {
+            transactionIds: requestedTransactionIds,
+          }),
+      reviewSummaryPromise,
+    ]);
     return {
       denied: false as const,
       planningOnly: false,
-      rows: sourceSelection
-        ? sourceSelection.rows
-        : await listTransactionsForGrid(pool, scope, {
-            transactionIds: requestedTransactionIds,
-          }),
+      rows,
       visibility,
       canSeeBudgets: scope.canSeeBudgets,
       requestedTransactionIds,
       sourceSelection,
+      reviewSummary,
     };
   });
 
@@ -70,9 +83,9 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   if (result.ok && result.data.denied) {
     return (
       <>
-        <PageHeader eyebrow="Actual activity" title="Transactions" />
-        <ErrorPanel title="No access to Transactions" action={<ButtonLink href="/home">Back to home</ButtonLink>}>
-          Your account doesn&rsquo;t include permission to view transactions. Ask an administrator if you need it.
+        <PageHeader eyebrow="Recorded work" title="Activity" />
+        <ErrorPanel title="No access to Activity" action={<ButtonLink href="/home">Back to home</ButtonLink>}>
+          Your account doesn&rsquo;t include permission to view recorded services or payroll. Ask an administrator if you need it.
         </ErrorPanel>
       </>
     );
@@ -97,7 +110,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     : allRows;
   const seeded = result.ok ? buildInitialFilters(rows, sp) : { filters: {}, label: null };
   const contextLabel = requestedSettlementSource && !sourceUnavailable
-    ? `${requestedTransactionIds.length.toLocaleString()} source transaction${requestedTransactionIds.length === 1 ? "" : "s"} from Money operations`
+    ? `${requestedTransactionIds.length.toLocaleString()} recorded service${requestedTransactionIds.length === 1 ? "" : "s"} behind Money operations`
     : selectedTransaction
     ? `Selected transaction${selectedTransaction.checkNumber ? ` · check ${selectedTransaction.checkNumber}` : ""}`
     : requestedTransactionIds.length > 1
@@ -105,20 +118,21 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
       : seeded.label;
   const hasFilterContext = Object.keys(seeded.filters).length > 0;
   const requestedView = one(sp.view);
+  const normalizedRequestedView: "checks" | "rows" | null = requestedView === "checks" || requestedView === "payroll"
+    ? "checks"
+    : requestedView === "rows" || requestedView === "services"
+      ? "rows"
+      : null;
   const initialView: "checks" | "rows" = contextLabel || hasFilterContext
     ? "rows"
-    : requestedView === "checks" || requestedView === "rows"
-      ? requestedView
-      : user.role === "admin"
-        ? "rows"
-        : "checks";
+    : normalizedRequestedView ?? "rows";
 
   return (
     <>
       <PageHeader
-        eyebrow="Actual activity"
-        title="Transactions"
-        description="Actual billing and payroll activity."
+        eyebrow="Recorded work"
+        title="Activity"
+        description="See what service happened, how payroll was grouped, and what needs a decision."
       />
 
       {!result.ok ? (
@@ -142,14 +156,14 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
       ) : rows.length === 0 ? (
         <Card>
           <EmptyState
-            title="No transactions yet"
+            title="No recorded activity yet"
             action={canManage ? (
               <ButtonLink href="/sync" variant="primary">
-                <RefreshCw aria-hidden className="h-4 w-4" /> Open Google Sheet sync
+                <RefreshCw aria-hidden className="h-4 w-4" /> Update activity
               </ButtonLink>
             ) : undefined}
           >
-            Once a payroll file is imported and committed, every row appears here.
+            Recorded services and payroll checks will appear here after activity is updated.
           </EmptyState>
         </Card>
       ) : (
@@ -162,6 +176,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
           initialFilters={seeded.filters}
           contextLabel={contextLabel}
           initialView={initialView}
+          reviewSummary={result.data.reviewSummary}
         />
       )}
     </>

@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest";
 import { getCommandDestinations, getVisibleWorkspaces } from "@/lib/nav/app-navigation";
 
 const page = readFileSync("src/app/(app)/reports/agency-financials/page.tsx", "utf8");
-const workspace = readFileSync("src/components/reports/agency-financial-workspace.tsx", "utf8");
+const workspacePaths = [
+  "src/components/reports/agency-financial-workspace.tsx",
+  "src/components/reports/agency-financial-shared.tsx",
+  "src/components/reports/agency-financial-workspace-forms.tsx",
+] as const;
+const workspace = workspacePaths.map((path) => readFileSync(path, "utf8")).join("\n");
 const reportLibrary = readFileSync("src/app/(app)/reports/page.tsx", "utf8");
 const incomeApi = readFileSync("src/app/api/agency-financials/income/route.ts", "utf8");
 const manualSeparateApi = readFileSync("src/app/api/agency-financials/income/[id]/count-separately/route.ts", "utf8");
@@ -25,6 +30,12 @@ const baseAccess = {
 };
 
 describe("owner agency financials access and interface", () => {
+  it("keeps each report UI module below the transport limit", () => {
+    for (const path of workspacePaths) {
+      expect(Buffer.byteLength(readFileSync(path))).toBeLessThan(50_000);
+    }
+  });
+
   it("guards the page as administrator-only and hides its report card from managers", () => {
     expect(page).toContain('requireUser("admin")');
     expect(reportLibrary).toContain('report.ownerOnly && user.role !== "admin"');
@@ -49,6 +60,12 @@ describe("owner agency financials access and interface", () => {
       "Class invoice receivables",
       "Approved monthly set-asides",
       "Payroll taxes (gross - net)",
+      "How transaction income is divided",
+      "Funder billed",
+      "Employee base",
+      "Agency spread",
+      "Employee share of base",
+      "Agency share of base",
       "Add income",
       "Program split",
       "Employee pay rule",
@@ -95,6 +112,13 @@ describe("owner agency financials access and interface", () => {
     expect(workspace).toContain("Gross comes from");
     expect(workspace).toContain("Individual split comes from this receipt");
     expect(workspace).toContain("Google Sheet transactions and recorded payments");
+    expect(workspace).toContain("Date basis:");
+    expect(workspace).toContain("service month, using period begin, otherwise check date, otherwise period end");
+    expect(workspace).toContain("Funder billed = Employee base + Agency spread");
+    expect(workspace).toContain("Funder billed = Agency spread + Employee share of base + Agency share of base");
+    expect(workspace).toContain("Direct-pay deal amounts stay check-level and use verified net");
+    expect(workspace).toContain("Incomplete values stay out of the money split");
+    expect(workspace).toContain("missing base, spread, or deal amounts are not guessed");
     expect(workspace).toContain("Individual split included");
     expect(workspace).toContain("transactionId=${row.id}");
     expect(workspace).toContain("serviceFrom=${report.periodStart}&serviceTo=${report.periodEnd}");

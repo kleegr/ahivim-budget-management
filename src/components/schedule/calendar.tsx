@@ -11,8 +11,10 @@ import {
   sessionTone, EVENT_TONE_COLOR, EVENT_TONE_LABEL, type EventTone, type SessionFlags,
   type Picker, type ProgramPicker, type View,
 } from "./shared";
-import SessionDetail from "./session-detail";
+import SessionDetail, { type SessionRepairMode } from "./session-detail";
 import CreateSessionModal from "./create-session-modal";
+import ScheduleAttentionPanel from "./schedule-attention-panel";
+import type { ScheduleRepairKind } from "@/lib/business/schedule-attention";
 import { PaceBar } from "@/components/ui";
 import { BigStat, ProgressBar, UtilizationBadge } from "@/components/ui-viz";
 import { dec, formatHours, formatPercent } from "@/lib/money";
@@ -68,6 +70,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<CalendarSession | null>(null);
+  const [selectedRepair, setSelectedRepair] = useState<SessionRepairMode | null>(null);
   const [creating, setCreating] = useState<null | { date: string; mode: "one_time" | "recurring" }>(null);
   const [summary, setSummary] = useState<ScheduleUtilizationSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -176,7 +179,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
       budgetHours = budgetHours.plus(dec(session.durationHours).times(Math.max(1, session.individualIds.length)));
       if (session.employeeId) employeeIds.add(session.employeeId);
       for (const id of session.individualIds) individualIds.add(id);
-      if (session.warningCount > 0) flaggedSessions += 1;
+      if (session.warningCount > 0 || !session.employeeId) flaggedSessions += 1;
     }
     return {
       sessions: scheduledSessions,
@@ -203,6 +206,11 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
       individualId: next === "individual" ? current.individualId : "",
       unassigned: next === "all" ? current.unassigned : false,
     }));
+  }
+
+  function openSession(session: CalendarSession, repair: ScheduleRepairKind | null = null) {
+    setSelectedRepair(repair === "staffing" || repair === "reschedule" ? repair : null);
+    setSelected(session);
   }
 
   const label = view === "month" ? monthLabel(anchor) : view === "week" ? `Week of ${humanDate(startOfWeek(anchor))}` : humanDate(anchor);
@@ -311,8 +319,19 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
         perspective={perspective}
         showBudgetTracking={showBudgetTracking}
         onReview={rangeSummary.flaggedSessions > 0
-          ? () => setSelected(sessions.find((session) => session.warningCount > 0) ?? null)
+          ? () => {
+              const session = sessions.find((candidate) => candidate.warningCount > 0 || !candidate.employeeId);
+              if (session) openSession(session);
+            }
           : undefined}
+      />
+
+      <ScheduleAttentionPanel
+        sessions={sessions}
+        flags={flags}
+        canManage={canManage}
+        showBudgetTracking={showBudgetTracking}
+        onRepair={openSession}
       />
 
       {/* Utilization strip: budget headroom for the individual in focus. */}
@@ -344,22 +363,25 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
           today={today}
           byDate={byDate}
           flags={flags}
-          onSelect={setSelected}
+          onSelect={(session) => openSession(session)}
           onOpenDay={(date) => { setAnchor(date); setView("day"); }}
           onAdd={canManage ? (d) => setCreating({ date: d, mode: "one_time" }) : undefined}
         />
       ) : view === "week" ? (
-        <WeekList anchor={anchor} today={today} byDate={byDate} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d, mode: "one_time" }) : undefined} />
+        <WeekList anchor={anchor} today={today} byDate={byDate} flags={flags} onSelect={(session) => openSession(session)} onAdd={canManage ? (d) => setCreating({ date: d, mode: "one_time" }) : undefined} />
       ) : (
-        <DayList date={anchor} today={today} sessions={byDate.get(anchor) ?? []} flags={flags} onSelect={setSelected} onAdd={canManage ? (d) => setCreating({ date: d, mode: "one_time" }) : undefined} />
+        <DayList date={anchor} today={today} sessions={byDate.get(anchor) ?? []} flags={flags} onSelect={(session) => openSession(session)} onAdd={canManage ? (d) => setCreating({ date: d, mode: "one_time" }) : undefined} />
       )}
 
       {selected ? (
         <SessionDetail
           session={selected}
+          flags={flags.get(selected.id)}
+          employees={employees}
           canManage={canManage}
-          onClose={() => setSelected(null)}
-          onChanged={() => { setSelected(null); void load(); }}
+          initialMode={selectedRepair}
+          onClose={() => { setSelected(null); setSelectedRepair(null); }}
+          onChanged={() => { setSelected(null); setSelectedRepair(null); void load(); }}
         />
       ) : null}
 

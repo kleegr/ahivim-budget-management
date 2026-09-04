@@ -475,8 +475,7 @@ export async function getSettlementDashboard(pool: Queryable, scope?: AccessScop
             LIMIT 1
          ) pair ON true
         ${eventScopeWhere}
-        ORDER BY se.created_at DESC
-        LIMIT 250`,
+        ORDER BY se.created_at DESC`,
       eventParams,
     ),
     pool.query<{

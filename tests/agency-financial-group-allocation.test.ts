@@ -85,28 +85,36 @@ describe("agency financial group-service allocation truth", () => {
       sourceRef: row.sourceRef,
       grossAmount: row.grossAmount,
       baseAmount: row.baseAmount,
+      agencySpread: row.agencySpread,
       employeeExpense: row.employeeExpense,
+      agencyShareOfBase: row.agencyShareOfBase,
     }))).toEqual([
       {
         id: "group-member-a",
         sourceRef: "GROUP-A",
         grossAmount: "600.0000",
         baseAmount: "300.0000",
+        agencySpread: "300.0000",
         employeeExpense: "150.0000",
+        agencyShareOfBase: "150.0000",
       },
       {
         id: "group-member-b",
         sourceRef: "GROUP-B",
         grossAmount: "400.0000",
         baseAmount: "250.0000",
+        agencySpread: "150.0000",
         employeeExpense: "200.0000",
+        agencyShareOfBase: "50.0000",
       },
       {
         id: "ordinary-row",
         sourceRef: "ORDINARY-1",
         grossAmount: "100.0000",
         baseAmount: "80.0000",
+        agencySpread: "20.0000",
         employeeExpense: "60.0000",
+        agencyShareOfBase: "20.0000",
       },
     ]);
     expect(report.totals.income.transactions).toBe("1100.0000");
@@ -115,6 +123,19 @@ describe("agency financial group-service allocation truth", () => {
       0,
     )).toBe(630);
     expect(report.totals.expenses.agencyRoutedEmployeeShare).toBe("410.0000");
+    expect(report.transactionBreakdown).toMatchObject({
+      completeRows: 3,
+      excludedRows: 0,
+      funderBilled: "1100.0000",
+      employeeBase: "630.0000",
+      agencySpread: "470.0000",
+      agencyRouted: {
+        completeRows: 3,
+        excludedRows: 0,
+        employeeShareOfBase: "410.0000",
+        agencyShareOfBase: "220.0000",
+      },
+    });
 
     const transactionSql = statements.find((statement) => statement.includes("FROM payroll_transactions t"));
     expect(transactionSql).toBeDefined();
@@ -167,8 +188,23 @@ describe("agency financial group-service allocation truth", () => {
     expect(report.transactions.find((row) => row.id === "linked-missing-base")).toMatchObject({
       sourceRef: "LEGACY-2",
       baseAmount: null,
+      agencySpread: null,
       employeeExpense: null,
+      agencyShareOfBase: null,
       payRuleSource: "person_rule",
+    });
+    expect(report.transactionBreakdown).toMatchObject({
+      completeRows: 2,
+      excludedRows: 1,
+      funderBilled: "600.0000",
+      employeeBase: "390.0000",
+      agencySpread: "210.0000",
+      agencyRouted: {
+        completeRows: 2,
+        excludedRows: 1,
+        employeeShareOfBase: "390.0000",
+        agencyShareOfBase: "0.0000",
+      },
     });
   });
 });

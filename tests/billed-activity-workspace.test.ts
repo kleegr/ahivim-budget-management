@@ -31,6 +31,7 @@ function transactionColumns(): Array<{ key: string; label: string; hidden: boole
 function transaction(overrides: Partial<GridTransaction> = {}): GridTransaction {
   return {
     id: "row-1",
+    serviceDate: "2026-01-01",
     payTo: null,
     checkDate: "2026-01-15",
     checkNumber: "CHK-100",
@@ -42,7 +43,7 @@ function transaction(overrides: Partial<GridTransaction> = {}): GridTransaction 
     periodEnd: "2026-01-14",
     program: "Community Habilitation",
     programCode: "COMHAB",
-    programId: null,
+    programId: "program-1",
     individual: "Test Individual",
     individualId: "individual-1",
     employee: "Test Employee",
@@ -81,7 +82,7 @@ describe("billed activity check grouping", () => {
       ["internalAmount", "Employee base"],
       ["agencyAdditional", "Agency spread"],
       ["paymentRecipient", "Payment recipient"],
-      ["matchStatus", "Review state"],
+      ["nextStep", "Next step"],
     ]);
   });
 
@@ -95,7 +96,11 @@ describe("billed activity check grouping", () => {
       "paid",
       "periodBegin",
       "periodEnd",
+      "matchStatus",
       "groupStatus",
+      "sourceName",
+      "sourceSheet",
+      "sourceRowNumber",
     ]));
   });
 
@@ -147,6 +152,32 @@ describe("billed activity check grouping", () => {
       employee: "Multiple employees",
       employeeId: null,
       transactionIds: ["row-1", "row-2"],
+    }]);
+  });
+
+  it("puts payroll checks needing a decision before ready checks", () => {
+    const checks = groupChecks([
+      transaction({ id: "ready", checkNumber: "CHK-READY", totalNetPay: "20.00" }),
+      transaction({ id: "review", checkNumber: "CHK-REVIEW", paymentRecipient: "unknown" }),
+    ]);
+
+    expect(checks.map((check) => check.checkNumber)).toEqual(["CHK-REVIEW", "CHK-READY"]);
+    expect(checks[0]).toMatchObject({ needsReview: true });
+    expect(checks[0]?.reviewReasons).toContain("Confirm recipient");
+    expect(checks[1]).toMatchObject({ needsReview: false, reviewReasons: [] });
+  });
+
+  it("uses the populated check net once and flags conflicting source values", () => {
+    const checks = groupChecks([
+      transaction({ id: "row-1", totalNetPay: null }),
+      transaction({ id: "row-2", totalNetPay: "21.00" }),
+      transaction({ id: "row-3", totalNetPay: "22.00" }),
+    ]);
+
+    expect(checks).toMatchObject([{
+      netPay: "21.00",
+      needsReview: true,
+      reviewReasons: expect.arrayContaining(["Check net values differ"]),
     }]);
   });
 

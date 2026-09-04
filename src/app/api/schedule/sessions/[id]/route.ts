@@ -10,6 +10,7 @@ import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } fr
 import {
   setSessionStatus,
   rescheduleSession,
+  reassignSession,
   duplicateSession,
 } from "@/lib/manage/schedule";
 import { getSession } from "@/lib/data/schedule-queries";
@@ -47,6 +48,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
  *   status     — set completed / cancelled / no_show / pending
  *   cancel     — shorthand for status = cancelled
  *   reschedule — move date and/or times (re-runs conflict detection)
+ *   reassign   — change the employee on this occurrence (re-runs live checks)
  *   duplicate  — copy the session onto another date
  * Planning access is required.
  */
@@ -110,6 +112,36 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           reason,
           { enforceBudgetWarnings: planning.access.canSeeBudgets },
         );
+      if (result.ok) {
+        result.data.warnings = result.data.warnings.filter((warning) =>
+          warning.code !== "missing_rate"
+          && (planning.access.canSeeBudgets || !isBudgetPlanningWarningCode(warning.code)));
+      }
+      return resultResponse(result, 200);
+    }
+
+    if (action === "reassign") {
+      if (!await planningProgramAllowed(pool, planning, existing.programId)) {
+        return jsonError("Choose an active hours-based planning program.", 403);
+      }
+      if (body.employeeId !== null && !asString(body.employeeId)) {
+        return jsonError("Choose an employee or leave the visit unassigned.", 400);
+      }
+      const employeeId = body.employeeId === null ? null : asString(body.employeeId)!;
+      if (!planningSubjectsAllowed(planning, {
+        individualIds: existing.individualIds,
+        employeeId,
+      }, "schedule", { from: existing.sessionDate, to: existing.sessionDate })) {
+        return jsonError("That employee is outside your agency roster for this service date.", 403);
+      }
+      const result = await reassignSession(
+        pool,
+        id,
+        employeeId,
+        user.id,
+        reason,
+        { enforceBudgetWarnings: planning.access.canSeeBudgets },
+      );
       if (result.ok) {
         result.data.warnings = result.data.warnings.filter((warning) =>
           warning.code !== "missing_rate"

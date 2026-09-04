@@ -28,6 +28,7 @@ describe("actionable review destinations", () => {
   });
 
   it("routes every review queue to its relevant filtered destination", () => {
+    expect(reviewQueueHref("sync_conflicts")).toBe("/sync#sync-conflicts");
     expect(reviewQueueHref("unmatched_names")).toBe(exceptionQueueHref("unmatched_name"));
     expect(reviewQueueHref("unknown_programs")).toBe("/exceptions?kind=unknown_program");
     expect(reviewQueueHref("duplicate_rows")).toBe("/exceptions?kind=possible_duplicate");

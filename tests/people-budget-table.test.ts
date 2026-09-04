@@ -7,6 +7,7 @@ import {
   matchesPeopleStatus,
   matchesProgram,
   matchesRenewal,
+  selectedPeopleActualsHref,
   type PeopleBudgetTableRow,
 } from "@/components/individuals/people-budget-table";
 
@@ -33,6 +34,9 @@ function row(overrides: Partial<PeopleBudgetTableRow> = {}): PeopleBudgetTableRo
     hasCanonicalBudget: true,
     hasBilling: true,
     insightsVisible: true,
+    canPlan: true,
+    assignedEmployees: [{ id: "employee-1" }],
+    nextScheduledService: { date: "2026-09-12" },
     ...overrides,
   };
 }
@@ -96,6 +100,14 @@ describe("people and budgets working table", () => {
     expect(tableSource).toContain('exportEndpoint="/api/grid/export"');
     expect(tableSource).toContain("externalConfig");
     expect(pageSource).toContain("canManage={canEdit}");
+    expect(tableSource).toContain("Open recorded activity");
+    expect(tableSource).toContain("Work next:");
+  });
+
+  it("builds one stable exact-people Activity drill-through", () => {
+    expect(selectedPeopleActualsHref(["person-b", "person-a", "person-b"])).toBe(
+      "/transactions?individualId=person-a&individualId=person-b",
+    );
   });
 
   it("filters status, exact program membership, and renewal windows", () => {
@@ -113,11 +125,33 @@ describe("people and budgets working table", () => {
     expect(individualNextAction(row({ hasCanonicalBudget: false })).label).toBe("Create budget for billed work");
     expect(individualNextAction(row({
       budget: { ...row().budget!, hoursAfterScheduled: -7.5 },
-    })).label).toBe("Reduce schedule by 7.5 h");
+    }))).toMatchObject({ label: "Reduce schedule by 7.5 h", destination: "schedule" });
     expect(individualNextAction(row({
       budget: { ...row().budget!, daysToRenewal: 30 },
     })).label).toBe("Prepare renewal");
     expect(individualNextAction(row()).label).toBe("Plan 4 h/week");
+    expect(individualNextAction(row({ assignedEmployees: [] }))).toMatchObject({
+      label: "Assign an employee",
+      destination: "assignments",
+    });
+    expect(individualNextAction(row({ nextScheduledService: null }))).toMatchObject({
+      label: "Schedule next service",
+      destination: "schedule",
+    });
+    expect(individualNextAction(row({
+      canPlan: false,
+      budget: { ...row().budget!, hoursAfterScheduled: -7.5 },
+    })).destination).toBe("budget");
+  });
+
+  it("keeps exception shortcuts and the required staffing columns in the default scan", () => {
+    for (const key of ["billingWithoutBudget", "assignedEmployees", "nextScheduledService"]) {
+      expect(tableSource).toContain(`key: "${key}"`);
+    }
+    for (const label of ["Billing, no budget", "Renewal missing", "Renewal overdue", "Schedule over", "Behind pace"]) {
+      expect(tableSource).toContain(label);
+    }
+    expect(tableSource).toContain('useState<PeopleStatusFilter>("all")');
   });
 
   it("does not infer budget problems from redacted rows", () => {

@@ -26,7 +26,6 @@ const CHROMIUM_PATH =
 export default defineConfig({
   testDir: path.join(__dirname, "tests", "e2e"),
   testMatch: /.*\.spec\.ts$/,
-  globalSetup: path.join(__dirname, "tests", "e2e", "global-setup.ts"),
 
   // A boot-the-real-app smoke suite: keep it serial and deterministic.
   fullyParallel: false,
@@ -59,15 +58,15 @@ export default defineConfig({
     {
       command: "npm run dev:ws-proxy",
       port: WS_PROXY_PORT,
-      reuseExistingServer: true,
+      reuseExistingServer: false,
       timeout: 30_000,
       env: { WS_PROXY_PORT: String(WS_PROXY_PORT) },
     },
     // 2. The real built application.
     {
-      command: "npm run build && npm run start",
+      command: "node --import tsx tests/e2e/seed.ts && npm run build && npm run start",
       url: BASE_URL,
-      reuseExistingServer: true,
+      reuseExistingServer: false,
       timeout: 300_000,
       stdout: "pipe",
       stderr: "pipe",

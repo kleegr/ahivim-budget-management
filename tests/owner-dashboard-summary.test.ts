@@ -244,7 +244,7 @@ describe("buildOwnerDashboardSummary", () => {
     });
   });
 
-  it("prioritizes current owner follow-up with direct budget, check, money, and setup links", () => {
+  it("keeps check and money follow-up in separate exact queues", () => {
     const summary = buildOwnerDashboardSummary({
       asOf: AS_OF,
       transactions: [
@@ -287,30 +287,38 @@ describe("buildOwnerDashboardSummary", () => {
     }, 2);
 
     expect(items.map((item) => item.key)).toEqual([
-      "budget-exceptions",
       "check-verification",
-      "money-queues",
+      "agency-payments",
+      "employee-collections",
+      "individual-put-away",
+      "billing-without-budget",
+      "budget-behind-pace",
+      "money-credits",
       "financial-approvals",
     ]);
     expect(items[0]).toMatchObject({
-      href: "/individuals?view=attention",
-      action: "Review people & budgets",
-    });
-    expect(items[1]).toMatchObject({
       detail: "2 check groups have missing or conflicting routing, net pay, identity, duplicate, or group-review data.",
       href: "/settlements?focus=check-issues",
     });
-    expect(items[2]).toMatchObject({
-      detail: "$75.00 to pay, $80.00 to collect, $40.00 to set aside, and $12.50 in 1 credit.",
+    expect(items[1]).toMatchObject({
+      title: "$75.00 needs to be paid",
       href: "/settlements?queue=payable",
     });
+    expect(items[2]).toMatchObject({
+      title: "$80.00 needs to be collected",
+      href: "/settlements?queue=receivable",
+    });
     expect(items[3]).toMatchObject({
+      title: "$40.00 needs to be put away",
+      href: "/settlements?queue=reserve",
+    });
+    expect(items[7]).toMatchObject({
       detail: "1 financial plan needs an approved final amount.",
       href: "/calculations",
     });
   });
 
-  it("aggregates budget, renewal, schedule, check, money, and setup exceptions into six actions", () => {
+  it("prioritizes eight concise owner actions with filtered source sets", () => {
     const personId = (suffix: string) => `20000000-0000-4000-8000-0000000000${suffix}`;
     const authorization = (
       suffix: string,
@@ -374,23 +382,75 @@ describe("buildOwnerDashboardSummary", () => {
       credits: "0",
       creditCount: 0,
     }, 1);
-    expect(items).toHaveLength(6);
+    expect(items).toHaveLength(8);
     expect(items.map((item) => item.key)).toEqual([
-      "budget-exceptions",
-      "renewal-exceptions",
-      "scheduled-over-limit",
       "check-verification",
-      "money-queues",
+      "budget-over-limit",
+      "scheduled-over-limit",
+      "agency-payments",
+      "budget-at-limit",
+      "renewal-repair",
+      "budget-behind-pace",
       "financial-approvals",
     ]);
     expect(items.map((item) => item.href)).toEqual([
-      "/individuals?view=attention",
-      "/individuals?view=attention",
-      "/schedule?view=coverage",
       "/settlements?focus=check-issues",
+      "/individuals?view=over",
+      "/schedule?view=coverage",
       "/settlements?queue=payable",
+      "/individuals?view=at_limit",
+      "/individuals?view=attention",
+      "/individuals?view=behind",
       "/calculations",
     ]);
+  });
+
+  it("opens the exact next visit for schedule conflicts and staffing gaps", () => {
+    const summary = buildOwnerDashboardSummary({
+      asOf: AS_OF,
+      transactions: [],
+      programBudgets: [],
+      budgetBoard: [],
+      strategies: [],
+    });
+    const conflictId = "70000000-0000-4000-8000-000000000001";
+    const unassignedId = "70000000-0000-4000-8000-000000000002";
+    const items = buildOwnerAttentionItems(summary, undefined, 0, {
+      from: "2026-09-04",
+      through: "2026-10-04",
+      conflictCount: 2,
+      unassignedCount: 1,
+      nextConflict: {
+        id: conflictId,
+        sessionDate: "2026-09-05",
+        startTime: "09:30",
+        employeeName: "Eli Worker",
+        individualNames: ["Ari Person"],
+        programName: "Com Hab",
+        href: `/schedule?view=calendar&date=2026-09-05&calendarView=day&sessionId=${conflictId}`,
+      },
+      nextUnassigned: {
+        id: unassignedId,
+        sessionDate: "2026-09-06",
+        startTime: null,
+        employeeName: null,
+        individualNames: ["Bea Person"],
+        programName: "Respite",
+        href: `/schedule?view=calendar&date=2026-09-06&calendarView=day&sessionId=${unassignedId}`,
+      },
+    });
+
+    expect(items.map((item) => item.key)).toEqual(["schedule-conflicts", "staffing-gaps"]);
+    expect(items[0]).toMatchObject({
+      href: `/schedule?view=calendar&date=2026-09-05&calendarView=day&sessionId=${conflictId}`,
+      action: "Open first conflict",
+    });
+    expect(items[0]?.detail).toContain("2026-09-05 at 09:30 · Ari Person · Com Hab.");
+    expect(items[0]?.detail).toContain("1 more visit needs review.");
+    expect(items[1]).toMatchObject({
+      href: `/schedule?view=calendar&date=2026-09-06&calendarView=day&sessionId=${unassignedId}`,
+      action: "Assign first visit",
+    });
   });
 
   it("omits cleared attention categories", () => {

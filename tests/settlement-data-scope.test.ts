@@ -68,7 +68,7 @@ describe("settlement history SQL scope", () => {
     expect(emptyParams).toEqual([]);
   });
 
-  it("places the authorization predicate before settlement history ordering and limit", async () => {
+  it("places the authorization predicate before ordering and does not truncate authorized history", async () => {
     const query = vi.fn(async (sql: string, params?: unknown[]) => {
       void sql;
       void params;
@@ -84,8 +84,56 @@ describe("settlement history SQL scope", () => {
     const sql = String(historyCall?.[0]);
     expect(sql).toContain("WHERE (se.employee_id = ANY($1::uuid[]))");
     expect(sql.indexOf("WHERE (se.employee_id")).toBeLessThan(sql.indexOf("ORDER BY se.created_at"));
-    expect(sql.indexOf("ORDER BY se.created_at")).toBeLessThan(sql.indexOf("LIMIT 250"));
+    expect(sql).not.toMatch(/LIMIT\s+250/i);
     expect(historyCall?.[1]).toEqual([[EMPLOYEE_GRANTED]]);
+  });
+
+  it("returns every accessible audit event instead of silently dropping older entries", async () => {
+    const historyRows = Array.from({ length: 251 }, (_, index) => ({
+      id: `event-${index}`,
+      settlement_obligation_id: null,
+      obligation_kind: null,
+      check_number: null,
+      check_date: null,
+      period_begin: null,
+      period_end: null,
+      batch_action: null,
+      paired_obligation_id: null,
+      paired_obligation_kind: null,
+      paired_check_number: null,
+      paired_check_date: null,
+      paired_period_begin: null,
+      paired_period_end: null,
+      employee_id: EMPLOYEE_GRANTED,
+      individual_id: null,
+      employee_name: "Employee One",
+      individual_name: null,
+      event_type: "payment",
+      amount: "1.0000",
+      occurred_on: "2026-08-01",
+      reference: `REF-${index}`,
+      note: null,
+      actor_name: "owner@example.com",
+      reversal_of_event_id: null,
+      reversed_by_event_id: null,
+      created_at: "2026-08-01T12:00:00.000Z",
+    }));
+    const query = vi.fn(async (sql: string) => (
+      sql.includes("SELECT se.id") ? { rows: historyRows } : { rows: [] }
+    ));
+    const pool = { query, connect: vi.fn() } as unknown as PgLikePool;
+
+    const dashboard = await getSettlementDashboard(
+      pool,
+      scoped({ grantedEmployeeIds: [EMPLOYEE_GRANTED] }),
+    );
+
+    expect(dashboard.events).toHaveLength(251);
+    expect(dashboard.events.at(-1)).toMatchObject({
+      id: "event-250",
+      personId: EMPLOYEE_GRANTED,
+      reference: "REF-250",
+    });
   });
 
   it("groups the same normalized check number used by ambiguous source ids", async () => {

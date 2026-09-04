@@ -75,6 +75,50 @@ describe("role-specific workspaces", () => {
     expect(workspaces[0]?.href).toBe("/home");
   });
 
+  it("does not duplicate an external account's portal as a second Home link", () => {
+    const parent = getVisibleWorkspaces({
+      role: "viewer",
+      accountPreset: "individual_parent",
+      accessResolved: true,
+      canSeeTransactions: false,
+      canSeeSettlements: false,
+      canSeeBudgets: false,
+      canPlan: false,
+      canEditDocuments: false,
+      canUsePortal: true,
+    });
+    expect(parent.map((workspace) => workspace.id)).toEqual(["portal"]);
+    expect(getCommandDestinations({
+      role: "viewer",
+      accountPreset: "employee",
+      accessResolved: true,
+      canSeeTransactions: false,
+      canSeeSettlements: false,
+      canSeeBudgets: false,
+      canPlan: false,
+      canEditDocuments: false,
+      canUsePortal: true,
+    }).map((item) => item.href)).not.toContain("/home");
+  });
+
+  it("gives agency schedulers Portal and Schedule without a redirect-only Home duplicate", () => {
+    const workspaces = getVisibleWorkspaces({
+      role: "viewer",
+      accountPreset: "agency_scheduler",
+      accessResolved: true,
+      canSeeTransactions: false,
+      canSeeSettlements: false,
+      canSeeBudgets: false,
+      canPlan: true,
+      canSeeEmployees: true,
+      canEditDocuments: false,
+      canUsePortal: true,
+    });
+    expect(workspaces.map((workspace) => workspace.id)).toEqual(["portal", "people", "activity"]);
+    expect(workspaces.find((workspace) => workspace.id === "people")?.href).toBe("/employees");
+    expect(workspaces.find((workspace) => workspace.id === "activity")?.href).toBe("/schedule");
+  });
+
   it("gives a budget planner Schedule and People & budgets without transaction navigation", () => {
     const access = {
       role: "viewer",
