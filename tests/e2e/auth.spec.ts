@@ -10,7 +10,7 @@ import { ADMIN_EMAIL, ADMIN_PASSWORD } from "./fixtures";
 
 const WORKSPACES: { path: string; title: RegExp; heading: RegExp }[] = [
   { path: "/dashboard", title: /Home - Ahivim/, heading: /^(Owner overview|Home)$/ },
-  { path: "/transactions", title: /Transactions - Ahivim/, heading: /^Transactions$/ },
+  { path: "/transactions", title: /Activity - Ahivim/, heading: /^Activity$/ },
   { path: "/calculations", title: /Financial setup - Ahivim/, heading: /^Financial setup$/ },
   { path: "/individuals", title: /People & budgets - Ahivim Budget Management/, heading: /^People & budgets$/ },
   { path: "/reports", title: /Reports - Ahivim Budget Management/, heading: /^Reports$/ },

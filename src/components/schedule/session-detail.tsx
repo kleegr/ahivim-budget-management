@@ -1,27 +1,85 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CalendarSession } from "@/lib/data/schedule-queries";
-import { send, ModalShell, humanDate, prettyTime, STATUS_STYLE, STATUS_LABEL } from "./shared";
+import type { EmployeeAvailabilityResult } from "@/lib/data/employee-availability";
+import { employeeAvailabilityLabel } from "@/lib/business/employee-availability-label";
+import {
+  send,
+  ModalShell,
+  humanDate,
+  prettyTime,
+  STATUS_STYLE,
+  STATUS_LABEL,
+  type Picker,
+  type SessionFlags,
+} from "./shared";
+
+export type SessionRepairMode = "reschedule" | "duplicate" | "staffing";
 
 /** Detail panel for one planned session, with the manager actions. */
 export default function SessionDetail({
-  session, canManage, onClose, onChanged,
+  session, flags, employees, canManage, initialMode = null, onClose, onChanged,
 }: {
   session: CalendarSession;
+  flags?: SessionFlags;
+  employees: Picker[];
   canManage: boolean;
+  initialMode?: SessionRepairMode | null;
   onClose: () => void;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reason, setReason] = useState("");
-  const [mode, setMode] = useState<null | "reschedule" | "duplicate">(null);
+  const [mode, setMode] = useState<SessionRepairMode | null>(initialMode);
   const [reDate, setReDate] = useState(session.sessionDate);
   const [reStart, setReStart] = useState(session.startTime ?? "");
   const [reEnd, setReEnd] = useState(session.endTime ?? "");
   const [dupDate, setDupDate] = useState(session.sessionDate);
+  const [employeeId, setEmployeeId] = useState(session.employeeId ?? "");
+  const [availability, setAvailability] = useState<EmployeeAvailabilityResult | null>(null);
+  const [availabilityBusy, setAvailabilityBusy] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (mode !== "staffing") return;
+    let cancelled = false;
+    setAvailabilityBusy(true);
+    setAvailabilityError(null);
+    void send("POST", "/api/schedule/preview", {
+      employeeId: employeeId || null,
+      programId: session.programId,
+      individualIds: session.individualIds,
+      sessionDate: session.sessionDate,
+      startTime: session.startTime,
+      endTime: session.endTime,
+      durationHours: session.durationHours,
+      excludeSessionId: session.id,
+    }).then((result) => {
+      if (cancelled) return;
+      setAvailabilityBusy(false);
+      if (!result.ok) {
+        setAvailability(null);
+        setAvailabilityError(result.error ?? "Could not check employee availability.");
+        return;
+      }
+      const data = result.data as { employeeAvailability?: EmployeeAvailabilityResult };
+      setAvailability(data.employeeAvailability ?? null);
+      setAvailabilityError(null);
+    });
+    return () => { cancelled = true; };
+  }, [employeeId, mode, session]);
+
+  const employeeOptions = useMemo(() => {
+    const byId = new Map(employees.map((employee) => [employee.id, employee]));
+    if (!availability) return employees.map((employee) => ({ employee, signal: null }));
+    return availability.employees.map((signal) => ({
+      employee: byId.get(signal.employeeId) ?? { id: signal.employeeId, label: signal.employeeName },
+      signal,
+    }));
+  }, [availability, employees]);
 
   async function act(body: Record<string, unknown>) {
     setBusy(true);
@@ -52,6 +110,19 @@ export default function SessionDetail({
           ) : null}
         </dl>
 
+        {flags && session.warningCount > 0 ? (
+          <div className="rounded border border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
+            <p className="font-semibold">Why this visit needs review</p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {flags.hasAvailabilityConflict ? <li>The employee is unavailable or outside their entered working hours.</li> : null}
+              {flags.hasScheduleConflict ? <li>The employee or individual has an overlapping visit.</li> : null}
+              {flags.hasAssignmentGap ? <li>The employee does not have an effective assignment for this work.</li> : null}
+              {flags.hasBudgetRisk ? <li>Authorization coverage or planned hours need review.</li> : null}
+              {flags.hasOtherWarning ? <li>A program or participant setting needs review.</li> : null}
+            </ul>
+          </div>
+        ) : null}
+
         {canManage ? (
           <>
             <label className="block">
@@ -66,6 +137,7 @@ export default function SessionDetail({
                 {session.status !== "pending" ? <button type="button" disabled={busy} onClick={() => act({ action: "status", status: "pending" })} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs disabled:opacity-60">Reopen</button> : null}
                 {session.canChangeSchedule && session.status !== "cancelled" ? <button type="button" disabled={busy} onClick={() => act({ action: "cancel" })} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs disabled:opacity-60">Cancel</button> : null}
                 {session.canChangeSchedule ? <button type="button" onClick={() => setMode("reschedule")} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs">Reschedule</button> : null}
+                {session.canChangeSchedule ? <button type="button" onClick={() => setMode("staffing")} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs">Change employee</button> : null}
                 <button type="button" onClick={() => setMode("duplicate")} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs">Duplicate</button>
               </div>
             ) : mode === "reschedule" ? (
@@ -78,6 +150,45 @@ export default function SessionDetail({
                 </div>
                 <div className="flex gap-2">
                   <button type="button" disabled={busy} onClick={() => act({ action: "reschedule", sessionDate: reDate, startTime: reStart || null, endTime: reEnd || null })} className="rounded bg-[var(--color-primary)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60">Save</button>
+                  <button type="button" onClick={() => setMode(null)} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs">Back</button>
+                </div>
+              </div>
+            ) : mode === "staffing" ? (
+              <div className="space-y-3 rounded border border-[var(--color-rule)] p-3">
+                <div>
+                  <p className="text-xs font-medium">Choose an employee for this visit</p>
+                  <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">Availability, schedule conflicts, and assignments are checked for this exact date and time.</p>
+                </div>
+                <label className="block text-xs">
+                  Employee
+                  <select data-modal-initial-focus value={employeeId} onChange={(event) => setEmployeeId(event.target.value)} className="mt-1 min-h-10 w-full rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1.5 text-sm">
+                    <option value="">Leave unassigned</option>
+                    {employeeOptions.map(({ employee, signal }) => (
+                      <option key={employee.id} value={employee.id}>
+                        {employee.label}{signal && availability ? ` — ${employeeAvailabilityLabel(signal, availability.timeRangeKnown, availability.occurrenceCount)}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {availabilityBusy ? <p role="status" className="text-xs text-[var(--color-ink-faint)]">Checking availability…</p> : null}
+                {availabilityError ? <p role="alert" className="text-xs text-[var(--color-danger)]">{availabilityError}</p> : null}
+                {availability && availability.timeRangeKnown ? (
+                  <div className="flex flex-wrap gap-1.5" role="group" aria-label="Available employees">
+                    {availability.employees.filter((employee) => employee.available).slice(0, 6).map((employee) => (
+                      <button
+                        key={employee.employeeId}
+                        type="button"
+                        aria-pressed={employeeId === employee.employeeId}
+                        onClick={() => setEmployeeId(employee.employeeId)}
+                        className={`min-h-10 rounded border px-2 py-1 text-xs ${employeeId === employee.employeeId ? "border-[var(--color-primary)] bg-[var(--color-primary)] text-white" : "border-[var(--color-rule-strong)] bg-white"}`}
+                      >
+                        {employee.employeeName} · available
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="flex gap-2">
+                  <button type="button" disabled={busy || availabilityBusy || employeeId === (session.employeeId ?? "")} onClick={() => act({ action: "reassign", employeeId: employeeId || null })} className="rounded bg-[var(--color-primary)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60">Save employee</button>
                   <button type="button" onClick={() => setMode(null)} className="rounded border border-[var(--color-rule-strong)] px-3 py-1.5 text-xs">Back</button>
                 </div>
               </div>
