@@ -1143,6 +1143,89 @@ export async function rescheduleSession(
   }
 }
 
+/** Change the employee on one unmatched occurrence and re-run every live check. */
+export async function reassignSession(
+  pool: PgLikePool,
+  id: string,
+  employeeId: string | null,
+  actorId: string | null,
+  reason?: string | null,
+  warningPolicy?: ScheduleWarningPolicy,
+): Promise<Result<{ id: string; warnings: ScheduleWarning[] }>> {
+  if (!isUuid(id)) return fail("not_found", "That session no longer exists.");
+  if (employeeId && !isUuid(employeeId)) return fail("validation", "Choose a valid employee.");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{
+      employee_id: string | null;
+      program_id: string;
+      session_date: string;
+      start_time: string | null;
+      end_time: string | null;
+      duration_hours: string;
+      matched_transaction_id: string | null;
+    }>(
+      `SELECT employee_id, program_id, session_date::text, start_time, end_time,
+              duration_hours::text, matched_transaction_id
+         FROM scheduled_sessions WHERE id = $1 FOR UPDATE`,
+      [id],
+    );
+    const session = rows[0];
+    if (!session) {
+      await client.query("ROLLBACK");
+      return fail("not_found", "That session no longer exists.");
+    }
+    if (session.matched_transaction_id) {
+      await client.query("ROLLBACK");
+      return fail("immutable", "A matched session cannot change employees. Remove its reconciliation match first.");
+    }
+    const allocations = await client.query<{ individual_id: string }>(
+      `SELECT individual_id FROM scheduled_allocations WHERE scheduled_session_id = $1`,
+      [id],
+    );
+    if (employeeId) {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`employee-availability:${employeeId}`]);
+    }
+    const warnings = await detectConflicts(client, {
+      employeeId,
+      programId: session.program_id,
+      individualIds: allocations.rows.map((row) => row.individual_id),
+      sessionDate: session.session_date,
+      startTime: session.start_time,
+      endTime: session.end_time,
+      durationHours: session.duration_hours,
+    }, id);
+    if (warningsRequiringScheduleOverride(warnings, warningPolicy).length > 0
+      && !writtenOverrideReason(reason)) {
+      await client.query("ROLLBACK");
+      return fail("validation", SCHEDULE_OVERRIDE_REQUIRED_MESSAGE);
+    }
+    await client.query(
+      `UPDATE scheduled_sessions
+          SET employee_id = $2, warnings = $3, updated_at = now()
+        WHERE id = $1`,
+      [id, employeeId, warnings.length ? JSON.stringify(warnings) : null],
+    );
+    await recordChange(client, {
+      actorId,
+      action: "session_employee_changed",
+      entityType: "scheduled_session",
+      entityId: id,
+      previous: { employeeId: session.employee_id },
+      next: { employeeId },
+      reason,
+    });
+    await client.query("COMMIT");
+    return ok({ id, warnings });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    return fail("validation", scheduleSaveMessage(error, "Could not change the employee. Try again."));
+  } finally {
+    client.release();
+  }
+}
+
 export async function duplicateSession(
   pool: PgLikePool,
   id: string,
