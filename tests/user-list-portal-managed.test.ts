@@ -7,6 +7,7 @@ function userRow(id: string, portal: {
   agencyRoles?: string[];
   individual?: boolean;
   employee?: boolean;
+  accountPreset?: string | null;
 }) {
   return {
     id,
@@ -14,6 +15,7 @@ function userRow(id: string, portal: {
     display_name: id,
     password_hash: "hash",
     role: portal.globalRoles.includes("owner") ? "admin" : "viewer",
+    account_preset: portal.accountPreset ?? null,
     is_active: true,
     last_login_at: null,
     created_at: "2026-08-31T00:00:00Z",
@@ -69,5 +71,28 @@ describe("portal-managed account summaries", () => {
       accountPreset: "owner",
       portalManaged: false,
     });
+  });
+
+  it("prefers the persisted preset and falls back to legacy portal assignments", async () => {
+    const pool = {
+      query: vi.fn(async () => ({
+        rows: [
+          userRow("stored-internal", {
+            globalRoles: [],
+            accountPreset: "budget_planner",
+          }),
+          userRow("legacy-employee", {
+            globalRoles: ["employee"],
+            employee: true,
+          }),
+        ],
+      })),
+    } as unknown as PgLikePool;
+
+    const users = await listUsersWithAccess(pool);
+    expect(users.find((user) => user.id === "stored-internal")?.accountPreset)
+      .toBe("budget_planner");
+    expect(users.find((user) => user.id === "legacy-employee")?.accountPreset)
+      .toBe("employee");
   });
 });

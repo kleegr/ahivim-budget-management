@@ -170,6 +170,7 @@ describe("new user access defaults", () => {
             display_name: "Viewer",
             password_hash: "stored-hash",
             role: "viewer",
+            account_preset: "custom_access",
             is_active: true,
             last_login_at: null,
             created_at: "2026-08-24T00:00:00.000Z",
@@ -193,7 +194,8 @@ describe("new user access defaults", () => {
 
     expect(result.ok).toBe(true);
     const insert = clientQuery.mock.calls.find(([sql]) => sql.includes("INSERT INTO users"));
-    expect(insert?.[1]?.slice(4)).toEqual(["scoped", ...Array(15).fill(false)]);
+    expect(insert?.[1]?.slice(4, 20)).toEqual(["scoped", ...Array(15).fill(false)]);
+    expect(insert?.[1]?.[20]).toBe("custom_access");
     const accessUpdate = clientQuery.mock.calls.find(([sql]) => sql.includes("SET access_scope"));
     expect(accessUpdate?.[1]).toEqual([
       "scoped",

@@ -53,6 +53,7 @@ const INTERNAL_SURFACES: Record<InternalSurface, string> = {
 
 const INTERNAL_ALLOW: Record<AccountPresetId, readonly InternalSurface[]> = {
   owner: Object.keys(INTERNAL_SURFACES) as InternalSurface[],
+  office_manager: Object.keys(INTERNAL_SURFACES) as InternalSurface[],
   budget_planner: ["hours", "budgets", "planning"],
   staffing_manager: ["hours", "planning"],
   money_collector: [
@@ -72,6 +73,7 @@ const INTERNAL_ALLOW: Record<AccountPresetId, readonly InternalSurface[]> = {
   agency_scheduler: [],
   agency_staffing_manager: [],
   agency_collector: [],
+  custom_access: [],
 };
 
 const PORTAL_ROLE_FOR_PRESET: Partial<Record<AccountPresetId, PortalRole>> = {

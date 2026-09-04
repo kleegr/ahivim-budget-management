@@ -73,6 +73,7 @@ describe("owner Role Preview Center", () => {
     }
     expect(ROLE_PREVIEW_DETAILS).toMatchObject({
       owner: { landingHref: "/dashboard" },
+      office_manager: { landingHref: "/dashboard" },
       budget_planner: { landingHref: "/schedule" },
       staffing_manager: { landingHref: "/schedule" },
       money_collector: { landingHref: "/masser" },
@@ -83,6 +84,7 @@ describe("owner Role Preview Center", () => {
       agency_scheduler: { landingHref: "/schedule" },
       agency_staffing_manager: { landingHref: "/schedule" },
       agency_collector: { landingHref: "/portal" },
+      custom_access: { landingHref: "/home" },
     });
   });
 
@@ -90,7 +92,11 @@ describe("owner Role Preview Center", () => {
     for (const id of ["budget_planner", "staffing_manager", "money_collector", "class_billing"] as const) {
       expect(previewPresetForUser(internalAccount(id)), id).toBe(id);
     }
-    expect(previewPresetForUser(internalAccount("budget_planner", { canSeeMoney: true }))).toBeNull();
+    expect(previewPresetForUser(internalAccount("budget_planner", { canSeeMoney: true }))).toBe("custom_access");
+    expect(previewPresetForUser(internalAccount("budget_planner", {
+      accountPreset: "budget_planner",
+      canSeeMoney: true,
+    }))).toBe("budget_planner");
     expect(previewPresetForUser(internalAccount("budget_planner", { portalManaged: true }))).toBeNull();
   });
 
