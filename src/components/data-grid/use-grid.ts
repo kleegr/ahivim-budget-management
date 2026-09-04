@@ -37,6 +37,11 @@ export interface UseGridOptions<Row, Totals> {
   initialSearch?: string;
   searchKeys?: string[];
   computeTotals?: (filtered: Row[]) => Totals;
+  /** Persist/apply grid-specific controls alongside shared filters and columns. */
+  externalConfig?: Record<string, string>;
+  onApplyExternalConfig?: (config: Record<string, string>) => void;
+  /** Narrow an export further, for example to an active row selection. */
+  exportRowPredicate?: (row: Row) => boolean;
   serializeHidden?: boolean;
   serializeWidths?: boolean;
   /** Calculations exports every column (none are hidden); others export visible only. */
@@ -189,6 +194,7 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
 
   const columns = o.columns;
   const rows = o.rows;
+  const onApplyExternalConfig = o.onApplyExternalConfig;
 
   // Columns in the chosen display order; any column missing from `order`
   // (e.g. added after a saved view) is appended in its original position.
@@ -228,23 +234,25 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
 
   const currentConfig = useCallback((): GridViewConfig => {
     const cfg: GridViewConfig = { filters, sort, search };
+    if (o.externalConfig) cfg.external = o.externalConfig;
     if (o.serializeHidden) { cfg.hidden = [...hidden]; cfg.order = order; }
     if (o.serializeWidths) cfg.widths = widths;
     return cfg;
-  }, [filters, sort, search, hidden, order, widths, o.serializeHidden, o.serializeWidths]);
+  }, [filters, sort, search, hidden, order, widths, o.externalConfig, o.serializeHidden, o.serializeWidths]);
 
   const applyView = useCallback(
     (cfg: GridViewConfig) => {
       setFilters(cfg.filters ?? {});
       setSort(cfg.sort ?? []);
       setSearch(cfg.search ?? "");
+      onApplyExternalConfig?.(cfg.external ?? {});
       if (o.serializeHidden) {
         setHidden(new Set(cfg.hidden ?? []));
         setOrder(cfg.order ?? o.columns.map((c) => c.key));
       }
       if (o.serializeWidths && cfg.widths) setWidths({ ...(o.initialWidths ?? {}), ...cfg.widths });
     },
-    [o.serializeHidden, o.serializeWidths, o.initialWidths, o.columns],
+    [onApplyExternalConfig, o.serializeHidden, o.serializeWidths, o.initialWidths, o.columns],
   );
 
   const saveView = useCallback(
@@ -308,6 +316,7 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
       setNotice(null);
       try {
         const cols = o.exportAllColumns ? columns : visibleColumns;
+        const exportableRows = o.exportRowPredicate ? sorted.filter(o.exportRowPredicate) : sorted;
         const res = await fetch(meta.endpoint, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -316,7 +325,7 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
             title: meta.title,
             filename: meta.filename,
             columns: exportColumns(cols),
-            rows: exportRows(cols, sorted),
+            rows: exportRows(cols, exportableRows),
           }),
         });
         if (!res.ok) {
@@ -339,7 +348,7 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
         setBusy(false);
       }
     },
-    [o.exportAllColumns, columns, visibleColumns, sorted],
+    [o.exportAllColumns, o.exportRowPredicate, columns, visibleColumns, sorted],
   );
 
   return {

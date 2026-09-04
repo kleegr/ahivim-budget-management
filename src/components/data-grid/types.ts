@@ -31,8 +31,12 @@ export interface ColumnDef<Row> {
   key: string;
   label: string;
   kind: GridFieldKind;
-  /** Raw string value used for filtering, sorting and export. Null = empty. */
+  /** Raw string value used for filtering and display fallback. Null = empty. */
   accessor: (r: Row) => string | null;
+  /** Optional machine value used only for ordering. */
+  sortAccessor?: (r: Row) => string | null;
+  /** Optional honest cell value used only in downloaded files. */
+  exportAccessor?: (r: Row) => string | null;
   /** Optional rich cell (links, badges, editable inputs). Falls back to text. */
   render?: (r: Row, text: string, ctx: CellCtx) => ReactNode;
   sortable?: boolean; // default true
@@ -100,6 +104,8 @@ export interface GridViewConfig {
   filters: FilterState;
   sort: SortState;
   search: string;
+  /** Grid-specific controls that live outside the shared column-filter engine. */
+  external?: Record<string, string>;
   hidden?: string[];
   widths?: Record<string, number>;
   order?: string[]; // column display order (keys)
