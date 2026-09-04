@@ -44,8 +44,12 @@ export interface AgencyTransactionActual {
   paymentRecipient: string;
   grossAmount: string | null;
   baseAmount: string | null;
+  /** Funder billed minus Employee base. This stays outside every deal. */
+  agencySpread: string | null;
   employeeSharePercent: string | null;
   employeeExpense: string | null;
+  /** The agency's deal share of Employee base on an agency-routed row. */
+  agencyShareOfBase: string | null;
   payRuleSource: PayRuleSource | null;
 }
 
@@ -140,6 +144,24 @@ export interface AgencyFinancialReport {
   setAsides: MonthlySetAsideActual[];
   classInvoices: ClassInvoiceActual[];
   manualIncome: AgencyManualIncomeActual[];
+  transactionBreakdown: {
+    /** Only rows with both Funder billed and Employee base are included. */
+    completeRows: number;
+    excludedRows: number;
+    funderBilled: string;
+    employeeBase: string;
+    agencySpread: string;
+    agencyRouted: {
+      /** Only agency-routed rows with billed, base, and an effective deal are included. */
+      completeRows: number;
+      excludedRows: number;
+      funderBilled: string;
+      employeeBase: string;
+      agencySpread: string;
+      employeeShareOfBase: string;
+      agencyShareOfBase: string;
+    };
+  };
   totals: {
     income: {
       transactions: string;
@@ -326,6 +348,26 @@ export function classInvoiceSplit(input: {
 
 export function approvedMonthlySetAside(value: string | null): string | null {
   return value === null ? null : toMoney(dec(value).abs());
+}
+
+export function transactionAgencySpread(
+  grossAmount: string | null,
+  baseAmount: string | null,
+): string | null {
+  if (grossAmount === null || baseAmount === null) return null;
+  // Do not floor a negative source variance. This is the same reconciliation
+  // definition used by the Transactions ledger and preserves workbook parity.
+  return toMoney(dec(grossAmount).minus(baseAmount));
+}
+
+export function agencyShareOfEmployeeBase(
+  baseAmount: string | null,
+  employeeShare: string | null,
+): string | null {
+  if (baseAmount === null || employeeShare === null) return null;
+  // Employee share is rounded first; the agency receives the exact residual so
+  // the two deal sides always reconcile to Employee base at money precision.
+  return toMoney(dec(baseAmount).minus(employeeShare));
 }
 
 function directDealLabel(row: CheckRow): string | null {
@@ -578,6 +620,12 @@ export async function getAgencyFinancialReport(
           employeeAgencyCutPercent: row.agency_cut_percent,
         })
       : null;
+    const grossAmount = row.gross_amount === null ? null : toMoney(row.gross_amount);
+    const baseAmount = row.base_amount === null ? null : toMoney(row.base_amount);
+    const agencySpread = transactionAgencySpread(row.gross_amount, row.base_amount);
+    const agencyShareOfBase = row.payment_recipient === "excellent_staffing"
+      ? agencyShareOfEmployeeBase(baseAmount, routed?.amount ?? null)
+      : null;
     return {
       id: row.id,
       sourceRef: row.source_ref ?? row.id,
@@ -589,10 +637,12 @@ export async function getAgencyFinancialReport(
       employeeName: row.employee_name,
       programName: row.program_name,
       paymentRecipient: row.payment_recipient,
-      grossAmount: row.gross_amount === null ? null : toMoney(row.gross_amount),
-      baseAmount: row.base_amount === null ? null : toMoney(row.base_amount),
+      grossAmount,
+      baseAmount,
+      agencySpread,
       employeeSharePercent: routed?.percent ?? null,
       employeeExpense: routed?.amount ?? null,
+      agencyShareOfBase,
       payRuleSource: routed?.source ?? null,
     };
   });
@@ -754,6 +804,24 @@ export async function getAgencyFinancialReport(
   const countedManualIncome = manualIncome.filter((entry) => entry.countedInIncome);
   const countedManualSplits = manualIncome.filter((entry) => entry.countedSplitExpense);
 
+  const completeTransactionBreakdown = transactions.filter((row) => (
+    row.grossAmount !== null && row.baseAmount !== null && row.agencySpread !== null
+  ));
+  const agencyRoutedTransactions = transactions.filter((row) => (
+    row.paymentRecipient === "excellent_staffing"
+  ));
+  const completeAgencyRoutedBreakdown = agencyRoutedTransactions.filter((row) => (
+    row.grossAmount !== null
+    && row.baseAmount !== null
+    && row.agencySpread !== null
+    && row.employeeExpense !== null
+    && row.agencyShareOfBase !== null
+  ));
+  const sumTransactionField = (
+    rows: AgencyTransactionActual[],
+    field: "grossAmount" | "baseAmount" | "agencySpread" | "employeeExpense" | "agencyShareOfBase",
+  ) => rows.reduce((sum, row) => sum.plus(row[field] ?? 0), dec(0));
+
   const transactionIncome = transactions.reduce((sum, row) => sum.plus(row.grossAmount ?? 0), dec(0));
   const classIncome = dec(0);
   const manualIncomeTotal = countedManualIncome.reduce((sum, row) => sum.plus(row.grossAmount), dec(0));
@@ -792,6 +860,22 @@ export async function getAgencyFinancialReport(
     setAsides,
     classInvoices,
     manualIncome,
+    transactionBreakdown: {
+      completeRows: completeTransactionBreakdown.length,
+      excludedRows: transactions.length - completeTransactionBreakdown.length,
+      funderBilled: toMoney(sumTransactionField(completeTransactionBreakdown, "grossAmount")),
+      employeeBase: toMoney(sumTransactionField(completeTransactionBreakdown, "baseAmount")),
+      agencySpread: toMoney(sumTransactionField(completeTransactionBreakdown, "agencySpread")),
+      agencyRouted: {
+        completeRows: completeAgencyRoutedBreakdown.length,
+        excludedRows: agencyRoutedTransactions.length - completeAgencyRoutedBreakdown.length,
+        funderBilled: toMoney(sumTransactionField(completeAgencyRoutedBreakdown, "grossAmount")),
+        employeeBase: toMoney(sumTransactionField(completeAgencyRoutedBreakdown, "baseAmount")),
+        agencySpread: toMoney(sumTransactionField(completeAgencyRoutedBreakdown, "agencySpread")),
+        employeeShareOfBase: toMoney(sumTransactionField(completeAgencyRoutedBreakdown, "employeeExpense")),
+        agencyShareOfBase: toMoney(sumTransactionField(completeAgencyRoutedBreakdown, "agencyShareOfBase")),
+      },
+    },
     totals: {
       income: {
         transactions: toMoney(transactionIncome),
