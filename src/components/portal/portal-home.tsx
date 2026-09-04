@@ -245,7 +245,7 @@ function agencyIndividualResponsibility(individual: PortalAgencyIndividualSummar
   if (individual.managesBudget && individual.billsServices) return "Budget + billing";
   if (individual.managesBudget) return "Budget managed";
   if (individual.billsServices) return "Billing only";
-  return null;
+  return "Roster only";
 }
 
 function AgencyIndividualMember({ individual }: { individual: PortalAgencyIndividualSummary }) {
@@ -408,7 +408,9 @@ function AgencyAccess({ agency }: { agency: PortalAgencySummary }) {
             <p className="eyebrow">{agency.code}</p>
             <h2 className="display mt-1 truncate text-base font-semibold">{agency.name}</h2>
           </div>
-          <Building2 aria-hidden className="h-5 w-5 shrink-0 text-[var(--color-primary)]" />
+          <Link href={`/agencies/${agency.id}?month=${agency.month}`} className="btn btn-secondary btn-sm shrink-0">
+            Open Agency 360
+          </Link>
         </div>
         <div className="mt-3 flex flex-wrap gap-1.5">
           {agency.roles.map((role) => <StatusBadge key={role.key} tone="info" label={role.label} />)}
