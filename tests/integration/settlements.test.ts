@@ -37,6 +37,15 @@ function unwrap<T>(result: { ok: true; data: T } | { ok: false; code: string; me
   return result.data;
 }
 
+async function backdateStrategy(strategyId: string, updatedAt = "2026-07-15T12:00:00-04:00") {
+  await pool.query(
+    `UPDATE calculation_strategies
+        SET created_at = '2026-07-01T12:00:00-04:00', updated_at = $2::timestamptz
+      WHERE id = $1`,
+    [strategyId, updatedAt],
+  );
+}
+
 async function verifyPayrollCheck(input: {
   employeeId: string;
   checkNumber: string;
@@ -197,6 +206,7 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     const individual = unwrap(await createIndividual(pool, { displayName: "Corrected Reserve Person" }, ACTOR));
     const strategy = unwrap(await createStrategy(pool, { individualId: individual.id }, ACTOR));
     unwrap(await updateStrategy(pool, { id: strategy.id, afterAll: "80" }, ACTOR));
+    await backdateStrategy(strategy.id);
     const roots = await pool.query<{ id: string; source_key: string }>(
       `INSERT INTO settlement_obligations
          (source_key, kind, direction, individual_id, calculation_strategy_id,
@@ -287,6 +297,10 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       renewalDate: "2027-09-15",
       afterAll: "20",
     }, ACTOR));
+    await Promise.all([
+      backdateStrategy(oldStrategy.id),
+      backdateStrategy(newStrategy.id),
+    ]);
     const roots = await pool.query<{ id: string; source_key: string }>(
       `INSERT INTO settlement_obligations
          (source_key, kind, direction, individual_id, calculation_strategy_id,
@@ -329,6 +343,7 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       "2026-09",
     );
     expect(statement).toMatchObject({
+      setupHistoryAvailable: true,
       approvedMonthlyPlan: "30.0000",
       activePlans: 2,
       trackedPlans: 1,
@@ -339,7 +354,43 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     });
   });
 
-  it("keeps the approved monthly final fixed regardless of the annual divisor", async () => {
+  it("uses the setup revision effective in the selected month", async () => {
+    const individual = unwrap(await createIndividual(pool, { displayName: "Historical Setup Person" }, ACTOR));
+    const strategy = unwrap(await createStrategy(pool, { individualId: individual.id }, ACTOR));
+    unwrap(await updateStrategy(pool, {
+      id: strategy.id,
+      renewalDate: "2027-01-01",
+      afterAll: "100",
+    }, ACTOR));
+    await backdateStrategy(strategy.id, "2026-08-10T12:00:00-04:00");
+
+    unwrap(await updateStrategy(pool, { id: strategy.id, afterAll: "200" }, ACTOR, "September plan change"));
+    await pool.query(
+      `UPDATE calculation_strategies SET updated_at = '2026-09-15T12:00:00-04:00' WHERE id = $1`,
+      [strategy.id],
+    );
+
+    const august = await getCollectionsWorkspace(pool, fullAccess(ACTOR, "admin"), "2026-08");
+    const september = await getIndividualMasserStatement(
+      pool,
+      fullAccess(ACTOR, "admin"),
+      individual.id,
+      "2026-09",
+    );
+
+    expect(august.setupHistoryAvailable).toBe(true);
+    expect(august.individualSetAsides.find((row) => row.individualId === individual.id)).toMatchObject({
+      approvedMonthlyPlan: "100.0000",
+      activePlans: 1,
+    });
+    expect(september).toMatchObject({
+      setupHistoryAvailable: true,
+      approvedMonthlyPlan: "200.0000",
+      activePlans: 1,
+    });
+  });
+
+  it("keeps the approved monthly final fixed regardless of the annual divisor without guessing legacy history", async () => {
     const individual = unwrap(await createIndividual(pool, { displayName: "Late Start Reserve" }, ACTOR));
     const strategy = unwrap(await createStrategy(pool, { individualId: individual.id }, ACTOR));
     unwrap(await updateStrategy(pool, {
@@ -348,6 +399,7 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       monthDivisor: "7",
       afterAll: "80",
     }, ACTOR));
+    await backdateStrategy(strategy.id);
     await pool.query(
       `INSERT INTO settlement_obligations
          (source_key, kind, direction, individual_id, calculation_strategy_id,
@@ -360,11 +412,13 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     );
 
     const may = await getCollectionsWorkspace(pool, fullAccess(ACTOR, "admin"), "2026-05");
-    const june = await getCollectionsWorkspace(pool, fullAccess(ACTOR, "admin"), "2026-06");
+    const august = await getCollectionsWorkspace(pool, fullAccess(ACTOR, "admin"), "2026-08");
     const december = await getCollectionsWorkspace(pool, fullAccess(ACTOR, "admin"), "2026-12");
 
-    expect(may.individualSetAsides.find((row) => row.individualId === individual.id)?.approvedMonthlyPlan).toBe("80.0000");
-    expect(june.individualSetAsides.find((row) => row.individualId === individual.id)?.approvedMonthlyPlan).toBe("80.0000");
+    expect(may.setupHistoryAvailable).toBe(false);
+    expect(may.individualSetAsides.find((row) => row.individualId === individual.id)?.approvedMonthlyPlan).toBe("0.0000");
+    expect(august.setupHistoryAvailable).toBe(true);
+    expect(august.individualSetAsides.find((row) => row.individualId === individual.id)?.approvedMonthlyPlan).toBe("80.0000");
     expect(december.individualSetAsides.find((row) => row.individualId === individual.id)?.approvedMonthlyPlan).toBe("80.0000");
   });
 
