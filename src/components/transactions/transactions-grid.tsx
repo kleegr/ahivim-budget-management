@@ -6,7 +6,8 @@ import { useRouter } from "next/navigation";
 import { MoveHorizontal, PanelRightOpen, X } from "lucide-react";
 import { formatMoney, formatHours } from "@/lib/money";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
-import { individualBudgetHref } from "@/lib/nav/review-actions";
+import { importCorrectionsHref, individualBudgetHref } from "@/lib/nav/review-actions";
+import { ACTIVITY_NEXT_STEP_LABELS, activityNextStep } from "@/lib/transactions/activity-state";
 import { computeGridTotals, type GridTotals } from "@/lib/business/transaction-totals";
 import { useGrid } from "@/components/data-grid/use-grid";
 import { Toolbar } from "@/components/data-grid/toolbar";
@@ -74,7 +75,7 @@ const COLUMNS: ColumnDef<GridTransaction>[] = [
       ),
   },
   { key: "program", label: "Program", kind: "text", width: 150, accessor: (r) => r.program },
-  { key: "payTo", label: "Source pay to", kind: "text", width: 150, hidden: true, accessor: (r) => r.payTo },
+  { key: "payTo", label: "Payee", kind: "text", width: 150, hidden: true, accessor: (r) => r.payTo },
   { key: "checkNumber", label: "Check #", kind: "text", width: 90, hidden: true, accessor: (r) => r.checkNumber },
   { key: "hours", label: "Hours", kind: "hours", width: 80, accessor: (r) => r.hours },
   { key: "rate", label: "Rate", kind: "money", width: 80, hidden: true, accessor: (r) => r.rate },
@@ -82,12 +83,16 @@ const COLUMNS: ColumnDef<GridTransaction>[] = [
   { key: "internalAmount", label: "Employee base", kind: "money", width: 150, accessor: (r) => r.internalAmount },
   { key: "agencyAdditional", label: "Agency spread", kind: "money", width: 160, accessor: (r) => r.agencyAdditional },
   { key: "totalNetPay", label: "Total net pay", kind: "money", width: 120, hidden: true, accessor: (r) => r.totalNetPay },
-  { key: "paid", label: "Source paid marker", kind: "text", width: 130, hidden: true, accessor: (r) => (r.isPaid ? "Marked" : "Not marked") },
+  { key: "paid", label: "Paid status", kind: "text", width: 110, hidden: true, accessor: (r) => (r.isPaid ? "Paid" : "Not paid") },
   { key: "periodBegin", label: "Period begin", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodBegin },
   { key: "periodEnd", label: "Period end", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodEnd },
   { key: "paymentRecipient", label: "Payment recipient", kind: "badge", width: 150, badgeLabels: RECIPIENT_LABEL, accessor: (r) => r.paymentRecipient },
-  { key: "matchStatus", label: "Review state", kind: "badge", width: 130, badgeLabels: REVIEW_LABEL, accessor: (r) => r.matchStatus },
+  { key: "nextStep", label: "Next step", kind: "badge", width: 140, badgeLabels: ACTIVITY_NEXT_STEP_LABELS, accessor: (r) => activityNextStep(r) },
+  { key: "matchStatus", label: "Duplicate review", kind: "badge", width: 130, hidden: true, badgeLabels: REVIEW_LABEL, accessor: (r) => r.matchStatus },
   { key: "groupStatus", label: "Group status", kind: "badge", width: 120, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => (r.isGroup ? "Group" : "Individual") },
+  { key: "sourceName", label: "Original source", kind: "text", width: 190, hidden: true, accessor: (r) => r.sourceName ?? null },
+  { key: "sourceSheet", label: "Source sheet", kind: "text", width: 120, hidden: true, accessor: (r) => r.sourceSheet ?? null },
+  { key: "sourceRowNumber", label: "Source row", kind: "int", width: 90, hidden: true, accessor: (r) => r.sourceRowNumber == null ? null : String(r.sourceRowNumber) },
 ];
 
 // The existing per-column width and default-hidden maps. useGrid seeds its
@@ -155,7 +160,10 @@ export default function TransactionsGrid({
     columns,
     gridKey: "transactions",
     canManage,
-    initialSort: [{ key: "checkDate", dir: "desc" }],
+    initialSort: [
+      { key: "nextStep", dir: "asc" },
+      { key: "serviceDate", dir: "desc" },
+    ],
     initialHidden,
     initialWidths: INITIAL_WIDTHS,
     initialFilters,
@@ -325,10 +333,10 @@ export default function TransactionsGrid({
       {hasFixedDateContext ? null : <PeriodControl onChange={applyPeriod} paramKey="period" />}
       <Toolbar
         grid={grid}
-        searchPlaceholder="Search transactions…"
+        searchPlaceholder="Search recorded services…"
         exportEndpoint="/api/transactions/export"
-        exportTitle="Transactions"
-        exportFilename="transactions"
+        exportTitle="Recorded services"
+        exportFilename="recorded-services"
         showColumnChooser
       />
 
@@ -344,7 +352,7 @@ export default function TransactionsGrid({
             {fields.canSeeAgencySpread ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency spread</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div> : null}
             {fields.canSeeHours ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Hours</div><div className="text-xl font-semibold tabular-nums">{formatHours(totals.hours)}</div></div> : null}
             {!fields.canSeeBilledAmounts && !fields.canSeeEmployeeAmounts && !fields.canSeeAgencySpread ? (
-              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Transactions</div><div className="text-xl font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
+              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Recorded services</div><div className="text-xl font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
             ) : null}
           </div>
           <button
@@ -360,7 +368,7 @@ export default function TransactionsGrid({
               {fields.canSeeCheckNet ? (
                 <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Net pay (per check)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.netPerCheck)}</div></div>
               ) : null}
-              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Transactions</div><div className="text-lg font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
+              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Recorded services</div><div className="text-lg font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Checks</div><div className="text-lg font-semibold tabular-nums">{totals.checks.toLocaleString()}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Individuals</div><div className="text-lg font-semibold tabular-nums">{totals.individuals.toLocaleString()}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Employees</div><div className="text-lg font-semibold tabular-nums">{totals.employees.toLocaleString()}</div></div>
@@ -506,14 +514,14 @@ export default function TransactionsGrid({
                             disabled={actionBusy}
                             aria-busy={rowUpdating}
                             onClick={() => setPaid([r.id], !r.isPaid)}
-                            title={rowUpdating ? "Updating source marker" : r.isPaid ? `Source marked paid${r.paidAt ? ` on ${r.paidAt}` : ""}` : "Mark the source row paid"}
+                            title={rowUpdating ? "Updating paid status" : r.isPaid ? `Marked paid${r.paidAt ? ` on ${r.paidAt}` : ""}` : "Mark this payment paid"}
                             className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
                               r.isPaid
                                 ? "bg-[var(--color-success-soft,#e6f4ea)] text-[var(--color-success,#127a3d)]"
                                 : "text-[var(--color-ink-faint)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
                             }`}
                           >
-                            {rowUpdating ? "Updating…" : r.isPaid ? "Marked" : "Mark source"}
+                            {rowUpdating ? "Updating…" : r.isPaid ? "Paid" : "Mark paid"}
                           </button>
                         ) : r.isPaid ? (
                           <span className="text-xs font-medium text-[var(--color-success,#127a3d)]">Marked</span>
@@ -545,7 +553,7 @@ export default function TransactionsGrid({
             {total === 0 && (
               <tr>
                 <td colSpan={visibleColumns.length + 1} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
-                  No transactions match the current filters.
+                  No recorded services match the current filters.
                 </td>
               </tr>
             )}
@@ -573,10 +581,10 @@ export default function TransactionsGrid({
             {grid.canManage ? (
               <>
                 <button type="button" disabled={actionBusy} aria-busy={selectionUpdating} onClick={() => setPaid(selectedRows.map((r) => r.id), true)} className="btn btn-sm btn-primary">
-                  {selectionUpdating ? "Updating…" : "Mark source paid"}
+                  {selectionUpdating ? "Updating…" : "Mark paid"}
                 </button>
                 <button type="button" disabled={actionBusy} aria-busy={selectionUpdating} onClick={() => setPaid(selectedRows.map((r) => r.id), false)} className="btn btn-sm btn-secondary">
-                  {selectionUpdating ? "Updating…" : "Clear source marker"}
+                  {selectionUpdating ? "Updating…" : "Clear paid status"}
                 </button>
               </>
             ) : null}
@@ -591,6 +599,7 @@ export default function TransactionsGrid({
           visibility={fields}
           canSeeBudgets={canSeeBudgets}
           canReviewGroups={canManage}
+          canReviewSource={canManage}
           onClose={() => setSelected(null)}
           onFilterCheck={(cn) => {
             grid.setFilter("checkNumber", { selected: [cn], contains: "" });
@@ -609,6 +618,7 @@ function DetailDrawer({
   visibility,
   canSeeBudgets,
   canReviewGroups,
+  canReviewSource,
   onClose,
   onFilterCheck,
 }: {
@@ -616,9 +626,35 @@ function DetailDrawer({
   visibility: TransactionFieldVisibility;
   canSeeBudgets: boolean;
   canReviewGroups: boolean;
+  canReviewSource: boolean;
   onClose: () => void;
   onFilterCheck: (checkNumber: string) => void;
 }) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onCloseRef.current();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      window.requestAnimationFrame(() => previousFocus?.focus());
+    };
+  }, []);
+  const nextStep = activityNextStep(row);
+  const sourceHref = row.sourceFileId
+    ? row.importRowId
+      ? importCorrectionsHref(row.sourceFileId, row.importRowId)
+      : `/imports/${encodeURIComponent(row.sourceFileId)}`
+    : null;
   const line = (label: string, value: ReactNode) => (
     <div className="flex justify-between gap-4 py-1"><span className="text-[var(--color-text-soft)]">{label}</span><span className="text-right font-medium">{value}</span></div>
   );
@@ -626,14 +662,16 @@ function DetailDrawer({
     <div id="transaction-detail-drawer" role="dialog" aria-modal="false" aria-labelledby="transaction-detail-title" className="drawer-in fixed inset-y-0 right-0 z-50 w-full max-w-sm overflow-auto border-l border-[var(--color-rule-strong)] bg-white shadow-2xl">
       <div className="flex items-center justify-between border-b border-[var(--color-rule)] px-4 py-3">
         <div>
-          <div className="eyebrow text-[var(--color-text-soft)]">Transaction</div>
+          <div className="eyebrow text-[var(--color-text-soft)]">Recorded service</div>
           <div id="transaction-detail-title" className="text-lg font-semibold">{row.individual ?? "—"}</div>
         </div>
-        <button type="button" onClick={onClose} className="btn btn-icon btn-ghost" aria-label="Close transaction details" title="Close transaction details">
+        <button ref={closeButtonRef} type="button" onClick={onClose} className="btn btn-icon btn-ghost" aria-label="Close transaction details" title="Close transaction details">
           <X aria-hidden="true" className="h-4 w-4" />
         </button>
       </div>
       <div className="px-4 py-3 text-sm">
+        {line("Next step", ACTIVITY_NEXT_STEP_LABELS[nextStep])}
+        {line("Service date", row.serviceDate ?? "Date missing")}
         {line("Check date", row.checkDate ?? "—")}
         {line("Check #", row.checkNumber ?? "—")}
         {line("Program", row.program ?? "—")}
@@ -644,19 +682,32 @@ function DetailDrawer({
         {visibility.canSeeEmployeeAmounts ? line("Employee base", row.internalAmount ? formatMoney(row.internalAmount) : "—") : null}
         {visibility.canSeeAgencySpread ? line("Agency spread", row.agencyAdditional ? formatMoney(row.agencyAdditional) : "—") : null}
         {visibility.canSeeCheckNet ? line("Total net pay", row.totalNetPay ? formatMoney(row.totalNetPay) : "—") : null}
-        {line("Source paid marker", row.isPaid ? `Marked${row.paidAt ? ` on ${row.paidAt}` : ""}` : "Not marked")}
+        {line("Paid status", row.isPaid ? `Paid${row.paidAt ? ` on ${row.paidAt}` : ""}` : "Not paid")}
         {line("Period", `${row.periodBegin ?? "—"} → ${row.periodEnd ?? "—"}`)}
         {line("Paid to", RECIPIENT_LABEL[row.paymentRecipient ?? ""] ?? row.paymentRecipient ?? "—")}
-        {line("Review state", REVIEW_LABEL[row.matchStatus ?? ""] ?? row.matchStatus ?? "—")}
         {line("Group", row.isGroup ? "Group service" : "Individual")}
+
+        {canReviewSource && (row.sourceName || row.sourceRowNumber || sourceHref) ? (
+          <div className="mt-4 border-t border-[var(--color-rule)] pt-3">
+            <div className="eyebrow text-[var(--color-text-soft)]">Source evidence</div>
+            <p className="mt-1 text-sm text-[var(--color-ink)]">
+              {row.sourceName ?? "Original activity record"}
+              {row.sourceSheet ? ` · ${row.sourceSheet}` : ""}
+              {row.sourceRowNumber ? ` · row ${row.sourceRowNumber.toLocaleString()}` : ""}
+            </p>
+             <p className="mt-1 text-xs text-[var(--color-ink-faint)]">Ahivim preserves the original values so this service can always be traced back.</p>
+             {sourceHref ? <Link href={sourceHref} className="mt-2 inline-block font-medium text-[var(--color-primary)] hover:underline">Open exact source record →</Link> : null}
+             {row.importBatchId && <Link href={`/imports/${row.importBatchId}`} className="ml-3 mt-2 inline-block text-[var(--color-primary)] hover:underline">Open source update →</Link>}
+           </div>
+        ) : null}
 
         <div className="mt-4 space-y-1.5 border-t border-[var(--color-rule)] pt-3">
           <div className="eyebrow text-[var(--color-text-soft)]">Open</div>
+          {canReviewSource && nextStep !== "ready" && sourceHref ? <Link href={sourceHref} className="block font-semibold text-[var(--color-primary)] hover:underline">Complete next step: {ACTIVITY_NEXT_STEP_LABELS[nextStep]} →</Link> : null}
           {row.individualId && <Link href={`/individuals/${row.individualId}`} className="block text-[var(--color-primary)] hover:underline">Individual profile →</Link>}
           {row.employeeId && <Link href={`/employees/${row.employeeId}`} className="block text-[var(--color-primary)] hover:underline">Employee: {row.employee} →</Link>}
           {canSeeBudgets && row.individualId && <Link href={individualBudgetHref(row.individualId)} className="block text-[var(--color-primary)] hover:underline">Budget →</Link>}
-          {row.checkNumber && <button type="button" onClick={() => onFilterCheck(row.checkNumber as string)} className="block text-left text-[var(--color-primary)] hover:underline">Show all rows on check {row.checkNumber} →</button>}
-          {row.importBatchId && <Link href={`/imports/${row.importBatchId}`} className="block text-[var(--color-primary)] hover:underline">Import batch →</Link>}
+          {row.checkNumber && <button type="button" onClick={() => onFilterCheck(row.checkNumber as string)} className="block text-left text-[var(--color-primary)] hover:underline">Show all services on check {row.checkNumber} →</button>}
           {canReviewGroups && row.serviceSessionId && ["detected", "needs_review", "confirmed"].includes(row.groupDetectionStatus ?? "") ? <Link href={`/reconciliation/groups?sessionId=${row.serviceSessionId}`} className="block text-[var(--color-primary)] hover:underline">Group session record →</Link> : null}
         </div>
       </div>
