@@ -181,6 +181,28 @@ function isBlankRow(values: Record<AhivimField, string>): boolean {
   return Object.values(values).every((v) => v.trim() === "");
 }
 
+const NUMERIC_FIELDS = new Set<AhivimField>([
+  "hours",
+  "rate",
+  "amount",
+  "totalNetPay",
+  "calculatedInternalAmount",
+]);
+
+/**
+ * Google Sheets can display a negative value in accounting format as
+ * `$ (625.00)` (or `(625.00)`). The CSV export contains that display text,
+ * while the shared row schema deliberately accepts only a canonical numeric
+ * string. Normalize only the value passed to validation; `raw` keeps the exact
+ * source text for the import audit trail.
+ */
+export function normalizeAccountingNumber(value: string): string {
+  const trimmed = value.trim();
+  const accounting = trimmed.match(/^\$?\s*\(\s*\$?\s*([\d,]+(?:\.\d+)?)\s*\)$/);
+  if (!accounting) return trimmed;
+  return `-${accounting[1]!.replace(/,/g, "")}`;
+}
+
 /** Locate the control-total row (the row above the header carrying the four totals). */
 function readControlTotals(
   grid: string[][],
@@ -193,7 +215,12 @@ function readControlTotals(
     deduplicatedNetPay: null,
   };
   const upTo = headerRowIndex ?? 2;
-  const numberish = (v: string) => v !== "" && /-?\$?[\d,]*\.?\d+/.test(v);
+  const numberish = (value: string): string | null => {
+    const normalized = normalizeAccountingNumber(value);
+    return normalized !== "" && /^-?\$?[\d,]*\.?\d+$/.test(normalized.replace(/\s/g, ""))
+      ? normalized
+      : null;
+  };
   // Scan every row above the header for one that carries ANY of the four control
   // totals in its known column; take all four totals from that row.
   for (let n = 0; n < upTo; n++) {
@@ -201,11 +228,12 @@ function readControlTotals(
     const gross = cell(grid, n, CONTROL_TOTAL_CELLS.agencyGross.col);
     const retention = cell(grid, n, CONTROL_TOTAL_CELLS.agencyRetention.col);
     const net = cell(grid, n, CONTROL_TOTAL_CELLS.deduplicatedNetPay.col);
-    if (numberish(internal) || numberish(gross) || numberish(retention) || numberish(net)) {
-      totals.internalAmount = numberish(internal) ? internal : null;
-      totals.agencyGross = numberish(gross) ? gross : null;
-      totals.agencyRetention = numberish(retention) ? retention : null;
-      totals.deduplicatedNetPay = numberish(net) ? net : null;
+    const parsed = [internal, gross, retention, net].map(numberish);
+    if (parsed.some((value) => value !== null)) {
+      totals.internalAmount = parsed[0];
+      totals.agencyGross = parsed[1];
+      totals.agencyRetention = parsed[2];
+      totals.deduplicatedNetPay = parsed[3];
       break;
     }
   }
@@ -256,6 +284,9 @@ export function parseSheetCsv(csvText: string): SheetCsvParseResult {
     if (isBlankRow(raw)) continue;
 
     const normalized = { ...raw, ...normalizeDates(raw) };
+    for (const field of NUMERIC_FIELDS) {
+      normalized[field] = normalizeAccountingNumber(raw[field]);
+    }
     const result = ahivimRowSchema.safeParse(normalized);
 
     // Source row number is 1-indexed to mirror the workbook's row numbering.

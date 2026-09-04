@@ -44,7 +44,7 @@ export default function MatchesClient({ reviews, canManage }: { reviews: MatchRe
       const res = await fetch("/api/matches/scan", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
       const j = await res.json();
       if (!res.ok || j.ok === false) throw new Error(j.error ?? "Scan failed.");
-      setNotice(`Scan complete — ${j.data.merged} auto-merged, ${j.data.queued} sent to review.`);
+      setNotice(`Scan complete — ${j.data.queued} candidate${j.data.queued === 1 ? "" : "s"} sent to review. No records were merged.`);
       router.refresh();
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "Scan failed.");
@@ -93,7 +93,7 @@ export default function MatchesClient({ reviews, canManage }: { reviews: MatchRe
         <div className="card px-5 py-12 text-center">
           <p className="display text-[0.95rem] font-semibold">Everything is connected</p>
           <p className="mx-auto mt-1.5 max-w-md text-sm text-[var(--color-text-soft)]">
-            Obvious spelling variants are merged automatically. Anything the system is unsure about will appear here for you to confirm.
+            Similar names are suggestions only. Every possible match waits here for a person to decide.
           </p>
         </div>
       ) : (

@@ -1,6 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { LayoutList, RefreshCw, TableProperties } from "lucide-react";
@@ -133,10 +142,11 @@ function FinancialSortHead({
 /** The workbook's standing setup, without actuals or budget-utilization data. */
 function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: (id: string) => void }) {
   const [q, setQ] = useState("");
+  const deferredQuery = useDeferredValue(q);
   const [sort, setSort] = useState<{ key: FinancialSortKey; dir: "asc" | "desc" }>({ key: "name", dir: "asc" });
 
   const visible = useMemo(() => {
-    const needle = q.trim().toLowerCase();
+    const needle = deferredQuery.trim().toLowerCase();
     const filtered = needle
       ? rows.filter((row) =>
           [row.individualName, row.account, row.label].some((value) => value?.toLowerCase().includes(needle)),
@@ -162,7 +172,7 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
       return sort.dir === "asc" ? result : -result;
     };
     return filtered.sort(compare);
-  }, [q, rows, sort]);
+  }, [deferredQuery, rows, sort]);
 
   const totals = useMemo(() => {
     let yearly = dec(0);
@@ -170,7 +180,10 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
     let calculated = dec(0);
     let approved = dec(0);
     let approvedCount = 0;
+    let activeCount = 0;
     for (const row of visible) {
+      if (row.status !== "active") continue;
+      activeCount++;
       yearly = yearly.plus(dec(row.yearlyGross));
       monthly = monthly.plus(dec(row.monthlyGross));
       calculated = calculated.plus(dec(row.net));
@@ -185,6 +198,7 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
       calculated: calculated.toFixed(2),
       approved: approved.toFixed(2),
       approvedCount,
+      activeCount,
     };
   }, [visible]);
 
@@ -196,7 +210,9 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
     );
   };
 
-  const totalDetail = q.trim() ? `${visible.length} matching setups` : `${rows.length} active setups`;
+  const totalDetail = deferredQuery.trim()
+    ? `${totals.activeCount} current matching setups`
+    : `${totals.activeCount} current setups`;
   const sortProps = { activeKey: sort.key, direction: sort.dir, onSort: toggle };
 
   return (
@@ -242,7 +258,7 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
             {visible.map((row) => {
               const difference = overrideDifference(row);
               return (
-                <tr key={row.id} className="border-b border-[var(--color-rule)] hover:bg-black/[0.02]">
+                <tr key={row.id} className={`border-b border-[var(--color-rule)] hover:bg-black/[0.02] ${row.status === "archived" ? "opacity-70" : ""}`}>
                   <td className="px-3 py-2 font-medium">
                     <Link href={`/individuals/${row.individualId}`} className="text-[var(--color-primary)] hover:underline" title={`Open ${row.individualName}'s profile`}>
                       {row.individualName}
@@ -251,6 +267,8 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
                   <td className="px-3 py-2">
                     <div className="font-medium text-[var(--color-ink)]">{row.account ?? row.label}</div>
                     {row.account ? <div className="text-xs text-[var(--color-text-soft)]">{row.label}</div> : <div className="text-xs text-[var(--color-text-soft)]">Account not set</div>}
+                    {row.status === "archived" ? <div className="text-xs font-medium text-[var(--color-text-soft)]">Archived history</div> : null}
+                    {row.notes ? <div className="max-w-64 truncate text-xs text-[var(--color-text-soft)]" title={row.notes}>{row.notes}</div> : null}
                   </td>
                   <td className="tnum px-3 py-2 text-[var(--color-ink-soft)]">{row.renewalDate ?? "Not set"}</td>
                   <td className="tnum px-3 py-2 text-right">{formatMoney(row.yearlyGross)}</td>
@@ -305,6 +323,7 @@ export default function CalculationsGrid({
 }) {
   const router = useRouter();
   const [view, setView] = useState<"overview" | "full">("overview");
+  const [showArchived, setShowArchived] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [editing, setEditing] = useState<{ rowId: string; colKey: string } | null>(null);
   const [active, setActive] = useState<{ row: number; col: number } | null>(null);
@@ -314,11 +333,21 @@ export default function CalculationsGrid({
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [addFor, setAddFor] = useState("");
+  const archivedCount = useMemo(() => rows.filter((row) => row.status === "archived").length, [rows]);
+  const displayedRows = useMemo(
+    () => rows.filter((row) => row.status === "active" || showArchived),
+    [rows, showArchived],
+  );
 
   /* ---- edit commit (PATCH /api/calculation-strategies/[id] with col.patch) ---- */
   const commitEdit = useCallback(
     async (col: ColumnDef<StrategyGridRow>, r: StrategyGridRow, value: string) => {
       if (!col.patch) return;
+      if (r.status !== "active") {
+        setNotice("Restore this archived setup before editing it.");
+        setEditing(null);
+        return;
+      }
       const current = rawValue(col, r);
       if (value === current) {
         setEditing(null);
@@ -386,6 +415,8 @@ export default function CalculationsGrid({
       },
       editable({ key: "label", label: "Setup name", kind: "text", accessor: (r) => r.label, patch: (v) => ({ label: v }) }),
       editable({ key: "account", label: "Account / type", kind: "text", accessor: (r) => r.account, patch: (v) => ({ account: v || null }) }),
+      { key: "status", label: "Status", kind: "badge", badgeLabels: { active: "Current", archived: "Archived" }, accessor: (r) => r.status },
+      editable({ key: "notes", label: "Notes", kind: "text", accessor: (r) => r.notes ?? null, patch: (v) => ({ notes: v || null }) }),
       editable({ key: "renewalDate", label: "Renewal date", kind: "date", frozen: true, accessor: (r) => r.renewalDate, patch: (v) => ({ renewalDate: v || null }) }),
       editable({ key: "monthDivisor", label: "Monthly divisor", kind: "int", accessor: (r) => r.monthDivisor, patch: (v) => ({ monthDivisor: v }) }),
       editable({ key: "cut1Percent", label: "First cut %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut1Percent), patch: (v) => ({ cut1Percent: v }) }),
@@ -434,7 +465,7 @@ export default function CalculationsGrid({
   }, [programs, showAnalytics, commitEdit]);
 
   const grid = useGrid<StrategyGridRow, CalcTotals>({
-    rows,
+    rows: displayedRows,
     columns,
     gridKey: "calculations",
     canManage,
@@ -445,8 +476,11 @@ export default function CalculationsGrid({
         monthly = dec(0),
         net = dec(0),
         approved = dec(0);
+      let strategies = 0;
       const inds = new Set<string>();
       for (const r of filtered) {
+        if (r.status !== "active") continue;
+        strategies++;
         yearly = yearly.plus(dec(r.yearlyGross || 0));
         monthly = monthly.plus(dec(r.monthlyGross || 0));
         net = net.plus(dec(r.net || 0));
@@ -458,7 +492,7 @@ export default function CalculationsGrid({
         monthly: monthly.toFixed(2),
         net: net.toFixed(2),
         approved: approved.toFixed(2),
-        strategies: filtered.length,
+        strategies,
         individuals: inds.size,
       };
     },
@@ -548,6 +582,10 @@ export default function CalculationsGrid({
       for (let di = 0; di < matrix.length; di++) {
         const row = grid.sorted[active.row + di];
         if (!row) break;
+        if (row.status !== "active") {
+          skipped += matrix[di]!.length;
+          continue;
+        }
         for (let dj = 0; dj < matrix[di]!.length; dj++) {
           const col = grid.visibleColumns[active.col + dj];
           if (!col) continue;
@@ -586,7 +624,7 @@ export default function CalculationsGrid({
     else if (e.key === "Enter" || e.key === "F2") {
       const col = grid.visibleColumns[active.col];
       const row = grid.sorted[active.row];
-      if (canManage && col?.editable && row) {
+      if (canManage && col?.editable && row?.status === "active") {
         e.preventDefault();
         setEditing({ rowId: row.id, colKey: col.key });
       }
@@ -617,14 +655,18 @@ export default function CalculationsGrid({
     }
   };
 
-  const rowAction = async (id: string, action: "duplicate" | "archive") => {
+  const rowAction = async (id: string, action: "duplicate" | "archive" | "restore") => {
     setBusy(true);
     try {
       const url = action === "duplicate" ? `/api/calculation-strategies/${id}/duplicate` : `/api/calculation-strategies/${id}/status`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: action === "archive" ? JSON.stringify({ status: "archived" }) : "{}",
+        body: action === "archive"
+          ? JSON.stringify({ status: "archived" })
+          : action === "restore"
+            ? JSON.stringify({ status: "active" })
+            : "{}",
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || j.ok === false) throw new Error(j.error ?? "Action failed.");
@@ -634,6 +676,20 @@ export default function CalculationsGrid({
     } finally {
       setBusy(false);
     }
+  };
+
+  const moveViewTabFocus = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const nextView = event.key === "ArrowLeft" || event.key === "Home"
+      ? "overview"
+      : event.key === "ArrowRight" || event.key === "End"
+        ? "full"
+        : null;
+    if (!nextView) return;
+    event.preventDefault();
+    setView(nextView);
+    window.requestAnimationFrame(() => {
+      document.getElementById(`financial-setup-${nextView}-tab`)?.focus();
+    });
   };
 
   // Hardcoded frozen leading column(s): the loop stops at the first non-frozen
@@ -652,30 +708,57 @@ export default function CalculationsGrid({
 
   const tile = "rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2";
   const totals = grid.totals;
+  const drawerRow = drawerId ? rows.find((row) => row.id === drawerId) : undefined;
+  const closeDrawer = useCallback(() => setDrawerId(null), []);
 
   return (
     <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
       <div className="segmented-control" role="tablist" aria-label="Financial setup views">
         <button
+          id="financial-setup-overview-tab"
           type="button"
           onClick={() => setView("overview")}
+          onKeyDown={moveViewTabFocus}
           role="tab"
           aria-selected={view === "overview"}
+          aria-controls="financial-setup-panel"
+          tabIndex={view === "overview" ? 0 : -1}
         >
           <LayoutList className="h-4 w-4" aria-hidden /> Expected monthly amounts
         </button>
         <button
+          id="financial-setup-full-tab"
           type="button"
           onClick={() => setView("full")}
+          onKeyDown={moveViewTabFocus}
           role="tab"
           aria-selected={view === "full"}
+          aria-controls="financial-setup-panel"
+          tabIndex={view === "full" ? 0 : -1}
         >
           <TableProperties className="h-4 w-4" aria-hidden /> Advanced editor
         </button>
       </div>
+        {archivedCount > 0 ? (
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            aria-pressed={showArchived}
+            onClick={() => setShowArchived((current) => !current)}
+          >
+            {showArchived ? "Hide archived history" : `Show archived history (${archivedCount})`}
+          </button>
+        ) : null}
+      </div>
 
+      <div
+        id="financial-setup-panel"
+        role="tabpanel"
+        aria-labelledby={view === "overview" ? "financial-setup-overview-tab" : "financial-setup-full-tab"}
+      >
       {view === "overview" ? (
-        <FinancialOverview rows={rows} onOpen={setDrawerId} />
+        <FinancialOverview rows={displayedRows} onOpen={setDrawerId} />
       ) : (
       <>
       {/* shared toolbar: search, result count, reset, saved views, export + our extras */}
@@ -769,7 +852,7 @@ export default function CalculationsGrid({
                   const isFrozen = c.key in frozenLeft;
                   const numeric = isNumericKind(c.kind);
                   const isEditing = editing?.rowId === r.id && editing?.colKey === c.key;
-                  const canEdit = canManage && !!c.editable;
+                  const canEdit = canManage && r.status === "active" && !!c.editable;
                   const isActive = active?.row === ri && active?.col === ci;
                   const selected = inSelection(ri, ci);
                   const frozenBg = isActive ? "var(--color-primary-tint)" : selected ? "var(--color-primary-soft)" : "white";
@@ -800,14 +883,19 @@ export default function CalculationsGrid({
                 })}
                 <td className="whitespace-nowrap border-b border-[var(--color-rule)] px-2 py-1 text-xs">
                   <button type="button" className="touch-target inline-flex items-center px-1 text-[var(--color-primary)] hover:underline" onClick={() => setDrawerId(r.id)}>Explain</button>
-                  {canManage && (
+                  {canManage && r.status === "active" ? (
                     <>
                       <span className="px-1 text-[var(--color-text-soft)]">·</span>
                       <button type="button" disabled={busy} aria-busy={busy} className="touch-target inline-flex items-center px-1 text-[var(--color-primary)] hover:underline disabled:opacity-50" onClick={() => rowAction(r.id, "duplicate")}>Duplicate</button>
                       <span className="px-1 text-[var(--color-text-soft)]">·</span>
                       <button type="button" disabled={busy} aria-busy={busy} className="touch-target inline-flex items-center px-1 text-[var(--color-text-soft)] hover:text-red-600 hover:underline disabled:opacity-50" onClick={() => { if (confirm(`Archive ${r.individualName} ${r.label}? It is kept in history, not deleted.`)) rowAction(r.id, "archive"); }}>Archive</button>
                     </>
-                  )}
+                  ) : canManage ? (
+                    <>
+                      <span className="px-1 text-[var(--color-text-soft)]">·</span>
+                      <button type="button" disabled={busy} aria-busy={busy} className="touch-target inline-flex items-center px-1 text-[var(--color-primary)] hover:underline disabled:opacity-50" onClick={() => rowAction(r.id, "restore")}>Restore</button>
+                    </>
+                  ) : null}
                 </td>
               </tr>
             ))}
@@ -821,8 +909,16 @@ export default function CalculationsGrid({
       </div>
       </>
       )}
+      </div>
 
-      {drawerId && <ExplainDrawer strategyId={drawerId} row={rows.find((r) => r.id === drawerId)} canManage={canManage} onClose={() => setDrawerId(null)} />}
+      {drawerId && (
+        <ExplainDrawer
+          strategyId={drawerId}
+          row={drawerRow}
+          canManage={canManage && drawerRow?.status === "active"}
+          onClose={closeDrawer}
+        />
+      )}
     </div>
   );
 }
@@ -855,6 +951,8 @@ function EditCell({ kind, initial, onCommit, onCancel }: { kind: GridFieldKind; 
 
 function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: string; row: StrategyGridRow | undefined; canManage: boolean; onClose: () => void }) {
   const router = useRouter();
+  const titleId = useId();
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [data, setData] = useState<{ explain: ExplainResult; revisions: Revision[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savingRate, setSavingRate] = useState<string | null>(null);
@@ -871,12 +969,32 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
 
   useEffect(() => {
     let live = true;
+    setData(null);
+    setError(null);
+    setFailedRate(null);
     fetch(`/api/calculation-strategies/${strategyId}`)
       .then((r) => r.json())
       .then((j) => { if (live) { if (j.ok) setData(j.data); else setError(j.error ?? "Could not load."); } })
       .catch(() => live && setError("Could not load."));
     return () => { live = false; };
   }, [strategyId]);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", onKeyDown);
+      window.requestAnimationFrame(() => previousFocus?.focus());
+    };
+  }, [onClose]);
 
   const saveRate = async (programId: string, value: string) => {
     setSavingRate(programId);
@@ -905,14 +1023,19 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
   };
 
   return (
-    <div className="drawer-in fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-auto border-l border-[var(--color-rule-strong)] bg-white shadow-2xl">
+    <div
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby={titleId}
+      className="drawer-in fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-auto border-l border-[var(--color-rule-strong)] bg-white shadow-2xl"
+    >
       <div className="flex items-center justify-between border-b border-[var(--color-rule)] px-4 py-3">
         <div>
           <div className="eyebrow text-[var(--color-text-soft)]">Calculation</div>
-          <div className="text-lg font-semibold">{row ? `${row.individualName} — ${row.label}` : "Financial setup"}</div>
+          <div id={titleId} className="text-lg font-semibold">{row ? `${row.individualName} — ${row.label}` : "Financial setup"}</div>
           {row?.renewalDate && <div className="text-xs text-[var(--color-text-soft)]">Renewal date {row.renewalDate}</div>}
         </div>
-        <button type="button" onClick={onClose} className="btn btn-sm btn-icon btn-ghost text-lg" aria-label="Close" title="Close">×</button>
+        <button ref={closeButtonRef} type="button" onClick={onClose} className="btn btn-sm btn-icon btn-ghost text-lg" aria-label="Close calculation details" title="Close calculation details">×</button>
       </div>
       <div className="px-4 py-3 text-sm">
         {error ? (
@@ -928,7 +1051,7 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
             </button>
           </div>
         ) : null}
-        {!data && !error && <div className="text-[var(--color-text-soft)]">Loading…</div>}
+        {!data && !error && <div role="status" className="text-[var(--color-text-soft)]">Loading…</div>}
         {data && (
           <>
             <div className="eyebrow mb-1 text-[var(--color-text-soft)]">Program rates — yearly gross = Σ (hours × rate)</div>

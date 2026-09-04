@@ -6,10 +6,10 @@ import { scanMatches } from "@/lib/manage/individual-merge";
  * One-time data tasks that run after migrations on a deployed instance, so the
  * production database self-heals without an operator POSTing anywhere.
  *
- * Currently: the first match scan. It connects the obvious spelling variants
- * the two workbook tabs created (auto-merging clear typos, queuing uncertain
- * pairs for review). Guarded by an app_settings flag so it runs once, and the
- * scan itself is idempotent (rejected pairs are remembered, merged rows skipped).
+ * Currently: the first match scan. It queues possible spelling variants from
+ * the two workbook tabs for human review and never merges people itself.
+ * Guarded by an app_settings flag so it runs once, and the scan itself is
+ * idempotent (existing review pairs are remembered).
  */
 let started = false;
 

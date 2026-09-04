@@ -180,6 +180,7 @@ export interface AuthorizationRecord {
   supersedesId: string | null;
   notes: string | null;
   source: string | null;
+  sourceRowRef: string | null;
   createdAt: string;
 }
 
@@ -201,6 +202,7 @@ interface AuthRow {
   supersedes_id: string | null;
   notes: string | null;
   source: string | null;
+  source_row_ref?: string | null;
   created_at: string;
 }
 
@@ -213,6 +215,7 @@ const AUTH_SELECT = `
          a.agency_rate::text AS agency_rate,
          a.individual_rate_override::text AS individual_rate_override,
          a.rate_basis, a.revision, a.status, a.supersedes_id, a.notes, a.source,
+         a.source_row_ref,
          a.created_at::text AS created_at
   FROM budget_authorizations a JOIN programs p ON p.id = a.program_id`;
 
@@ -234,6 +237,7 @@ const toAuth = (r: AuthRow): AuthorizationRecord => ({
   supersedesId: r.supersedes_id,
   notes: r.notes,
   source: r.source,
+  sourceRowRef: r.source_row_ref ?? null,
   createdAt: r.created_at,
 });
 
@@ -256,6 +260,8 @@ export interface AuthorizationInput {
   rateBasis?: string | null;
   notes?: string | null;
   source?: string | null;
+  /** Stable workbook/file/sheet/row reference for imported authorizations. */
+  sourceRowRef?: string | null;
 }
 
 /** Set the canonical annual renewal and derive its complete period atomically. */
@@ -606,8 +612,8 @@ export async function createAuthorizationInTransaction(
     `INSERT INTO budget_authorizations
        (budget_period_id, individual_id, program_id, authorized_hours, internal_rate,
         agency_rate, individual_rate_override, rate_override, authorized_dollars,
-        rate_basis, notes, source, created_by_user_id, revision, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1, 'active') RETURNING id`,
+        rate_basis, notes, source, created_by_user_id, revision, status, source_row_ref)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1, 'active', $14) RETURNING id`,
     [
       input.budgetPeriodId,
       period.individualId,
@@ -622,6 +628,7 @@ export async function createAuthorizationInTransaction(
       input.notes?.trim() || null,
       input.source ?? "manual",
       actorId,
+      input.sourceRowRef?.trim() || null,
     ],
   );
   const record = await getAuthorization(client, rows[0]!.id);
@@ -740,8 +747,9 @@ export async function reviseAuthorization(
       `INSERT INTO budget_authorizations
          (budget_period_id, individual_id, program_id, authorized_hours, internal_rate,
           agency_rate, individual_rate_override, rate_override, authorized_dollars,
-          rate_basis, notes, source, created_by_user_id, revision, status, supersedes_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'active', $15) RETURNING id`,
+          rate_basis, notes, source, created_by_user_id, revision, status, supersedes_id,
+          source_row_ref)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'active', $15, $16) RETURNING id`,
       [
         before.budgetPeriodId,
         before.individualId,
@@ -758,6 +766,7 @@ export async function reviseAuthorization(
         actorId,
         before.revision + 1,
         id,
+        before.sourceRowRef,
       ],
     );
     await client.query(

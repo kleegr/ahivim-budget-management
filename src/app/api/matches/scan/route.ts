@@ -7,7 +7,7 @@ import { scanMatches } from "@/lib/manage/individual-merge";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Scan for near-duplicate individuals: auto-merge obvious typos, queue the rest. */
+/** Scan for near-duplicate individuals and queue every candidate for human review. */
 export async function POST(request: NextRequest) {
   const user = await apiUser("manager");
   if (!user) return jsonError("You do not have permission to run a match scan.", 403);

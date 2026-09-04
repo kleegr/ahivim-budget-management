@@ -129,7 +129,7 @@ suite("portal effective hours (real PostgreSQL)", () => {
     });
   }, 60_000);
 
-  it("counts one transaction once across overlapping strategy periods for the same program", async () => {
+  it("counts one transaction once and selects the primary overlapping strategy for the same program", async () => {
     const scope = await createPortalScope("PORTAL_OVERLAP", "Portal Overlap Person");
     const program = await programId(scope.pool, "COM_HAB");
     await addStrategyBudget(scope.pool, {
@@ -174,9 +174,9 @@ suite("portal effective hours (real PostgreSQL)", () => {
 
     const model = await getPortalHomeReadModel(scope.pool, scope.context, scope.month);
     expectHourSurfaces(model, scope.agencyId, {
-      authorized: "100.0000",
+      authorized: "40.0000",
       used: "10.0000",
-      remaining: "90.0000",
+      remaining: "30.0000",
     });
     expect(JSON.stringify(model)).not.toContain("Portal Unauthorized Outsider");
   }, 60_000);
@@ -228,7 +228,7 @@ suite("portal effective hours (real PostgreSQL)", () => {
         WHERE individual_id = $2 AND program_id = $3`,
       [scope.today, scope.individualId, program],
     );
-    expect(effective.rows).toEqual([{ source: "calculation_strategy" }]);
+    expect(effective.rows).toEqual([{ source: "explicit_authorization" }]);
 
     const model = await getPortalHomeReadModel(scope.pool, scope.context, scope.month);
     expectHourSurfaces(model, scope.agencyId, {

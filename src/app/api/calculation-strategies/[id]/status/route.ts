@@ -15,7 +15,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (cross) return cross;
   const { id } = await params;
   const body = await readJson(request);
-  const status = body.status === "archived" ? "archived" : "active";
+  if (body.status !== "active" && body.status !== "archived") {
+    return jsonError("Status must be active or archived.", 400);
+  }
+  const status = body.status;
   const pool = getPool();
   const result = await setStrategyStatus(pool, { id, status }, user.id);
   if (!result.ok) return resultResponse(result);

@@ -194,6 +194,7 @@ export interface ProgramBudgetFilters {
   programId?: string | null;
   status?: "active" | "closed" | null;
   asOf?: string | null;
+  scope?: AccessScope;
 }
 
 export interface CurrentProgramBudgetFilters {
@@ -376,10 +377,13 @@ export async function listProgramBudgets(
     params.push(filters.asOf);
     where.push(`$${params.length}::date BETWEEN balance.start_date AND balance.end_date`);
   }
+  const directScope = filters.scope
+    ? directIndividualScopeClause(filters.scope, "balance.individual_id", params)
+    : "";
 
   const { rows } = await pool.query<ProgramBudgetRow>(
     `${PROGRAM_BUDGET_SELECT}
-      WHERE ${where.join(" AND ")}
+      WHERE ${where.join(" AND ")}${directScope}
       ORDER BY balance.end_date, balance.individual_name, balance.program_name,
                balance.budget_period_id`,
     params,

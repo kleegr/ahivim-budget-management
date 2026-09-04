@@ -6,14 +6,10 @@ import { levenshtein, similarity } from "@/lib/business/name-matching";
  *
  * `normalizePersonName` already collapses spacing, ordering, punctuation and
  * numbering, so any pair reaching here differs by SPELLING. The rule set is
- * deliberately conservative:
- *   - AUTO only for a clear single-name-part typo (same token count, exactly one
- *     token differs, and that token pair is very close) — e.g. Markowitz vs
- *     Markovitz, Fleishman vs Fleischman.
- *   - REVIEW for anything else that is plausibly the same person (decent overall
- *     similarity, or a near-identical shared surname) — e.g. Duestch vs Deutsch.
- *   - NONE otherwise.
- * A merge is destructive, so when in doubt we queue for a human, never guess.
+ * deliberately conservative: plausible near-name pairs are REVIEW candidates,
+ * never automatic merges. A close spelling is useful evidence for ordering the
+ * review queue, but it is not proof that two records represent the same person.
+ * Pairs below the review threshold are ignored.
  */
 
 export interface IndividualForMatch {
@@ -23,7 +19,7 @@ export interface IndividualForMatch {
   weight: number; // heavier row (more transactions/history) survives a merge
 }
 
-export type MatchKind = "auto" | "review" | "none";
+export type MatchKind = "review" | "none";
 
 export interface MatchCandidate {
   keep: IndividualForMatch;
@@ -33,8 +29,8 @@ export interface MatchCandidate {
   reason: string;
 }
 
-const AUTO_MIN = 0.88;
-const AUTO_TOKEN_MIN = 0.8;
+const CLOSE_NAME_MIN = 0.88;
+const CLOSE_TOKEN_MIN = 0.8;
 // Require the WHOLE name to be similar to queue a review. A merely-shared surname
 // is not enough — otherwise every pair of siblings (Yaakov vs Yoel Neuwirth) would
 // be flagged. Genuine spelling variants of a full name (Duestch vs Deutsch ≈ 0.75)
@@ -61,10 +57,10 @@ export function scorePair(aName: string, bName: string): PairScore {
       const i = diffIdx[0]!;
       const pairSim = similarity(ta[i]!, tb[i]!);
       const editDist = levenshtein(ta[i]!, tb[i]!);
-      if (pairSim >= AUTO_TOKEN_MIN && score >= AUTO_MIN) {
+      if (pairSim >= CLOSE_TOKEN_MIN && score >= CLOSE_NAME_MIN) {
         return {
           score,
-          kind: "auto",
+          kind: "review",
           reason: `“${ta[i]}” vs “${tb[i]}” — one name part differs by ${editDist} letter${editDist === 1 ? "" : "s"}.`,
         };
       }

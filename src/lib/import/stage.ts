@@ -474,8 +474,8 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
     // above), a blank individual, or an unknown program. A NEAR-MISS — a name
     // that merely resembles an existing record — is a real, countable
     // transaction. It is committed to its own record and the possible duplicate
-    // is reconciled afterwards by the Matches scanner (confident single-letter
-    // typos auto-merge; the rest queue for a one-click merge). Excluding these
+    // is reconciled afterwards by the Matches scanner (every near-name pair
+    // queues for an explicit human decision). Excluding these
     // understated every budget and total; the source sheet counts every row.
     const individualUnattributable = individual.normalizedName === "";
 

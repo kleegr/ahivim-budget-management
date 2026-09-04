@@ -43,6 +43,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     ...(body.otherAdjustment !== undefined ? { otherAdjustment: body.otherAdjustment as string } : {}),
     ...(body.afterAll !== undefined ? { afterAll: body.afterAll as string } : {}),
     ...(body.account !== undefined ? { account: body.account === null ? null : String(body.account) } : {}),
+    ...(body.notes !== undefined ? { notes: body.notes === null ? null : String(body.notes) } : {}),
     ...(body.hours !== undefined ? { hours: body.hours as Record<string, string> } : {}),
     ...(body.rateOverrides !== undefined ? { rateOverrides: body.rateOverrides as Record<string, string> } : {}),
   };

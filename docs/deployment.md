@@ -126,6 +126,25 @@ npm run dev
 
 `NEON_WS_PROXY` is unset in production, where `src/lib/db/index.ts` ignores it.
 
+### Playwright disposable-database reset interlock
+
+The end-to-end seed drops and recreates the target `public` schema. Run it only
+against a dedicated disposable database. The reset fails closed unless all
+three variables below are set explicitly; it never falls back to
+`DATABASE_URL`:
+
+```powershell
+$env:TEST_DATABASE_URL = '<disposable-postgres-url>'
+$env:E2E_EXPECTED_DB_HOST = '<hostname-from-that-url>'
+$env:E2E_CONFIRM_RESET = 'DROP_DISPOSABLE_E2E_DATABASE'
+npm run e2e
+```
+
+`E2E_EXPECTED_DB_HOST` must exactly match the hostname parsed from
+`TEST_DATABASE_URL`, and the URL must use the `postgres` or `postgresql`
+protocol and name a database. Never set these reset controls to a production
+database or production host.
+
 ## ExcelJS and the CommonJS dependency chain
 
 ExcelJS is loaded in the Node server runtime with CommonJS `require`, and it

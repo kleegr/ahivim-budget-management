@@ -2,14 +2,16 @@ import { requireUser } from "@/lib/auth/session";
 import { canAccessPlanning, hasDirectIndividualAccess, resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listIndividualBudgetBoard } from "@/lib/data/queries";
-import { listCurrentProgramBudgets } from "@/lib/data/program-budgets";
+import { listCurrentProgramBudgets, listProgramBudgets } from "@/lib/data/program-budgets";
 import { summarizeAuthorizationPortfolio } from "@/lib/data/authorization-portfolio";
 import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
-import IndividualsList from "@/components/individuals/individuals-list";
+import BudgetStatusWorkspace from "@/components/individuals/budget-status-workspace";
 import { agencyDate } from "@/lib/business/agency-time";
 import { resolvePortfolioView } from "@/components/individuals/portfolio-view";
+import { resolveBudgetStatusView } from "@/components/individuals/budget-status-view";
 import { getIndividualPortfolioStaffingContext } from "@/lib/data/individual-profile";
+import { buildUpToDateBudgetPortfolio } from "@/lib/business/up-to-date-budget";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "People & budgets - Ahivim Budget Management" };
@@ -32,22 +34,30 @@ export default async function IndividualsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const user = await requireUser("viewer");
+  const [user, sp] = await Promise.all([
+    requireUser("viewer"),
+    searchParams,
+  ]);
   const canEdit = user.role !== "viewer";
-  const sp = await searchParams;
   const requestedView = Array.isArray(sp.view) ? sp.view[0] : sp.view;
   const requestedBudget = Array.isArray(sp.budget) ? sp.budget[0] : sp.budget;
+  const requestedSheet = Array.isArray(sp.sheet) ? sp.sheet[0] : sp.sheet;
   const initialView = resolvePortfolioView({ view: requestedView, budget: requestedBudget });
+  const initialSheet = resolveBudgetStatusView(requestedSheet);
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
     const today = agencyDate();
     const asOf = new Date(`${today}T12:00:00Z`);
     const canPlan = canAccessPlanning(scope);
-    const [rows, authorizationRows, staffingContext] = await Promise.all([
+    const canViewUpToDate = scope.canSeeBudgets && scope.canSeeHours;
+    const [rows, authorizationRows, explicitAuthorizationRows, staffingContext] = await Promise.all([
       listIndividualBudgetBoard(pool, asOf, scope),
-      scope.canSeeBudgets
+      canViewUpToDate
         ? listCurrentProgramBudgets(pool, { asOf: today, scope })
+        : Promise.resolve([]),
+      canViewUpToDate
+        ? listProgramBudgets(pool, { scope })
         : Promise.resolve([]),
       getIndividualPortfolioStaffingContext(pool, scope, {
         canViewPlanning: canPlan,
@@ -55,16 +65,18 @@ export default async function IndividualsPage({
       }),
     ]);
     const visibleIds = new Set(rows.map((row) => row.id));
+    const visibleAuthorizationRows = authorizationRows.filter((row) => visibleIds.has(row.individualId));
+    const visibleExplicitAuthorizationRows = explicitAuthorizationRows.filter((row) => visibleIds.has(row.individualId));
     const authorizationPortfolio = summarizeAuthorizationPortfolio(
-      authorizationRows.filter((row) => visibleIds.has(row.individualId)),
+      visibleAuthorizationRows,
       asOf,
     );
     const canonicalBudgetPeople = new Set(
-      authorizationRows
+      visibleAuthorizationRows
         .filter((row) => row.requiredAuthType === "hours" || row.requiredAuthType === "both")
         .map((row) => row.individualId),
     );
-    return rows.map((row) => {
+    const people = rows.map((row) => {
       const staffing = staffingContext.get(row.id);
       const nextSession = staffing?.nextSession ?? null;
       const staffingFacts = {
@@ -116,6 +128,15 @@ export default async function IndividualsPage({
           }
       );
     });
+    return {
+      people,
+      canViewUpToDate,
+      upToDate: buildUpToDateBudgetPortfolio({
+        current: visibleAuthorizationRows,
+        explicit: visibleExplicitAuthorizationRows,
+        asOf: today,
+      }),
+    };
   });
 
   return (
@@ -133,18 +154,20 @@ export default async function IndividualsPage({
 
       {!result.ok ? (
         <ErrorPanel title="Budget list is unavailable">{result.error}</ErrorPanel>
-      ) : result.data.length === 0 ? (
+      ) : result.data.people.length === 0 ? (
         <Card>
           <EmptyState title="No people yet">
             <p>People appear here after billing data is added{canEdit ? ", or you can add someone with the Add person button." : "."}</p>
           </EmptyState>
         </Card>
       ) : (
-        <IndividualsList
-          key={initialView}
-          rows={result.data}
+        <BudgetStatusWorkspace
+          rows={result.data.people}
+          upToDate={result.data.upToDate}
+          initialView={initialSheet}
           initialFilter={initialView}
           canManage={canEdit}
+          canViewUpToDate={result.data.canViewUpToDate}
         />
       )}
     </>

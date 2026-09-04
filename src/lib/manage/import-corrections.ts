@@ -384,6 +384,11 @@ export async function resolveRowMatch(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // Applying this row takes the settlement-source lock before locking the
+    // source row. Match changes must use the same order so a concurrent apply
+    // either sees the completed rematch or completes first and makes the row
+    // immutable; the source identity and ledger identity can never diverge.
+    await acquireSettlementSourceLock(client);
     const before = await getRow(client, rowId, true);
     const editable = ensureHeldRow(before);
     if (!editable.ok) {

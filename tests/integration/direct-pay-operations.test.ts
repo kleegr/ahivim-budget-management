@@ -176,7 +176,7 @@ suite("direct-pay operations (real PostgreSQL)", () => {
     );
     expect(program.rows[0]).toBeDefined();
     const file = await pool.query<{ id: string }>(
-      `INSERT INTO imported_files (file_name, file_size, checksum)
+      `INSERT INTO imported_files (original_filename, byte_size, checksum_sha256)
        VALUES ('imported-checks.xlsx', 1, 'imported-checks-review') RETURNING id`,
     );
     const batch = await pool.query<{ id: string }>(

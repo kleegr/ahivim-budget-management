@@ -15,6 +15,7 @@ const HOURS_FIELDS = ["hours", "allocationHours", "physicalHours"] as const;
 const BILLED_FIELDS = ["rate", "gross", "amount", "agencyGross"] as const;
 const EMPLOYEE_FIELDS = [
   "internalAmount",
+  "employeeRate",
   "employeePaymentAmount",
   "totalPayment",
   "paidToEmployee",
@@ -22,7 +23,14 @@ const EMPLOYEE_FIELDS = [
   "unknownRecipient",
 ] as const;
 const SPREAD_FIELDS = ["agencyAdditional", "agencyAdditionalAmount"] as const;
-const CHECK_NET_FIELDS = ["totalNetPay", "net", "netPay"] as const;
+const CHECK_NET_FIELDS = [
+  "totalNetPay",
+  "verifiedCheckGross",
+  "verifiedCheckNet",
+  "verificationStatus",
+  "net",
+  "netPay",
+] as const;
 const TAX_FIELDS = ["withheld", "withholding", "tax", "taxes"] as const;
 
 type TransactionSensitiveField =

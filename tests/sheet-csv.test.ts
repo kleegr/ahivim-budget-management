@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { parseCsv, parseSheetCsv } from "@/lib/sheets/parse-csv";
+import {
+  normalizeAccountingNumber,
+  parseCsv,
+  parseSheetCsv,
+} from "@/lib/sheets/parse-csv";
 
 /** Encode a grid as CSV, quoting every field (mirrors Google's gviz export). */
 function toCsv(grid: string[][]): string {
@@ -122,5 +126,50 @@ describe("Ahivim sheet CSV → parsed rows", () => {
     const invalid = parse.ahivimRows.find((r) => r.parsed === null);
     expect(invalid).toBeTruthy();
     expect(invalid!.errors.length).toBeGreaterThan(0);
+  });
+
+  it("normalizes accounting-style negatives without changing the raw source cell", () => {
+    const accounting = [
+      grid[0],
+      grid[1],
+      dataRow({
+        hours: "-31.25",
+        rate: "20",
+        amount: "$ (625.00)",
+        program: "Com Hab",
+        individual: "Markovitz, Berl",
+        employee: "Denied Billing",
+        internal: "$(531.25)",
+      }),
+    ];
+
+    const parse = parseSheetCsv(toCsv(accounting));
+    const row = parse.ahivimRows[0]!;
+
+    expect(row.parsed).not.toBeNull();
+    expect(row.parsed!.amount).toBe("-625.00");
+    expect(row.parsed!.calculatedInternalAmount).toBe("-531.25");
+    expect(row.raw.amount).toBe("$ (625.00)");
+    expect(row.raw.calculatedInternalAmount).toBe("$(531.25)");
+  });
+
+  it("leaves ordinary and malformed numeric text unchanged", () => {
+    expect(normalizeAccountingNumber(" $1,234.50 ")).toBe("$1,234.50");
+    expect(normalizeAccountingNumber("(not a number)")).toBe("(not a number)");
+    expect(normalizeAccountingNumber("(1,234.50)")).toBe("-1234.50");
+  });
+
+  it("makes accounting-negative control totals safe for Decimal reconciliation", () => {
+    const accountingTotals = [
+      totalsRow("$ (531.25)", "$ (625.00)", "93.75", "(600.00)"),
+      header(),
+      grid[2],
+    ];
+    expect(parseSheetCsv(toCsv(accountingTotals)).controlTotals).toEqual({
+      internalAmount: "-531.25",
+      agencyGross: "-625.00",
+      agencyRetention: "93.75",
+      deduplicatedNetPay: "-600.00",
+    });
   });
 });

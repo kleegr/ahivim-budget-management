@@ -230,8 +230,12 @@ suite("calculation strategies (real PostgreSQL)", () => {
 
     // 300 hours actually billed for this individual+program
     await pool.query(
-      `INSERT INTO payroll_transactions (individual_id, program_id, imported_hours, calculated_internal_amount, transaction_fingerprint)
-       VALUES ($1,$2,'300','6300','fp-an-1')`,
+      `INSERT INTO payroll_transactions
+         (individual_id, program_id, period_begin, period_end, imported_hours,
+          calculated_internal_amount, transaction_fingerprint)
+       VALUES
+         ($1, $2, (now() AT TIME ZONE 'America/New_York')::date,
+          (now() AT TIME ZONE 'America/New_York')::date, '300', '6300', 'fp-an-1')`,
       [ind.id, p],
     );
 

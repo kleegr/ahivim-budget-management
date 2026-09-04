@@ -283,9 +283,9 @@ export async function commit(
 
   // Self-heal duplicates. A person spelled one way in the Calculations tab and
   // another in the ledger (Markowitz/Markovitz, Fleishman/Fleischman) is now
-  // committed under both spellings; the scanner auto-merges the confident
-  // single-letter typos and queues anything less certain on the Matches screen,
-  // so budgets, financials and the ledger converge on one record. Non-fatal: the
+  // committed under both spellings; the scanner queues every possible match on
+  // the Matches screen for a human decision and never merges people itself.
+  // Once confirmed, budgets, financials and the ledger converge. Non-fatal: the
   // rows are already committed if this step fails.
   try {
     await scanMatches(pool, committedByUserId);

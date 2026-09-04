@@ -10,6 +10,7 @@ import {
 } from "@/lib/data/employee-profile";
 
 const page = readFileSync("src/app/(app)/employees/[id]/page.tsx", "utf8");
+const availability = readFileSync("src/components/schedule/employee-availability-manager.tsx", "utf8");
 const employeeId = "00000000-0000-4000-8000-000000000001";
 
 function root(overrides: Partial<EmployeeMoneyRoot>): EmployeeMoneyRoot {
@@ -46,6 +47,11 @@ describe("Employee 360 profile", () => {
     expect(page).toContain("EmployeeAvailabilityManager");
     expect(page).toContain("Current assignments");
     expect(page).toContain("Weekly hours and time off");
+  });
+
+  it("does not let a stale availability request replace the selected employee", () => {
+    expect(availability).toContain("const requestId = ++loadRequestId.current");
+    expect(availability).toContain("if (requestId !== loadRequestId.current) return");
   });
 
   it("uses actual linked accounts for contextual Owner preview", () => {
@@ -101,7 +107,7 @@ describe("Employee route-specific money summaries", () => {
 });
 
 describe("Employee profile source facts", () => {
-  it("finds only active Employee self-service accounts", async () => {
+  it("finds only active Employee self-service accounts without an invalid DISTINCT sort", async () => {
     const query = vi.fn(async (_sql: string) => ({
       rows: [{
         user_id: "00000000-0000-4000-8000-000000000099",
@@ -114,6 +120,9 @@ describe("Employee profile source facts", () => {
     expect(accounts).toHaveLength(1);
     expect(accounts[0]?.email).toBe("employee@example.com");
     const sql = String(query.mock.calls[0]?.[0]);
+    expect(sql).toContain("SELECT account.id AS user_id");
+    expect(sql).not.toContain("SELECT DISTINCT account.id AS user_id");
+    expect(sql).toContain("ORDER BY account.last_login_at DESC NULLS LAST");
     expect(sql).toContain("relationship.relationship_type = 'self'");
     expect(sql).toContain("portal_role.portal_role = 'employee'");
     expect(sql).toContain("portal_role.is_active = true");

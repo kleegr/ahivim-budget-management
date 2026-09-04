@@ -575,6 +575,70 @@ export const calculationStrategyRevisions = pgTable(
   ],
 );
 
+/**
+ * Immutable source-row provenance for Calculations-workbook reconciliation.
+ * Rows that cannot be imported safely remain here with a structured review
+ * classification instead of being discarded or hidden in a free-form note.
+ */
+export const calculationStrategyImportRows = pgTable(
+  "calculation_strategy_import_rows",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    strategyId: uuid("strategy_id").references(() => calculationStrategies.id, {
+      onDelete: "set null",
+    }),
+    individualId: uuid("individual_id").references(() => individuals.id, {
+      onDelete: "set null",
+    }),
+    sourceFileName: text("source_file_name").notNull(),
+    sourceSheetName: text("source_sheet_name").notNull(),
+    sourceRowNumber: integer("source_row_number").notNull(),
+    sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+    sourceRowHashSha256: text("source_row_hash_sha256").notNull(),
+    sourceIndividualLabel: text("source_individual_label").notNull(),
+    strategyLabel: text("strategy_label").notNull(),
+    classification: text("classification").notNull(),
+    sourceSnapshot: jsonb("source_snapshot").$type<Record<string, unknown>>().notNull(),
+    reconciliation: jsonb("reconciliation")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`)
+      .notNull(),
+    appliedByUserId: uuid("applied_by_user_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("calculation_strategy_import_rows_source_key").on(
+      table.sourceChecksumSha256,
+      table.sourceSheetName,
+      table.sourceRowNumber,
+    ),
+    index("calculation_strategy_import_rows_strategy_idx").on(
+      table.strategyId,
+      table.createdAt,
+    ),
+    index("calculation_strategy_import_rows_individual_idx").on(
+      table.individualId,
+      table.createdAt,
+    ),
+    index("calculation_strategy_import_rows_review_idx").on(
+      table.classification,
+      table.createdAt,
+    ),
+    check(
+      "calculation_strategy_import_rows_row_check",
+      sql`${table.sourceRowNumber} > 0`,
+    ),
+    check(
+      "calculation_strategy_import_rows_classification_check",
+      sql`${table.classification} in (
+        'exact', 'missing', 'different', 'ambiguous',
+        'duplicate', 'historical', 'needs-review'
+      )`,
+    ),
+  ],
+);
+
 /* -------------------------------------------------------------------------- */
 /* Budgets                                                                    */
 /* -------------------------------------------------------------------------- */

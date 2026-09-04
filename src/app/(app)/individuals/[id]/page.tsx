@@ -22,6 +22,8 @@ import { getIndividualMasserStatement } from "@/lib/data/direct-pay-operations";
 import {
   getIndividualProfileContext,
   individualProfileMainAction,
+  assignmentIsCurrent,
+  summarizeActiveFinancialSetups,
   type IndividualAgencyResponsibility,
   type IndividualProfileAction,
 } from "@/lib/data/individual-profile";
@@ -123,12 +125,12 @@ export default async function IndividualDetailPage({
   params: Promise<{ id: string }>;
   searchParams?: Promise<{ view?: string | string[] }>;
 }) {
-  const user = await requireUser("viewer");
-  const canEdit = user.role !== "viewer";
-  const [{ id }, query] = await Promise.all([
+  const [user, { id }, query] = await Promise.all([
+    requireUser("viewer"),
     params,
     searchParams ?? Promise.resolve<{ view?: string | string[] }>({}),
   ]);
+  const canEdit = user.role !== "viewer";
   const requestedView = typeof query.view === "string" ? query.view : undefined;
   const initialView = requestedView === "financial" || requestedView === "classes" || requestedView === "details"
     ? "more"
@@ -136,6 +138,7 @@ export default async function IndividualDetailPage({
   if (!isUuid(id)) notFound();
 
   const result = await withDb(async (pool) => {
+    const today = agencyDate();
     const [individual, scope] = await Promise.all([
       getIndividual(pool, id),
       resolveAccessScope(pool, user),
@@ -151,25 +154,13 @@ export default async function IndividualDetailPage({
     const canSeeClasses = scope.canSeeClassFinancials && directAccess;
     const canManageHours = canManageHourAuthorizations(scope) && directAccess;
     const canPlan = canAccessPlanning(scope);
-    const budget = await getIndividualBudgetView(pool, id, undefined, scope);
-    const [strategies, assignments, aliasesAll, activity, settlement, masserStatement, profileContext, classBudgets, classInvoices, programBudgetsRaw, programCatalogRaw, authorizationHistoryRaw] = await Promise.all([
+    const budgetPromise = getIndividualBudgetView(pool, id, undefined, scope);
+    const supportingDataPromise = Promise.all([
       canSeeBudgets
         ? listStrategies(pool, { individualId: id, withAnalytics: true })
         : Promise.resolve({ rows: [], programs: [] }),
       listAssignments(pool, { individualId: id, includeInactive: true }),
       listAliases(pool, { kind: "individual" }),
-      canSeeBudgets
-        ? getIndividualPeriodActivity(
-            pool,
-            id,
-            budget.periodStart,
-            budget.periodEnd,
-            scope,
-            budget.lines
-              .filter((line) => line.inPlan)
-              .map((line) => ({ id: line.programId, name: line.programName, code: line.programCode })),
-          )
-        : Promise.resolve({ periods: [], byEmployee: [] }),
       canSeeSettlements ? getPersonSettlementBalance(pool, { individualId: id }) : Promise.resolve({ payable: "0", receivable: "0", reserve: "0", credit: "0", openItems: 0 }),
       canSeeSettlements ? getIndividualMasserStatement(pool, scope, id) : Promise.resolve(null),
       getIndividualProfileContext(pool, id, scope, {
@@ -179,7 +170,7 @@ export default async function IndividualDetailPage({
       canSeeClasses ? listClassBudgets(pool, scope, { individualId: id }) : Promise.resolve([]),
       canSeeClasses ? listClassInvoices(pool, scope, { individualId: id }) : Promise.resolve([]),
       canSeeProgramBudgets ? Promise.all([
-        listCurrentProgramBudgets(pool, { asOf: agencyDate(), individualId: id, scope }),
+        listCurrentProgramBudgets(pool, { asOf: today, individualId: id, scope }),
         listProgramBudgets(pool, { individualId: id }),
       ]).then(([current, explicit]) => {
         const currentIds = new Set(current.map((row) => row.authorizationId));
@@ -190,6 +181,35 @@ export default async function IndividualDetailPage({
         ? listAuthorizationsForIndividual(pool, id)
         : Promise.resolve({ periods: [], authorizations: [] }),
     ]);
+    const activityPromise = budgetPromise.then((budget) => canSeeBudgets
+      ? getIndividualPeriodActivity(
+          pool,
+          id,
+          budget.periodStart,
+          budget.periodEnd,
+          scope,
+          budget.lines
+            .filter((line) => line.inPlan)
+            .map((line) => ({ id: line.programId, name: line.programName, code: line.programCode })),
+        )
+      : { periods: [], byEmployee: [] });
+    const [
+      budget,
+      [
+        strategies,
+        assignments,
+        aliasesAll,
+        settlement,
+        masserStatement,
+        profileContext,
+        classBudgets,
+        classInvoices,
+        programBudgetsRaw,
+        programCatalogRaw,
+        authorizationHistoryRaw,
+      ],
+      activity,
+    ] = await Promise.all([budgetPromise, supportingDataPromise, activityPromise]);
     const canSeeRowDollars = (serviceCategory: string) => directAccess && (
       serviceCategory === "classes" ? scope.canSeeClassFinancials : scope.canSeeBilledAmounts
     );
@@ -312,6 +332,10 @@ export default async function IndividualDetailPage({
     const activeStrategies = strategies.rows.filter((s) => s.status === "active");
     const strategy = activeStrategies.find((s) => s.id === budget.strategyId) ?? activeStrategies[0] ?? null;
     const others = activeStrategies.filter((s) => s.id !== (strategy?.id ?? budget.strategyId));
+    const financialSetupOverview = summarizeActiveFinancialSetups(
+      activeStrategies,
+      masserStatement?.approvedMonthlyPlan,
+    );
     const otherPlans = await Promise.all(
       others.map(async (s) => ({ strategy: s, budget: await getIndividualBudgetView(pool, id, s.id, scope) })),
     );
@@ -352,6 +376,7 @@ export default async function IndividualDetailPage({
       profileContext,
       strategy,
       otherPlans,
+      financialSetupOverview,
       canSeeHours: scope.canSeeHours,
       canSeeBilledAmounts: scope.canSeeBilledAmounts,
       canSeeEmployeeAmounts: scope.canSeeEmployeeAmounts,
@@ -383,7 +408,11 @@ export default async function IndividualDetailPage({
       canSeeTransactions: scope.canSeeTransactions,
       canPlan,
       programs: strategies.programs, // program list with default per-hour rates, for the editor
-      assignments: assignments.filter((a) => a.status === "active" && canViewEmployee(scope, a.employeeId)),
+      assignments: assignments.filter((a) => (
+        a.status === "active"
+        && assignmentIsCurrent(a, today)
+        && canViewEmployee(scope, a.employeeId)
+      )),
       aliases: aliasesAll.filter((a) => a.canonicalId === id),
     };
   });
@@ -400,7 +429,7 @@ export default async function IndividualDetailPage({
 
   const {
     individual, budget, operationalBudget, activity, settlement, masserStatement, profileContext,
-    strategy, otherPlans,
+    strategy, otherPlans, financialSetupOverview,
     canSeeHours, canSeeBilledAmounts, canSeeEmployeeAmounts, canSeeAgencySpread,
     canSeeBudgets, canSeeProgramBudgets,
     canSeeSettlements, canSeeTransactions, canPlan, canSeeClasses, canManageClasses,
@@ -621,8 +650,8 @@ export default async function IndividualDetailPage({
                 actualWorkers={activity.byEmployee}
                 assignments={assignments}
                 upcomingSessions={profileContext.upcomingSessions}
-                strategyLabel={canSeeFinancialSetup ? strategy?.label ?? null : null}
-                approvedMonthlyPutAway={canSeeFinancialSetup ? strategy?.afterAll ?? null : null}
+                strategyLabels={canSeeFinancialSetup ? financialSetupOverview.labels : []}
+                approvedMonthlyPutAway={canSeeFinancialSetup ? financialSetupOverview.approvedMonthly : null}
                 recordedPutAway={canSeeSettlements ? masserStatement?.recordedReserve ?? "0" : null}
                 remainingPutAway={canSeeSettlements ? masserStatement?.remainingReserve ?? settlement.reserve : null}
                 canSeeTransactions={canSeeTransactions}
@@ -981,7 +1010,7 @@ function OverviewSnapshot({
   actualWorkers,
   assignments,
   upcomingSessions,
-  strategyLabel,
+  strategyLabels,
   approvedMonthlyPutAway,
   recordedPutAway,
   remainingPutAway,
@@ -994,7 +1023,7 @@ function OverviewSnapshot({
   actualWorkers: PeriodEmployee[];
   assignments: Awaited<ReturnType<typeof listAssignments>>;
   upcomingSessions: CalendarSession[];
-  strategyLabel: string | null;
+  strategyLabels: string[];
   approvedMonthlyPutAway: string | null;
   recordedPutAway: string | null;
   remainingPutAway: string | null;
@@ -1024,8 +1053,8 @@ function OverviewSnapshot({
           : "Employee identity is not included in this view"}</dd></div>
         <div><dt className="eyebrow">Assigned employees</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{assignments.length ? assignments.map((assignment) => assignment.employeeName).join(", ") : "No active assignments"}</dd></div>
         <div><dt className="eyebrow">Scheduled next</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{scheduledEmployees.length ? scheduledEmployees.join(", ") : upcomingSessions.length ? "Upcoming visit is unassigned" : "No visit in the next 60 days"}</dd></div>
-        {strategyLabel || approvedMonthlyPutAway !== null ? (
-          <div><dt className="eyebrow">Active financial setup</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{strategyLabel ?? "Current plan"}{approvedMonthlyPutAway !== null ? ` · ${formatMoney(approvedMonthlyPutAway)} approved monthly` : ""}</dd></div>
+        {strategyLabels.length > 0 || approvedMonthlyPutAway !== null ? (
+          <div><dt className="eyebrow">Active financial setups</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{strategyLabels.length > 0 ? strategyLabels.join(", ") : "Current plans"}{approvedMonthlyPutAway !== null ? ` · ${formatMoney(approvedMonthlyPutAway)} total approved monthly` : ""}</dd></div>
         ) : null}
         {recordedPutAway !== null || remainingPutAway !== null ? (
           <div><dt className="eyebrow">Put-away position</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{formatMoney(recordedPutAway ?? "0")} recorded · {formatMoney(remainingPutAway ?? "0")} remaining</dd></div>

@@ -6,7 +6,10 @@ import { listTransactionsForGrid, type GridTransaction } from "@/lib/data/transa
 import { PageHeader, ErrorPanel, EmptyState, Card, ButtonLink } from "@/components/ui";
 import BilledActivityWorkspace from "@/components/transactions/billed-activity-workspace";
 import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
-import { buildInitialFilters } from "@/lib/transactions/initial-filters";
+import {
+  buildInitialFilters,
+  filterTransactionsByCheckIdentity,
+} from "@/lib/transactions/initial-filters";
 import { RefreshCw } from "lucide-react";
 import { listSettlementSourceTransactions } from "@/lib/data/settlement-source-transactions";
 import { getActivityReviewSummary } from "@/lib/data/activity-overview";
@@ -24,6 +27,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   const user = await requireUser("viewer");
   const canManage = user.role !== "viewer";
   const sp = await searchParams;
+  const requestedCheckIdentity = one(sp.checkIdentity);
   const requestedTransactionIdsFromUrl = many(sp.transactionId);
   const requestedSettlementSource = one(sp.settlementSource);
   const requestedTransactionId = !requestedSettlementSource && requestedTransactionIdsFromUrl.length === 1
@@ -91,7 +95,10 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     );
   }
 
-  const allRows = result.ok ? result.data.rows : [];
+  const allRows = filterTransactionsByCheckIdentity(
+    result.ok ? result.data.rows : [],
+    requestedCheckIdentity,
+  );
   const requestedTransactionIds = result.ok
     ? result.data.requestedTransactionIds
     : requestedTransactionIdsFromUrl;

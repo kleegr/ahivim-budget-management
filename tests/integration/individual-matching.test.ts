@@ -41,7 +41,7 @@ async function addTx(individualId: string, fp: string, amount = "100") {
 suite("individual matching + merge (real PostgreSQL)", () => {
   beforeAll(async () => { await resetSchema(); pool = testPool(); }, 60_000);
   beforeEach(async () => {
-    await pool.query(`TRUNCATE class_budget_periods, class_reimbursement_profiles CASCADE`);
+    await pool.query(`TRUNCATE class_budget_periods, class_reimbursement_profiles, program_budget_events CASCADE`);
     await pool.query(`DELETE FROM individual_match_reviews`);
     await pool.query(`DELETE FROM calculation_strategy_lines`);
     await pool.query(`DELETE FROM calculation_strategies`);
@@ -53,10 +53,10 @@ suite("individual matching + merge (real PostgreSQL)", () => {
   });
   afterAll(closeTestPool);
 
-  it("scores a single-letter surname typo as an auto-merge and different first names as review-only", () => {
+  it("queues even a single-letter surname typo and ignores clearly different people", () => {
     // scorePair takes already-normalized (sorted-token) names, as loadIndividualsForMatch supplies.
-    expect(scorePair("berl markovitz", "berl markowitz").kind).toBe("auto"); // Markovitz/Markowitz
-    expect(scorePair("fleischman moshe", "fleishman moshe").kind).toBe("auto"); // Fleischman/Fleishman
+    expect(scorePair("berl markovitz", "berl markowitz").kind).toBe("review"); // Markovitz/Markowitz
+    expect(scorePair("fleischman moshe", "fleishman moshe").kind).toBe("review"); // Fleischman/Fleishman
     // A genuine full-name spelling variant → review (a human confirms).
     expect(scorePair("duestch joel", "deutsch joel").kind).toBe("review"); // Duestch/Deutsch ≈ 75%
     // Same surname but clearly different first name (siblings) → NOT flagged, no noise.
@@ -65,7 +65,7 @@ suite("individual matching + merge (real PostgreSQL)", () => {
     expect(scorePair("aaron levy", "klein miriam").kind).toBe("none");
   });
 
-  it("auto-merges an obvious typo and repoints the strategy + transactions to the survivor", async () => {
+  it("queues an obvious typo without changing either person, then merges only after confirmation", async () => {
     // The transaction spelling has the billing history (weight) → it survives.
     const billed = unwrap(await createIndividual(pool, { displayName: "Markovitz, Berl" }, ACTOR));
     await addTx(billed.id, "fp-1");
@@ -74,26 +74,31 @@ suite("individual matching + merge (real PostgreSQL)", () => {
     unwrap(await createStrategy(pool, { individualId: planned.id, label: "1" }, ACTOR));
 
     const result = unwrap(await scanMatches(pool, ACTOR));
-    expect(result.merged).toBe(1);
-    expect(result.queued).toBe(0);
+    expect(result.merged).toBe(0);
+    expect(result.queued).toBe(1);
 
-    // Exactly one active individual remains…
+    // Scanning alone is read-only with respect to both people and their records.
     const active = await loadIndividualsForMatch(pool);
-    expect(active).toHaveLength(1);
-    expect(active[0]!.id).toBe(billed.id); // the billed row survived
-    // …the strategy moved to the survivor…
+    expect(active).toHaveLength(2);
     const strat = await pool.query<{ c: string }>(`SELECT count(*)::text c FROM calculation_strategies WHERE individual_id = $1`, [billed.id]);
-    expect(Number(strat.rows[0]!.c)).toBe(1);
-    // …the folded row is archived + points at the survivor…
+    expect(Number(strat.rows[0]!.c)).toBe(0);
     const folded = await pool.query<{ status: string; merged_into_id: string | null }>(`SELECT status, merged_into_id FROM individuals WHERE id = $1`, [planned.id]);
-    expect(folded.rows[0]!.status).toBe("archived");
-    expect(folded.rows[0]!.merged_into_id).toBe(billed.id);
-    // …an approved alias captures the old spelling…
+    expect(folded.rows[0]!.status).toBe("active");
+    expect(folded.rows[0]!.merged_into_id).toBeNull();
     const alias = await pool.query<{ c: string }>(`SELECT count(*)::text c FROM individual_aliases WHERE individual_id = $1 AND status = 'approved'`, [billed.id]);
-    expect(Number(alias.rows[0]!.c)).toBe(1);
-    // …and NO transaction was lost.
+    expect(Number(alias.rows[0]!.c)).toBe(0);
     const tx = await pool.query<{ c: string }>(`SELECT count(*)::text c FROM payroll_transactions WHERE individual_id = $1`, [billed.id]);
     expect(Number(tx.rows[0]!.c)).toBe(2);
+
+    // A human decision is the only operation that performs the merge.
+    const [review] = await listMatchReviews(pool, { status: "pending" });
+    expect(review).toBeTruthy();
+    unwrap(await decideMatchReview(pool, { id: review!.id, decision: "confirm" }, ACTOR));
+    const after = await loadIndividualsForMatch(pool);
+    expect(after).toHaveLength(1);
+    expect(after[0]!.id).toBe(billed.id);
+    const movedStrategy = await pool.query<{ c: string }>(`SELECT count(*)::text c FROM calculation_strategies WHERE individual_id = $1`, [billed.id]);
+    expect(Number(movedStrategy.rows[0]!.c)).toBe(1);
   });
 
   it("queues an uncertain pair for review instead of guessing, then confirms it", async () => {
@@ -143,8 +148,10 @@ suite("individual matching + merge (real PostgreSQL)", () => {
     // The billed spelling has 100 hours billed; the planning spelling has the strategy (200 planned).
     const billed = unwrap(await createIndividual(pool, { displayName: "Deutsch, Joel" }, ACTOR));
     await pool.query(
-      `INSERT INTO payroll_transactions (individual_id, program_id, imported_hours, calculated_internal_amount, transaction_fingerprint)
-       VALUES ($1,$2,'100','2100','fp-conn-1')`,
+      `INSERT INTO payroll_transactions
+         (individual_id, program_id, period_begin, imported_hours,
+          calculated_internal_amount, transaction_fingerprint)
+       VALUES ($1,$2,'2026-01-01','100','2100','fp-conn-1')`,
       [billed.id, program],
     );
     const planned = unwrap(await createIndividual(pool, { displayName: "Joel Duestch" }, ACTOR));

@@ -39,12 +39,34 @@ function addDays(value: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-function assignmentIsCurrent(
+export function assignmentIsCurrent(
   assignment: { startDate: string | null; endDate: string | null },
   asOf: string,
 ): boolean {
   return (!assignment.startDate || assignment.startDate <= asOf)
     && (!assignment.endDate || assignment.endDate >= asOf);
+}
+
+/**
+ * Profile headline data for the already-filtered active calculation setups.
+ * The Masser statement is the authoritative current aggregate when available;
+ * otherwise, fall back to an exact Decimal sum of each approved final.
+ */
+export function summarizeActiveFinancialSetups(
+  strategies: Array<{ label: string; afterAll: string | null }>,
+  authoritativeApprovedMonthly?: string | null,
+): { labels: string[]; approvedMonthly: string | null } {
+  const approved = strategies.filter(
+    (strategy): strategy is { label: string; afterAll: string } => strategy.afterAll !== null,
+  );
+  return {
+    labels: strategies.map((strategy) => strategy.label),
+    approvedMonthly: authoritativeApprovedMonthly !== undefined && authoritativeApprovedMonthly !== null
+      ? dec(authoritativeApprovedMonthly).toFixed(4)
+      : approved.length > 0
+        ? approved.reduce((total, strategy) => total.plus(strategy.afterAll), dec(0)).toFixed(4)
+        : null,
+  };
 }
 
 /**

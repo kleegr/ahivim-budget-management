@@ -237,16 +237,24 @@ suite("read models over committed data (real PostgreSQL)", () => {
 
   it("exposes the effective-dated rate schedule", async () => {
     const programs = await listPrograms(testPool());
-    expect(programs).toHaveLength(6);
+    expect(programs).toHaveLength(7);
     const comHab = programs.find((p) => p.code === "COM_HAB")!;
     expect(dec(comHab.agencyRate!).toNumber()).toBe(25);
     expect(dec(comHab.internalRate!).toNumber()).toBe(21);
     expect(comHab.aliasCount).toBeGreaterThan(0);
+    const classes = programs.find((p) => p.code === "CLASSES")!;
+    expect(classes).toMatchObject({
+      agencyRate: null,
+      internalRate: null,
+      requiredAuthType: "dollars",
+      consumptionSource: "invoice",
+    });
 
     const rates = await currentRatesByProgram(testPool());
     expect(dec(rates.DAY_HAB.internalRate).toNumber()).toBe(17);
     expect(dec(rates.DAY_HAB.agencyRate!).toNumber()).toBe(19);
     expect(rates.SH_COM_HAB.agencyRate).toBeNull();
+    expect(rates.CLASSES).toBeUndefined();
   });
 
   it("records the audit trail of the import", async () => {

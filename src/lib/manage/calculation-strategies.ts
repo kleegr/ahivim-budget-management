@@ -50,6 +50,7 @@ export interface StrategyGridRow {
   otherAdjustment: string;
   afterAll: string | null;
   account: string | null;
+  notes?: string | null;
   status: string;
   sortOrder: number;
   hours: Record<string, string>; // programId -> hours
@@ -187,6 +188,7 @@ export async function listStrategies(
     other_adjustment: string;
     after_all: string | null;
     account: string | null;
+    notes: string | null;
     status: string;
     sort_order: number;
     revision_count: string;
@@ -198,7 +200,7 @@ export async function listStrategies(
             to_char(s.renewal_date, 'YYYY-MM-DD') AS renewal_date,
             s.month_divisor::text, s.cut1_percent::text, s.cut2_percent::text,
             s.clock_adjustment::text, s.other_adjustment::text,
-            s.after_all::text, s.account, s.status, s.sort_order,
+            s.after_all::text, s.account, s.notes, s.status, s.sort_order,
             (SELECT count(*)::text FROM calculation_strategy_revisions r WHERE r.strategy_id = s.id) AS revision_count
        FROM calculation_strategies s
        JOIN individuals i ON i.id = s.individual_id
@@ -302,6 +304,7 @@ export async function listStrategies(
       otherAdjustment: s.other_adjustment,
       afterAll: s.after_all,
       account: s.account,
+      notes: s.notes,
       status: s.status,
       sortOrder: s.sort_order,
       hours,
@@ -313,8 +316,12 @@ export async function listStrategies(
     };
   });
 
-  if (opts.withAnalytics && rows.length > 0) {
-    await attachStrategyAnalytics(pool, rows, rateByStrategy, asOf);
+  // Archived rows are immutable history, not part of the current operating
+  // plan. Keep them out of live actual/scheduled queries so an old setup can
+  // neither inherit current analytics nor choose an individual's live window.
+  const analyticRows = rows.filter((row) => row.status === "active");
+  if (opts.withAnalytics && analyticRows.length > 0) {
+    await attachStrategyAnalytics(pool, analyticRows, rateByStrategy, asOf);
   }
   return { rows, programs };
 }
@@ -629,6 +636,7 @@ export interface UpdateStrategyInput {
   otherAdjustment?: string | number | null;
   afterAll?: string | number | null;
   account?: string | null;
+  notes?: string | null;
   hours?: Record<string, string | number | null>; // programId -> hours (upsert; null clears)
   rateOverrides?: Record<string, string | number | null>; // programId -> rate (null reverts to default)
 }
@@ -644,10 +652,17 @@ export async function updateStrategy(
   try {
     await client.query("BEGIN");
     await acquireSettlementSourceLock(client);
-    const existing = await client.query(`SELECT id FROM calculation_strategies WHERE id = $1 FOR UPDATE`, [input.id]);
+    const existing = await client.query<{ id: string; status: string }>(
+      `SELECT id, status FROM calculation_strategies WHERE id = $1 FOR UPDATE`,
+      [input.id],
+    );
     if (existing.rowCount === 0) {
       await client.query("ROLLBACK");
       return fail("not_found", "That strategy no longer exists.");
+    }
+    if (existing.rows[0]?.status !== "active") {
+      await client.query("ROLLBACK");
+      return fail("conflict", "Restore this archived setup before editing it.");
     }
     await snapshot(client, input.id, reason ?? null, actorId);
 
@@ -666,6 +681,7 @@ export async function updateStrategy(
     if (input.otherAdjustment !== undefined) set("other_adjustment", input.otherAdjustment == null || input.otherAdjustment === "" ? "0" : toMoney(input.otherAdjustment as string));
     if (input.afterAll !== undefined) set("after_all", input.afterAll == null || input.afterAll === "" ? null : toMoney(input.afterAll as string));
     if (input.account !== undefined) set("account", input.account || null);
+    if (input.notes !== undefined) set("notes", input.notes?.trim() || null);
 
     if (sets.length > 0) {
       vals.push(input.id);

@@ -340,7 +340,8 @@ export interface EmployeePayableRow {
 /**
  * Per employee: total employee payment, split three ways by the canonical route
  * (transaction override, then program default), plus physical hours and the
- * number of distinct checks. The three recipient buckets always sum to total.
+ * number of distinct complete check identities. The three recipient buckets
+ * always sum to total.
  */
 export async function employeePayableReport(
   pool: PgLikePool,
@@ -375,7 +376,18 @@ export async function employeePayableReport(
               ) = 'unknown'), 0)::text
                                                           AS unknown_recipient,
             COALESCE(sum(t.imported_hours), 0)::text      AS physical_hours,
-            count(DISTINCT t.check_number)::text          AS check_count
+            count(DISTINCT ROW(
+              t.employee_id,
+              COALESCE(NULLIF(btrim(t.check_number), ''), ''),
+              COALESCE(t.check_date, 'infinity'::date),
+              COALESCE(t.period_begin, 'infinity'::date),
+              COALESCE(t.period_end, 'infinity'::date)
+            )) FILTER (WHERE
+              NULLIF(btrim(t.check_number), '') IS NOT NULL
+              OR t.check_date IS NOT NULL
+              OR t.period_begin IS NOT NULL
+              OR t.period_end IS NOT NULL
+            )::text                                     AS check_count
      FROM employees e
      JOIN payroll_transactions t ON t.employee_id = e.id
      LEFT JOIN programs p ON p.id = t.program_id

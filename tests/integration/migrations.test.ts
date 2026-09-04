@@ -16,8 +16,8 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`CREATE SCHEMA public`);
 
     const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
-    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 41]);
-    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 41]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 42]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 42]);
   }, 60_000);
 
   it("creates the ledger and every expected table", async () => {
@@ -32,6 +32,7 @@ suite("migration runner (real PostgreSQL)", () => {
       "schedule_series", "schedule_series_individuals", "scheduled_sessions", "scheduled_allocations",
       "budget_calculations", "app_settings",
       "calculation_strategies", "calculation_strategy_lines", "calculation_strategy_revisions",
+      "calculation_strategy_import_rows",
       "individual_match_reviews",
       "sheet_sync_runs", "sheet_sync_rows", "sheet_sync_conflicts",
       "user_individual_access", "user_employee_access",
@@ -54,13 +55,13 @@ suite("migration runner (real PostgreSQL)", () => {
     ]) {
       expect(tables, `missing table ${table}`).toContain(table);
     }
-    expect(tables.length).toBe(73);
+    expect(tables.length).toBe(74);
   });
 
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(41);
+    expect(again.skipped).toBe(42);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -68,7 +69,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(41);
+    expect(rows).toHaveLength(42);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -110,6 +111,7 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[38].name).toBe("0038_unique_schedule_transaction_match.sql");
     expect(rows[39].name).toBe("0039_agency_roster_only.sql");
     expect(rows[40].name).toBe("0040_user_account_preset.sql");
+    expect(rows[41].name).toBe("0041_calculation_workbook_provenance.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 
@@ -233,8 +235,8 @@ suite("migration runner (real PostgreSQL)", () => {
     const budgetHelper = await testPool().query<{ definition: string }>(
       `SELECT pg_get_functiondef('effective_billed_hours(uuid,uuid,date,date,numeric)'::regprocedure) AS definition`,
     );
-    expect(budgetHelper.rows[0]?.definition).toContain(
-      "canonical_service_date(t.period_begin, t.check_date, t.period_end)",
+    expect(budgetHelper.rows[0]?.definition).toMatch(
+      /canonical_service_date\s*\(\s*payroll_row\.period_begin\s*,\s*payroll_row\.check_date\s*,\s*payroll_row\.period_end\s*\)/,
     );
     const triggers = await testPool().query<{ tgname: string }>(
       `SELECT tgname FROM pg_trigger

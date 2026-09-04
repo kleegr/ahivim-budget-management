@@ -116,6 +116,12 @@ suite("canonical budgets in planning (real PostgreSQL)", () => {
       [individualId],
     );
     await pool.query(
+      `INSERT INTO budget_authorizations
+         (budget_period_id, individual_id, program_id, authorized_hours, internal_rate, status)
+       VALUES ($1, $2, $3, 100, 17, 'active')`,
+      [period.rows[0]!.id, individualId, dayHab],
+    );
+    await pool.query(
       `INSERT INTO program_budget_events
          (budget_period_id, individual_id, program_id, event_type, service_date,
           hours, amount, source_type, source_id)

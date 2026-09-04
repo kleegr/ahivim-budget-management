@@ -44,6 +44,19 @@ async function backdateStrategy(strategyId: string, updatedAt = "2026-07-15T12:0
       WHERE id = $1`,
     [strategyId, updatedAt],
   );
+  // updateStrategy snapshots the pre-change row. Keep that fixture history in
+  // the same artificial chronology as the current row; otherwise the real
+  // current timestamp on the blank pre-change snapshot incorrectly wins the
+  // historical-state query over the backdated configured strategy.
+  await pool.query(
+    `UPDATE calculation_strategy_revisions
+        SET snapshot = snapshot || jsonb_build_object(
+          'created_at', '2026-07-01T12:00:00-04:00',
+          'updated_at', ($2::timestamptz - interval '1 second')::text
+        )
+      WHERE strategy_id = $1`,
+    [strategyId, updatedAt],
+  );
 }
 
 async function verifyPayrollCheck(input: {
@@ -521,8 +534,8 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     );
 
     const financial = await getFinancialDashboard(pool);
-    expect(financial.rows.find((row) => row.individualId === firstIndividual.id)?.taxesAll).toBe("20.00");
-    expect(financial.rows.find((row) => row.individualId === secondIndividual.id)?.taxesAll).toBe("50.00");
+    expect(financial.rows.find((row) => row.individualId === firstIndividual.id)?.taxesAll).toBe("20.0000");
+    expect(financial.rows.find((row) => row.individualId === secondIndividual.id)?.taxesAll).toBe("50.0000");
   });
 
   it("keeps an unverified payroll check pending until verification", async () => {
@@ -828,7 +841,11 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     const source = unwrap(await createEmployee(pool, { displayName: "Rachel Greenberg" }, ACTOR));
     const target = unwrap(await createEmployee(pool, { displayName: "R. Greenberg" }, ACTOR));
     const individual = unwrap(await createIndividual(pool, { displayName: "David Klein" }, ACTOR));
-    const homeAgency = await pool.query<{ id: string }>(`SELECT id FROM agencies WHERE is_home_agency = true`);
+    const homeAgency = await pool.query<{ id: string }>(
+      `INSERT INTO agencies (code, name, is_home_agency)
+       VALUES ('MERGE_TEST', 'Merge Test Agency', true)
+       RETURNING id`,
+    );
     await pool.query(
       `INSERT INTO agency_employees (agency_id, employee_id, is_active, effective_from)
        VALUES ($1, $2, true, '2025-01-01')`,

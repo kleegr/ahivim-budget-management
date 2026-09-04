@@ -16,6 +16,10 @@ import {
   employeePayableReport,
   programTotalsReport,
 } from "@/lib/data/report-queries";
+import {
+  getEmployeeMonthlyPayments,
+  getEmployeePaymentSummary,
+} from "@/lib/data/employee-queries";
 import { dec } from "@/lib/money";
 
 const suite = hasTestDatabase ? describe : describe.skip;
@@ -39,9 +43,10 @@ async function insertTransaction(opts: {
   individualId: string;
   employeeId?: string;
   programId: string;
-  periodBegin?: string;
-  periodEnd?: string;
-  checkNumber?: string;
+  periodBegin?: string | null;
+  periodEnd?: string | null;
+  checkNumber?: string | null;
+  checkDate?: string | null;
   hours?: string;
   agencyGross?: string;
   internalAmount?: string;
@@ -51,18 +56,19 @@ async function insertTransaction(opts: {
 }): Promise<string> {
   const { rows } = await testPool().query<{ id: string }>(
     `INSERT INTO payroll_transactions
-       (individual_id, employee_id, program_id, period_begin, period_end, check_number,
+       (individual_id, employee_id, program_id, period_begin, period_end, check_number, check_date,
         imported_hours, imported_amount, calculated_internal_amount,
         agency_additional_amount, employee_payment_amount, payment_recipient,
         transaction_fingerprint)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
     [
       opts.individualId,
       opts.employeeId ?? null,
       opts.programId,
-      opts.periodBegin ?? "2025-03-01",
-      opts.periodEnd ?? "2025-03-15",
+      opts.periodBegin === undefined ? "2025-03-01" : opts.periodBegin,
+      opts.periodEnd === undefined ? "2025-03-15" : opts.periodEnd,
       opts.checkNumber ?? null,
+      opts.checkDate ?? null,
       opts.hours ?? null,
       opts.agencyGross ?? null,
       opts.internalAmount ?? null,
@@ -224,6 +230,86 @@ suite("phase 4D — reporting read models (real PostgreSQL)", () => {
     // Buckets reconcile to the total exactly.
     const bucketSum = dec(r.paidToEmployee).plus(dec(r.payableByAgency)).plus(dec(r.unknownRecipient));
     expect(bucketSum.toNumber()).toBe(dec(r.totalPayment).toNumber());
+  });
+
+  it("counts complete check identities across reused and numberless payroll rows", async () => {
+    const dayHab = await programId("DAY_HAB");
+    const ind = unwrap(await createIndividual(pool, { displayName: "Check Count Person" }, ACTOR));
+    const emp = unwrap(await createEmployee(pool, { displayName: "Check Count Employee" }, ACTOR));
+
+    const base = {
+      individualId: ind.id,
+      employeeId: emp.id,
+      programId: dayHab,
+      employeePayment: "10",
+      paymentRecipient: "employee",
+    } as const;
+
+    // Two ledger lines with the same normalized complete identity are one check.
+    await insertTransaction({
+      ...base,
+      checkNumber: "REUSED-1",
+      checkDate: "2025-03-15",
+      periodBegin: "2025-03-01",
+      periodEnd: "2025-03-14",
+    });
+    await insertTransaction({
+      ...base,
+      checkNumber: "  REUSED-1  ",
+      checkDate: "2025-03-15",
+      periodBegin: "2025-03-01",
+      periodEnd: "2025-03-14",
+    });
+
+    // Reusing that number in another dated pay period is a separate check.
+    await insertTransaction({
+      ...base,
+      checkNumber: "REUSED-1",
+      checkDate: "2025-04-15",
+      periodBegin: "2025-04-01",
+      periodEnd: "2025-04-14",
+    });
+
+    // A date is sufficient identity when the source omitted the check number.
+    await insertTransaction({
+      ...base,
+      checkNumber: null,
+      checkDate: "2025-04-30",
+      periodBegin: null,
+      periodEnd: null,
+    });
+    await insertTransaction({
+      ...base,
+      checkNumber: null,
+      checkDate: "2025-04-30",
+      periodBegin: null,
+      periodEnd: null,
+    });
+
+    // A transaction with no check-number or date identity remains activity,
+    // but must not invent a check.
+    await insertTransaction({
+      ...base,
+      checkNumber: null,
+      checkDate: null,
+      periodBegin: null,
+      periodEnd: null,
+    });
+
+    const summary = await getEmployeePaymentSummary(pool, emp.id);
+    expect(summary.transactionCount).toBe(6);
+    expect(summary.checkCount).toBe(3);
+
+    const report = await employeePayableReport(pool, {});
+    expect(report).toHaveLength(1);
+    expect(report[0].checkCount).toBe(3);
+
+    const monthly = await getEmployeeMonthlyPayments(pool, emp.id);
+    expect(monthly).toEqual([
+      expect.objectContaining({ month: "2025-04", checkCount: 2, transactionCount: 3 }),
+      expect.objectContaining({ month: "2025-03", checkCount: 1, transactionCount: 2 }),
+      expect.objectContaining({ month: null, checkCount: 0, transactionCount: 1 }),
+    ]);
   });
 
   it("programTotalsReport separates group credits from physical employee time", async () => {

@@ -9,6 +9,7 @@ import { issueClassInvoice } from "@/lib/manage/class-invoices";
 import { saveEmployeeDeal } from "@/lib/manage/employee-deals";
 import { mergeEmployees } from "@/lib/manage/employee-merge";
 import { mergeIndividuals } from "@/lib/manage/individual-merge";
+import { resolveRowMatch } from "@/lib/manage/import-corrections";
 import { SETTLEMENT_SOURCE_LOCK } from "@/lib/manage/settlement-freshness";
 
 interface QueryCall {
@@ -168,6 +169,37 @@ describe("settlement source lock ordering", () => {
 
     expect(result).toMatchObject({ ok: false, code: "not_found" });
     expectRowLockAfterSourceLock(calls, "individuals");
+  });
+
+  it("locks before rematching an import row that may be applied concurrently", async () => {
+    const { pool, calls } = recordingPool((sql) => {
+      if (sql.includes("FROM import_rows r WHERE r.id") && sql.includes("FOR UPDATE")) {
+        return {
+          rows: [{
+            id: KEEP_ID,
+            status: "needs_review",
+            corrected_values: null,
+            resolved_individual_id: KEEP_ID,
+            resolved_employee_id: null,
+            resolved_program_id: null,
+            transaction_id: null,
+          }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+
+    const result = await resolveRowMatch(
+      pool,
+      KEEP_ID,
+      { individualId: MERGE_ID },
+      null,
+      "Concurrent rematch regression",
+    );
+
+    expect(result).toEqual({ ok: true, data: { id: KEEP_ID } });
+    expectRowLockAfterSourceLock(calls, "import_rows r");
   });
 
   it("locks before commitStagedImport takes its file lock or reads import state", async () => {

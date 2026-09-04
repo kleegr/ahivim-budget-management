@@ -18,6 +18,10 @@ function row(p: Partial<TotalsInput>): TotalsInput {
     individual: p.individual ?? null,
     employeeId: p.employeeId ?? null,
     employee: p.employee ?? null,
+    verifiedCheckGross: p.verifiedCheckGross ?? null,
+    verifiedCheckNet: p.verifiedCheckNet ?? null,
+    withholding: p.withholding ?? null,
+    verificationStatus: p.verificationStatus ?? null,
   };
 }
 
@@ -59,17 +63,17 @@ describe("computeGridTotals — Excel-SUBTOTAL parity", () => {
     expect(t.checks).toBe(3);
   });
 
-  it("counts one agency payment once when it covers multiple employees", () => {
+  it("keeps agency-routed checks separate for different employees", () => {
     const t = computeGridTotals([
       row({ id: "a", payTo: "Excellent Staffing", employeeId: "e1", checkNumber: "900", checkDate: "2026-08-15", totalNetPay: "800" }),
       row({ id: "b", payTo: " Excellent Staffing ", employeeId: "e2", checkNumber: "900", checkDate: "2026-08-15", totalNetPay: "800" }),
     ]);
 
-    expect(t.netPerCheck).toBe("800.00");
-    expect(t.checks).toBe(1);
+    expect(t.netPerCheck).toBe("1600.00");
+    expect(t.checks).toBe(2);
   });
 
-  it("uses the pay period when a check date is missing and keeps unnumbered rows separate", () => {
+  it("uses both pay-period bounds and excludes fully unidentified rows from check totals", () => {
     const t = computeGridTotals([
       row({ id: "a", employee: "First Payee", checkNumber: "88", periodBegin: "2026-07-01", periodEnd: "2026-07-15", totalNetPay: "125" }),
       row({ id: "b", employee: "First Payee", checkNumber: "88", periodBegin: "2026-07-01", periodEnd: "2026-07-15", totalNetPay: "125" }),
@@ -79,8 +83,70 @@ describe("computeGridTotals — Excel-SUBTOTAL parity", () => {
       row({ id: "f", employee: "First Payee", totalNetPay: "30" }),
     ]);
 
-    expect(t.netPerCheck).toBe("505.00");
-    expect(t.checks).toBe(5);
+    expect(t.netPerCheck).toBe("450.00");
+    expect(t.checks).toBe(3);
+  });
+
+  it("counts verified check facts once per complete identity only", () => {
+    const shared = {
+      employeeId: "e1",
+      checkNumber: " V-100 ",
+      checkDate: "2026-08-15",
+      periodBegin: "2026-08-01",
+      periodEnd: "2026-08-15",
+      verificationStatus: "verified",
+      verifiedCheckGross: "1000",
+      verifiedCheckNet: "800",
+      withholding: "200",
+    };
+    const t = computeGridTotals([
+      row({ id: "a", ...shared }),
+      row({ id: "b", ...shared, checkNumber: "V-100" }),
+      row({
+        id: "c",
+        ...shared,
+        periodBegin: "2026-08-16",
+        periodEnd: "2026-08-31",
+        verifiedCheckGross: "500",
+        verifiedCheckNet: "400",
+        withholding: "100",
+      }),
+      row({
+        id: "unverified",
+        ...shared,
+        employeeId: "e2",
+        verificationStatus: "unverified",
+        verifiedCheckGross: "900",
+        verifiedCheckNet: "700",
+        withholding: "200",
+      }),
+      row({
+        id: "unidentified",
+        employeeId: "e3",
+        verificationStatus: "verified",
+        verifiedCheckGross: "999",
+        verifiedCheckNet: "999",
+        withholding: "999",
+      }),
+    ]);
+
+    expect(t).toMatchObject({
+      checks: 3,
+      verifiedCheckGross: "1500.00",
+      verifiedCheckNet: "1200.00",
+      withholding: "300.00",
+    });
+  });
+
+  it("separates the same employee, number and check date when either period bound differs", () => {
+    const t = computeGridTotals([
+      row({ id: "a", employeeId: "e1", checkNumber: "10", checkDate: "2026-08-20", periodBegin: "2026-08-01", periodEnd: "2026-08-15", totalNetPay: "100" }),
+      row({ id: "b", employeeId: "e1", checkNumber: "10", checkDate: "2026-08-20", periodBegin: "2026-08-02", periodEnd: "2026-08-15", totalNetPay: "200" }),
+      row({ id: "c", employeeId: "e1", checkNumber: "10", checkDate: "2026-08-20", periodBegin: "2026-08-01", periodEnd: "2026-08-16", totalNetPay: "300" }),
+    ]);
+
+    expect(t.checks).toBe(3);
+    expect(t.netPerCheck).toBe("600.00");
   });
 
   it("counts distinct individuals and employees (by id, falling back to name)", () => {

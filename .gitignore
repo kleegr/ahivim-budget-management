@@ -25,6 +25,7 @@ playwright-report/
 *.xlsm
 *.csv
 /private-data/
+/work/
 
 # ...but the CSV export ROUTES are code, not data. Next.js names a route
 # segment after its URL, so these directories literally end in ".csv" and the

@@ -152,12 +152,12 @@ export default async function EmployeeDetailPage({
   params: Promise<{ id: string }>;
   searchParams?: Promise<{ view?: string | string[]; effectiveFrom?: string | string[] }>;
 }) {
-  const user = await requireUser("viewer");
-  const canEdit = user.role !== "viewer";
-  const [{ id }, query] = await Promise.all([
+  const [user, { id }, query] = await Promise.all([
+    requireUser("viewer"),
     params,
     searchParams ?? Promise.resolve<{ view?: string | string[]; effectiveFrom?: string | string[] }>({}),
   ]);
+  const canEdit = user.role !== "viewer";
   const initialView = normalizeEmployeeProfileView(typeof query.view === "string" ? query.view : undefined);
   const requestedEffectiveFrom = typeof query.effectiveFrom === "string"
     && /^\d{4}-\d{2}-\d{2}$/.test(query.effectiveFrom)
@@ -275,8 +275,6 @@ export default async function EmployeeDetailPage({
   const employeeNotes = "notes" in employee && typeof employee.notes === "string"
     ? employee.notes
     : null;
-  const attributionAvailable = payment.transactionCount === 0 || payment.attributedCount > 0;
-
   const currentDeal = deals.find((deal) => {
     return deal.status === "active" && deal.effectiveFrom <= today && (!deal.effectiveTo || deal.effectiveTo >= today);
   }) ?? deals.find((deal) => deal.status === "active") ?? null;
@@ -460,14 +458,13 @@ export default async function EmployeeDetailPage({
                   {!hasActualActivity ? <p className="mt-4 text-sm text-[var(--color-ink-soft)]">No actual service or transaction activity is recorded.</p> : null}
                 </section>
                 {monthly.length > 0 ? (
-                  <Card title="Actual activity by month" description="Route columns classify Employee base; they do not prove that a payment cleared.">
-                    <Table head={<><Th>Month</Th>{canSeeBilledAmounts ? <Th numeric>Funder billed</Th> : null}{canSeeEmployeeAmounts ? <Th numeric>Employee base</Th> : null}{canSeeEmployeeAmounts && attributionAvailable ? <><Th numeric>Direct-Pay base</Th><Th numeric>Agency-Routed base</Th></> : null}<Th numeric>Transactions</Th></>}>
+                  <Card title="Actual activity by month" description="Route columns classify Employee base and reconcile through an explicit Unknown bucket; they do not prove that a payment cleared.">
+                    <Table head={<><Th>Month</Th>{canSeeBilledAmounts ? <Th numeric>Funder billed</Th> : null}{canSeeEmployeeAmounts ? <><Th numeric>Employee base</Th><Th numeric>Direct-Pay base</Th><Th numeric>Agency-Routed base</Th><Th numeric>Unknown route</Th></> : null}<Th numeric>Transactions</Th></>}>
                       {monthly.map((month) => (
                         <Tr key={month.month ?? "undated"}>
                           <Td><span className="tnum">{month.month ?? "Undated"}</span></Td>
                           {canSeeBilledAmounts ? <Td numeric><Money value={month.agencyGross} /></Td> : null}
-                          {canSeeEmployeeAmounts ? <Td numeric><Money value={month.internalAmount} /></Td> : null}
-                          {canSeeEmployeeAmounts && attributionAvailable ? <><Td numeric><Money value={month.paidToEmployee} /></Td><Td numeric><Money value={month.payableByAgency} /></Td></> : null}
+                          {canSeeEmployeeAmounts ? <><Td numeric><Money value={month.internalAmount} /></Td><Td numeric><Money value={month.paidToEmployee} /></Td><Td numeric><Money value={month.payableByAgency} /></Td><Td numeric><Money value={month.unknownRecipient} /></Td></> : null}
                           <Td numeric className="tnum">{month.transactionCount}</Td>
                         </Tr>
                       ))}

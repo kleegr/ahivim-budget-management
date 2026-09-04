@@ -13,8 +13,68 @@
  */
 export const TEST_DB_URL = process.env.TEST_DATABASE_URL ?? "";
 
+/**
+ * Neon endpoints already provide their own secure WebSocket transport. The
+ * development proxy is only needed when that driver has to reach a local
+ * PostgreSQL TCP socket.
+ */
+export function shouldUseE2eWsProxy(connectionString: string): boolean {
+  try {
+    const hostname = new URL(connectionString).hostname.toLowerCase();
+    return !(hostname === "neon.tech" || hostname.endsWith(".neon.tech"));
+  } catch {
+    // The destructive seed owns the actionable invalid-URL error. Retain the
+    // historical local-proxy path here rather than treating it as remote.
+    return true;
+  }
+}
+
+/**
+ * Destructive seed interlock. The expected host has to be supplied separately
+ * from the connection string, so copying a production URL into
+ * TEST_DATABASE_URL cannot be enough to authorize DROP SCHEMA.
+ */
+export const EXPECTED_DISPOSABLE_DB_HOST = process.env.E2E_EXPECTED_DB_HOST ?? "";
+export const RESET_CONFIRMATION = process.env.E2E_CONFIRM_RESET ?? "";
+export const RESET_CONFIRMATION_PHRASE = "DROP_DISPOSABLE_E2E_DATABASE";
+
+/** Pure and deliberately exported so the destructive gate can be unit tested. */
+export function assertSafeE2eDatabaseReset(input: {
+  connectionString: string;
+  expectedHost: string;
+  confirmation: string;
+}): void {
+  if (!input.connectionString) {
+    throw new Error("TEST_DATABASE_URL is required for the disposable E2E database.");
+  }
+  if (!input.expectedHost.trim()) {
+    throw new Error("E2E_EXPECTED_DB_HOST must name the disposable database host.");
+  }
+  if (input.confirmation !== RESET_CONFIRMATION_PHRASE) {
+    throw new Error(`E2E_CONFIRM_RESET must equal ${RESET_CONFIRMATION_PHRASE}.`);
+  }
+
+  let target: URL;
+  try {
+    target = new URL(input.connectionString);
+  } catch {
+    throw new Error("TEST_DATABASE_URL must be a valid PostgreSQL URL.");
+  }
+  if (target.protocol !== "postgres:" && target.protocol !== "postgresql:") {
+    throw new Error("TEST_DATABASE_URL must use the postgres or postgresql protocol.");
+  }
+  if (target.hostname.toLowerCase() !== input.expectedHost.trim().toLowerCase()) {
+    throw new Error("TEST_DATABASE_URL does not match E2E_EXPECTED_DB_HOST; reset refused.");
+  }
+  if (!target.pathname.replace(/^\/+/, "").trim()) {
+    throw new Error("TEST_DATABASE_URL must name a disposable database; reset refused.");
+  }
+}
+
 /** Where the built application is served for the run. */
-export const BASE_URL = process.env.E2E_BASE_URL || "http://127.0.0.1:3000";
+// Match Next's canonical local origin so host-bound authentication cookies
+// survive form redirects such as owner role preview.
+export const BASE_URL = process.env.E2E_BASE_URL || "http://localhost:3000";
 
 /** Port the WebSocket-to-TCP bridge (scripts/ws-proxy.ts) listens on. */
 export const WS_PROXY_PORT = Number(process.env.WS_PROXY_PORT || 5480);
@@ -34,6 +94,21 @@ export const UNLINKED_INDIVIDUAL_ID = "10000000-0000-4000-8000-000000000002";
 export const LINKED_EMPLOYEE_ID = "20000000-0000-4000-8000-000000000001";
 export const UNLINKED_EMPLOYEE_ID = "20000000-0000-4000-8000-000000000002";
 export const TEST_AGENCY_ID = "30000000-0000-4000-8000-000000000001";
+
+/** Stable release-acceptance records and exact business values. */
+export const DIRECT_TRANSACTION_ONE_ID = "40000000-0000-4000-8000-000000000001";
+export const DIRECT_TRANSACTION_TWO_ID = "40000000-0000-4000-8000-000000000002";
+export const AGENCY_TRANSACTION_ID = "40000000-0000-4000-8000-000000000003";
+export const DIRECT_CHECK_NUMBER = "CHECK-E2E-001";
+export const AGENCY_CHECK_NUMBER = "AGENCY-E2E-001";
+export const ACTIVITY_DATE = "2026-09-04";
+export const ACTIVITY_PERIOD_BEGIN = "2026-09-01";
+export const ACTIVITY_PERIOD_END = "2026-09-03";
+export const CURRENT_BUDGET_LABEL = "E2E Current 2026";
+export const HISTORICAL_BUDGET_LABEL = "E2E Historical 2025";
+export const PRIMARY_CALCULATION_ACCOUNT = "Primary Reserve";
+export const SECONDARY_CALCULATION_ACCOUNT = "Secondary Reserve";
+export const FUTURE_SESSION_DATE = "2026-10-15";
 
 export const REPRESENTATIVE_PASSWORD = "e2e-role-password";
 

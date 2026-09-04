@@ -325,7 +325,7 @@ suite("Google Sheet sync (real PostgreSQL)", () => {
 
     expect(imported.status).toBe("success");
     expect(imported.added).toBe(1);
-    expect(imported.note).toContain("Transactions were imported successfully");
+    expect(imported.note).toContain("The transaction data is saved");
     expect(await count("payroll_transactions")).toBe(4);
     const { rows: importedRuns } = await pool.query<{
       status: string;

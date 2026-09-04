@@ -49,7 +49,7 @@ export interface EmployeePaymentSummary {
   /** Rows whose transaction override or program default resolves to a known
    *  payment recipient. */
   attributedCount: number;
-  /** Distinct check numbers seen for this employee. */
+  /** Distinct complete check identities seen for this employee. */
   checkCount: number;
 }
 
@@ -98,7 +98,18 @@ export async function getEmployeePaymentSummary(
        count(*) FILTER (WHERE effective_payment_recipient(
          t.payment_recipient, p.payment_recipient
        ) <> 'unknown')::text                                          AS attributed_count,
-       count(DISTINCT t.check_number)::text                           AS check_count
+       count(DISTINCT ROW(
+         t.employee_id,
+         COALESCE(NULLIF(btrim(t.check_number), ''), ''),
+         COALESCE(t.check_date, 'infinity'::date),
+         COALESCE(t.period_begin, 'infinity'::date),
+         COALESCE(t.period_end, 'infinity'::date)
+       )) FILTER (WHERE
+         NULLIF(btrim(t.check_number), '') IS NOT NULL
+         OR t.check_date IS NOT NULL
+         OR t.period_begin IS NOT NULL
+         OR t.period_end IS NOT NULL
+       )::text                                                        AS check_count
      FROM payroll_transactions t
      LEFT JOIN programs p ON p.id = t.program_id
      WHERE t.employee_id = $1${scopeClause}`,
@@ -306,8 +317,12 @@ export interface EmployeeMonthlyPaymentRow {
   agencyGross: string;
   internalAmount: string;
   totalPayment: string;
+  /** Employee base on transactions routed directly to the employee. */
   paidToEmployee: string;
+  /** Employee base on transactions routed through the agency. */
   payableByAgency: string;
+  /** Employee base whose effective route is still unknown. */
+  unknownRecipient: string;
   checkCount: number;
   transactionCount: number;
 }
@@ -334,6 +349,7 @@ export async function getEmployeeMonthlyPayments(
     total_payment: string;
     paid_to_employee: string;
     payable_by_agency: string;
+    unknown_recipient: string;
     check_count: string;
     transaction_count: string;
   }>(
@@ -343,15 +359,30 @@ export async function getEmployeeMonthlyPayments(
             COALESCE(sum(t.imported_amount), 0)::text                       AS agency_gross,
             COALESCE(sum(t.calculated_internal_amount), 0)::text            AS internal_amount,
             COALESCE(sum(t.employee_payment_amount), 0)::text               AS total_payment,
-            COALESCE(sum(t.employee_payment_amount)
+            COALESCE(sum(t.calculated_internal_amount)
               FILTER (WHERE effective_payment_recipient(
                 t.payment_recipient, p.payment_recipient
               ) = 'employee'), 0)::text      AS paid_to_employee,
-            COALESCE(sum(t.employee_payment_amount)
+            COALESCE(sum(t.calculated_internal_amount)
               FILTER (WHERE effective_payment_recipient(
                 t.payment_recipient, p.payment_recipient
               ) = 'excellent_staffing'), 0)::text AS payable_by_agency,
-            count(DISTINCT t.check_number)::text                            AS check_count,
+            COALESCE(sum(t.calculated_internal_amount)
+              FILTER (WHERE effective_payment_recipient(
+                t.payment_recipient, p.payment_recipient
+              ) = 'unknown'), 0)::text AS unknown_recipient,
+            count(DISTINCT ROW(
+              t.employee_id,
+              COALESCE(NULLIF(btrim(t.check_number), ''), ''),
+              COALESCE(t.check_date, 'infinity'::date),
+              COALESCE(t.period_begin, 'infinity'::date),
+              COALESCE(t.period_end, 'infinity'::date)
+            )) FILTER (WHERE
+              NULLIF(btrim(t.check_number), '') IS NOT NULL
+              OR t.check_date IS NOT NULL
+              OR t.period_begin IS NOT NULL
+              OR t.period_end IS NOT NULL
+            )::text                                                         AS check_count,
             count(*)::text                                                  AS transaction_count
        FROM payroll_transactions t
        LEFT JOIN programs p ON p.id = t.program_id
@@ -367,6 +398,7 @@ export async function getEmployeeMonthlyPayments(
     totalPayment: toMoney(r.total_payment),
     paidToEmployee: toMoney(r.paid_to_employee),
     payableByAgency: toMoney(r.payable_by_agency),
+    unknownRecipient: toMoney(r.unknown_recipient),
     checkCount: Number(r.check_count),
     transactionCount: Number(r.transaction_count),
   }));
@@ -496,8 +528,14 @@ export async function getEmployeeSchedule(
   const [summaryRes, upcomingRes] = await Promise.all([
     pool.query<Record<string, string>>(
       `SELECT
-         count(*) FILTER (WHERE s.status = 'pending' AND s.matched_transaction_id IS NULL)::text AS pending_sessions,
-         COALESCE(sum(s.duration_hours) FILTER (WHERE s.status = 'pending' AND s.matched_transaction_id IS NULL), 0)::text AS pending_hours,
+         count(*) FILTER (
+           WHERE s.status = 'pending' AND s.matched_transaction_id IS NULL
+             AND s.session_date >= CURRENT_DATE
+         )::text AS pending_sessions,
+         COALESCE(sum(s.duration_hours) FILTER (
+           WHERE s.status = 'pending' AND s.matched_transaction_id IS NULL
+             AND s.session_date >= CURRENT_DATE
+         ), 0)::text AS pending_hours,
          count(*) FILTER (WHERE s.status = 'completed' OR s.matched_transaction_id IS NOT NULL)::text AS completed_sessions,
          COALESCE(sum(s.duration_hours) FILTER (WHERE s.status = 'completed' OR s.matched_transaction_id IS NOT NULL), 0)::text AS completed_hours,
          count(*) FILTER (WHERE s.status = 'cancelled')::text                 AS cancelled_sessions,

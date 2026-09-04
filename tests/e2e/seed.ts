@@ -18,8 +18,12 @@ import type { PgLikePool } from "../../src/lib/import/commit";
 import { runMigrations } from "../../src/lib/db/migrate";
 import { hashPassword } from "../../src/lib/auth/crypto";
 import { provisionUser, type ProvisionUserInput } from "../../src/lib/auth/provision-user";
+import { seedReleaseAcceptanceData } from "./release-data";
 import {
   TEST_DB_URL,
+  EXPECTED_DISPOSABLE_DB_HOST,
+  RESET_CONFIRMATION,
+  assertSafeE2eDatabaseReset,
   ADMIN_EMAIL,
   ADMIN_PASSWORD,
   ADMIN_DISPLAY_NAME,
@@ -33,17 +37,27 @@ import {
 } from "./fixtures";
 
 async function main(): Promise<void> {
-  if (!TEST_DB_URL) {
-    throw new Error(
-      "TEST_DATABASE_URL is required and must point to a disposable test database.",
-    );
-  }
+  // This must run before constructing a Pool: a copied connection string alone
+  // can never authorize the destructive reset below.
+  assertSafeE2eDatabaseReset({
+    connectionString: TEST_DB_URL,
+    expectedHost: EXPECTED_DISPOSABLE_DB_HOST,
+    confirmation: RESET_CONFIRMATION,
+  });
   const pool = new Pool({ connectionString: TEST_DB_URL, max: 4 });
   try {
     // A fresh deployment's schema, deterministically.
     await pool.query("DROP SCHEMA IF EXISTS public CASCADE");
     await pool.query("CREATE SCHEMA public");
     const result = await runMigrations(pool as unknown as PgLikePool);
+
+    // Some historical migrations intentionally seed demo business records.
+    // Playwright needs one deterministic production-shaped truth set instead:
+    // clear only the disposable database's business roots and their dependent
+    // rows, while retaining the migrated schema, programs, and effective rates.
+    await pool.query(
+      `TRUNCATE TABLE individuals, employees, agencies, imported_files CASCADE`,
+    );
 
     // One known administrator, hashed the way the app hashes.
     const passwordHash = await hashPassword(ADMIN_PASSWORD);
@@ -70,17 +84,24 @@ async function main(): Promise<void> {
     );
 
     await pool.query(
-      `INSERT INTO individuals (id, normalized_name, display_name)
+      `INSERT INTO individuals
+         (id, normalized_name, display_name, external_ref, phone, category, legal_name, preferred_name, notes)
        VALUES
-         ($1, 'linked-individual', 'Linked Individual'),
-         ($2, 'private-individual', 'Private Unlinked Individual')`,
+         ($1, 'linked-individual', 'Linked Individual', 'E2E-PERSON-001',
+          '212-555-0101', 'Community supports', 'Linked Individual Legal', 'Linked',
+          'Production-shaped release acceptance person'),
+         ($2, 'private-individual', 'Private Unlinked Individual', 'E2E-PRIVATE-001',
+          NULL, NULL, 'Private Unlinked Individual', NULL,
+          'Must remain invisible to scoped portal accounts')`,
       [LINKED_INDIVIDUAL_ID, UNLINKED_INDIVIDUAL_ID],
     );
     await pool.query(
-      `INSERT INTO employees (id, normalized_name, display_name)
+      `INSERT INTO employees (id, normalized_name, display_name, external_ref, notes)
        VALUES
-         ($1, 'linked-employee', 'Linked Employee'),
-         ($2, 'private-employee', 'Private Unlinked Employee')`,
+         ($1, 'linked-employee', 'Linked Employee', 'E2E-WORKER-001',
+          'Production-shaped release acceptance employee'),
+         ($2, 'private-employee', 'Private Unlinked Employee', 'E2E-PRIVATE-WORKER-001',
+          'Must remain invisible to scoped portal accounts')`,
       [LINKED_EMPLOYEE_ID, UNLINKED_EMPLOYEE_ID],
     );
     await pool.query(
@@ -129,12 +150,19 @@ async function main(): Promise<void> {
       }
     }
 
+    const releaseData = await seedReleaseAcceptanceData(
+      pool as unknown as PgLikePool,
+      actorId,
+    );
+
     const { rows } = await pool.query<{ c: string }>(
       "SELECT count(*)::text AS c FROM users",
     );
     console.log(
       `[e2e-seed] migrations applied=${result.applied} skipped=${result.skipped}; ` +
-        `users=${rows[0]?.c}; representative-presets=${REPRESENTATIVE_ACCOUNTS.length}`,
+        `users=${rows[0]?.c}; representative-presets=${REPRESENTATIVE_ACCOUNTS.length}; ` +
+        `transactions=${releaseData.transactions}; strategies=${releaseData.strategies}; ` +
+        `sessions=${releaseData.sessions}; obligations=${releaseData.obligations}`,
     );
   } finally {
     await pool.end();

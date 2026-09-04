@@ -35,8 +35,11 @@ test("parent and employee URLs do not widen beyond their direct subject", async 
   const parent = REPRESENTATIVE_ACCOUNTS.find((account) => account.preset === "individual_parent")!;
   await signIn(parentPage, parent);
   await expect(parentPage.getByText("Linked Individual").first()).toBeVisible();
-  const privateIndividual = await parentPage.goto(`/individuals/${UNLINKED_INDIVIDUAL_ID}`);
-  expect(privateIndividual?.status()).toBe(404);
+  await parentPage.goto(`/individuals/${UNLINKED_INDIVIDUAL_ID}`);
+  await expect(parentPage.getByRole("heading", { level: 1, name: "404" })).toBeVisible();
+  await expect(
+    parentPage.getByRole("heading", { level: 2, name: "This page could not be found." }),
+  ).toBeVisible();
   await expect(parentPage.getByText("Private Unlinked Individual")).toHaveCount(0);
   await parentContext.close();
 
@@ -45,8 +48,11 @@ test("parent and employee URLs do not widen beyond their direct subject", async 
   const employee = REPRESENTATIVE_ACCOUNTS.find((account) => account.preset === "employee")!;
   await signIn(employeePage, employee);
   await expect(employeePage.getByText("Linked Employee").first()).toBeVisible();
-  const privateEmployee = await employeePage.goto(`/employees/${UNLINKED_EMPLOYEE_ID}`);
-  expect(privateEmployee?.status()).toBe(404);
+  await employeePage.goto(`/employees/${UNLINKED_EMPLOYEE_ID}`);
+  await expect(employeePage.getByRole("heading", { level: 1, name: "404" })).toBeVisible();
+  await expect(
+    employeePage.getByRole("heading", { level: 2, name: "This page could not be found." }),
+  ).toBeVisible();
   await expect(employeePage.getByText("Private Unlinked Employee")).toHaveCount(0);
   await employeeContext.close();
 });
@@ -80,7 +86,9 @@ test("owner can preview a real portal account and return to the owner session", 
   });
   await parentCard.getByRole("button", { name: "Preview / Sign in as" }).click();
   await page.waitForURL((url) => url.pathname === "/portal");
-  await expect(page.getByRole("status")).toContainText("Viewing as E2E Parent");
+  await expect(
+    page.getByRole("status").filter({ hasText: "Viewing as E2E Parent" }),
+  ).toContainText("Viewing as E2E Parent");
   await expect(page.getByRole("link", { name: /^Home$/ })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Return to owner portal" }).click();

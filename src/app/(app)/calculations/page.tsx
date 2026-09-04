@@ -15,13 +15,15 @@ export const metadata = { title: "Financial setup - Ahivim" };
  * final per account. Actual transactions and budget utilization live elsewhere.
  */
 export default async function FinancialSetupPage({ searchParams }: { searchParams: Promise<{ individualId?: string }> }) {
-  const user = await requireUser("manager");
+  const [user, { individualId }] = await Promise.all([
+    requireUser("manager"),
+    searchParams,
+  ]);
   const canManage = user.role !== "viewer";
-  const { individualId } = await searchParams;
 
   const result = await withDb(async (pool) => {
     const [strategies, managedIndividuals] = await Promise.all([
-      listStrategies(pool, { withAnalytics: true }),
+      listStrategies(pool, { withAnalytics: true, includeArchived: true }),
       listIndividualsManaged(pool, { status: "active" }),
     ]);
     const individuals = managedIndividuals.map((i) => ({

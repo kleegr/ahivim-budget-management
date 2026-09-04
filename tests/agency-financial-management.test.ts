@@ -70,7 +70,9 @@ describe("agency financial management math", () => {
       join(process.cwd(), "src", "lib", "manage", "settlements.ts"),
       "utf8",
     );
-    expect(settlements).toContain("LEFT JOIN LATERAL (\n         SELECT term.id, term.revision, term.employee_share_percent");
+    expect(settlements).toMatch(
+      /LEFT JOIN LATERAL \(\r?\n\s+SELECT term\.id, term\.revision, term\.employee_share_percent/,
+    );
     expect(settlements).toContain("CASE WHEN compensation.id IS NOT NULL");
     expect(settlements).toContain("THEN (1 - compensation.employee_share_percent)::text");
     expect(settlements).toContain("individualId: null");

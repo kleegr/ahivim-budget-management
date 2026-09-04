@@ -217,23 +217,16 @@ suite("scheduling (real PostgreSQL)", () => {
 
   it("contains actual and scheduled forecasts to the selected authorization period", async () => {
     const { dayHab, ind, emp } = await fixture();
-    const insideActual = await pool.query<{ id: string }>(
-      `INSERT INTO service_sessions
-         (employee_id, program_id, period_begin, period_end, physical_hours)
-       VALUES ($1, $2, '2025-05-01', '2025-05-15', 20) RETURNING id`,
-      [emp.id, dayHab],
-    );
-    const outsideActual = await pool.query<{ id: string }>(
-      `INSERT INTO service_sessions
-         (employee_id, program_id, period_begin, period_end, physical_hours)
-       VALUES ($1, $2, '2024-05-01', '2024-05-15', 50) RETURNING id`,
-      [emp.id, dayHab],
-    );
+    // Transactions are the canonical actuals ledger. The 2024 row proves the
+    // selected authorization period contains both hours and money.
     await pool.query(
-      `INSERT INTO service_allocations
-         (service_session_id, individual_id, allocation_hours, allocated_rate, allocated_amount)
-       VALUES ($1, $3, 20, 17, 340), ($2, $3, 50, 17, 850)`,
-      [insideActual.rows[0].id, outsideActual.rows[0].id, ind.id],
+      `INSERT INTO payroll_transactions
+         (employee_id, individual_id, program_id, period_begin, period_end,
+          imported_hours, calculated_internal_amount, transaction_fingerprint)
+       VALUES
+         ($1, $2, $3, '2025-05-01', '2025-05-15', 20, 340, 'forecast-inside-authorization'),
+         ($1, $2, $3, '2024-05-01', '2024-05-15', 50, 850, 'forecast-outside-authorization')`,
+      [emp.id, ind.id, dayHab],
     );
     await createSession(pool, {
       employeeId: emp.id, programId: dayHab, individualIds: [ind.id],
@@ -705,17 +698,13 @@ suite("scheduling (real PostgreSQL)", () => {
     const matched = unwrap(await createSession(pool, { employeeId: emp.id, programId: dayHab, individualIds: [ind.id], sessionDate: "2025-04-01", durationHours: "5", startTime: null, endTime: null }, ACTOR));
     await createSession(pool, { employeeId: emp.id, programId: dayHab, individualIds: [ind.id], sessionDate: "2025-04-08", durationHours: "5", startTime: null, endTime: null }, ACTOR);
 
-    const actual = await pool.query<{ id: string }>(
-      `INSERT INTO service_sessions
-         (employee_id, program_id, period_begin, period_end, physical_hours)
-       VALUES ($1, $2, '2025-04-01', '2025-04-01', 5) RETURNING id`,
-      [emp.id, dayHab],
-    );
+    // Transactions, rather than legacy service allocations, are actuals.
     await pool.query(
-      `INSERT INTO service_allocations
-         (service_session_id, individual_id, allocation_hours, allocated_rate, allocated_amount)
-       VALUES ($1, $2, 5, 17, 85)`,
-      [actual.rows[0].id, ind.id],
+      `INSERT INTO payroll_transactions
+         (employee_id, individual_id, program_id, period_begin, period_end,
+          imported_hours, calculated_internal_amount, transaction_fingerprint)
+       VALUES ($1, $2, $3, '2025-04-01', '2025-04-01', 5, 85, 'forecast-canonical-actual')`,
+      [emp.id, ind.id, dayHab],
     );
     const transaction = await pool.query<{ id: string }>(
       `INSERT INTO payroll_transactions (employee_id, individual_id, transaction_fingerprint)

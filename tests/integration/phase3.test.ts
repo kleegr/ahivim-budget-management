@@ -343,19 +343,29 @@ suite("phase 3 — reconciliation + import corrections (real PostgreSQL)", () =>
   });
 
   it("stores a field correction without touching raw values, and resets it", async () => {
-    const { rowId, batchId } = await insertBatchWithRow({ Name: "Aron Levi", Program: "Respit", Hours: "3" });
-    unwrap(await correctRowFields(pool, rowId, { Program: "RESPITE", Hours: "3.5" }, ACTOR, "typo in export"));
+    const { rowId, batchId } = await insertBatchWithRow({
+      employeeName: "Aron Levi",
+      programDescription: "Respit",
+      hours: "3",
+    });
+    unwrap(await correctRowFields(
+      pool,
+      rowId,
+      { programDescription: "RESPITE", hours: "3.5" },
+      ACTOR,
+      "typo in export",
+    ));
 
     const q = await listCorrectionQueue(pool, batchId, {});
     expect(q.rows).toHaveLength(1);
-    expect(q.rows[0].raw.Program).toBe("Respit");          // original preserved
-    expect((q.rows[0].corrected as Record<string, unknown>).Program).toBe("RESPITE"); // correction stored
+    expect(q.rows[0].raw.programDescription).toBe("Respit"); // original preserved
+    expect((q.rows[0].corrected as Record<string, unknown>).programDescription).toBe("RESPITE"); // correction stored
     expect(q.rows[0].correctionStatus).toBe("corrected");
 
     unwrap(await resetRowCorrection(pool, rowId, ACTOR, "revert"));
     const q2 = await listCorrectionQueue(pool, batchId, {});
     expect(q2.rows[0].corrected).toBeNull();
-    expect(q2.rows[0].raw.Program).toBe("Respit");         // still intact
+    expect(q2.rows[0].raw.programDescription).toBe("Respit"); // still intact
   });
 
   it("resolves a match, changes status, and bulk actions apply", async () => {
@@ -584,14 +594,19 @@ suite("phase 3 — reconciliation + import corrections (real PostgreSQL)", () =>
   });
 
   it("applies the effective rate on the canonical historical service date", async () => {
-    const { dayHab, ind, emp } = await fixture();
-    await testPool().query(`DELETE FROM program_rate_schedules WHERE program_id=$1`, [dayHab]);
+    const { ind, emp } = await fixture();
+    const historicalProgram = await testPool().query<{ id: string }>(
+      `INSERT INTO programs (code, name)
+       VALUES ('HISTORICAL_RATE_TEST', 'Historical Rate Test')
+       RETURNING id`,
+    );
+    const historicalProgramId = historicalProgram.rows[0].id;
     await testPool().query(
       `INSERT INTO program_rate_schedules
          (program_id, effective_from, effective_to, agency_rate, internal_rate)
        VALUES ($1,'2024-01-01','2024-12-31','25','17'),
               ($1,'2030-01-01',NULL,'35','22')`,
-      [dayHab],
+      [historicalProgramId],
     );
     const held = await insertCommittedHeldRow(
       validSource({
@@ -605,7 +620,7 @@ suite("phase 3 — reconciliation + import corrections (real PostgreSQL)", () =>
         calculatedInternalAmount: "34",
         checkNumber: "CHK-HISTORICAL",
       }),
-      { individualId: ind.id, employeeId: emp.id, programId: dayHab },
+      { individualId: ind.id, employeeId: emp.id, programId: historicalProgramId },
       45,
     );
 

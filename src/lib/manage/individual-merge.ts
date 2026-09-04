@@ -390,9 +390,9 @@ export async function loadIndividualsForMatch(pool: PgLikePool): Promise<Individ
 const pairKey = (a: string, b: string) => [a, b].sort().join(":");
 
 /**
- * Scan for near-duplicate individuals. Confident single-token typos are merged
- * automatically; uncertain pairs are queued for review; pairs a human already
- * rejected are left alone.
+ * Scan for near-duplicate individuals. Every candidate is queued for a human;
+ * similarity is evidence, never authority to merge two people. Pairs already
+ * pending or decided are left alone.
  */
 export async function scanMatches(
   pool: PgLikePool,
@@ -401,43 +401,33 @@ export async function scanMatches(
   const individuals = await loadIndividualsForMatch(pool);
   const candidates = findMatchCandidates(individuals);
 
-  // Remember rejected pairs so we do not re-suggest them.
+  // Remember every existing pair so a scan cannot reverse the ordering and
+  // recreate a pending review after a human has already decided it.
   const decided = await pool.query<{ keep_individual_id: string; merge_individual_id: string; status: string }>(
     `SELECT keep_individual_id, merge_individual_id, status FROM individual_match_reviews`,
   );
-  const rejected = new Set(decided.rows.filter((r) => r.status === "rejected").map((r) => pairKey(r.keep_individual_id, r.merge_individual_id)));
+  const existingPairs = new Set(decided.rows.map((r) => pairKey(r.keep_individual_id, r.merge_individual_id)));
 
-  const mergedIds = new Set<string>();
-  let merged = 0;
   let queued = 0;
 
   for (const c of candidates) {
-    if (rejected.has(pairKey(c.keep.id, c.merge.id))) continue;
-    if (mergedIds.has(c.keep.id) || mergedIds.has(c.merge.id)) continue; // chain safety
-
-    if (c.kind === "auto") {
-      const res = await mergeIndividuals(pool, { keepId: c.keep.id, mergeId: c.merge.id }, actorId, `Auto-merged: ${c.reason}`);
-      if (res.ok) {
-        mergedIds.add(c.merge.id);
-        merged++;
-      }
-    } else if (c.kind === "review") {
-      const up = await pool.query(
-        `INSERT INTO individual_match_reviews (keep_individual_id, merge_individual_id, score, reason, status)
-         VALUES ($1, $2, $3, $4, 'pending')
-         ON CONFLICT (keep_individual_id, merge_individual_id) DO NOTHING`,
-        [c.keep.id, c.merge.id, c.score.toFixed(4), c.reason],
-      );
-      if (up.rowCount) queued++;
-    }
+    if (existingPairs.has(pairKey(c.keep.id, c.merge.id))) continue;
+    const up = await pool.query(
+      `INSERT INTO individual_match_reviews (keep_individual_id, merge_individual_id, score, reason, status)
+       VALUES ($1, $2, $3, $4, 'pending')
+       ON CONFLICT (keep_individual_id, merge_individual_id) DO NOTHING`,
+      [c.keep.id, c.merge.id, c.score.toFixed(4), c.reason],
+    );
+    if (up.rowCount) queued++;
   }
 
+  const merged = 0;
   await recordChange(pool, {
     actorId,
     action: "individual_match_scan",
     entityType: "individual",
     entityId: null,
-    extra: { merged, queued, candidates: candidates.length },
+    extra: { merged, queued, candidates: candidates.length, automaticMergesDisabled: true },
   });
   return ok({ merged, queued, candidates: candidates.length });
 }

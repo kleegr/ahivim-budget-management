@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, Archive, CalendarOff, Clock3, Plus } from "lucide-react";
 import { EmptyState, Table, Td, Th, Tr } from "@/components/ui";
@@ -54,6 +54,7 @@ export default function EmployeeAvailabilityManager({
   const [loading, setLoading] = useState(Boolean(firstEmployeeId));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [editor, setEditor] = useState<Editor>(null);
   const [archiveTarget, setArchiveTarget] = useState<ArchiveTarget | null>(null);
@@ -70,6 +71,7 @@ export default function EmployeeAvailabilityManager({
   const [timeOffStartTime, setTimeOffStartTime] = useState("09:00");
   const [timeOffEndTime, setTimeOffEndTime] = useState("17:00");
   const [timeOffLabel, setTimeOffLabel] = useState("");
+  const loadRequestId = useRef(0);
 
   const selectedName = employees.find((employee) => employee.id === employeeId)?.label ?? "employee";
   const sortedWeekly = useMemo(() => [...rules.weekly].sort((a, b) =>
@@ -78,18 +80,22 @@ export default function EmployeeAvailabilityManager({
     a.startDate.localeCompare(b.startDate) || (a.startTime ?? "").localeCompare(b.startTime ?? "")), [rules.unavailable]);
 
   const load = useCallback(async (id: string) => {
+    const requestId = ++loadRequestId.current;
     if (!id) {
       setRules(EMPTY_RULES);
       setLoading(false);
+      setLoadError(null);
       return;
     }
     setLoading(true);
     setError(null);
+    setLoadError(null);
     const result = await send("GET", `/api/employee-availability?employeeId=${encodeURIComponent(id)}`);
+    if (requestId !== loadRequestId.current) return;
     setLoading(false);
     if (!result.ok) {
       setRules(EMPTY_RULES);
-      setError(result.error ?? "Could not load employee hours.");
+      setLoadError(result.error ?? "Could not load employee hours.");
       return;
     }
     setRules(result.data as EmployeeAvailabilityRules);
@@ -97,11 +103,15 @@ export default function EmployeeAvailabilityManager({
 
   useEffect(() => {
     void load(employeeId);
+    return () => {
+      loadRequestId.current += 1;
+    };
   }, [employeeId, load]);
 
   const changeEmployee = (id: string) => {
     setEmployeeId(id);
     setNotice(null);
+    setLoadError(null);
     setEditor(null);
     setArchiveTarget(null);
   };
@@ -239,9 +249,16 @@ export default function EmployeeAvailabilityManager({
         </label>
       </div>
 
+      {loadError ? (
+        <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 border-l-2 border-[var(--color-pace-over)] bg-[#fdf2f5] px-3 py-2 text-sm text-[var(--color-pace-over)]">
+          <span>{loadError}</span>
+          <button type="button" className="btn btn-sm btn-secondary" onClick={() => void load(employeeId)}>Try again</button>
+        </div>
+      ) : null}
       {error ? <p role="alert" className="mb-4 border-l-2 border-[var(--color-pace-over)] bg-[#fdf2f5] px-3 py-2 text-sm text-[var(--color-pace-over)]">{error}</p> : null}
       {notice ? <p role="status" className="mb-4 border-l-2 border-[var(--color-pace-on)] bg-[#f0f8f5] px-3 py-2 text-sm text-[var(--color-pace-on)]">{notice}</p> : null}
       {loading ? <p role="status" className="py-8 text-sm text-[var(--color-ink-soft)]">Loading employee hours...</p> : (
+        loadError ? null :
         <div className="space-y-8">
           {rules.scheduleConflicts.length > 0 ? (
             <section aria-labelledby="availability-review-heading" className="border-l-2 border-[var(--color-pace-near)] bg-[var(--color-warn-soft)] px-4 py-3">

@@ -36,6 +36,7 @@ function authorizationRow(overrides: Record<string, unknown> = {}) {
     supersedes_id: null,
     notes: "Original",
     source: "manual",
+    source_row_ref: null,
     created_at: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
@@ -93,6 +94,7 @@ function fakeCreateClient(options: FakeOptions = {}) {
           rate_basis: values[9],
           notes: values[10],
           source: values[11],
+          source_row_ref: values[13],
         })],
       };
     }
@@ -126,6 +128,25 @@ describe("authorization catalog rates", () => {
     expect(lock).toBeGreaterThan(-1);
     expect(lock).toBeLessThan(overlap);
     expect(overlap).toBeLessThan(insert);
+  });
+
+  it("preserves a stable source-row reference on imported authorizations", async () => {
+    const client = fakeCreateClient();
+    const result = await createAuthorizationInTransaction(client, {
+      budgetPeriodId: PERIOD_ID,
+      programId: PROGRAM_ID,
+      authorizedHours: "100",
+      source: "budget_workbook",
+      sourceRowRef: "Budget.xlsx::UpToDate::row=3::cell=D3::sha256=abc",
+    }, ACTOR_ID, "Recover a source authorization");
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        source: "budget_workbook",
+        sourceRowRef: "Budget.xlsx::UpToDate::row=3::cell=D3::sha256=abc",
+      },
+    });
   });
 
   it("writes allowed individual funder and employee overrides explicitly", async () => {

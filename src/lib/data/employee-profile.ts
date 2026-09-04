@@ -42,7 +42,7 @@ export async function listEmployeeProfilePreviewAccounts(
     email: string;
     last_login_at: string | null;
   }>(
-    `SELECT DISTINCT account.id AS user_id, account.display_name, account.email,
+    `SELECT account.id AS user_id, account.display_name, account.email,
             account.last_login_at::text
        FROM user_employee_relationships relationship
        JOIN users account ON account.id = relationship.user_id

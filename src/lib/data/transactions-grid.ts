@@ -29,9 +29,14 @@ export interface GridTransaction {
   checkDate: string | null; // YYYY-MM-DD
   checkNumber: string | null;
   hours: string | null;
-  rate: string | null;
+  rate: string | null; // imported funder rate
+  employeeRate?: string | null; // effective internal/employee rate applied
   gross: string | null; // imported_amount, untouched
   totalNetPay: string | null; // per-check net; repeated on every row of a check
+  verifiedCheckGross?: string | null; // canonical linked payroll-check fact; null until verified
+  verifiedCheckNet?: string | null; // canonical linked payroll-check fact; null until verified
+  withholding?: string | null; // canonical linked payroll-check fact; null until verified
+  verificationStatus?: string | null;
   periodBegin: string | null;
   periodEnd: string | null;
   program: string | null;
@@ -103,8 +108,13 @@ export async function listTransactionsForGrid(
     check_number: string | null;
     hours: string | null;
     rate: string | null;
+    employee_rate: string | null;
     gross: string | null;
     total_net_pay: string | null;
+    verified_check_gross: string | null;
+    verified_check_net: string | null;
+    withholding: string | null;
+    verification_status: string | null;
     period_begin: string | null;
     period_end: string | null;
     program: string | null;
@@ -140,8 +150,16 @@ export async function listTransactionsForGrid(
       t.check_number,
       t.imported_hours::text                                  AS hours,
       t.imported_rate::text                                   AS rate,
+      t.internal_rate_applied::text                           AS employee_rate,
       t.imported_amount::text                                 AS gross,
       t.total_net_pay::text                                   AS total_net_pay,
+      (CASE WHEN pc.verification_status = 'verified'
+             THEN pc.actual_gross END)::text                  AS verified_check_gross,
+      (CASE WHEN pc.verification_status = 'verified'
+             THEN pc.actual_net END)::text                    AS verified_check_net,
+      (CASE WHEN pc.verification_status = 'verified'
+             THEN pc.tax_withheld END)::text                  AS withholding,
+      pc.verification_status                                  AS verification_status,
       to_char(t.period_begin, 'YYYY-MM-DD')                   AS period_begin,
       to_char(t.period_end,   'YYYY-MM-DD')                   AS period_end,
       COALESCE(p.name, t.program_raw)                         AS program,
@@ -180,6 +198,9 @@ export async function listTransactionsForGrid(
     LEFT JOIN individuals i ON i.id = t.individual_id
     LEFT JOIN employees   e ON e.id = t.employee_id
     LEFT JOIN programs    p ON p.id = t.program_id
+    LEFT JOIN employee_payroll_checks pc
+      ON pc.id = t.payroll_check_id
+     AND pc.employee_id = t.employee_id
     LEFT JOIN import_batches b ON b.id = t.import_batch_id
     LEFT JOIN imported_files f ON f.id = COALESCE(t.source_file_id, b.imported_file_id)
     LEFT JOIN import_rows ir ON ir.id = t.import_row_id
@@ -204,8 +225,13 @@ export async function listTransactionsForGrid(
     checkNumber: r.check_number,
     hours: r.hours,
     rate: r.rate,
+    employeeRate: r.employee_rate,
     gross: r.gross,
     totalNetPay: r.total_net_pay,
+    verifiedCheckGross: r.verified_check_gross,
+    verifiedCheckNet: r.verified_check_net,
+    withholding: r.withholding,
+    verificationStatus: r.verification_status,
     periodBegin: r.period_begin,
     periodEnd: r.period_end,
     program: r.program,

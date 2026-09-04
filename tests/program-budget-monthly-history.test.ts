@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { listProgramBudgetMonthlyHistory, listProgramBudgets } from "@/lib/data/program-budgets";
 import type { PgLikePool } from "@/lib/import/commit";
+import { fullAccess } from "@/lib/auth/access";
 
 const PERIOD = "10000000-0000-4000-8000-000000000001";
 const PROGRAM = "20000000-0000-4000-8000-000000000001";
@@ -57,6 +58,21 @@ describe("canonical program budget monthly history", () => {
       scheduledHours: "15.0000",
       remainingAfterScheduledHours: "45.0000",
     });
+  });
+
+  it("restricts portfolio history to directly granted individuals", async () => {
+    const query = vi.fn(async (_sql: string, _params?: unknown[]) => ({ rows: [] }));
+    const scope = {
+      ...fullAccess("viewer-1", "viewer"),
+      full: false,
+      allIndividuals: false,
+      grantedIndividualIds: ["40000000-0000-4000-8000-000000000001"],
+    };
+
+    await listProgramBudgets({ query } as unknown as PgLikePool, { scope });
+
+    expect(query.mock.calls[0]?.[0]).toContain("balance.individual_id = ANY($1::uuid[])");
+    expect(query.mock.calls[0]?.[1]).toEqual([["40000000-0000-4000-8000-000000000001"]]);
   });
 
   it("combines transaction actuals and pending unmatched schedule into a cumulative pace", async () => {

@@ -33,6 +33,11 @@ const REVIEW_LABEL: Record<string, string> = {
   possible: "Needs review",
   confirmed: "Confirmed duplicate",
 };
+const VERIFICATION_LABEL: Record<string, string> = {
+  unverified: "Needs verification",
+  verified: "Verified",
+  void: "Void",
+};
 
 /* -------------------------------------------------------------- columns
 
@@ -42,8 +47,14 @@ const REVIEW_LABEL: Record<string, string> = {
    stay available through the column chooser, saved views and exports. */
 
 const COLUMNS: ColumnDef<GridTransaction>[] = [
-  { key: "serviceDate", label: "Service date", kind: "date", width: 110, frozen: true, accessor: (r) => r.serviceDate ?? null },
+  { key: "payTo", label: "Pay to", kind: "text", width: 150, frozen: true, accessor: (r) => r.payTo },
   { key: "checkDate", label: "Check date", kind: "date", width: 110, accessor: (r) => r.checkDate },
+  { key: "checkNumber", label: "Check #", kind: "text", width: 90, accessor: (r) => r.checkNumber },
+  { key: "serviceDate", label: "Service date", kind: "date", width: 110, accessor: (r) => r.serviceDate ?? null },
+  { key: "periodBegin", label: "Period begin", kind: "date", width: 110, accessor: (r) => r.periodBegin },
+  { key: "periodEnd", label: "Period end", kind: "date", width: 110, accessor: (r) => r.periodEnd },
+  { key: "programCode", label: "Code", kind: "text", width: 90, accessor: (r) => r.programCode },
+  { key: "program", label: "Program", kind: "text", width: 150, accessor: (r) => r.program },
   {
     key: "individual",
     label: "Individual",
@@ -74,20 +85,20 @@ const COLUMNS: ColumnDef<GridTransaction>[] = [
         text
       ),
   },
-  { key: "program", label: "Program", kind: "text", width: 150, accessor: (r) => r.program },
-  { key: "payTo", label: "Payee", kind: "text", width: 150, hidden: true, accessor: (r) => r.payTo },
-  { key: "checkNumber", label: "Check #", kind: "text", width: 90, hidden: true, accessor: (r) => r.checkNumber },
   { key: "hours", label: "Hours", kind: "hours", width: 80, accessor: (r) => r.hours },
-  { key: "rate", label: "Rate", kind: "money", width: 80, hidden: true, accessor: (r) => r.rate },
+  { key: "rate", label: "Funder rate", kind: "money", width: 105, accessor: (r) => r.rate },
   { key: "gross", label: "Funder billed", kind: "money", width: 120, accessor: (r) => r.gross },
+  { key: "employeeRate", label: "Employee rate", kind: "money", width: 115, accessor: (r) => r.employeeRate ?? null },
   { key: "internalAmount", label: "Employee base", kind: "money", width: 150, accessor: (r) => r.internalAmount },
   { key: "agencyAdditional", label: "Agency spread", kind: "money", width: 160, accessor: (r) => r.agencyAdditional },
-  { key: "totalNetPay", label: "Total net pay", kind: "money", width: 120, hidden: true, accessor: (r) => r.totalNetPay },
-  { key: "paid", label: "Paid status", kind: "text", width: 110, hidden: true, accessor: (r) => (r.isPaid ? "Paid" : "Not paid") },
-  { key: "periodBegin", label: "Period begin", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodBegin },
-  { key: "periodEnd", label: "Period end", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodEnd },
+  { key: "verifiedCheckGross", label: "Verified check gross", kind: "money", width: 155, accessor: (r) => r.verifiedCheckGross ?? null },
+  { key: "verifiedCheckNet", label: "Verified check net", kind: "money", width: 145, accessor: (r) => r.verifiedCheckNet ?? null },
+  { key: "withholding", label: "Withholding", kind: "money", width: 110, accessor: (r) => r.withholding ?? null },
+  { key: "verificationStatus", label: "Check status", kind: "badge", width: 130, badgeLabels: VERIFICATION_LABEL, accessor: (r) => r.verificationStatus ?? null },
+  { key: "totalNetPay", label: "Source net pay", kind: "money", width: 120, hidden: true, accessor: (r) => r.totalNetPay },
+  { key: "paid", label: "Paid", kind: "text", width: 100, accessor: (r) => (r.isPaid ? "Paid" : "Not paid") },
   { key: "paymentRecipient", label: "Payment recipient", kind: "badge", width: 150, badgeLabels: RECIPIENT_LABEL, accessor: (r) => r.paymentRecipient },
-  { key: "nextStep", label: "Next step", kind: "badge", width: 140, badgeLabels: ACTIVITY_NEXT_STEP_LABELS, accessor: (r) => activityNextStep(r) },
+  { key: "nextStep", label: "Review status", kind: "badge", width: 140, badgeLabels: ACTIVITY_NEXT_STEP_LABELS, accessor: (r) => activityNextStep(r) },
   { key: "matchStatus", label: "Duplicate review", kind: "badge", width: 130, hidden: true, badgeLabels: REVIEW_LABEL, accessor: (r) => r.matchStatus },
   { key: "groupStatus", label: "Group status", kind: "badge", width: 120, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => (r.isGroup ? "Group" : "Individual") },
   { key: "sourceName", label: "Original source", kind: "text", width: 190, hidden: true, accessor: (r) => r.sourceName ?? null },
@@ -105,6 +116,9 @@ const INITIAL_HIDDEN: string[] = COLUMNS.filter((c) => c.hidden).map((c) => c.ke
 
 const colWidth = (widths: Record<string, number>, c: ColumnDef<GridTransaction>): number =>
   widths[c.key] ?? c.width ?? 120;
+
+const hasAmount = (value: string | null | undefined): value is string =>
+  value !== null && value !== undefined;
 
 /* -------------------------------------------------------------- component */
 
@@ -141,9 +155,10 @@ export default function TransactionsGrid({
     () => COLUMNS.filter((column) => {
       if (column.key === "hours") return fields.canSeeHours;
       if (column.key === "rate" || column.key === "gross") return fields.canSeeBilledAmounts;
-      if (column.key === "internalAmount") return fields.canSeeEmployeeAmounts;
+      if (column.key === "employeeRate" || column.key === "internalAmount") return fields.canSeeEmployeeAmounts;
       if (column.key === "agencyAdditional") return fields.canSeeAgencySpread;
-      if (column.key === "totalNetPay") return fields.canSeeCheckNet;
+      if (column.key === "totalNetPay" || column.key === "verifiedCheckGross" || column.key === "verifiedCheckNet" || column.key === "verificationStatus") return fields.canSeeCheckNet;
+      if (column.key === "withholding") return fields.canSeeTaxes;
       return true;
     }),
     [fields],
@@ -364,9 +379,18 @@ export default function TransactionsGrid({
             {showMore ? "Hide extra totals" : "More totals"}
           </button>
           {showMore ? (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
               {fields.canSeeCheckNet ? (
-                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Net pay (per check)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.netPerCheck)}</div></div>
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Verified check gross</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.verifiedCheckGross)}</div></div>
+              ) : null}
+              {fields.canSeeCheckNet ? (
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Verified check net</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.verifiedCheckNet)}</div></div>
+              ) : null}
+              {fields.canSeeTaxes ? (
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Verified withholding</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.withholding)}</div></div>
+              ) : null}
+              {fields.canSeeCheckNet ? (
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Source net (per check)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.netPerCheck)}</div></div>
               ) : null}
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Recorded services</div><div className="text-lg font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Checks</div><div className="text-lg font-semibold tabular-nums">{totals.checks.toLocaleString()}</div></div>
@@ -575,7 +599,10 @@ export default function TransactionsGrid({
           {fields.canSeeAgencySpread ? <span className="text-[var(--color-ink-soft)]">Agency spread <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.agencyAdditional)}</span></span> : null}
           {fields.canSeeHours ? <span className="text-[var(--color-ink-soft)]">Hours <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(selTotals.hours)}</span></span> : null}
           {fields.canSeeCheckNet ? (
-            <span className="text-[var(--color-ink-soft)]">Net <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.netPerCheck)}</span></span>
+            <span className="text-[var(--color-ink-soft)]">Verified net <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.verifiedCheckNet)}</span></span>
+          ) : null}
+          {fields.canSeeTaxes ? (
+            <span className="text-[var(--color-ink-soft)]">Withholding <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.withholding)}</span></span>
           ) : null}
           <div className="ml-auto flex items-center gap-2">
             {grid.canManage ? (
@@ -676,12 +703,17 @@ function DetailDrawer({
         {line("Check #", row.checkNumber ?? "—")}
         {line("Program", row.program ?? "—")}
         {line("Pay to", row.payTo ?? "—")}
-        {visibility.canSeeHours ? line("Hours", row.hours ? formatHours(row.hours) : "—") : null}
-        {visibility.canSeeBilledAmounts ? line("Rate", row.rate ? formatMoney(row.rate) : "—") : null}
-        {visibility.canSeeBilledAmounts ? line("Funder billed", row.gross ? formatMoney(row.gross) : "—") : null}
-        {visibility.canSeeEmployeeAmounts ? line("Employee base", row.internalAmount ? formatMoney(row.internalAmount) : "—") : null}
-        {visibility.canSeeAgencySpread ? line("Agency spread", row.agencyAdditional ? formatMoney(row.agencyAdditional) : "—") : null}
-        {visibility.canSeeCheckNet ? line("Total net pay", row.totalNetPay ? formatMoney(row.totalNetPay) : "—") : null}
+        {visibility.canSeeHours ? line("Hours", hasAmount(row.hours) ? formatHours(row.hours) : "—") : null}
+        {visibility.canSeeBilledAmounts ? line("Funder rate", hasAmount(row.rate) ? formatMoney(row.rate) : "—") : null}
+        {visibility.canSeeBilledAmounts ? line("Funder billed", hasAmount(row.gross) ? formatMoney(row.gross) : "—") : null}
+        {visibility.canSeeEmployeeAmounts ? line("Employee rate", hasAmount(row.employeeRate) ? formatMoney(row.employeeRate) : "—") : null}
+        {visibility.canSeeEmployeeAmounts ? line("Employee base", hasAmount(row.internalAmount) ? formatMoney(row.internalAmount) : "—") : null}
+        {visibility.canSeeAgencySpread ? line("Agency spread", hasAmount(row.agencyAdditional) ? formatMoney(row.agencyAdditional) : "—") : null}
+        {visibility.canSeeCheckNet ? line("Verified check gross", hasAmount(row.verifiedCheckGross) ? formatMoney(row.verifiedCheckGross) : "—") : null}
+        {visibility.canSeeCheckNet ? line("Verified check net", hasAmount(row.verifiedCheckNet) ? formatMoney(row.verifiedCheckNet) : "—") : null}
+        {visibility.canSeeTaxes ? line("Withholding", hasAmount(row.withholding) ? formatMoney(row.withholding) : "—") : null}
+        {visibility.canSeeCheckNet ? line("Check status", VERIFICATION_LABEL[row.verificationStatus ?? ""] ?? row.verificationStatus ?? "Not linked") : null}
+        {visibility.canSeeCheckNet ? line("Source net pay", hasAmount(row.totalNetPay) ? formatMoney(row.totalNetPay) : "—") : null}
         {line("Paid status", row.isPaid ? `Paid${row.paidAt ? ` on ${row.paidAt}` : ""}` : "Not paid")}
         {line("Period", `${row.periodBegin ?? "—"} → ${row.periodEnd ?? "—"}`)}
         {line("Paid to", RECIPIENT_LABEL[row.paymentRecipient ?? ""] ?? row.paymentRecipient ?? "—")}

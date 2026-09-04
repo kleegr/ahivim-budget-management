@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useDeferredValue, useMemo, useState, type KeyboardEvent } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { CheckCircle2, ListChecks, RefreshCw, RotateCcw, Search, ShieldAlert, TableProperties } from "lucide-react";
 import { dec, formatHours, formatMoney } from "@/lib/money";
@@ -15,7 +16,10 @@ import {
   type CheckRouting,
   type CheckSummary,
 } from "@/components/transactions/check-grouping";
-import TransactionsGrid from "@/components/transactions/transactions-grid";
+
+const TransactionsGrid = dynamic(() => import("@/components/transactions/transactions-grid"), {
+  loading: () => <p role="status" className="py-8 text-sm text-[var(--color-ink-soft)]">Loading recorded services…</p>,
+});
 
 type WorkspaceView = "checks" | "rows";
 
@@ -37,23 +41,32 @@ const routingLabel = (routing: CheckRouting) => {
   return <StatusBadge tone="warn" label="Routing review" />;
 };
 
+const VERIFICATION_LABEL: Record<string, string> = {
+  unverified: "Needs verification",
+  verified: "Verified",
+  void: "Void",
+};
+
 function checkRowsHref(check: CheckSummary): string {
   const params = new URLSearchParams({ view: "rows" });
-  if (!check.checkNumber) {
-    const transactionId = check.transactionIds[0];
-    if (transactionId) params.set("transactionId", transactionId);
-    return `/transactions?${params.toString()}`;
-  }
+  // The stable grouping key is the final guard against display-value quirks
+  // (for example whitespace around a source check number). The component
+  // filters below remain present so operators can see every identity part.
+  params.set("checkIdentity", check.key);
   if (check.checkNumber) params.set("checkNumber", check.checkNumber);
-  if (check.payTo) params.set("payToKey", check.payTo.trim().toLocaleLowerCase());
-  else if (check.employeeId) params.set("employeeId", check.employeeId);
+  else params.set("checkNumberExact", "");
+  if (check.employeeId) params.set("employeeId", check.employeeId);
   else if (check.employee) params.set("employee", check.employee);
+  else params.set("employeeExact", "");
   if (check.checkDate) {
     params.set("checkDateFrom", check.checkDate);
     params.set("checkDateTo", check.checkDate);
-  }
-  if (check.periodBegin) params.set("pbFrom", check.periodBegin);
-  if (check.periodEnd) params.set("pbTo", check.periodEnd);
+  } else params.set("checkDateExact", "");
+  // Complete check identity uses both exact period bounds. These are distinct
+  // from pbFrom/pbTo, whose established meaning is a Period Begin range for
+  // budget/report links.
+  params.set("periodBeginExact", check.periodBegin ?? "");
+  params.set("periodEndExact", check.periodEnd ?? "");
   return `/transactions?${params.toString()}`;
 }
 
@@ -67,11 +80,12 @@ function ChecksView({
   onShowRows: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
   const [period, setPeriod] = useState<PeriodRange>(null);
   const [periodControlKey, setPeriodControlKey] = useState(0);
   const checks = useMemo(() => groupChecks(rows), [rows]);
   const filtered = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase();
+    const needle = deferredQuery.trim().toLocaleLowerCase();
     return checks.filter((check) => {
       if (period && (!check.checkDate || check.checkDate < period.from || check.checkDate > period.to)) return false;
       if (!needle) return true;
@@ -83,19 +97,23 @@ function ChecksView({
         ...check.programs,
       ].some((value) => value?.toLocaleLowerCase().includes(needle));
     });
-  }, [checks, period, query]);
+  }, [checks, deferredQuery, period]);
 
   const totals = useMemo(() => filtered.reduce((result, check) => ({
     funderBilled: result.funderBilled.plus(check.funderBilled),
     employeeBase: result.employeeBase.plus(check.employeeBase),
     agencySpread: result.agencySpread.plus(check.agencySpread),
-    directNet: result.directNet.plus(check.netPay ?? 0),
+    verifiedGross: result.verifiedGross.plus(check.verifiedCheckGross ?? 0),
+    verifiedNet: result.verifiedNet.plus(check.verifiedCheckNet ?? 0),
+    withholding: result.withholding.plus(check.withholding ?? 0),
     hours: result.hours.plus(check.hours),
   }), {
     funderBilled: dec(0),
     employeeBase: dec(0),
     agencySpread: dec(0),
-    directNet: dec(0),
+    verifiedGross: dec(0),
+    verifiedNet: dec(0),
+    withholding: dec(0),
     hours: dec(0),
   }), [filtered]);
 
@@ -127,12 +145,14 @@ function ChecksView({
         </label>
       </div>
 
-      <div className="grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)] sm:grid-cols-3 lg:grid-cols-6 lg:divide-y-0">
+      <div className="grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)] sm:grid-cols-3 lg:grid-cols-8 lg:divide-y-0">
         <SummaryMetric label="Checks" value={filtered.length.toLocaleString()} />
         {visibility.canSeeBilledAmounts ? <SummaryMetric label="Funder billed" value={formatMoney(totals.funderBilled)} /> : null}
         {visibility.canSeeEmployeeAmounts ? <SummaryMetric label="Employee base" value={formatMoney(totals.employeeBase)} /> : null}
         {visibility.canSeeAgencySpread ? <SummaryMetric label="Agency spread" value={formatMoney(totals.agencySpread)} /> : null}
-        {visibility.canSeeCheckNet ? <SummaryMetric label="Direct-check net" value={formatMoney(totals.directNet)} /> : null}
+        {visibility.canSeeCheckNet ? <SummaryMetric label="Verified gross" value={formatMoney(totals.verifiedGross)} /> : null}
+        {visibility.canSeeCheckNet ? <SummaryMetric label="Verified net" value={formatMoney(totals.verifiedNet)} /> : null}
+        {visibility.canSeeTaxes ? <SummaryMetric label="Withholding" value={formatMoney(totals.withholding)} /> : null}
         {visibility.canSeeHours ? <SummaryMetric label="Hours" value={formatHours(totals.hours)} /> : null}
       </div>
 
@@ -167,7 +187,11 @@ function ChecksView({
               {visibility.canSeeBilledAmounts ? <Th numeric>Funder billed</Th> : null}
               {visibility.canSeeEmployeeAmounts ? <Th numeric>Employee base</Th> : null}
               {visibility.canSeeAgencySpread ? <Th numeric>Agency spread</Th> : null}
-              {visibility.canSeeCheckNet ? <Th numeric>Check net</Th> : null}
+              {visibility.canSeeCheckNet ? <Th numeric>Verified gross</Th> : null}
+              {visibility.canSeeCheckNet ? <Th numeric>Verified net</Th> : null}
+              {visibility.canSeeTaxes ? <Th numeric>Withholding</Th> : null}
+              {visibility.canSeeCheckNet ? <Th>Verification</Th> : null}
+              {visibility.canSeeCheckNet ? <Th numeric>Source net</Th> : null}
               <Th>Status</Th>
               <Th><span className="sr-only">Open</span></Th>
             </>}
@@ -196,7 +220,13 @@ function ChecksView({
                 {visibility.canSeeBilledAmounts ? <Td numeric>{formatMoney(check.funderBilled)}</Td> : null}
                 {visibility.canSeeEmployeeAmounts ? <Td numeric>{formatMoney(check.employeeBase)}</Td> : null}
                 {visibility.canSeeAgencySpread ? <Td numeric>{formatMoney(check.agencySpread)}</Td> : null}
-                {visibility.canSeeCheckNet ? <Td numeric>{check.netPay ? formatMoney(check.netPay) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
+                {visibility.canSeeCheckNet ? <Td numeric>{check.verifiedCheckGross !== null ? formatMoney(check.verifiedCheckGross) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
+                {visibility.canSeeCheckNet ? <Td numeric>{check.verifiedCheckNet !== null ? formatMoney(check.verifiedCheckNet) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
+                {visibility.canSeeTaxes ? <Td numeric>{check.withholding !== null ? formatMoney(check.withholding) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
+                {visibility.canSeeCheckNet ? (
+                  <Td>{check.verificationStatus === null ? "Not linked" : VERIFICATION_LABEL[check.verificationStatus] ?? check.verificationStatus}</Td>
+                ) : null}
+                {visibility.canSeeCheckNet ? <Td numeric>{check.netPay !== null ? formatMoney(check.netPay) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
                 <Td>
                   <StatusBadge tone={check.needsReview ? "warn" : "good"} label={check.needsReview ? "Needs review" : "Ready"} />
                   {check.needsReview ? <div className="mt-1 max-w-44 text-xs text-[var(--color-ink-faint)]">{check.reviewReasons.join(" · ")}</div> : null}
