@@ -116,6 +116,15 @@ export function summarizeAuthorizationPortfolio(
 
     const renewalDates = [...renewals].sort();
     const nextRenewal = renewalDates[0] ?? null;
+    const periodCandidates = nextRenewal
+      ? rows.filter((row) => row.renewalDate === nextRenewal)
+      : rows;
+    const primaryPeriod = periodCandidates
+      .slice()
+      .sort((left, right) => {
+        return left.endDate.localeCompare(right.endDate)
+          || left.startDate.localeCompare(right.startDate);
+      })[0] ?? null;
     const daysToRenewal = nextRenewal
       ? Math.round(
           (Date.parse(`${nextRenewal}T00:00:00.000Z`) - Date.parse(`${today}T00:00:00.000Z`))
@@ -134,6 +143,9 @@ export function summarizeAuthorizationPortfolio(
         // One marker cannot honestly represent several independent period clocks.
         elapsedPct: periods.size === 1 ? singleElapsedPercent : null,
         renews: nextRenewal,
+        periodStart: primaryPeriod?.startDate ?? null,
+        periodEnd: primaryPeriod?.endDate ?? null,
+        periodCount: periods.size,
         missingRenewal,
         renewalCount: renewalDates.length,
         usedHours: used.toNumber(),

@@ -27,27 +27,27 @@ const RECIPIENT_LABEL: Record<string, string> = {
   excellent_staffing: "Payable by agency",
   unknown: "Unknown",
 };
+const REVIEW_LABEL: Record<string, string> = {
+  new: "Ready",
+  possible: "Needs review",
+  confirmed: "Confirmed duplicate",
+};
 
 /* -------------------------------------------------------------- columns
 
-   The old local ColumnDef is now the shared ColumnDef<GridTransaction>:
-     get           -> accessor
-     header        -> label
-     type          -> kind ("badge" carries badgeLabels = RECIPIENT_LABEL)
-     defaultVisible:false -> hidden:true
-   frozen / width are unchanged. Only the individual/employee cells need a
-   custom render (the profile links); every other cell uses the engine's
-   formatCell, so money/hours/date/badge formatting stays identical. */
+   Default-visible columns are deliberately limited to the everyday activity,
+   money, routing and review fields from the takeover brief. Source/import,
+   calculation and audit fields remain in this list with hidden:true, so they
+   stay available through the column chooser, saved views and exports. */
 
 const COLUMNS: ColumnDef<GridTransaction>[] = [
-  { key: "serviceDate", label: "Service date", kind: "date", width: 110, hidden: true, accessor: (r) => r.serviceDate ?? null },
-  { key: "checkDate", label: "Check date", kind: "date", width: 110, frozen: true, accessor: (r) => r.checkDate },
+  { key: "serviceDate", label: "Service date", kind: "date", width: 110, frozen: true, accessor: (r) => r.serviceDate ?? null },
+  { key: "checkDate", label: "Check date", kind: "date", width: 110, accessor: (r) => r.checkDate },
   {
     key: "individual",
     label: "Individual",
     kind: "text",
     width: 170,
-    frozen: true,
     accessor: (r) => r.individual,
     render: (r, text) =>
       r.individualId ? (
@@ -74,19 +74,19 @@ const COLUMNS: ColumnDef<GridTransaction>[] = [
       ),
   },
   { key: "program", label: "Program", kind: "text", width: 150, accessor: (r) => r.program },
-  { key: "payTo", label: "Pay to", kind: "text", width: 150, accessor: (r) => r.payTo },
-  { key: "checkNumber", label: "Check #", kind: "text", width: 90, accessor: (r) => r.checkNumber },
+  { key: "payTo", label: "Source pay to", kind: "text", width: 150, hidden: true, accessor: (r) => r.payTo },
+  { key: "checkNumber", label: "Check #", kind: "text", width: 90, hidden: true, accessor: (r) => r.checkNumber },
   { key: "hours", label: "Hours", kind: "hours", width: 80, accessor: (r) => r.hours },
   { key: "rate", label: "Rate", kind: "money", width: 80, hidden: true, accessor: (r) => r.rate },
   { key: "gross", label: "Funder billed", kind: "money", width: 120, accessor: (r) => r.gross },
   { key: "internalAmount", label: "Employee base", kind: "money", width: 150, accessor: (r) => r.internalAmount },
   { key: "agencyAdditional", label: "Agency spread", kind: "money", width: 160, accessor: (r) => r.agencyAdditional },
-  { key: "totalNetPay", label: "Total net pay", kind: "money", width: 120, accessor: (r) => r.totalNetPay },
+  { key: "totalNetPay", label: "Total net pay", kind: "money", width: 120, hidden: true, accessor: (r) => r.totalNetPay },
   { key: "paid", label: "Source paid marker", kind: "text", width: 130, hidden: true, accessor: (r) => (r.isPaid ? "Marked" : "Not marked") },
   { key: "periodBegin", label: "Period begin", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodBegin },
   { key: "periodEnd", label: "Period end", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodEnd },
-  { key: "paymentRecipient", label: "Paid to", kind: "badge", width: 150, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => r.paymentRecipient },
-  { key: "matchStatus", label: "Duplicate review", kind: "badge", width: 120, hidden: true, accessor: (r) => r.matchStatus },
+  { key: "paymentRecipient", label: "Payment recipient", kind: "badge", width: 150, badgeLabels: RECIPIENT_LABEL, accessor: (r) => r.paymentRecipient },
+  { key: "matchStatus", label: "Review state", kind: "badge", width: 130, badgeLabels: REVIEW_LABEL, accessor: (r) => r.matchStatus },
   { key: "groupStatus", label: "Group status", kind: "badge", width: 120, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => (r.isGroup ? "Group" : "Individual") },
 ];
 
@@ -647,7 +647,7 @@ function DetailDrawer({
         {line("Source paid marker", row.isPaid ? `Marked${row.paidAt ? ` on ${row.paidAt}` : ""}` : "Not marked")}
         {line("Period", `${row.periodBegin ?? "—"} → ${row.periodEnd ?? "—"}`)}
         {line("Paid to", RECIPIENT_LABEL[row.paymentRecipient ?? ""] ?? row.paymentRecipient ?? "—")}
-        {line("Duplicate review", row.matchStatus ?? "—")}
+        {line("Review state", REVIEW_LABEL[row.matchStatus ?? ""] ?? row.matchStatus ?? "—")}
         {line("Group", row.isGroup ? "Group service" : "Individual")}
 
         <div className="mt-4 space-y-1.5 border-t border-[var(--color-rule)] pt-3">

@@ -7,8 +7,9 @@ import {
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 import type { IndividualBudgetBoardRow } from "@/lib/data/queries";
 import type { ProgramBudgetRecord } from "@/lib/data/program-budgets";
+import { summarizeAuthorizationPortfolio } from "@/lib/data/authorization-portfolio";
 import type { StrategyGridRow } from "@/lib/manage/calculation-strategies";
-import { dec } from "@/lib/money";
+import { dec, formatMoney } from "@/lib/money";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -66,6 +67,13 @@ export interface OwnerDashboardSummary {
     usedHours: string;
     remainingHours: string;
     billingWithoutBudget: number;
+    overLimit: number;
+    atLimit: number;
+    behindPace: number;
+    scheduledOverLimit: number;
+    renewalDueSoon: number;
+    renewalMissing: number;
+    renewalExpired: number;
     source: "program_authorizations";
   };
   financial: {
@@ -76,6 +84,23 @@ export interface OwnerDashboardSummary {
     approvedFinal: string;
     approvedStrategies: number;
   };
+}
+
+export interface OwnerAttentionMoney {
+  agencyOwes: string;
+  employeesOwe: string;
+  reservesToSetAside: string;
+  credits: string;
+  creditCount: number;
+}
+
+export interface OwnerAttentionItem {
+  key: string;
+  category: "Budget" | "Renewal" | "Schedule" | "Check" | "Money" | "Setup";
+  title: string;
+  detail: string;
+  href: string;
+  action: string;
 }
 
 function cleanDate(value: string | null | undefined): string | null {
@@ -208,6 +233,8 @@ function latestCheckDate(rows: GridTransaction[]): string | null {
 function summarizeBudgets(
   programBudgets: ProgramBudgetRecord[],
   board: IndividualBudgetBoardRow[],
+  strategies: StrategyGridRow[],
+  asOf: Date,
 ): OwnerDashboardSummary["budgets"] {
   const hourAuthorizations = programBudgets.filter(
     (row) => row.requiredAuthType === "hours" || row.requiredAuthType === "both",
@@ -219,6 +246,21 @@ function summarizeBudgets(
       && row.hasBilling
       && !authorizedPeople.has(row.id),
   ).length;
+  const activePeople = new Set(board
+    .filter((row) => !row.archived && row.status === "active")
+    .map((row) => row.id));
+  const portfolio = [...summarizeAuthorizationPortfolio(hourAuthorizations, asOf).values()]
+    .filter((row) => activePeople.has(row.individualId));
+  const missingRenewalPeople = new Set(
+    portfolio
+      .filter((row) => row.budget.missingRenewal)
+      .map((row) => row.individualId),
+  );
+  for (const strategy of strategies) {
+    if (strategy.active && strategy.status === "active" && !strategy.renewalDate) {
+      missingRenewalPeople.add(strategy.individualId);
+    }
+  }
 
   return {
     people: authorizedPeople.size,
@@ -227,6 +269,18 @@ function summarizeBudgets(
     usedHours: sum(hourAuthorizations.map((row) => row.consumedHours)),
     remainingHours: sum(hourAuthorizations.map((row) => row.remainingHours)),
     billingWithoutBudget,
+    overLimit: portfolio.filter((row) => row.budget.status === "over_authorization"
+      || row.budget.plainStatus === "over").length,
+    atLimit: portfolio.filter((row) => row.budget.status === "fully_used"
+      || row.budget.status === "near_exhaustion").length,
+    behindPace: portfolio.filter((row) => row.budget.status === "behind_pace").length,
+    scheduledOverLimit: portfolio.filter((row) => (row.budget.hoursAfterScheduled ?? 0) < 0
+      && (row.budget.hoursLeft ?? 0) >= 0).length,
+    renewalDueSoon: portfolio.filter((row) => row.budget.daysToRenewal !== null
+      && row.budget.daysToRenewal >= 0
+      && row.budget.daysToRenewal <= 60).length,
+    renewalMissing: missingRenewalPeople.size,
+    renewalExpired: portfolio.filter((row) => row.budget.expired).length,
     source: "program_authorizations",
   };
 }
@@ -236,6 +290,7 @@ export function buildOwnerDashboardSummary(input: {
   programBudgets: ProgramBudgetRecord[];
   budgetBoard: IndividualBudgetBoardRow[];
   strategies: StrategyGridRow[];
+  asOf?: Date;
   activitySelection?: Partial<OwnerActivitySelection> & { individualId?: string | null };
 }): OwnerDashboardSummary {
   const selection = normalizeOwnerActivitySelection(input.activitySelection);
@@ -289,7 +344,12 @@ export function buildOwnerDashboardSummary(input: {
           : "/transactions",
       recentChecks,
     },
-    budgets: summarizeBudgets(input.programBudgets, input.budgetBoard),
+    budgets: summarizeBudgets(
+      input.programBudgets,
+      input.budgetBoard,
+      input.strategies,
+      input.asOf ?? new Date(),
+    ),
     financial: {
       strategies: input.strategies.length,
       yearlyGross: sum(input.strategies.map((row) => row.yearlyGross)),
@@ -299,4 +359,150 @@ export function buildOwnerDashboardSummary(input: {
       approvedStrategies: approved.length,
     },
   };
+}
+
+function plural(value: number, singular: string, pluralValue = `${singular}s`): string {
+  return value === 1 ? singular : pluralValue;
+}
+
+function joinSignals(values: string[]): string {
+  if (values.length <= 1) return values[0] ?? "";
+  if (values.length === 2) return `${values[0]} and ${values[1]}`;
+  return `${values.slice(0, -1).join(", ")}, and ${values.at(-1)}`;
+}
+
+/**
+ * Turn data already loaded for Owner Home into a short, prioritized work list.
+ * Money is optional so budget/check/setup follow-up remains available when the
+ * isolated actual-money read fails.
+ */
+export function buildOwnerAttentionItems(
+  summary: OwnerDashboardSummary,
+  money?: OwnerAttentionMoney,
+  canonicalCheckIssueCount = 0,
+): OwnerAttentionItem[] {
+  const items: OwnerAttentionItem[] = [];
+  const budgetSignals = [
+    summary.budgets.overLimit > 0
+      ? `${summary.budgets.overLimit.toLocaleString()} over the hour limit`
+      : null,
+    summary.budgets.atLimit > 0
+      ? `${summary.budgets.atLimit.toLocaleString()} at or near the hour limit`
+      : null,
+    summary.budgets.behindPace > 0
+      ? `${summary.budgets.behindPace.toLocaleString()} behind planned pace`
+      : null,
+    summary.budgets.billingWithoutBudget > 0
+      ? `${summary.budgets.billingWithoutBudget.toLocaleString()} with billing but no active hour budget`
+      : null,
+  ].filter((value): value is string => value !== null);
+
+  if (budgetSignals.length > 0) {
+    const singleHref = summary.budgets.overLimit > 0
+      ? "/individuals?view=over"
+      : summary.budgets.atLimit > 0
+        ? "/individuals?view=at_limit"
+        : summary.budgets.behindPace > 0
+          ? "/individuals?view=behind"
+          : "/individuals?view=billing_without_budget";
+    items.push({
+      key: "budget-exceptions",
+      category: "Budget",
+      title: "Current budgets need review",
+      detail: `${joinSignals(budgetSignals)}.`,
+      href: budgetSignals.length === 1 ? singleHref : "/individuals?view=attention",
+      action: "Review people & budgets",
+    });
+  }
+
+  const renewalSignals = [
+    summary.budgets.renewalExpired > 0
+      ? `${summary.budgets.renewalExpired.toLocaleString()} expired`
+      : null,
+    summary.budgets.renewalMissing > 0
+      ? `${summary.budgets.renewalMissing.toLocaleString()} missing a renewal date`
+      : null,
+    summary.budgets.renewalDueSoon > 0
+      ? `${summary.budgets.renewalDueSoon.toLocaleString()} due within 60 days`
+      : null,
+  ].filter((value): value is string => value !== null);
+  if (renewalSignals.length > 0) {
+    items.push({
+      key: "renewal-exceptions",
+      category: "Renewal",
+      title: "Renewals need follow-up",
+      detail: `${joinSignals(renewalSignals)}.`,
+      href: summary.budgets.renewalExpired === 0 && summary.budgets.renewalMissing === 0
+        ? "/individuals?view=renewing"
+        : "/individuals?view=attention",
+      action: "Review renewals",
+    });
+  }
+
+  if (summary.budgets.scheduledOverLimit > 0) {
+    const count = summary.budgets.scheduledOverLimit;
+    items.push({
+      key: "scheduled-over-limit",
+      category: "Schedule",
+      title: "Future schedules exceed available hours",
+      detail: `${count.toLocaleString()} ${plural(count, "person", "people")} ${plural(count, "has", "have")} more scheduled than the current authorization can cover.`,
+      href: "/schedule?view=coverage",
+      action: "Review coverage",
+    });
+  }
+
+  if (canonicalCheckIssueCount > 0) {
+    const count = canonicalCheckIssueCount;
+    items.push({
+      key: "check-verification",
+      category: "Check",
+      title: "Payroll checks need verification",
+      detail: `${count.toLocaleString()} ${plural(count, "check group")} ${plural(count, "has", "have")} missing or conflicting routing, net pay, identity, duplicate, or group-review data.`,
+      href: "/settlements?focus=check-issues",
+      action: "Verify checks",
+    });
+  }
+
+  const moneySignals = money ? [
+    dec(money.agencyOwes).greaterThan(0) ? `${formatMoney(money.agencyOwes)} to pay` : null,
+    dec(money.employeesOwe).greaterThan(0) ? `${formatMoney(money.employeesOwe)} to collect` : null,
+    dec(money.reservesToSetAside).greaterThan(0) ? `${formatMoney(money.reservesToSetAside)} to set aside` : null,
+    money.creditCount > 0 && dec(money.credits).greaterThan(0)
+      ? `${formatMoney(money.credits)} in ${money.creditCount.toLocaleString()} ${plural(money.creditCount, "credit")}`
+      : null,
+  ].filter((value): value is string => value !== null) : [];
+  if (money && moneySignals.length > 0) {
+    const href = dec(money.agencyOwes).greaterThan(0)
+      ? "/settlements?queue=payable"
+      : dec(money.employeesOwe).greaterThan(0)
+        ? "/settlements?queue=receivable"
+        : dec(money.reservesToSetAside).greaterThan(0)
+          ? "/settlements?queue=reserve"
+          : "/settlements?queue=credit";
+    items.push({
+      key: "money-queues",
+      category: "Money",
+      title: "Current money work is open",
+      detail: `${joinSignals(moneySignals)}.`,
+      href,
+      action: "Open money queues",
+    });
+  }
+
+  const plansWithoutApproval = Math.max(
+    0,
+    summary.financial.strategies - summary.financial.approvedStrategies,
+  );
+  if (plansWithoutApproval > 0) {
+    items.push({
+      key: "financial-approvals",
+      category: "Setup",
+      title: "Approved monthly amounts are missing",
+      detail: `${plansWithoutApproval.toLocaleString()} ${plural(plansWithoutApproval, "financial plan")} ${plural(plansWithoutApproval, "needs", "need")} an approved final amount.`,
+      href: "/calculations",
+      action: "Open financial setup",
+    });
+  }
+
+  return items.slice(0, 6);
 }
