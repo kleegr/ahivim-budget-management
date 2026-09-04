@@ -135,8 +135,12 @@ function strategy(overrides: Partial<StrategyGridRow>): StrategyGridRow {
     hours: {},
     yearlyGross: "12000",
     monthlyGross: "1000",
+    cut1Amount: "100",
+    afterCut1: "900",
+    cut2Amount: "90",
     grossNet: "810",
     net: "700",
+    approvedDifference: "-50",
     revisionCount: 0,
     ...overrides,
   };

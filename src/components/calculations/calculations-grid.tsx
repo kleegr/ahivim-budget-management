@@ -21,6 +21,10 @@ import { useGrid } from "@/components/data-grid/use-grid";
 import { Toolbar } from "@/components/data-grid/toolbar";
 import { FilterBar, HeaderFilter } from "@/components/data-grid/filter-bar";
 import { friendlyActionError } from "@/lib/nav/review-actions";
+import {
+  selectedFinancialSetups,
+  summarizeFinancialSetups,
+} from "@/components/calculations/financial-setup-summary";
 
 /**
  * The Calculations workspace on top of the shared data-grid engine. The engine
@@ -101,7 +105,7 @@ function percentLabel(fraction: string | null): string {
 }
 
 function overrideDifference(row: StrategyGridRow) {
-  return row.afterAll === null ? null : dec(row.afterAll).minus(dec(row.net));
+  return row.approvedDifference === null ? null : dec(row.approvedDifference);
 }
 
 function FinancialTotal({ label, value, detail }: { label: string; value: string; detail: string }) {
@@ -144,6 +148,18 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
   const [q, setQ] = useState("");
   const deferredQuery = useDeferredValue(q);
   const [sort, setSort] = useState<{ key: FinancialSortKey; dir: "asc" | "desc" }>({ key: "name", dir: "asc" });
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const selectAllRef = useRef<HTMLInputElement>(null);
+
+  // Showing/hiding archived history or refreshing the page must not leave stale
+  // selections contributing to an approved monthly total.
+  useEffect(() => {
+    const currentIds = new Set(rows.filter((row) => row.status === "active").map((row) => row.id));
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => currentIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [rows]);
 
   const visible = useMemo(() => {
     const needle = deferredQuery.trim().toLowerCase();
@@ -174,33 +190,46 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
     return filtered.sort(compare);
   }, [deferredQuery, rows, sort]);
 
-  const totals = useMemo(() => {
-    let yearly = dec(0);
-    let monthly = dec(0);
-    let calculated = dec(0);
-    let approved = dec(0);
-    let approvedCount = 0;
-    let activeCount = 0;
-    for (const row of visible) {
-      if (row.status !== "active") continue;
-      activeCount++;
-      yearly = yearly.plus(dec(row.yearlyGross));
-      monthly = monthly.plus(dec(row.monthlyGross));
-      calculated = calculated.plus(dec(row.net));
-      if (row.afterAll !== null) {
-        approved = approved.plus(dec(row.afterAll));
-        approvedCount++;
-      }
+  const selectedRows = useMemo(
+    () => selectedFinancialSetups(rows, selectedIds),
+    [rows, selectedIds],
+  );
+  const selectionActive = selectedRows.length > 0;
+  const totals = useMemo(
+    () => summarizeFinancialSetups(selectionActive ? selectedRows : visible),
+    [selectionActive, selectedRows, visible],
+  );
+  const selectableVisibleIds = useMemo(
+    () => visible.filter((row) => row.status === "active").map((row) => row.id),
+    [visible],
+  );
+  const allVisibleSelected = selectableVisibleIds.length > 0
+    && selectableVisibleIds.every((id) => selectedIds.has(id));
+  const someVisibleSelected = selectableVisibleIds.some((id) => selectedIds.has(id));
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someVisibleSelected && !allVisibleSelected;
     }
-    return {
-      yearly: yearly.toFixed(2),
-      monthly: monthly.toFixed(2),
-      calculated: calculated.toFixed(2),
-      approved: approved.toFixed(2),
-      approvedCount,
-      activeCount,
-    };
-  }, [visible]);
+  }, [allVisibleSelected, someVisibleSelected]);
+
+  const toggleRow = (id: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleVisible = () => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (allVisibleSelected) selectableVisibleIds.forEach((id) => next.delete(id));
+      else selectableVisibleIds.forEach((id) => next.add(id));
+      return next;
+    });
+  };
 
   const toggle = (key: FinancialSortKey) => {
     setSort((current) =>
@@ -210,9 +239,11 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
     );
   };
 
-  const totalDetail = deferredQuery.trim()
-    ? `${totals.activeCount} current matching setups`
-    : `${totals.activeCount} current setups`;
+  const totalDetail = selectionActive
+    ? `${totals.activeCount} selected current setup${totals.activeCount === 1 ? "" : "s"}`
+    : deferredQuery.trim()
+      ? `${totals.activeCount} current matching setups`
+      : `${totals.activeCount} current setups`;
   const sortProps = { activeKey: sort.key, direction: sort.dir, onSort: toggle };
 
   return (
@@ -235,12 +266,30 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
         <span className="text-sm text-[var(--color-text-soft)]">
           Showing <span className="tnum font-semibold text-[var(--color-ink)]">{visible.length}</span> of <span className="tnum">{rows.length}</span>
         </span>
+        {selectionActive ? (
+          <span role="status" aria-live="polite" className="inline-flex items-center gap-2 text-sm font-medium text-[var(--color-primary)]">
+            {selectedRows.length} selected · combined Approved Final {formatMoney(totals.approved)}
+            <button type="button" onClick={() => setSelectedIds(new Set())} className="text-xs underline hover:no-underline">
+              Clear
+            </button>
+          </span>
+        ) : null}
       </div>
 
       <div className="scroll-thin max-h-[64vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
         <table className="w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10">
             <tr>
+              <th className="w-10 whitespace-nowrap border-b border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-3 py-2 text-center font-semibold">
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  disabled={selectableVisibleIds.length === 0}
+                  onChange={toggleVisible}
+                  aria-label="Select all current matching financial setups"
+                />
+              </th>
               <FinancialSortHead sortKey="name" {...sortProps}>Individual</FinancialSortHead>
               <FinancialSortHead sortKey="account" {...sortProps}>Account / type</FinancialSortHead>
               <FinancialSortHead sortKey="renews" {...sortProps}>Renewal date</FinancialSortHead>
@@ -259,6 +308,16 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
               const difference = overrideDifference(row);
               return (
                 <tr key={row.id} className={`border-b border-[var(--color-rule)] hover:bg-black/[0.02] ${row.status === "archived" ? "opacity-70" : ""}`}>
+                  <td className="px-3 py-2 text-center">
+                    {row.status === "active" ? (
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(row.id)}
+                        onChange={() => toggleRow(row.id)}
+                        aria-label={`Select ${row.individualName} ${row.account ?? row.label}`}
+                      />
+                    ) : null}
+                  </td>
                   <td className="px-3 py-2 font-medium">
                     <Link href={`/individuals/${row.individualId}`} className="text-[var(--color-primary)] hover:underline" title={`Open ${row.individualName}'s profile`}>
                       {row.individualName}
@@ -296,7 +355,7 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
             })}
             {visible.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
+                <td colSpan={12} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
                   {rows.length === 0 ? "No financial setups yet." : "No financial setup matches your search."}
                 </td>
               </tr>
@@ -439,9 +498,13 @@ export default function CalculationsGrid({
     const computed: ColumnDef<StrategyGridRow>[] = [
       { key: "yearlyGross", label: "Yearly gross", kind: "computed", accessor: (r) => r.yearlyGross },
       { key: "monthlyGross", label: "Monthly basis", kind: "computed", accessor: (r) => r.monthlyGross },
+      { key: "cut1Amount", label: "First cut amount", kind: "computed", accessor: (r) => r.cut1Amount },
+      { key: "afterCut1", label: "After first cut", kind: "computed", accessor: (r) => r.afterCut1 },
+      { key: "cut2Amount", label: "Second cut amount", kind: "computed", accessor: (r) => r.cut2Amount },
       { key: "grossNet", label: "After sequential cuts", kind: "computed", accessor: (r) => r.grossNet },
       { key: "net", label: "Calculated net", kind: "computed", accessor: (r) => r.net },
       editable({ key: "afterAll", label: "Approved final / month", kind: "money", accessor: (r) => r.afterAll, patch: (v) => ({ afterAll: v === "" ? null : v }) }),
+      { key: "approvedDifference", label: "Approved − calculated", kind: "computed", accessor: (r) => r.approvedDifference },
     ];
 
     // Optional read-only analysis columns: actual-vs-plan, forecast, and the

@@ -56,8 +56,12 @@ export interface StrategyGridRow {
   hours: Record<string, string>; // programId -> hours
   yearlyGross: string;
   monthlyGross: string;
+  cut1Amount: string;
+  afterCut1: string;
+  cut2Amount: string;
   grossNet: string;
   net: string;
+  approvedDifference: string | null;
   revisionCount: number;
   analytics?: StrategyAnalytics;
 }
@@ -310,8 +314,14 @@ export async function listStrategies(
       hours,
       yearlyGross: computed.yearlyGross,
       monthlyGross: computed.monthlyGross,
+      cut1Amount: computed.cut1Amount,
+      afterCut1: computed.afterCut1,
+      cut2Amount: computed.cut2Amount,
       grossNet: computed.grossNet,
       net: computed.net,
+      approvedDifference: computed.afterAll === null
+        ? null
+        : toMoney(dec(computed.afterAll).minus(computed.net)),
       revisionCount: Number(s.revision_count),
     };
   });
@@ -333,41 +343,35 @@ async function attachStrategyAnalytics(
   rateByStrategy: ReadonlyMap<string, Record<string, string>>,
   asOf: string,
 ): Promise<void> {
-  const individualIds = [...new Set(rows.map((r) => r.individualId))];
+  const strategyIds = rows.map((row) => row.id);
+  const windowIndividualIds = rows.map((row) => row.individualId);
+  const windowStarts = rows.map((row) => row.periodStart);
+  const windowEnds = rows.map((row) => row.periodEnd);
 
-  // Billed actuals per (individual, program), WINDOWED to each individual's
-  // current budget period — exactly like the Individuals budget board. Without
-  // the window this summed the entire ledger history (several years) against a
-  // single year's authorized hours, so the glance read 200–300% "used" and
-  // contradicted the Individuals page. One period window makes them agree.
+  // Billed actuals per (strategy, individual, program), windowed to EACH
+  // strategy's current budget period. A person may have multiple accounts with
+  // different renewal dates, so collapsing the window by individual makes all
+  // but the first account inherit the wrong actuals.
   // `observations` is the real transaction count, used to gate the forecast.
-  const winByInd = new Map<string, { start: string; end: string }>();
-  for (const r of rows) {
-    if (r.periodStart && r.periodEnd && !winByInd.has(r.individualId)) {
-      winByInd.set(r.individualId, { start: r.periodStart, end: r.periodEnd });
-    }
-  }
-  const winIds = [...winByInd.keys()];
-  const winStarts = winIds.map((id) => winByInd.get(id)!.start);
-  const winEnds = winIds.map((id) => winByInd.get(id)!.end);
-  // Window an individual's billed rows to their current budget period when we
-  // know it; when a strategy has no period at all there is nothing to window to,
-  // so those individuals fall back to their full billed history (a LEFT JOIN
-  // that leaves the window null). This keeps paced budgets honest without
-  // zeroing out plans that simply have no dated period.
-  const billed = await pool.query<{ individual_id: string; program_id: string; program_code: string; hours: string; internal: string; observations: string }>(
+  // When a strategy has no period, its non-calendar programs retain the legacy
+  // full-history fallback. Calendar programs always use the current calendar
+  // year. End dates from currentBudgetPeriod are renewal dates and therefore
+  // exclusive: a service on renewal day belongs to the new period.
+  const billed = await pool.query<{ strategy_id: string; individual_id: string; program_id: string; program_code: string; hours: string; internal: string; observations: string }>(
     `WITH win AS (
-       SELECT * FROM unnest($1::uuid[], $2::date[], $3::date[]) AS w(individual_id, start_date, end_date)
+       SELECT *
+         FROM unnest($1::uuid[], $2::uuid[], $3::date[], $4::date[])
+              AS w(strategy_id, individual_id, start_date, end_date)
      )
-     SELECT t.individual_id, t.program_id, pr.code AS program_code,
-            COALESCE(sum(t.imported_hours),0)::text AS hours,
-            COALESCE(sum(COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
-                     t.internal_rate_applied * t.imported_hours, 0)),0)::text AS internal,
-            count(*)::text AS observations
-       FROM payroll_transactions t
+     SELECT w.strategy_id, t.individual_id, t.program_id, pr.code AS program_code,
+             COALESCE(sum(t.imported_hours),0)::text AS hours,
+             COALESCE(sum(COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
+                      t.internal_rate_applied * t.imported_hours, 0)),0)::text AS internal,
+             count(*)::text AS observations
+       FROM win w
+       JOIN payroll_transactions t ON t.individual_id = w.individual_id
        JOIN programs pr ON pr.id = t.program_id
-      LEFT JOIN win w ON w.individual_id = t.individual_id
-      WHERE t.individual_id = ANY($4::uuid[]) AND t.program_id IS NOT NULL
+      WHERE t.program_id IS NOT NULL
         AND canonical_service_date(t.period_begin, t.check_date, t.period_end) IS NOT NULL
         AND (
           -- Day Hab / Supplemental always bill on the calendar year …
@@ -378,30 +382,51 @@ async function attachStrategyAnalytics(
                  < make_date(EXTRACT(YEAR FROM $5::date)::int + 1, 1, 1))
           -- … everything else uses the individual's own renewal window.
           OR (pr.code NOT IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
-             AND (w.individual_id IS NULL OR canonical_service_date(
+             AND (w.start_date IS NULL OR canonical_service_date(
                     t.period_begin, t.check_date, t.period_end
-                  ) BETWEEN w.start_date AND w.end_date))
+                  ) >= w.start_date)
+             AND (w.end_date IS NULL OR canonical_service_date(
+                    t.period_begin, t.check_date, t.period_end
+                  ) < w.end_date))
         )
-      GROUP BY t.individual_id, t.program_id, pr.code`,
-    [winIds, winStarts, winEnds, individualIds, asOf],
-  );
-  // Pending scheduled per (individual, program).
-  const scheduled = await pool.query<{ individual_id: string; program_id: string; hours: string; internal: string }>(
-    `SELECT sa.individual_id, ss.program_id,
-            COALESCE(sum(sa.allocation_hours),0)::text AS hours,
-            COALESCE(sum(sa.allocated_amount),0)::text AS internal
-       FROM scheduled_allocations sa
-       JOIN scheduled_sessions ss ON ss.id = sa.scheduled_session_id
-      WHERE sa.individual_id = ANY($1::uuid[]) AND ss.status = 'pending'
-        AND ss.matched_transaction_id IS NULL AND ss.program_id IS NOT NULL
-      GROUP BY sa.individual_id, ss.program_id`,
-    [individualIds],
+      GROUP BY w.strategy_id, t.individual_id, t.program_id, pr.code`,
+    [strategyIds, windowIndividualIds, windowStarts, windowEnds, asOf],
   );
 
-  const key = (i: string, p: string) => `${i}:${p}`;
+  // Pending schedule is scoped to the same strategy period. Previously every
+  // pending visit for the person, including a later authorization year, reduced
+  // every account's remaining hours.
+  const scheduled = await pool.query<{ strategy_id: string; individual_id: string; program_id: string; hours: string; internal: string }>(
+    `WITH win AS (
+       SELECT *
+         FROM unnest($1::uuid[], $2::uuid[], $3::date[], $4::date[])
+              AS w(strategy_id, individual_id, start_date, end_date)
+     )
+     SELECT w.strategy_id, sa.individual_id, ss.program_id,
+             COALESCE(sum(sa.allocation_hours),0)::text AS hours,
+             COALESCE(sum(sa.allocated_amount),0)::text AS internal
+       FROM win w
+       JOIN scheduled_allocations sa ON sa.individual_id = w.individual_id
+       JOIN scheduled_sessions ss ON ss.id = sa.scheduled_session_id
+       JOIN programs pr ON pr.id = ss.program_id
+      WHERE ss.status = 'pending'
+         AND ss.matched_transaction_id IS NULL AND ss.program_id IS NOT NULL
+        AND (
+          (pr.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
+             AND ss.session_date >= make_date(EXTRACT(YEAR FROM $5::date)::int, 1, 1)
+             AND ss.session_date < make_date(EXTRACT(YEAR FROM $5::date)::int + 1, 1, 1))
+          OR (pr.code NOT IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')
+             AND (w.start_date IS NULL OR ss.session_date >= w.start_date)
+             AND (w.end_date IS NULL OR ss.session_date < w.end_date))
+        )
+      GROUP BY w.strategy_id, sa.individual_id, ss.program_id`,
+    [strategyIds, windowIndividualIds, windowStarts, windowEnds, asOf],
+  );
+
+  const key = (strategyId: string, programId: string) => `${strategyId}:${programId}`;
   const billedMap = new Map<string, { code: string; hours: string; internal: string; observations: string }>();
   for (const r of billed.rows) {
-    billedMap.set(key(r.individual_id, r.program_id), {
+    billedMap.set(key(r.strategy_id, r.program_id), {
       code: r.program_code,
       hours: r.hours,
       internal: r.internal,
@@ -409,7 +434,7 @@ async function attachStrategyAnalytics(
     });
   }
   const schedMap = new Map<string, { hours: string; internal: string }>();
-  for (const r of scheduled.rows) schedMap.set(key(r.individual_id, r.program_id), { hours: r.hours, internal: r.internal });
+  for (const r of scheduled.rows) schedMap.set(key(r.strategy_id, r.program_id), { hours: r.hours, internal: r.internal });
 
   for (const row of rows) {
     const programIds = Object.keys(row.hours);
@@ -418,14 +443,14 @@ async function attachStrategyAnalytics(
     let observations = 0;
     for (const pid of programIds) {
       planned = planned.plus(dec(row.hours[pid] ?? 0));
-      const b = billedMap.get(key(row.individualId, pid));
+      const b = billedMap.get(key(row.id, pid));
       if (b) {
         const budgetRate = rateByStrategy.get(row.id)?.[pid] ?? null;
         actualH = actualH.plus(effectiveBilledHours(b.code, b.hours, b.internal, budgetRate));
         actualI = actualI.plus(dec(b.internal));
         observations += Number(b.observations);
       }
-      const s = schedMap.get(key(row.individualId, pid));
+      const s = schedMap.get(key(row.id, pid));
       if (s) { schedH = schedH.plus(dec(s.hours)); schedI = schedI.plus(dec(s.internal)); }
     }
     const remaining = planned.minus(actualH).minus(schedH);
@@ -436,10 +461,11 @@ async function attachStrategyAnalytics(
     // notch and the canonical status. Best-effort: a malformed period yields no
     // pacing rather than an error.
     let elapsed: ReturnType<typeof calculatePeriodElapsed> | null = null;
-    if (row.periodStart && row.periodEnd) {
+    const finalServiceDay = budgetRateDate(row.periodEnd);
+    if (row.periodStart && finalServiceDay) {
       try {
         elapsed = calculatePeriodElapsed(
-          { startDate: row.periodStart, endDate: row.periodEnd },
+          { startDate: row.periodStart, endDate: finalServiceDay },
           new Date(`${asOf}T00:00:00Z`),
         );
       } catch {
