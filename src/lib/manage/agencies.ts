@@ -589,7 +589,6 @@ export async function setAgencyIndividualMembership(
 ): Promise<Result<{ agencyId: string; individualId: string }>> {
   if (!UUID.test(agencyId) || !UUID.test(input.individualId)) return fail("validation", "Choose a valid agency and individual.");
   if (input.membershipId && !UUID.test(input.membershipId)) return fail("validation", "Choose a valid membership interval.");
-  if (!input.managesBudget && !input.billsServices) return fail("validation", "Choose budget management, billing, or both.");
   if (!validDate(input.effectiveFrom) || !validDate(input.effectiveTo)) return fail("validation", "Use YYYY-MM-DD for effective dates.");
   if (input.effectiveFrom && input.effectiveTo && input.effectiveTo < input.effectiveFrom) {
     return fail("validation", "The end date cannot be before the start date.");
