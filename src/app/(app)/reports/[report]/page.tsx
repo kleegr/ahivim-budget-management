@@ -4,8 +4,6 @@ import {
   ArrowLeft,
   CalendarDays,
   Clock3,
-  Download,
-  FileSpreadsheet,
   Filter,
   Info,
   ReceiptText,
@@ -58,7 +56,7 @@ function FilterField({ spec, value }: { spec: ReportFilterSpec; value: string | 
         <input
           id={spec.key}
           name={spec.key}
-          type={spec.type === "date" ? "date" : spec.type === "int" ? "number" : "text"}
+          type={spec.type === "date" ? "date" : spec.type === "month" ? "month" : spec.type === "int" ? "number" : "text"}
           min={spec.type === "int" ? 1 : undefined}
           defaultValue={current}
           placeholder={spec.placeholder}
@@ -195,15 +193,6 @@ export default async function ReportPage({
   const filters = selectFilters(report, raw);
   const asOf = agencyDate();
 
-  const exportQuery = new URLSearchParams();
-  for (const spec of def.filters) {
-    const value = filters[spec.key];
-    if (value) exportQuery.set(spec.key, value);
-  }
-  const querySuffix = exportQuery.toString() ? `&${exportQuery}` : "";
-  const csvHref = `/api/reports/${report}/export?format=csv${querySuffix}`;
-  const xlsxHref = `/api/reports/${report}/export?format=xlsx${querySuffix}`;
-
   const result = await withDb(async (pool) => {
     const tables = await def.run(pool, filters);
     await attachEntityIds(pool, tables);
@@ -239,12 +228,6 @@ export default async function ReportPage({
         eyebrow={group ? `Reports / ${group.heading}` : "Reports"}
         title={presentation?.title ?? def.title}
         description={presentation?.question ?? def.description}
-        action={
-          <>
-            <ButtonLink href={csvHref}><Download size={15} aria-hidden /> CSV</ButtonLink>
-            <ButtonLink href={xlsxHref} variant="primary"><FileSpreadsheet size={15} aria-hidden /> Excel</ButtonLink>
-          </>
-        }
       />
 
       {def.filters.length > 0 ? (
@@ -252,7 +235,7 @@ export default async function ReportPage({
           <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
             <div>
               <h2 id="report-scope-heading" className="display text-base font-semibold text-[var(--color-ink)]">Report scope</h2>
-              <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">The table, chart, and both exports use these same filters.</p>
+              <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">These filters set the report scope. Each table&rsquo;s export menu then uses its current filtered rows and visible columns exactly.</p>
             </div>
           </div>
           <form className="flex flex-wrap items-end gap-3" method="get" action={`/reports/${report}`}>

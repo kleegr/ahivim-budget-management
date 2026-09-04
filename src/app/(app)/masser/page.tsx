@@ -116,8 +116,9 @@ export default async function MasserPage({
     <>
       <PageHeader
         eyebrow="Masser"
-        title="Collections & put-away"
-        description="Collect what employees owe and prepare each individual's monthly set-aside update."
+        title="Money to collect, pay, and put away"
+        description="Review collections, payroll checks, and monthly set-asides here. Open all money operations for agency payments, credits, corrections, reversals, and completed history."
+        action={<ButtonLink href="/settlements" variant="secondary">All money operations</ButtonLink>}
       />
       {!result.ok ? <ErrorPanel title="Could not load Masser">{result.error}</ErrorPanel>
         : result.data.denied || !result.data.data ? <ErrorPanel title="Masser is not included in this account" action={<ButtonLink href="/home">Back to home</ButtonLink>}>Ask an administrator to assign the Money collector role.</ErrorPanel>
