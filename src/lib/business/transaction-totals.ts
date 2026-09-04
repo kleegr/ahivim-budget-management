@@ -1,5 +1,6 @@
 import { dec } from "@/lib/money";
 import { normalizePersonName } from "@/lib/business/name-matching";
+import { normalizePayee } from "@/lib/business/internal-rate";
 
 /**
  * Excel-SUBTOTAL-style totals for the Transactions grid, computed over whatever
@@ -7,14 +8,19 @@ import { normalizePersonName } from "@/lib/business/name-matching";
  * decimal-safe so it can be unit-tested against the workbook and reused by the
  * client grid.
  *
- * Reproduces the workbook's logic exactly:
+ * Reproduces the workbook's logic while preserving the application's stronger
+ * check identity:
  *   - gross / internal / agency-additional / hours are simple column sums;
  *   - agency additional per row is gross − internal (workbook column R = Q − P),
  *     already carried on each row, so the total can be negative or positive;
- *   - check-level values are counted once per complete payment identity:
+ *   - checks and verified check facts are counted once per complete check identity:
  *     employee + normalized check number + check date + both period bounds.
- *     Payee text is not identity, and fully unidentified rows do not create a
- *     synthetic check.
+ *     Payee text is not part of that identity;
+ *   - imported source net is counted once per source payment identity. That
+ *     identity prefers normalized pay-to (so one agency payment spanning
+ *     several employees is not multiplied), then falls back to employee, and
+ *     retains the check date plus both period bounds. Rows without any payment
+ *     coordinates do not create a synthetic payment.
  */
 export interface TotalsInput {
   id: string;
@@ -43,6 +49,11 @@ export type CompleteCheckIdentityInput = Pick<
   "employeeId" | "employee" | "checkNumber" | "checkDate" | "periodBegin" | "periodEnd"
 >;
 
+export type SourcePaymentIdentityInput = Pick<
+  TotalsInput,
+  "payTo" | "employeeId" | "employee" | "checkNumber" | "checkDate" | "periodBegin" | "periodEnd"
+>;
+
 /** Stable complete check identity shared by row totals and Check mode. */
 export function completeCheckIdentity(row: CompleteCheckIdentityInput): string | null {
   const checkNumber = row.checkNumber?.trim() || "";
@@ -57,6 +68,27 @@ export function completeCheckIdentity(row: CompleteCheckIdentityInput): string |
       ? `name:${normalizedEmployee}`
       : "unknown";
   return JSON.stringify([employeeKey, checkNumber, checkDate, periodBegin, periodEnd]);
+}
+
+/** Identity of one imported source payment, which can cover multiple employee checks. */
+export function sourcePaymentIdentity(row: SourcePaymentIdentityInput): string | null {
+  const checkNumber = row.checkNumber?.trim() || "";
+  const checkDate = row.checkDate ?? "";
+  const periodBegin = row.periodBegin ?? "";
+  const periodEnd = row.periodEnd ?? "";
+  if (!checkNumber && !checkDate && !periodBegin && !periodEnd) return null;
+
+  const normalizedPayTo = normalizePayee(row.payTo);
+  const normalizedEmployee = normalizePersonName(row.employee);
+  const recipientKey = normalizedPayTo
+    ? `pay-to:${normalizedPayTo}`
+    : row.employeeId
+      ? `employee-id:${row.employeeId}`
+      : normalizedEmployee
+        ? `employee-name:${normalizedEmployee}`
+        : "unknown";
+
+  return JSON.stringify([recipientKey, checkNumber, checkDate, periodBegin, periodEnd]);
 }
 
 export interface GridTotals {
@@ -103,11 +135,12 @@ export function computeGridTotals(rows: TotalsInput[]): GridTotals {
     const empKey = r.employeeId ?? r.employee;
     if (empKey) emps.add(empKey);
 
-    // Net pay is repeated on every row belonging to one payment. Count the
-    // first populated value once; rows with no usable check identity are not a
-    // check and do not contribute check-level values.
-    if (paymentKey && r.totalNetPay && !seenNetPayment.has(paymentKey)) {
-      seenNetPayment.add(paymentKey);
+    // Imported net pay can be repeated across several employee checks that
+    // belong to one source payment. Deduplicate it at the source-payment grain;
+    // verified facts below deliberately remain at the complete-check grain.
+    const sourcePaymentKey = sourcePaymentIdentity(r);
+    if (sourcePaymentKey && r.totalNetPay && !seenNetPayment.has(sourcePaymentKey)) {
+      seenNetPayment.add(sourcePaymentKey);
       net = net.plus(dec(r.totalNetPay));
     }
     if (paymentKey && r.verificationStatus === "verified") {

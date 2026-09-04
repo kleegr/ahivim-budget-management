@@ -156,7 +156,7 @@ export default function ReportGrid({
             { key: "funderBilled", header: "Funder billed", label: formatMoney(exact.gross) },
             { key: "employeeBase", header: "Employee base", label: formatMoney(exact.internal) },
             { key: "agencySpread", header: "Agency spread", label: formatMoney(exact.agencyAdditional) },
-            { key: "checkNet", header: "Deduplicated check net", label: formatMoney(exact.netPerCheck) },
+            { key: "checkNet", header: "Deduplicated source net", label: formatMoney(exact.netPerCheck) },
             { key: "hours", header: "Hours", label: formatHours(exact.hours) },
             { key: "checks", header: "Checks", label: exact.checks.toLocaleString() },
             { key: "individuals", header: "Individuals", label: exact.individuals.toLocaleString() },

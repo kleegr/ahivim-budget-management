@@ -63,13 +63,82 @@ describe("computeGridTotals — Excel-SUBTOTAL parity", () => {
     expect(t.checks).toBe(3);
   });
 
-  it("keeps agency-routed checks separate for different employees", () => {
+  it("counts one agency source payment once while retaining both employee checks and their verified facts", () => {
     const t = computeGridTotals([
-      row({ id: "a", payTo: "Excellent Staffing", employeeId: "e1", checkNumber: "900", checkDate: "2026-08-15", totalNetPay: "800" }),
-      row({ id: "b", payTo: " Excellent Staffing ", employeeId: "e2", checkNumber: "900", checkDate: "2026-08-15", totalNetPay: "800" }),
+      row({
+        id: "a",
+        payTo: "Excellent Staffing",
+        employeeId: "e1",
+        checkNumber: " 900 ",
+        checkDate: "2026-08-15",
+        periodBegin: "2026-08-01",
+        periodEnd: "2026-08-15",
+        totalNetPay: "800",
+        verificationStatus: "verified",
+        verifiedCheckGross: "1000",
+        verifiedCheckNet: "800",
+        withholding: "200",
+      }),
+      row({
+        id: "b",
+        payTo: " excellent staffing, LLC ",
+        employeeId: "e2",
+        checkNumber: "900",
+        checkDate: "2026-08-15",
+        periodBegin: "2026-08-01",
+        periodEnd: "2026-08-15",
+        totalNetPay: "800",
+        verificationStatus: "verified",
+        verifiedCheckGross: "1000",
+        verifiedCheckNet: "800",
+        withholding: "200",
+      }),
     ]);
 
-    expect(t.netPerCheck).toBe("1600.00");
+    expect(t).toMatchObject({
+      netPerCheck: "800.00",
+      checks: 2,
+      verifiedCheckGross: "2000.00",
+      verifiedCheckNet: "1600.00",
+      withholding: "400.00",
+    });
+  });
+
+  it("keeps direct source payments to different employee payees separate", () => {
+    const t = computeGridTotals([
+      row({ id: "a", payTo: "First Employee", employeeId: "e1", checkNumber: "900", checkDate: "2026-08-15", totalNetPay: "100" }),
+      row({ id: "b", payTo: "Second Employee", employeeId: "e2", checkNumber: "900", checkDate: "2026-08-15", totalNetPay: "200" }),
+    ]);
+
+    expect(t.netPerCheck).toBe("300.00");
+    expect(t.checks).toBe(2);
+  });
+
+  it("keeps dated source payments separate when their period bounds differ", () => {
+    const t = computeGridTotals([
+      row({
+        id: "a",
+        payTo: "Excellent Staffing",
+        employeeId: "e1",
+        checkNumber: "901",
+        checkDate: "2026-08-20",
+        periodBegin: "2026-08-01",
+        periodEnd: "2026-08-15",
+        totalNetPay: "825",
+      }),
+      row({
+        id: "b",
+        payTo: "Excellent Staffing",
+        employeeId: "e1",
+        checkNumber: "901",
+        checkDate: "2026-08-20",
+        periodBegin: "2026-08-02",
+        periodEnd: "2026-08-16",
+        totalNetPay: "825",
+      }),
+    ]);
+
+    expect(t.netPerCheck).toBe("1650.00");
     expect(t.checks).toBe(2);
   });
 

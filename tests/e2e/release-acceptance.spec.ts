@@ -60,7 +60,7 @@ test("owner sees exact row totals and whole-check totals without counting repeat
   await expectMetric(main, "Verified check gross", "$300.00");
   await expectMetric(main, "Verified check net", "$240.00");
   await expectMetric(main, "Verified withholding", "$60.00");
-  await expectMetric(main, "Source net (per check)", "$240.00");
+  await expectMetric(main, "Source net (per payment)", "$240.00");
   await expectMetric(main, "Recorded services", "3");
   await expectMetric(main, "# Checks", "2");
 

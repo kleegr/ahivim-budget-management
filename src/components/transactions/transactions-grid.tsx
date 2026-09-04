@@ -390,7 +390,7 @@ export default function TransactionsGrid({
                 <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Verified withholding</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.withholding)}</div></div>
               ) : null}
               {fields.canSeeCheckNet ? (
-                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Source net (per check)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.netPerCheck)}</div></div>
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Source net (per payment)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.netPerCheck)}</div></div>
               ) : null}
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Recorded services</div><div className="text-lg font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Checks</div><div className="text-lg font-semibold tabular-nums">{totals.checks.toLocaleString()}</div></div>
