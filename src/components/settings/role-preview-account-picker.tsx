@@ -52,6 +52,7 @@ export default function RolePreviewAccountPicker({
   presetLabel: string;
 }) {
   const [selectedId, setSelectedId] = useState(accounts[0]?.id ?? "");
+  const [submitting, setSubmitting] = useState(false);
   const selected = useMemo(
     () => accounts.find((account) => account.id === selectedId) ?? accounts[0],
     [accounts, selectedId],
@@ -72,7 +73,12 @@ export default function RolePreviewAccountPicker({
   const selectId = `role-preview-${presetLabel.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}`;
 
   return (
-    <form method="post" action="/api/auth/impersonation/start" className="space-y-3">
+    <form
+      method="post"
+      action="/api/auth/impersonation/start"
+      className="space-y-3"
+      onSubmit={() => setSubmitting(true)}
+    >
       <div>
         {accounts.length > 1 ? (
           <>
@@ -153,14 +159,53 @@ export default function RolePreviewAccountPicker({
         </div>
       </section>
 
+      {selected.portalScopes.length > 0 ? (
+        <section className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface-muted)] px-3.5 py-3">
+          <h3 className="text-sm font-semibold text-[var(--color-ink)]">Selected account — effective portal access</h3>
+          <p className="mt-1 text-xs leading-relaxed text-[var(--color-ink-soft)]">
+            Server-derived for each linked person or agency. Preset defaults and owner adjustments are combined here; an explicit denial wins.
+          </p>
+          <div className="mt-3 space-y-3">
+            {selected.portalScopes.map((scope) => (
+              <div key={scope.key} className="rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-2.5">
+                <h4 className="text-xs font-semibold text-[var(--color-ink)]">{scope.label}</h4>
+                <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+                  <div>
+                    <dt className="font-semibold text-[var(--color-success)]">Granted now</dt>
+                    <dd className="mt-0.5 leading-relaxed text-[var(--color-ink-soft)]">
+                      {scope.effectiveGrants.length > 0
+                        ? scope.effectiveGrants.join(" · ")
+                        : "No portal capability is active for this scope."}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="font-semibold text-[var(--color-ink)]">Explicitly denied</dt>
+                    <dd className="mt-0.5 leading-relaxed text-[var(--color-ink-soft)]">
+                      {scope.effectiveDenials.length > 0
+                        ? scope.effectiveDenials.join(" · ")
+                        : "No explicit denial is stored for this scope."}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <button
         type="submit"
-        disabled={selected.isCurrent}
+        disabled={selected.isCurrent || submitting}
+        aria-busy={submitting}
         className="btn btn-primary w-full"
         title={selected.isCurrent ? "You are already signed in as this owner" : `Sign in as ${selected.displayName}`}
       >
         <LogIn aria-hidden className="h-4 w-4" />
-        {selected.isCurrent ? "Current owner account" : "Preview / Sign in as"}
+        {selected.isCurrent
+          ? "Current owner account"
+          : submitting
+            ? "Opening…"
+            : "Preview / Sign in as"}
       </button>
     </form>
   );

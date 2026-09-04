@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PgLikePool } from "@/lib/import/commit";
 import {
+  listGlobalPortalRoleAssignments,
   setGlobalPortalRoleAssignment,
   setIndividualPortalAssignment,
 } from "@/lib/manage/portal-identities";
@@ -23,6 +24,36 @@ function transactionalPool(
 }
 
 describe("portal identity management", () => {
+  it("returns saved global capability overrides for an effective-access preview", async () => {
+    const pool = {
+      query: vi.fn(async () => ({ rows: [{
+        user_id: USER,
+        display_name: "Portal Parent",
+        email: "parent@example.test",
+        portal_role: "parent",
+        is_active: true,
+        capability_grants: [
+          "financials.self.billed_totals.read",
+          "not-a-real-capability",
+        ],
+        capability_denials: ["schedules.self.read"],
+        updated_at: "2026-09-04T12:00:00.000Z",
+      }] })),
+      connect: vi.fn(),
+    } as unknown as PgLikePool;
+
+    await expect(listGlobalPortalRoleAssignments(pool)).resolves.toEqual([{
+      userId: USER,
+      displayName: "Portal Parent",
+      email: "parent@example.test",
+      role: "parent",
+      isActive: true,
+      capabilityGrants: ["financials.self.billed_totals.read"],
+      capabilityDenials: ["schedules.self.read"],
+      updatedAt: "2026-09-04T12:00:00.000Z",
+    }]);
+  });
+
   it("does not activate a portal role as a side effect of a subject link", async () => {
     const { pool, clientQuery } = transactionalPool([], (sql) =>
       sql.includes("SELECT EXISTS") ? [{ user_exists: true, person_exists: true }] : []);

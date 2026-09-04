@@ -6,6 +6,7 @@ import {
   type AccountPresetId,
 } from "@/lib/auth/account-presets";
 import { PORTAL_ONLY_ACCESS } from "@/lib/auth/access-presets";
+import type { PortalAccessContext } from "@/lib/auth/portal-access";
 import type { UserWithAccess } from "@/lib/auth/users";
 import {
   buildRolePreviewAccounts,
@@ -195,6 +196,54 @@ describe("owner Role Preview Center", () => {
     expect(result.owner[0]?.effectiveDenials).toEqual([]);
   });
 
+  it("shows effective portal access per linked subject with explicit denials winning", () => {
+    const portalUser = account({
+      ...PORTAL_ONLY_ACCESS,
+      id: "parent-account",
+      accountPreset: "individual_parent",
+      portalManaged: true,
+    });
+    const individualId = "00000000-0000-4000-8000-000000000001";
+    const portal: PortalAccessContext = {
+      userId: portalUser.id,
+      globalRoles: [{
+        role: "parent",
+        grants: ["financials.self.billed_totals.read"],
+        denials: ["schedules.self.read"],
+      }],
+      agencyAccess: [],
+      individualLinks: [{
+        individualId,
+        relationship: "parent",
+        grants: [
+          "financials.self.billed_totals.read",
+          "financials.self.cuts_set_asides.read",
+        ],
+        denials: ["financials.self.billed_totals.read"],
+      }],
+      employeeLinks: [],
+    };
+
+    const result = buildRolePreviewAccounts([portalUser], "owner", {
+      portalAccessByUser: new Map([[portalUser.id, portal]]),
+      individualNameById: new Map([[individualId, "Linked Individual"]]),
+    });
+
+    expect(result.individual_parent[0]?.portalScopes).toEqual([{
+      key: `individual:${individualId}`,
+      label: "Linked Individual",
+      effectiveGrants: [
+        "Linked person profile",
+        "Linked hours and budgets",
+        "Linked cuts and set-asides",
+      ],
+      effectiveDenials: [
+        "Approved personal schedule",
+        "Linked funder-billed totals",
+      ],
+    }]);
+  });
+
   it("is guarded on the server and posts the selected real account through Sign In As", () => {
     const page = readFileSync("src/app/(app)/settings/role-preview/page.tsx", "utf8");
     const center = readFileSync("src/components/settings/role-preview-center.tsx", "utf8");
@@ -202,6 +251,7 @@ describe("owner Role Preview Center", () => {
 
     expect(page).toContain('requireUser("admin")');
     expect(page).toContain("listUsersWithAccess(pool)");
+    expect(page).toContain("listGlobalPortalRoleAssignments(pool)");
     expect(center).toContain("ACCOUNT_PRESETS.map");
     expect(center).toContain("Preset intent — visible");
     expect(center).toContain("Preset intent — hidden");
@@ -212,6 +262,9 @@ describe("owner Role Preview Center", () => {
     expect(picker).toContain("Not formally recorded");
     expect(picker).toContain("Selected account — effective internal access");
     expect(picker).toContain("Server-derived from this account");
+    expect(picker).toContain("Selected account — effective portal access");
+    expect(picker).toContain("an explicit denial wins");
+    expect(picker).toContain("aria-busy={submitting}");
     expect(picker).toContain('<p id={`${selectId}-label`} className="eyebrow">');
     expect(picker).toContain('aria-labelledby={`${selectId}-label`}');
   });

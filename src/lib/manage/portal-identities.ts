@@ -85,6 +85,8 @@ export interface GlobalPortalRoleAssignment {
   email: string;
   role: GlobalPortalRole;
   isActive: boolean;
+  capabilityGrants: PortalCapability[];
+  capabilityDenials: PortalCapability[];
   updatedAt: string;
 }
 
@@ -95,10 +97,13 @@ export async function listGlobalPortalRoleAssignments(pool: PgLikePool): Promise
     email: string;
     portal_role: string;
     is_active: boolean;
+    capability_grants: string[];
+    capability_denials: string[];
     updated_at: string;
   }>(
     `SELECT role.user_id, account.display_name, account.email, role.portal_role,
-            role.is_active, role.updated_at::text AS updated_at
+            role.is_active, role.capability_grants, role.capability_denials,
+            role.updated_at::text AS updated_at
        FROM user_portal_roles role
        JOIN users account ON account.id = role.user_id
       ORDER BY (role.is_active = false), account.display_name, role.portal_role`,
@@ -111,6 +116,8 @@ export async function listGlobalPortalRoleAssignments(pool: PgLikePool): Promise
       email: row.email,
       role: row.portal_role,
       isActive: row.is_active,
+      capabilityGrants: row.capability_grants.filter(isPortalCapability),
+      capabilityDenials: row.capability_denials.filter(isPortalCapability),
       updatedAt: row.updated_at,
     }];
   });

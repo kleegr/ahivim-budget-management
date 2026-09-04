@@ -2,6 +2,14 @@ import {
   ACCOUNT_PRESETS,
   type AccountPresetId,
 } from "@/lib/auth/account-presets";
+import {
+  isPortalOwner,
+  portalCapabilities,
+  portalEmployeeCapabilities,
+  portalIndividualCapabilities,
+  type PortalAccessContext,
+  type PortalCapability,
+} from "@/lib/auth/portal-access";
 import type { UserWithAccess } from "@/lib/auth/users";
 
 export interface RolePreviewDetails {
@@ -149,6 +157,15 @@ export interface RolePreviewLinkedAgency {
   employeeCount: number;
 }
 
+export interface RolePreviewPortalScope {
+  key: string;
+  label: string;
+  /** Capabilities active after preset defaults, grants, and denials are combined. */
+  effectiveGrants: string[];
+  /** Explicit owner-selected denials that apply to this exact linked scope. */
+  effectiveDenials: string[];
+}
+
 export interface RolePreviewAccount {
   id: string;
   displayName: string;
@@ -165,12 +182,17 @@ export interface RolePreviewAccount {
   /** Effective internal-workspace permissions, resolved from the stored account. */
   effectiveGrants: string[];
   effectiveDenials: string[];
+  /** Effective portal permissions, retained per linked subject or agency. */
+  portalScopes: RolePreviewPortalScope[];
 }
 
 export interface RolePreviewLinks {
   individualNamesByUser?: ReadonlyMap<string, readonly string[]>;
   employeeNamesByUser?: ReadonlyMap<string, readonly string[]>;
   agenciesByUser?: ReadonlyMap<string, readonly RolePreviewLinkedAgency[]>;
+  portalAccessByUser?: ReadonlyMap<string, PortalAccessContext>;
+  individualNameById?: ReadonlyMap<string, string>;
+  employeeNameById?: ReadonlyMap<string, string>;
 }
 
 function loginTime(value: string | null): number {
@@ -239,6 +261,125 @@ function effectiveAccountAccess(user: UserWithAccess): {
   return { grants, denials };
 }
 
+const PORTAL_CAPABILITY_LABELS = {
+  "agencies.read": "Agency profile",
+  "agencies.manage": "Agency setup changes",
+  "users.manage": "User administration",
+  "people.self.read": "Linked person profile",
+  "people.agency.read": "Dated agency roster",
+  "people.agency.manage": "Dated agency roster changes",
+  "assignments.self.read": "Own assignments",
+  "assignments.agency.manage": "Agency assignment changes",
+  "schedules.self.read": "Approved personal schedule",
+  "schedules.agency.read": "Agency schedule",
+  "schedules.agency.manage": "Agency schedule changes",
+  "hours_budgets.self.read": "Linked hours and budgets",
+  "hours_budgets.agency.read": "Agency hours and budgets",
+  "hours_budgets.agency.manage": "Agency hour and budget changes",
+  "dollar_budgets.self.read": "Linked dollar budgets",
+  "dollar_budgets.agency.read": "Agency dollar budgets",
+  "transactions.self.read": "Linked transactions",
+  "transactions.agency.read": "Agency transactions",
+  "employee_pay.self.read": "Own direct-pay history",
+  "employee_checks.self.gross.read": "Own check gross",
+  "employee_checks.self.net.read": "Own check net",
+  "employee_checks.self.tax.read": "Own check withholding",
+  "employee_giveback.self.read": "Own give-back balance",
+  "financials.self.billed_totals.read": "Linked funder-billed totals",
+  "financials.self.cuts_set_asides.read": "Linked cuts and set-asides",
+  "financials.self.direct_checks.read": "Linked direct checks",
+  "financials.self.agency_paid.read": "Linked agency-paid totals",
+  "financials.agency.billed_totals.read": "Agency funder-billed totals",
+  "financials.agency.cuts_set_asides.read": "Agency cuts and set-asides",
+  "financials.agency.direct_checks.read": "Agency direct checks",
+  "financials.agency.agency_paid.read": "Agency-paid totals",
+  "settlements.agency.read": "Agency settlement reports",
+  "settlements.agency.manage": "Agency settlement changes",
+  "documents.self.read": "Linked documents",
+} as const satisfies Record<PortalCapability, string>;
+
+function capabilityLabels(capabilities: readonly PortalCapability[]): string[] {
+  return capabilities.map((capability) => PORTAL_CAPABILITY_LABELS[capability]);
+}
+
+function explicitDenials(
+  policies: readonly { denials: readonly PortalCapability[] }[],
+): string[] {
+  const denied = new Set(policies.flatMap((policy) => policy.denials));
+  return capabilityLabels([...denied]);
+}
+
+/**
+ * Summarize the same effective capability decisions used by real portal reads.
+ * Scope stays separate so a denial for one person or agency is never presented
+ * as a global denial (or accidentally hidden by a grant on another scope).
+ */
+export function effectivePortalScopes(
+  context: PortalAccessContext,
+  names: {
+    individualNameById?: ReadonlyMap<string, string>;
+    employeeNameById?: ReadonlyMap<string, string>;
+  } = {},
+): RolePreviewPortalScope[] {
+  if (isPortalOwner(context)) {
+    const owners = context.globalRoles.filter((assignment) => assignment.role === "owner");
+    return [{
+      key: "owner",
+      label: "All portal records",
+      effectiveGrants: capabilityLabels(portalCapabilities(context)),
+      effectiveDenials: explicitDenials(owners),
+    }];
+  }
+
+  const scopes: RolePreviewPortalScope[] = [];
+  const individualIds = [...new Set(
+    context.individualLinks.map((link) => link.individualId),
+  )];
+  for (const [index, individualId] of individualIds.entries()) {
+    const links = context.individualLinks.filter((link) => link.individualId === individualId);
+    const roles = context.globalRoles.filter((assignment) => links.some((link) =>
+      assignment.role === (link.relationship === "self" ? "individual" : "parent")));
+    scopes.push({
+      key: `individual:${individualId}`,
+      label: names.individualNameById?.get(individualId)
+        ?? `Linked individual ${index + 1}`,
+      effectiveGrants: capabilityLabels(
+        portalIndividualCapabilities(context, individualId),
+      ),
+      effectiveDenials: explicitDenials([...roles, ...links]),
+    });
+  }
+
+  for (const [index, link] of context.employeeLinks.entries()) {
+    const roles = context.globalRoles.filter((assignment) => assignment.role === "employee");
+    scopes.push({
+      key: `employee:${link.employeeId}`,
+      label: names.employeeNameById?.get(link.employeeId)
+        ?? `Linked employee ${index + 1}`,
+      effectiveGrants: capabilityLabels(
+        portalEmployeeCapabilities(context, link.employeeId),
+      ),
+      effectiveDenials: explicitDenials([...roles, link]),
+    });
+  }
+
+  const agencyIds = [...new Set(context.agencyAccess.map((assignment) => assignment.agencyId))];
+  for (const agencyId of agencyIds) {
+    const assignments = context.agencyAccess.filter(
+      (assignment) => assignment.agencyId === agencyId,
+    );
+    const agency = assignments[0];
+    if (!agency) continue;
+    scopes.push({
+      key: `agency:${agencyId}`,
+      label: agency.agencyName,
+      effectiveGrants: capabilityLabels(portalCapabilities(context, agencyId)),
+      effectiveDenials: explicitDenials(assignments),
+    });
+  }
+  return scopes;
+}
+
 /** Build active preview choices in preset order, preferring a usable recent account. */
 export function buildRolePreviewAccounts(
   users: readonly UserWithAccess[],
@@ -254,6 +395,7 @@ export function buildRolePreviewAccounts(
     const presetId = previewPresetForUser(user);
     if (!presetId) continue;
     const effectiveAccess = effectiveAccountAccess(user);
+    const portalAccess = links.portalAccessByUser?.get(user.id);
     result[presetId].push({
       id: user.id,
       displayName: user.displayName,
@@ -269,6 +411,12 @@ export function buildRolePreviewAccounts(
       linkedAgencies: [...(links.agenciesByUser?.get(user.id) ?? [])],
       effectiveGrants: effectiveAccess.grants,
       effectiveDenials: effectiveAccess.denials,
+      portalScopes: portalAccess
+        ? effectivePortalScopes(portalAccess, {
+            individualNameById: links.individualNameById,
+            employeeNameById: links.employeeNameById,
+          })
+        : [],
     });
   }
 

@@ -4,9 +4,16 @@ import { buildRolePreviewAccounts } from "@/lib/auth/role-preview";
 import { withDb } from "@/lib/data/pool";
 import {
   listEmployeePortalAssignments,
+  listGlobalPortalRoleAssignments,
   listIndividualPortalAssignments,
 } from "@/lib/manage/portal-identities";
 import { listAgencies, listAgencyUserAccess } from "@/lib/manage/agencies";
+import {
+  portalCapabilityAllowedForRole,
+  type PortalAccessContext,
+  type PortalCapability,
+  type PortalRole,
+} from "@/lib/auth/portal-access";
 import RolePreviewCenter from "@/components/settings/role-preview-center";
 import { ErrorPanel, PageHeader } from "@/components/ui";
 
@@ -19,11 +26,23 @@ function appendName(map: Map<string, string[]>, userId: string, name: string) {
   map.set(userId, names);
 }
 
+function effectivePolicy(
+  role: PortalRole,
+  grants: readonly PortalCapability[],
+  denials: readonly PortalCapability[],
+) {
+  return {
+    grants: grants.filter((capability) => portalCapabilityAllowedForRole(role, capability)),
+    denials: denials.filter((capability) => portalCapabilityAllowedForRole(role, capability)),
+  };
+}
+
 export default async function RolePreviewPage() {
   const owner = await requireUser("admin");
   const result = await withDb(async (pool) => {
-    const [users, individualAssignments, employeeAssignments, agencies] = await Promise.all([
+    const [users, globalAssignments, individualAssignments, employeeAssignments, agencies] = await Promise.all([
       listUsersWithAccess(pool),
+      listGlobalPortalRoleAssignments(pool),
       listIndividualPortalAssignments(pool),
       listEmployeePortalAssignments(pool),
       listAgencies(pool),
@@ -36,13 +55,65 @@ export default async function RolePreviewPage() {
       })),
     );
 
+    const portalAccessByUser = new Map<string, PortalAccessContext>();
+    const portalAccessFor = (userId: string) => {
+      const existing = portalAccessByUser.get(userId);
+      if (existing) return existing;
+      const created: PortalAccessContext = {
+        userId,
+        globalRoles: [],
+        agencyAccess: [],
+        individualLinks: [],
+        employeeLinks: [],
+      };
+      portalAccessByUser.set(userId, created);
+      return created;
+    };
+
+    for (const assignment of globalAssignments) {
+      if (!assignment.isActive) continue;
+      portalAccessFor(assignment.userId).globalRoles.push({
+        role: assignment.role,
+        ...effectivePolicy(
+          assignment.role,
+          assignment.capabilityGrants,
+          assignment.capabilityDenials,
+        ),
+      });
+    }
+
     const individualNamesByUser = new Map<string, string[]>();
+    const individualNameById = new Map<string, string>();
     for (const assignment of individualAssignments) {
-      if (assignment.isActive) appendName(individualNamesByUser, assignment.userId, assignment.individualName);
+      individualNameById.set(assignment.individualId, assignment.individualName);
+      if (!assignment.isActive) continue;
+      appendName(individualNamesByUser, assignment.userId, assignment.individualName);
+      const role = assignment.relationship === "self" ? "individual" : "parent";
+      portalAccessFor(assignment.userId).individualLinks.push({
+        individualId: assignment.individualId,
+        relationship: assignment.relationship,
+        ...effectivePolicy(
+          role,
+          assignment.capabilityGrants,
+          assignment.capabilityDenials,
+        ),
+      });
     }
     const employeeNamesByUser = new Map<string, string[]>();
+    const employeeNameById = new Map<string, string>();
     for (const assignment of employeeAssignments) {
-      if (assignment.isActive) appendName(employeeNamesByUser, assignment.userId, assignment.employeeName);
+      employeeNameById.set(assignment.employeeId, assignment.employeeName);
+      if (!assignment.isActive) continue;
+      appendName(employeeNamesByUser, assignment.userId, assignment.employeeName);
+      portalAccessFor(assignment.userId).employeeLinks.push({
+        employeeId: assignment.employeeId,
+        relationship: "self",
+        ...effectivePolicy(
+          "employee",
+          assignment.capabilityGrants,
+          assignment.capabilityDenials,
+        ),
+      });
     }
     const agenciesByUser = new Map<string, Array<{
       name: string;
@@ -61,6 +132,17 @@ export default async function RolePreviewPage() {
           employeeCount: agency.employeeCount,
         });
         agenciesByUser.set(assignment.userId, linked);
+        portalAccessFor(assignment.userId).agencyAccess.push({
+          agencyId: agency.id,
+          agencyCode: agency.code,
+          agencyName: agency.name,
+          role: assignment.role,
+          ...effectivePolicy(
+            assignment.role,
+            assignment.capabilityGrants,
+            assignment.capabilityDenials,
+          ),
+        });
       }
     }
 
@@ -68,6 +150,9 @@ export default async function RolePreviewPage() {
       individualNamesByUser,
       employeeNamesByUser,
       agenciesByUser,
+      portalAccessByUser,
+      individualNameById,
+      employeeNameById,
     });
   });
 
