@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { Suspense, type ReactNode } from "react";
 import {
+  AlertTriangle,
   ArrowRight,
   BarChart3,
   Calculator,
+  CheckCircle2,
   Clock3,
   Filter,
   HandCoins,
@@ -16,21 +18,24 @@ import GoogleSheetSyncButton from "@/components/sync/google-sheet-sync-button";
 import OwnerPeopleMultiSelect from "@/components/dashboard/owner-people-multi-select";
 import OwnerSavedViews from "@/components/dashboard/owner-saved-views";
 import { ButtonLink, PageHeader } from "@/components/ui";
-import type {
-  OwnerActivityFilterOptions,
-  OwnerActivitySelection,
-  OwnerDashboardSummary,
+import {
+  buildOwnerAttentionItems,
+  type OwnerActivityFilterOptions,
+  type OwnerActivitySelection,
+  type OwnerAttentionItem,
+  type OwnerDashboardSummary,
 } from "@/lib/dashboard/owner-summary";
 import { formatHours, formatMoney } from "@/lib/money";
 import type { GridView } from "@/lib/manage/grid-views";
 import { getAgencyFinancialReport, type AgencyFinancialReport } from "@/lib/data/agency-financial-report";
-import { getSettlementSummary, type SettlementSummary } from "@/lib/data/settlements";
+import { getSettlementDashboard, type SettlementSummary } from "@/lib/data/settlements";
 import { withDb } from "@/lib/data/pool";
 
 export interface OwnerActualMoney {
   month: string;
   totals: AgencyFinancialReport["totals"];
   operations: SettlementSummary;
+  checkIssueCount: number;
 }
 
 const LONG_DATE = new Intl.DateTimeFormat("en-US", {
@@ -124,6 +129,84 @@ function SummaryMetric({
   );
 }
 
+function OwnerAttentionSection({
+  items,
+  moneyUnavailable = false,
+}: {
+  items: OwnerAttentionItem[];
+  moneyUnavailable?: boolean;
+}) {
+  return (
+    <section aria-labelledby="owner-attention-heading">
+      <div className="flex min-w-0 items-start gap-3">
+        <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-md bg-[var(--color-warn-soft)] text-[var(--color-warn)]">
+          <AlertTriangle aria-hidden className="h-4 w-4" />
+        </span>
+        <div className="min-w-0">
+          <p className="eyebrow text-[var(--color-ink-faint)]">Owner follow-up</p>
+          <h2 id="owner-attention-heading" className="display mt-1 text-xl font-semibold text-[var(--color-ink)]">Needs attention</h2>
+          <p className="mt-1 text-sm text-[var(--color-ink-soft)]">Start with work that can affect a person, a schedule, a check, or current cash.</p>
+        </div>
+      </div>
+
+      {items.length > 0 ? (
+        <div className="mt-4 divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)]">
+          {items.map((item) => (
+            <Link
+              key={item.key}
+              href={item.href}
+              className="group grid min-h-16 gap-1 px-1 py-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-primary)] sm:grid-cols-[5.5rem_minmax(0,1fr)_auto] sm:items-center sm:gap-4"
+            >
+              <span className="text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">{item.category}</span>
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-[var(--color-ink)] group-hover:text-[var(--color-primary)]">{item.title}</span>
+                <span className="mt-0.5 block text-xs leading-5 text-[var(--color-ink-soft)]">{item.detail}</span>
+              </span>
+              <span className="mt-1 inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--color-primary)] sm:mt-0 sm:justify-self-end">
+                {item.action}
+                <ArrowRight aria-hidden className="h-3.5 w-3.5" />
+              </span>
+            </Link>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-4 flex min-h-16 items-center gap-3 border-y border-[var(--color-rule-strong)] px-1 py-3 text-sm text-[var(--color-ink-soft)]">
+          <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-success)]" />
+          <p>
+            No follow-up appears in the budget, schedule-coverage, check, or financial setup data loaded on Home.
+            {moneyUnavailable ? " Current money status is temporarily unavailable." : " No current money queue is open."}
+          </p>
+        </div>
+      )}
+      {moneyUnavailable && items.length > 0 ? (
+        <p className="mt-2 text-xs text-[var(--color-ink-faint)]">Current money actions are temporarily unavailable; the other follow-up above is still current.</p>
+      ) : null}
+      <p className="mt-2 text-xs text-[var(--color-ink-faint)]">
+        Unassigned shifts and calendar conflicts stay in <Link href="/schedule?view=calendar" className="font-medium text-[var(--color-primary)] hover:underline">Schedule</Link> and are not counted here.
+      </p>
+    </section>
+  );
+}
+
+function OwnerAttentionLoading() {
+  return (
+    <section aria-labelledby="owner-attention-heading">
+      <div className="flex min-w-0 items-start gap-3">
+        <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-md bg-[var(--color-warn-soft)] text-[var(--color-warn)]">
+          <AlertTriangle aria-hidden className="h-4 w-4" />
+        </span>
+        <div className="min-w-0">
+          <p className="eyebrow text-[var(--color-ink-faint)]">Owner follow-up</p>
+          <h2 id="owner-attention-heading" className="display mt-1 text-xl font-semibold text-[var(--color-ink)]">Needs attention</h2>
+        </div>
+      </div>
+      <div role="status" aria-live="polite" className="mt-4 min-h-16 border-y border-[var(--color-rule-strong)] px-1 py-4 text-sm text-[var(--color-ink-soft)]">
+        Loading current follow-up...
+      </div>
+    </section>
+  );
+}
+
 function OwnerMoneyShell({ month, children }: { month: string; children: ReactNode }) {
   return (
     <section aria-labelledby="owner-money-heading">
@@ -155,20 +238,27 @@ function OwnerMoneyLoading({ month }: { month: string }) {
   );
 }
 
-async function OwnerActualMoneySection({ month }: { month: string }) {
+async function OwnerOperationalSections({
+  month,
+  summary,
+}: {
+  month: string;
+  summary: OwnerDashboardSummary;
+}) {
   const result = await withDb(async (pool) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
-      const [actualFinancials, operations] = await Promise.all([
+      const [actualFinancials, settlementDashboard] = await Promise.all([
         getAgencyFinancialReport(client, month),
-        getSettlementSummary(client),
+        getSettlementDashboard(client),
       ]);
       await client.query("COMMIT");
       return {
         month: actualFinancials.month,
         totals: actualFinancials.totals,
-        operations,
+        operations: settlementDashboard.summary,
+        checkIssueCount: settlementDashboard.checkIssues.length,
       } satisfies OwnerActualMoney;
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
@@ -180,57 +270,63 @@ async function OwnerActualMoneySection({ month }: { month: string }) {
 
   if (!result.ok) {
     return (
-      <OwnerMoneyShell month={month}>
-        <div role="alert" className="mt-4 flex min-h-24 flex-wrap items-center justify-between gap-3 border-y border-[var(--color-rule-strong)] px-3 py-4 text-sm">
-          <p className="text-[var(--color-ink-soft)]">Actual money is temporarily unavailable. The rest of the owner overview is still current.</p>
-          <ButtonLink href="/dashboard">Try again</ButtonLink>
-        </div>
-      </OwnerMoneyShell>
+      <>
+        <OwnerAttentionSection items={buildOwnerAttentionItems(summary)} moneyUnavailable />
+        <OwnerMoneyShell month={month}>
+          <div role="alert" className="mt-4 flex min-h-24 flex-wrap items-center justify-between gap-3 border-y border-[var(--color-rule-strong)] px-3 py-4 text-sm">
+            <p className="text-[var(--color-ink-soft)]">Actual money is temporarily unavailable. The rest of Home is still current.</p>
+            <ButtonLink href="/dashboard">Try again</ButtonLink>
+          </div>
+        </OwnerMoneyShell>
+      </>
     );
   }
 
   const actualMoney = result.data;
   return (
-    <OwnerMoneyShell month={actualMoney.month}>
-      <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] md:grid-cols-3 lg:grid-cols-6 lg:divide-y-0">
-        <SummaryMetric
-          label="Actual income"
-          value={formatMoney(actualMoney.totals.income.total)}
-          href={`/reports/agency-financials?month=${actualMoney.month}`}
-          hint="Transactions and recorded receipts"
-        />
-        <SummaryMetric
-          label="Actual expenses"
-          value={formatMoney(actualMoney.totals.expenses.total)}
-          href={`/reports/agency-financials?month=${actualMoney.month}`}
-          hint="Set-asides, taxes, and shares"
-        />
-        <SummaryMetric
-          label="Agency result"
-          value={formatMoney(actualMoney.totals.agencyResult)}
-          href={`/reports/agency-financials?month=${actualMoney.month}`}
-          hint="Income minus listed expenses"
-        />
-        <SummaryMetric
-          label="Agency pays"
-          value={formatMoney(actualMoney.operations.agencyOwes)}
-          href="/settlements?queue=payable"
-          hint="Open employee payments"
-        />
-        <SummaryMetric
-          label="Employees owe"
-          value={formatMoney(actualMoney.operations.employeesOwe)}
-          href="/settlements?queue=receivable"
-          hint="Open collections"
-        />
-        <SummaryMetric
-          label="Set aside"
-          value={formatMoney(actualMoney.operations.reservesToSetAside)}
-          href="/settlements?queue=reserve"
-          hint={`${(actualMoney.operations.openCount + actualMoney.operations.partialCount).toLocaleString()} open money items`}
-        />
-      </div>
-    </OwnerMoneyShell>
+    <>
+      <OwnerAttentionSection items={buildOwnerAttentionItems(summary, actualMoney.operations, actualMoney.checkIssueCount)} />
+      <OwnerMoneyShell month={actualMoney.month}>
+        <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] md:grid-cols-3 lg:grid-cols-6 lg:divide-y-0">
+          <SummaryMetric
+            label="Actual income"
+            value={formatMoney(actualMoney.totals.income.total)}
+            href={`/reports/agency-financials?month=${actualMoney.month}`}
+            hint="Transactions and recorded receipts"
+          />
+          <SummaryMetric
+            label="Actual expenses"
+            value={formatMoney(actualMoney.totals.expenses.total)}
+            href={`/reports/agency-financials?month=${actualMoney.month}`}
+            hint="Set-asides, taxes, and shares"
+          />
+          <SummaryMetric
+            label="Agency result"
+            value={formatMoney(actualMoney.totals.agencyResult)}
+            href={`/reports/agency-financials?month=${actualMoney.month}`}
+            hint="Income minus listed expenses"
+          />
+          <SummaryMetric
+            label="Agency pays"
+            value={formatMoney(actualMoney.operations.agencyOwes)}
+            href="/settlements?queue=payable"
+            hint="Open employee payments"
+          />
+          <SummaryMetric
+            label="Employees owe"
+            value={formatMoney(actualMoney.operations.employeesOwe)}
+            href="/settlements?queue=receivable"
+            hint="Open collections"
+          />
+          <SummaryMetric
+            label="Set aside"
+            value={formatMoney(actualMoney.operations.reservesToSetAside)}
+            href="/settlements?queue=reserve"
+            hint={`${(actualMoney.operations.openCount + actualMoney.operations.partialCount).toLocaleString()} open money items`}
+          />
+        </div>
+      </OwnerMoneyShell>
+    </>
   );
 }
 
@@ -396,8 +492,8 @@ export default function OwnerDashboard({
     <>
       <PageHeader
         eyebrow="Ahivim"
-        title="Owner overview"
-        description="Actual activity, current money, active authorizations, and financial plans."
+        title="Home"
+        description="See what needs attention, take the next action, and keep budgets, checks, and money moving."
         action={(
           <>
             <ButtonLink href="/reports">
@@ -410,6 +506,10 @@ export default function OwnerDashboard({
       />
 
       <div className="space-y-12">
+        <Suspense fallback={<><OwnerAttentionLoading /><OwnerMoneyLoading month={financialMonth} /></>}>
+          <OwnerOperationalSections month={financialMonth} summary={summary} />
+        </Suspense>
+
         <section aria-labelledby="owner-transactions-heading">
           <SectionHeading
             id="owner-transactions-heading"
@@ -456,10 +556,6 @@ export default function OwnerDashboard({
             />
           </div>
         </section>
-
-        <Suspense fallback={<OwnerMoneyLoading month={financialMonth} />}>
-          <OwnerActualMoneySection month={financialMonth} />
-        </Suspense>
 
         <section aria-labelledby="owner-financial-heading">
           <SectionHeading

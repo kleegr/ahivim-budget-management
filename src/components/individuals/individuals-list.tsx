@@ -1,18 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
-  Search,
   SlidersHorizontal,
-  X,
 } from "lucide-react";
 import { Badge } from "@/components/ui";
-import { type UtilizationStatus } from "@/components/ui-viz";
-import { ColumnChooser } from "@/components/data-grid/toolbar";
+import { type UtilizationStatus, UtilizationBadge, utilizationLabel } from "@/components/ui-viz";
+import { ColumnChooser, Toolbar } from "@/components/data-grid/toolbar";
 import { useGrid } from "@/components/data-grid/use-grid";
 import type { ColumnDef, SortState } from "@/components/data-grid/types";
 import { BUDGET_STATUS_PRESENT, type BudgetLineStatus } from "@/lib/business/budget-status";
@@ -27,6 +25,16 @@ import {
   type DetailedPortfolioView,
   type PortfolioView,
 } from "@/components/individuals/portfolio-view";
+import {
+  authorizedHours,
+  computePeopleBudgetTotals,
+  individualNextAction,
+  matchesPeopleStatus,
+  matchesProgram,
+  matchesRenewal,
+  type PeopleStatusFilter,
+  type RenewalFilter,
+} from "@/components/individuals/people-budget-table";
 
 export type IndividualBudget = {
   status: UtilizationStatus;
@@ -34,6 +42,9 @@ export type IndividualBudget = {
   usedPct: number | null;
   elapsedPct: number | null;
   renews: string | null;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  periodCount?: number;
   missingRenewal: boolean;
   renewalCount: number;
   usedHours: number;
@@ -69,6 +80,26 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 const LOCKED_COLUMNS: ReadonlySet<string> = new Set(["name"]);
 const DEFAULT_SORT: SortState = [{ key: "renews", dir: "asc" }];
 
+const STATUS_FILTERS: Array<{ value: PeopleStatusFilter; label: string }> = [
+  { value: "active", label: "Active" },
+  { value: "all", label: "All statuses" },
+  { value: "inactive", label: "Inactive" },
+  { value: "discharged", label: "Discharged" },
+  { value: "archived", label: "Archived" },
+];
+
+const RENEWAL_FILTERS: Array<{ value: RenewalFilter; label: string }> = [
+  { value: "all", label: "Any renewal" },
+  { value: "next_30", label: "Due in 30 days" },
+  { value: "next_60", label: "Due in 60 days" },
+  { value: "next_90", label: "Due in 90 days" },
+  { value: "overdue", label: "Overdue" },
+  { value: "missing", label: "Missing date" },
+];
+
+const STATUS_FILTER_VALUES = new Set(STATUS_FILTERS.map((option) => option.value));
+const RENEWAL_FILTER_VALUES = new Set(RENEWAL_FILTERS.map((option) => option.value));
+
 const DETAIL_FILTERS: Array<{ key: DetailedPortfolioView; label: string }> = [
   { key: "attention", label: "Follow-up list" },
   { key: "at_limit", label: "At or over the hour limit" },
@@ -78,6 +109,13 @@ const DETAIL_FILTERS: Array<{ key: DetailedPortfolioView; label: string }> = [
   { key: "billing_without_budget", label: "Billing found, no budget" },
   { key: "no_activity", label: "No billing activity" },
 ];
+
+const PORTFOLIO_FILTER_VALUES = new Set<PortfolioFilter>([
+  "all",
+  "with_budget",
+  "without_budget",
+  ...DETAIL_FILTERS.map((option) => option.key),
+]);
 
 function formatDate(value: string): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
@@ -161,6 +199,12 @@ function healthRank(row: IndividualRow): number {
   return rank[row.budget.status];
 }
 
+function healthLabel(row: IndividualRow): string | null {
+  if (!row.insightsVisible) return null;
+  if (row.budget) return utilizationLabel(row.budget.status);
+  return row.hasCanonicalBudget ? "Dollar allowance" : "No budget";
+}
+
 function SummaryMetric({ label, value }: {
   label: string;
   value: string;
@@ -170,16 +214,6 @@ function SummaryMetric({ label, value }: {
       <dt className="truncate text-xs font-medium text-[var(--color-ink-soft)]">{label}</dt>
       <dd className="tnum mt-1 text-lg font-semibold leading-none text-[var(--color-ink)]">{value}</dd>
     </div>
-  );
-}
-
-function StatusPill({ status }: { status: BudgetLineStatus }) {
-  const presentation = BUDGET_STATUS_PRESENT[status];
-  return (
-    <span className="badge" style={{ background: presentation.tint, color: presentation.color }}>
-      <span className="h-1.5 w-1.5 rounded-full" style={{ background: presentation.color }} />
-      {presentation.label}
-    </span>
   );
 }
 
@@ -235,6 +269,24 @@ function Renewal({ budget }: { budget: IndividualBudget }) {
   );
 }
 
+function AuthorizationPeriod({ budget }: { budget: IndividualBudget }) {
+  if (!budget.periodStart || !budget.periodEnd) {
+    return <span className="text-[var(--color-ink-faint)]">-</span>;
+  }
+  return (
+    <div className="text-[var(--color-ink-soft)]">
+      <p className="tnum whitespace-nowrap font-medium text-[var(--color-ink)]">
+        {formatDate(budget.periodStart)} – {formatDate(budget.periodEnd)}
+      </p>
+      {(budget.periodCount ?? 0) > 1 ? (
+        <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
+          Next of {budget.periodCount ?? 0} program periods
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function remainingHours(budget: IndividualBudget): string {
   if (budget.hoursLeft === null) return "-";
   if (budget.hoursLeft < 0) return `${formatHours(Math.abs(budget.hoursLeft))} h over`;
@@ -266,7 +318,11 @@ function HealthCell({ row }: { row: IndividualRow }) {
         className="block rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]"
         title={`Open ${row.name}'s budget`}
       >
-        <StatusPill status={row.budget.plainStatus} />
+        <UtilizationBadge status={row.budget.status} />
+        <p className="mt-1 text-xs font-medium text-[var(--color-ink-soft)]">
+          {row.budget.usedPct !== null ? `${Math.round(row.budget.usedPct)}% used` : "Usage not available"}
+          {row.budget.elapsedPct !== null ? ` · ${Math.round(row.budget.elapsedPct)}% elapsed` : ""}
+        </p>
         <PaceBar budget={row.budget} />
       </Link>
     );
@@ -281,6 +337,25 @@ function HealthCell({ row }: { row: IndividualRow }) {
   return (
     <Link href={individualBudgetHref(row.id)} className="text-sm text-[var(--color-ink-soft)] underline-offset-2 hover:text-[var(--color-primary)] hover:underline">
       No budget
+    </Link>
+  );
+}
+
+function NextActionCell({ row }: { row: IndividualRow }) {
+  const action = individualNextAction(row);
+  const href = action.destination === "budget"
+    ? individualBudgetHref(row.id)
+    : `/individuals/${encodeURIComponent(row.id)}`;
+  const tone = action.tone === "danger"
+    ? "text-[var(--color-danger)]"
+    : action.tone === "warn"
+      ? "text-[var(--color-warn)]"
+      : action.tone === "primary"
+        ? "text-[var(--color-primary)]"
+        : "text-[var(--color-ink-soft)]";
+  return (
+    <Link href={href} className={`font-semibold underline-offset-2 hover:underline ${tone}`}>
+      {action.label}
     </Link>
   );
 }
@@ -315,13 +390,30 @@ function SortHead({ column, sort, onSort }: {
 export default function IndividualsList({
   rows,
   initialFilter = "all",
+  canManage = false,
 }: {
   rows: IndividualRow[];
   initialFilter?: PortfolioView;
+  canManage?: boolean;
 }) {
-  const [showInactive, setShowInactive] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<PeopleStatusFilter>("active");
+  const [programFilter, setProgramFilter] = useState("");
+  const [renewalFilter, setRenewalFilter] = useState<RenewalFilter>("all");
   const [filter, setFilter] = useState<PortfolioFilter>(initialFilter);
   const [moreOpen, setMoreOpen] = useState(isDetailedPortfolioView(initialFilter));
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+
+  const chooseFilter = useCallback((next: PortfolioFilter) => {
+    setFilter(next);
+    if (typeof window !== "undefined") window.history.replaceState(null, "", portfolioViewHref(next));
+  }, []);
+
+  const resetExternalFilters = useCallback(() => {
+    setStatusFilter("active");
+    setProgramFilter("");
+    setRenewalFilter("all");
+    chooseFilter("all");
+  }, [chooseFilter]);
 
   const activeRows = useMemo(
     () => rows.filter((row) => row.status === "active" && !row.archived),
@@ -341,11 +433,38 @@ export default function IndividualsList({
     no_activity: activeRows.filter(hasNoActivity).length,
   }), [activeRows]);
 
+  const programOptions = useMemo(
+    () => [...new Set(rows.flatMap((row) => row.programs))].sort((left, right) => left.localeCompare(right)),
+    [rows],
+  );
+
+  const externalConfig = useMemo(() => ({
+    status: statusFilter,
+    program: programFilter,
+    renewal: renewalFilter,
+    portfolio: filter,
+  }), [filter, programFilter, renewalFilter, statusFilter]);
+
+  const applyExternalConfig = useCallback((config: Record<string, string>) => {
+    setStatusFilter(STATUS_FILTER_VALUES.has(config.status as PeopleStatusFilter)
+      ? config.status as PeopleStatusFilter
+      : "active");
+    setProgramFilter(programOptions.includes(config.program) ? config.program : "");
+    setRenewalFilter(RENEWAL_FILTER_VALUES.has(config.renewal as RenewalFilter)
+      ? config.renewal as RenewalFilter
+      : "all");
+    chooseFilter(PORTFOLIO_FILTER_VALUES.has(config.portfolio as PortfolioFilter)
+      ? config.portfolio as PortfolioFilter
+      : "all");
+  }, [chooseFilter, programOptions]);
+
   const portfolioRows = useMemo(
     () => rows
-      .filter((row) => (showInactive ? true : row.status === "active" && !row.archived))
+      .filter((row) => matchesPeopleStatus(row, statusFilter))
+      .filter((row) => matchesProgram(row, programFilter))
+      .filter((row) => matchesRenewal(row, renewalFilter))
       .filter((row) => matchesFilter(row, filter)),
-    [filter, rows, showInactive],
+    [filter, programFilter, renewalFilter, rows, statusFilter],
   );
   const canShowTransactionCounts = rows.some((row) => row.budget?.transactionCount !== null && row.budget?.transactionCount !== undefined);
   const canShowBilledAmounts = rows.some((row) => row.budget?.billedAmount !== null && row.budget?.billedAmount !== undefined);
@@ -364,33 +483,76 @@ export default function IndividualsList({
       ),
     },
     {
-      key: "renews", label: "Next renewal", kind: "date", width: 168,
-      accessor: (row) => row.budget?.renews ?? "9999-12-31",
+      key: "status", label: "Status", kind: "badge", width: 100,
+      accessor: (row) => row.status,
+      render: (row) => <Badge value={row.status} />,
+    },
+    {
+      key: "programs", label: "Active programs", kind: "text", width: 190,
+      accessor: (row) => row.programs.join(", ") || null,
+      render: (row) => <span className="text-[var(--color-ink-soft)]">{row.programs.length ? row.programs.join(", ") : "-"}</span>,
+    },
+    {
+      key: "authorizationPeriod", label: "Authorization period", kind: "text", width: 250,
+      accessor: (row) => row.budget?.periodStart && row.budget.periodEnd
+        ? `${row.budget.periodStart} – ${row.budget.periodEnd}`
+        : null,
+      render: (row) => row.budget
+        ? <AuthorizationPeriod budget={row.budget} />
+        : <span className="text-[var(--color-ink-faint)]">-</span>,
+    },
+    {
+      key: "renews", label: "Renewal", kind: "date", width: 168,
+      accessor: (row) => row.budget?.renews ?? null,
+      sortAccessor: (row) => row.budget?.renews ?? "9999-12-31",
       render: (row) => row.budget ? <Link href={individualBudgetHref(row.id)} className="block underline-offset-2 hover:underline"><Renewal budget={row.budget} /></Link> : <span className="text-[var(--color-ink-faint)]">-</span>,
     },
     {
-      key: "health", label: "Budget status", kind: "int", width: 170,
-      accessor: (row) => String(healthRank(row)),
-      render: (row) => <HealthCell row={row} />,
+      key: "authorized", label: "Authorized", kind: "hours", align: "right", width: 110,
+      accessor: (row) => row.budget ? authorizedHours(row.budget) : null,
+      render: (row) => {
+        const value = row.budget ? authorizedHours(row.budget) : null;
+        return value === null
+          ? <span className="text-[var(--color-ink-faint)]">-</span>
+          : <span className="tnum font-medium">{formatHours(value)} h</span>;
+      },
     },
     {
-      key: "left", label: "Remaining now", kind: "hours", align: "right", width: 125,
-      accessor: (row) => row.budget?.hoursLeft?.toString() ?? null,
-      render: (row) => row.budget ? <span className={`tnum font-medium ${isOver(row) ? "text-[var(--color-danger)]" : ""}`}>{remainingHours(row.budget)}</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
+      key: "billedHours", label: "Actual used", kind: "hours", align: "right", width: 110,
+      accessor: (row) => row.budget?.usedHours.toString() ?? null,
+      render: (row) => row.budget
+        ? <span className="tnum font-medium">{formatHours(row.budget.usedHours)} h</span>
+        : <span className="text-[var(--color-ink-faint)]">-</span>,
     },
     {
-      key: "scheduled", label: "Scheduled", kind: "hours", align: "right", width: 110,
+      key: "scheduled", label: "Future scheduled", kind: "hours", align: "right", width: 130,
       accessor: (row) => row.budget?.scheduledHours.toString() ?? null,
       render: (row) => row.budget ? <span className="tnum font-medium">{formatHours(row.budget.scheduledHours)} h</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
     },
     {
-      key: "afterScheduled", label: "After schedule", kind: "hours", align: "right", width: 125,
+      key: "left", label: "Remaining", kind: "hours", align: "right", width: 110,
+      accessor: (row) => row.budget?.hoursLeft?.toString() ?? null,
+      render: (row) => row.budget ? <span className={`tnum font-medium ${isOver(row) ? "text-[var(--color-danger)]" : ""}`}>{remainingHours(row.budget)}</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
+    },
+    {
+      key: "afterScheduled", label: "Remaining after schedule", kind: "hours", align: "right", width: 165,
       accessor: (row) => row.budget?.hoursAfterScheduled?.toString() ?? null,
       render: (row) => row.budget ? (
         <span className={`tnum font-medium ${(row.budget.hoursAfterScheduled ?? 0) < 0 ? "text-[var(--color-danger)]" : ""}`}>
           {row.budget.hoursAfterScheduled === null ? "-" : `${formatHours(row.budget.hoursAfterScheduled)} h`}
         </span>
       ) : <span className="text-[var(--color-ink-faint)]">-</span>,
+    },
+    {
+      key: "health", label: "Pace / status", kind: "custom", width: 185,
+      accessor: healthLabel,
+      sortAccessor: (row) => String(healthRank(row)),
+      render: (row) => <HealthCell row={row} />,
+    },
+    {
+      key: "nextAction", label: "Next action", kind: "text", width: 190,
+      accessor: (row) => individualNextAction(row).label,
+      render: (row) => <NextActionCell row={row} />,
     },
     {
       key: "monthly", label: "Required / month", kind: "hours", align: "right", width: 135,
@@ -403,16 +565,6 @@ export default function IndividualsList({
       render: (row) => row.lastBilledOn ? <span className="tnum whitespace-nowrap text-[var(--color-ink-soft)]">{formatDate(row.lastBilledOn)}</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
     },
     {
-      key: "programs", label: "Programs", kind: "text", width: 180,
-      accessor: (row) => row.programs.join(", ") || null,
-      render: (row) => <span className="text-[var(--color-ink-soft)]">{row.programs.length ? row.programs.join(", ") : "-"}</span>,
-    },
-    {
-      key: "status", label: "Status", kind: "badge", width: 95,
-      accessor: (row) => row.status,
-      render: (row) => <Badge value={row.status} />,
-    },
-    {
       key: "used", label: "Used %", kind: "percent", align: "right", width: 90,
       accessor: (row) => row.budget?.usedPct?.toString() ?? null,
       render: (row) => row.budget?.usedPct === null || row.budget?.usedPct === undefined ? <span className="text-[var(--color-ink-faint)]">-</span> : <span className="tnum font-medium">{Math.round(row.budget.usedPct)}%</span>,
@@ -421,11 +573,6 @@ export default function IndividualsList({
       key: "weekly", label: "Required / week", kind: "hours", align: "right", width: 130,
       accessor: (row) => row.budget?.mustUseWeekly?.toString() ?? null,
       render: (row) => row.budget ? <span className="tnum font-medium">{requiredWeekly(row.budget)}</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
-    },
-    {
-      key: "billedHours", label: "Billed this period", kind: "hours", align: "right", width: 135,
-      accessor: (row) => row.budget?.usedHours.toString() ?? null,
-      render: (row) => row.budget ? <span className="tnum font-medium">{formatHours(row.budget.usedHours)} h</span> : <span className="text-[var(--color-ink-faint)]">-</span>,
     },
     ...(canShowTransactionCounts ? [{
       key: "transactions", label: "Transactions", kind: "int", align: "right", width: 105,
@@ -439,69 +586,154 @@ export default function IndividualsList({
     } satisfies ColumnDef<IndividualRow>] : []),
   ], [canShowBilledAmounts, canShowTransactionCounts]);
 
-  const grid = useGrid<IndividualRow>({
+  const computeTotals = useCallback(
+    (filteredRows: IndividualRow[]) => computePeopleBudgetTotals(
+      selectedIds.size > 0
+        ? filteredRows.filter((row) => selectedIds.has(row.id))
+        : filteredRows,
+    ),
+    [selectedIds],
+  );
+  const exportRowPredicate = useCallback(
+    (row: IndividualRow) => selectedIds.size === 0 || selectedIds.has(row.id),
+    [selectedIds],
+  );
+
+  const grid = useGrid<IndividualRow, ReturnType<typeof computePeopleBudgetTotals>>({
     rows: portfolioRows,
     columns,
     gridKey: "individual-budget-portfolio",
-    canManage: false,
+    canManage,
     initialSort: DEFAULT_SORT,
     initialHidden: [...DEFAULT_HIDDEN_PORTFOLIO_COLUMNS],
     searchKeys: ["name", "programs"],
+    computeTotals,
+    externalConfig,
+    onApplyExternalConfig: applyExternalConfig,
+    exportRowPredicate,
     serializeHidden: true,
   });
 
-  const inactiveCount = rows.filter((row) => row.status !== "active" || row.archived).length;
-  const hasActiveFilters = grid.search.trim().length > 0 || filter !== "all";
-  const chooseFilter = (next: PortfolioFilter) => {
-    setFilter(next);
-    if (typeof window !== "undefined") window.history.replaceState(null, "", portfolioViewHref(next));
-  };
+  const filteredIds = useMemo(() => grid.filtered.map((row) => row.id), [grid.filtered]);
+  const selectedRows = useMemo(
+    () => grid.filtered.filter((row) => selectedIds.has(row.id)),
+    [grid.filtered, selectedIds],
+  );
+  const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id));
+  const someFilteredSelected = filteredIds.some((id) => selectedIds.has(id));
+  const toggleAllFiltered = useCallback(() => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      const remove = filteredIds.length > 0 && filteredIds.every((id) => next.has(id));
+      for (const id of filteredIds) {
+        if (remove) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  }, [filteredIds]);
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const hasActiveFilters = grid.anyFilter
+    || filter !== "all"
+    || statusFilter !== "active"
+    || programFilter !== ""
+    || renewalFilter !== "all";
   const resetFilters = () => {
-    grid.setSearch("");
-    chooseFilter("all");
+    grid.clearFilters();
+    resetExternalFilters();
   };
 
   return (
     <div className="space-y-4">
       <section aria-label="Individual budget portfolio summary" className="border-y border-[var(--color-rule-strong)]">
-        <dl className={`grid divide-x divide-[var(--color-rule)] ${hasPortfolioVisibility ? "grid-cols-3" : "grid-cols-1"}`}>
-          <SummaryMetric label="Active people" value={activeRows.length.toLocaleString()} />
-          {hasPortfolioVisibility ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] px-4 py-2 text-xs text-[var(--color-ink-soft)]">
+          <span>
+            {selectedIds.size > 0
+              ? `Totals for ${selectedRows.length.toLocaleString()} selected people in the current view`
+              : "Totals for everyone in the current view"}
+          </span>
+          {selectedIds.size > 0 ? (
+            <button type="button" onClick={() => setSelectedIds(new Set())} className="font-medium text-[var(--color-primary)] hover:underline">
+              Clear selection
+            </button>
+          ) : null}
+        </div>
+        <dl className={`grid divide-x divide-[var(--color-rule)] ${hasPortfolioVisibility ? "grid-cols-2 lg:grid-cols-5" : "grid-cols-1"}`}>
+          <SummaryMetric label="People" value={(grid.totals?.people ?? 0).toLocaleString()} />
+          {hasPortfolioVisibility && grid.totals ? (
             <>
-              <SummaryMetric label="With a budget" value={counts.with_budget.toLocaleString()} />
-              <SummaryMetric label="Without a budget" value={counts.without_budget.toLocaleString()} />
+              <SummaryMetric label="Authorized" value={`${formatHours(grid.totals.authorizedHours)} h`} />
+              <SummaryMetric label="Actual used" value={`${formatHours(grid.totals.usedHours)} h`} />
+              <SummaryMetric label="Future scheduled" value={`${formatHours(grid.totals.scheduledHours)} h`} />
+              <SummaryMetric label="After schedule" value={`${formatHours(grid.totals.remainingAfterScheduledHours)} h`} />
             </>
           ) : null}
         </dl>
       </section>
 
       <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative w-72 max-w-full">
-            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-ink-faint)]" aria-hidden />
-            <input
-              value={grid.search}
-              onChange={(event) => grid.setSearch(event.target.value)}
-              placeholder="Search individuals or programs"
-              className="input input-leading-icon input-trailing-action w-full"
-              aria-label="Search individuals"
-            />
-            {grid.search ? (
-              <button
-                type="button"
-                onClick={() => grid.setSearch("")}
-                className="btn btn-sm btn-icon btn-ghost absolute right-0 top-1/2 -translate-y-1/2"
-                aria-label="Clear individual search"
-                title="Clear search"
-              >
-                <X size={14} aria-hidden />
-              </button>
-            ) : null}
-          </div>
-          <span className="ml-auto text-sm text-[var(--color-text-soft)]" aria-live="polite">
-            <span className="tnum font-semibold text-[var(--color-ink)]">{grid.resultCount}</span>{" "}
-            {grid.resultCount === 1 ? "person" : "people"}
-          </span>
+        <Toolbar
+          grid={grid}
+          searchPlaceholder="Search individuals or programs…"
+          exportEndpoint="/api/grid/export"
+          exportTitle="People and budgets"
+          exportFilename="people-and-budgets"
+          showColumnChooser={false}
+          hasExternalFilters={filter !== "all" || statusFilter !== "active" || programFilter !== "" || renewalFilter !== "all"}
+          onResetFilters={resetExternalFilters}
+          extraActions={selectedIds.size > 0 ? (
+            <span role="status" aria-live="polite" className="text-xs font-medium text-[var(--color-primary)]">
+              {selectedRows.length.toLocaleString()} selected · exports use this selection
+            </span>
+          ) : null}
+        />
+
+        <div className="flex flex-wrap items-end gap-3" aria-label="People and budget filters">
+          <label className="block min-w-36 text-sm">
+            <span className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Status</span>
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as PeopleStatusFilter)}
+              className="select w-full"
+            >
+              {STATUS_FILTERS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block min-w-48 text-sm">
+            <span className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Program</span>
+            <select
+              value={programFilter}
+              onChange={(event) => setProgramFilter(event.target.value)}
+              className="select w-full"
+              disabled={programOptions.length === 0}
+            >
+              <option value="">All programs</option>
+              {programOptions.map((program) => <option key={program} value={program}>{program}</option>)}
+            </select>
+          </label>
+          <label className="block min-w-44 text-sm">
+            <span className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Renewal</span>
+            <select
+              value={renewalFilter}
+              onChange={(event) => setRenewalFilter(event.target.value as RenewalFilter)}
+              className="select w-full"
+              disabled={!hasPortfolioVisibility}
+            >
+              {RENEWAL_FILTERS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
         </div>
 
         {hasPortfolioVisibility ? (
@@ -560,12 +792,6 @@ export default function IndividualsList({
               <span className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Table details</span>
               <ColumnChooser grid={grid} lockedKeys={LOCKED_COLUMNS} />
             </div>
-            {inactiveCount > 0 ? (
-              <label className="flex min-h-9 items-center gap-2 text-sm text-[var(--color-ink-soft)]">
-                <input type="checkbox" checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} />
-                Include inactive people ({inactiveCount})
-              </label>
-            ) : null}
           </div>
         </details>
       </div>
@@ -574,6 +800,20 @@ export default function IndividualsList({
         <table className="touch-table w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10">
             <tr>
+              <th
+                scope="col"
+                className="w-12 border-b border-r border-[var(--color-rule-strong)] bg-[var(--color-surface-strong)] px-2 py-2 text-center"
+              >
+                <input
+                  type="checkbox"
+                  aria-label="Select all people in the current filters"
+                  checked={allFilteredSelected}
+                  ref={(element) => {
+                    if (element) element.indeterminate = !allFilteredSelected && someFilteredSelected;
+                  }}
+                  onChange={toggleAllFiltered}
+                />
+              </th>
               {grid.visibleColumns.map((column) => (
                 <SortHead key={column.key} column={column} sort={grid.sort} onSort={grid.toggleSort} />
               ))}
@@ -581,7 +821,15 @@ export default function IndividualsList({
           </thead>
           <tbody>
             {grid.sorted.map((row) => (
-              <tr key={row.id} className={`border-b border-[var(--color-rule)] hover:bg-[var(--color-surface-muted)] ${row.archived ? "opacity-70" : ""}`}>
+              <tr key={row.id} className={`border-b border-[var(--color-rule)] hover:bg-[var(--color-surface-muted)] ${selectedIds.has(row.id) ? "bg-[var(--color-primary-tint)]" : ""} ${row.archived ? "opacity-70" : ""}`}>
+                <td className="border-r border-[var(--color-rule)] px-2 py-2.5 text-center">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(row.id)}
+                    onChange={() => toggleSelected(row.id)}
+                    aria-label={`Select ${row.name}`}
+                  />
+                </td>
                 {grid.visibleColumns.map((column) => {
                   const text = column.accessor(row) ?? "";
                   const align = column.align ?? "left";
@@ -599,7 +847,7 @@ export default function IndividualsList({
             ))}
             {grid.sorted.length === 0 ? (
               <tr>
-                <td colSpan={Math.max(1, grid.visibleColumns.length)} className="px-3 py-12 text-center text-[var(--color-text-soft)]">
+                <td colSpan={Math.max(1, grid.visibleColumns.length + 1)} className="px-3 py-12 text-center text-[var(--color-text-soft)]">
                   <p>{rows.length === 0 ? "No individuals yet." : "No individuals match these filters."}</p>
                   {hasActiveFilters ? (
                     <button type="button" onClick={resetFilters} className="mt-2 font-medium text-[var(--color-primary)] hover:underline">

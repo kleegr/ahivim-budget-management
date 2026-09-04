@@ -151,6 +151,7 @@ export default async function SettingsPage({
         ) : null}
         <nav aria-label="Settings sections" className="scroll-thin sticky top-[var(--shell-header-height,0px)] z-20 -mx-1 flex gap-1 overflow-x-auto border-b border-[var(--color-rule)] bg-[var(--color-paper)] px-1 py-2">
           {isAdmin ? <Link href="#access" className="btn btn-sm btn-ghost shrink-0">Users</Link> : null}
+          {isAdmin ? <Link href="/settings/role-preview" className="btn btn-sm btn-ghost shrink-0">Role preview</Link> : null}
           {result.ok && result.data.canViewProgramRates ? <Link href="#programs" className="btn btn-sm btn-ghost shrink-0">Programs</Link> : null}
           <Link href="#account" className="btn btn-sm btn-ghost shrink-0">My account</Link>
           {isAdmin ? <Link href="#advanced" className="btn btn-sm btn-ghost shrink-0">Advanced</Link> : null}

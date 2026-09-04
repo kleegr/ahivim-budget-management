@@ -69,6 +69,9 @@ describe("authorization portfolio summary", () => {
     expect(summary?.programs).toEqual(["Com Hab", "Respite"]);
     expect(summary?.budget).toMatchObject({
       renews: "2026-12-31",
+      periodStart: "2026-01-01",
+      periodEnd: "2026-12-31",
+      periodCount: 2,
       renewalCount: 2,
       plans: 2,
       usedHours: 50,

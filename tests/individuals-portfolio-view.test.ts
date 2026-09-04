@@ -8,13 +8,17 @@ import {
 } from "@/components/individuals/portfolio-view";
 
 describe("individual portfolio views", () => {
-  it("keeps specialist columns out of the calm default table", () => {
+  it("shows the complete working scan and keeps only secondary details hidden", () => {
     expect(DEFAULT_HIDDEN_PORTFOLIO_COLUMNS).toEqual(expect.arrayContaining([
       "lastBilled",
-      "programs",
+      "monthly",
+      "used",
       "transactions",
       "billedAmount",
     ]));
+    for (const workingColumn of ["status", "programs", "authorized", "billedHours", "nextAction"]) {
+      expect(DEFAULT_HIDDEN_PORTFOLIO_COLUMNS).not.toContain(workingColumn);
+    }
   });
 
   it("uses calm budget setup filters with stable URLs", () => {

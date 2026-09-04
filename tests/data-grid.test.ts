@@ -138,6 +138,20 @@ describe("data-grid engine", () => {
     const er = exportRows(cols, [rows[0]]);
     expect(er[0]).toEqual({ name: "Aaron", program: "Respite", gross: "100.00", date: "2025-01-01" });
   });
+
+  it("keeps private sort keys out of exported cells", () => {
+    const honest: ColumnDef<Row> = {
+      key: "name",
+      label: "Name",
+      kind: "text",
+      accessor: (row) => row.name,
+      sortAccessor: (row) => row.name === "Aaron" ? "99" : "01",
+      exportAccessor: (row) => `Person: ${row.name}`,
+    };
+    expect(sortRows(rows.slice(0, 2), [honest], [{ key: "name", dir: "asc" }]).map((row) => row.name))
+      .toEqual(["Bella", "Aaron"]);
+    expect(exportRows([honest], [rows[0]])).toEqual([{ name: "Person: Aaron" }]);
+  });
 });
 
 /* ---- Google-Sheets-style value selection for dates and numbers ---- */

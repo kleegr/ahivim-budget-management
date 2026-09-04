@@ -147,7 +147,7 @@ export function Toolbar<Row, T>({
 
       {showColumnChooser ? <ColumnChooser grid={grid} /> : null}
 
-      <div className="relative">
+      {grid.canManage || grid.views.length > 0 ? <div className="relative">
         <button type="button" className="btn btn-sm btn-secondary" onClick={() => setViewsOpen((v) => !v)} aria-expanded={viewsOpen}>
           Saved views{grid.views.length ? ` (${grid.views.length})` : ""}
         </button>
@@ -210,7 +210,7 @@ export function Toolbar<Row, T>({
             </div>
           </>
         ) : null}
-      </div>
+      </div> : null}
 
       <div className="flex items-center gap-1">
         <button

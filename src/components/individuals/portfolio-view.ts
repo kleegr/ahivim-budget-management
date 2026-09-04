@@ -9,12 +9,10 @@ export type DetailedPortfolioView = Exclude<IndividualAttentionView, "all">;
 export type PortfolioView = IndividualAttentionView | Exclude<SimplePortfolioView, "all">;
 
 export const DEFAULT_HIDDEN_PORTFOLIO_COLUMNS = [
+  "monthly",
   "lastBilled",
-  "programs",
-  "status",
   "used",
   "weekly",
-  "billedHours",
   "transactions",
   "billedAmount",
 ] as const;

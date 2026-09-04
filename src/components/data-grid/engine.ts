@@ -161,15 +161,18 @@ export function sortRows<Row>(rows: Row[], cols: ColumnDef<Row>[], sort: SortSta
     for (const s of sort) {
       const col = colByKey.get(s.key);
       if (!col) continue;
+      const sortValue = col.sortAccessor ?? col.accessor;
       let cmp = 0;
       if (isNumericKind(col.kind)) {
-        const av = numValue(col, a.r);
-        const bv = numValue(col, b.r);
+        const avDecimal = tryDec(sortValue(a.r));
+        const bvDecimal = tryDec(sortValue(b.r));
+        const av = avDecimal === null ? null : avDecimal.toNumber();
+        const bv = bvDecimal === null ? null : bvDecimal.toNumber();
         const an = av === null ? -Infinity : av;
         const bn = bv === null ? -Infinity : bv;
         cmp = an === bn ? 0 : an < bn ? -1 : 1;
       } else {
-        cmp = rawValue(col, a.r).localeCompare(rawValue(col, b.r), undefined, { numeric: true });
+        cmp = (sortValue(a.r) ?? "").localeCompare(sortValue(b.r) ?? "", undefined, { numeric: true });
       }
       if (cmp !== 0) return s.dir === "desc" ? -cmp : cmp;
     }
@@ -271,7 +274,7 @@ export function exportColumns<Row>(cols: ColumnDef<Row>[]): ExportRequestColumn[
 export function exportRows<Row>(cols: ColumnDef<Row>[], rows: Row[]): Record<string, ExportCell>[] {
   return rows.map((r) => {
     const out: Record<string, ExportCell> = {};
-    for (const c of cols) out[c.key] = c.accessor(r);
+    for (const c of cols) out[c.key] = (c.exportAccessor ?? c.accessor)(r);
     return out;
   });
 }

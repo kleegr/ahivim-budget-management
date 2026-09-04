@@ -77,7 +77,7 @@ async function selectFreshness(
 
 /** Read-only status for dashboards and health surfaces. */
 export async function getSettlementLedgerFreshness(
-  pool: PgLikePool,
+  pool: Queryable,
   applicationDate: string = settlementApplicationDate(),
 ): Promise<SettlementLedgerFreshness> {
   return selectFreshness(pool, applicationDate);

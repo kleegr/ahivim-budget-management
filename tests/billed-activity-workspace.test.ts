@@ -7,6 +7,27 @@ import {
 } from "@/components/transactions/check-grouping";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 
+const transactionGridSource = readFileSync(
+  resolve("src/components/transactions/transactions-grid.tsx"),
+  "utf8",
+);
+
+function transactionColumns(): Array<{ key: string; label: string; hidden: boolean }> {
+  const start = transactionGridSource.indexOf("const COLUMNS:");
+  const end = transactionGridSource.indexOf("\n];", start);
+  const block = transactionGridSource.slice(start, end);
+  const matches = [...block.matchAll(/\bkey: "([^"]+)"/g)];
+  return matches.map((match, index) => {
+    const next = matches[index + 1]?.index ?? block.length;
+    const definition = block.slice(match.index, next);
+    return {
+      key: match[1]!,
+      label: definition.match(/\blabel: "([^"]+)"/)?.[1] ?? "",
+      hidden: /\bhidden: true\b/.test(definition),
+    };
+  });
+}
+
 function transaction(overrides: Partial<GridTransaction> = {}): GridTransaction {
   return {
     id: "row-1",
@@ -44,6 +65,40 @@ function transaction(overrides: Partial<GridTransaction> = {}): GridTransaction 
 }
 
 describe("billed activity check grouping", () => {
+  it("starts row mode with the brief's simple transaction columns", () => {
+    const visible = transactionColumns()
+      .filter((column) => !column.hidden)
+      .map((column) => [column.key, column.label]);
+
+    expect(visible).toEqual([
+      ["serviceDate", "Service date"],
+      ["checkDate", "Check date"],
+      ["individual", "Individual"],
+      ["employee", "Employee"],
+      ["program", "Program"],
+      ["hours", "Hours"],
+      ["gross", "Funder billed"],
+      ["internalAmount", "Employee base"],
+      ["agencyAdditional", "Agency spread"],
+      ["paymentRecipient", "Payment recipient"],
+      ["matchStatus", "Review state"],
+    ]);
+  });
+
+  it("keeps advanced source, calculation and audit fields in the column chooser", () => {
+    const hidden = transactionColumns().filter((column) => column.hidden).map((column) => column.key);
+    expect(hidden).toEqual(expect.arrayContaining([
+      "payTo",
+      "checkNumber",
+      "rate",
+      "totalNetPay",
+      "paid",
+      "periodBegin",
+      "periodEnd",
+      "groupStatus",
+    ]));
+  });
+
   it("separates a reused check number by check date", () => {
     const checks = groupChecks([
       transaction({ id: "row-1" }),
@@ -96,10 +151,7 @@ describe("billed activity check grouping", () => {
   });
 
   it("opens check evidence with a short stable filter instead of every row id", () => {
-    const source = readFileSync(
-      resolve("src/components/transactions/billed-activity-workspace.tsx"),
-      "utf8",
-    );
+    const source = readFileSync(resolve("src/components/transactions/billed-activity-workspace.tsx"), "utf8");
 
     expect(source).toContain('params.set("checkNumber", check.checkNumber)');
     expect(source).toContain('params.set("payToKey", check.payTo.trim().toLocaleLowerCase())');

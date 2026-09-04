@@ -366,7 +366,7 @@ export async function getSettlementSummary(pool: Queryable): Promise<SettlementS
   })));
 }
 
-export async function getSettlementDashboard(pool: PgLikePool, scope?: AccessScope): Promise<SettlementDashboardData> {
+export async function getSettlementDashboard(pool: Queryable, scope?: AccessScope): Promise<SettlementDashboardData> {
   const eventParams: unknown[] = [];
   const eventScopeWhere = settlementHistoryScopeWhere(scope, eventParams);
   const [obligations, eventResult, missingResult, checkIssueResult, freshness] = await Promise.all([

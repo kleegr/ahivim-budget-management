@@ -1,7 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
-import { resolveAccessScope } from "@/lib/auth/access";
 import { readJson, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { agencyDate } from "@/lib/business/agency-time";
 import {
@@ -23,6 +21,11 @@ const FIELD_TYPES: ReadonlySet<ExportFieldType> = new Set([
   "int",
   "percent",
 ]);
+const MAX_BODY_BYTES = 20_000_000;
+const MAX_COLUMNS = 100;
+const MAX_ROWS = 200_000;
+const MAX_CELLS = 2_000_000;
+const MAX_CELL_CHARACTERS = 32_767;
 
 /**
  * Generic "export the filtered view" endpoint for any client-side grid. The
@@ -36,17 +39,22 @@ export async function POST(request: NextRequest) {
   if (!user) return jsonError("Sign in to continue.", 401);
   const cross = sameOriginOrFail(request);
   if (cross) return cross;
+  const declaredSize = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declaredSize) && declaredSize > MAX_BODY_BYTES) {
+    return jsonError("Export payload is too large.", 413);
+  }
 
   try {
-    const scope = await resolveAccessScope(getPool(), user);
-    if (!scope.canSeeTransactions) return jsonError("No access to transactions", 403);
-
     const body = await readJson(request);
     const format = body.format === "xlsx" ? "xlsx" : "csv";
-    const title = typeof body.title === "string" && body.title ? body.title : "Report";
-    const baseName = typeof body.filename === "string" && body.filename ? body.filename : "report";
+    const title = typeof body.title === "string" && body.title
+      ? body.title.slice(0, 120)
+      : "Report";
+    const requestedName = typeof body.filename === "string" && body.filename ? body.filename : "report";
+    const baseName = requestedName.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 80) || "report";
 
     const rawColumns = Array.isArray(body.columns) ? body.columns : [];
+    if (rawColumns.length > MAX_COLUMNS) return jsonError("Too many columns to export at once.", 400);
     const columns: ExportColumn[] = rawColumns
       .map((c): ExportColumn | null => {
         if (!c || typeof c !== "object") return null;
@@ -56,23 +64,42 @@ export async function POST(request: NextRequest) {
         const type = FIELD_TYPES.has(col.type as ExportFieldType)
           ? (col.type as ExportFieldType)
           : "text";
-        return key && header ? { key, header, type } : null;
+        return key && header && key.length <= 200 && header.length <= 200
+          ? { key, header, type }
+          : null;
       })
       .filter((c): c is ExportColumn => c !== null);
 
     if (columns.length === 0) return jsonError("No columns to export.", 400);
 
     const rawRows = Array.isArray(body.rows) ? body.rows : [];
-    if (rawRows.length > 200_000) return jsonError("Too many rows to export at once.", 400);
-    const rows: Record<string, ExportCell>[] = rawRows.map((r) => {
+    if (rawRows.length > MAX_ROWS) return jsonError("Too many rows to export at once.", 400);
+    if (rawRows.length * columns.length > MAX_CELLS) {
+      return jsonError("Too many cells to export at once.", 400);
+    }
+    let characterCount = 0;
+    const rows: Record<string, ExportCell>[] = [];
+    for (const r of rawRows) {
       const src = (r && typeof r === "object" ? r : {}) as Record<string, unknown>;
       const out: Record<string, ExportCell> = {};
       for (const col of columns) {
         const v = src[col.key];
-        out[col.key] = v === null || v === undefined ? null : (v as ExportCell);
+        if (v === null || v === undefined) {
+          out[col.key] = null;
+          continue;
+        }
+        if (typeof v !== "string" && (typeof v !== "number" || !Number.isFinite(v))) {
+          return jsonError("Export cells must contain text or finite numbers.", 400);
+        }
+        if (typeof v === "string") {
+          if (v.length > MAX_CELL_CHARACTERS) return jsonError("An export cell is too long.", 400);
+          characterCount += v.length;
+          if (characterCount > MAX_BODY_BYTES) return jsonError("Export payload is too large.", 413);
+        }
+        out[col.key] = v;
       }
-      return out;
-    });
+      rows.push(out);
+    }
 
     const filename = `${baseName}-${agencyDate()}.${format}`;
 

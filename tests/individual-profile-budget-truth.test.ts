@@ -13,7 +13,7 @@ const workspaceSource = readFileSync(
 describe("individual profile budget truth", () => {
   it("uses canonical program authorizations for the operational Budget tab", () => {
     const budgetStart = profileSource.indexOf('id: "budget"');
-    const nextTab = profileSource.indexOf('id: "classes"', budgetStart);
+    const nextTab = profileSource.indexOf('id: "activity"', budgetStart);
     const budgetPanel = profileSource.slice(budgetStart, nextTab);
 
     expect(profileSource).toContain("summarizeAuthorizationPortfolio(programBudgetsRaw)");
@@ -24,12 +24,12 @@ describe("individual profile budget truth", () => {
   });
 
   it("keeps calculation strategies explicitly inside Financial setup", () => {
-    const financialStart = profileSource.indexOf('id: "financial"');
-    const detailsStart = profileSource.indexOf('id: "details"', financialStart);
-    const financialPanel = profileSource.slice(financialStart, detailsStart);
+    const moreStart = profileSource.indexOf('id: "more"');
+    const piecesStart = profileSource.indexOf("/* ---------------------------------------------------------------- pieces */", moreStart);
+    const morePanel = profileSource.slice(moreStart, piecesStart);
 
-    expect(financialPanel).toContain("<BudgetEditor");
-    expect(financialPanel).toContain("They do not authorize service or change the balances shown in Budget");
+    expect(morePanel).toContain("<BudgetEditor");
+    expect(morePanel).toContain("They do not authorize service or change the balances shown in Budget");
   });
 
   it("shows scheduled balances and canonical monthly trend per authorization", () => {

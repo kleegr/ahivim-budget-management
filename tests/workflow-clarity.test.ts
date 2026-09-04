@@ -59,7 +59,7 @@ describe("primary workflow clarity", () => {
   it("opens the actual individual budget from transaction details", () => {
     expect(transactionGrid).toContain("individualBudgetHref(row.individualId)");
     expect(transactionGrid).not.toContain("/calculations?individualId=${row.individualId}");
-    expect(transactionGrid).toContain('label: "Duplicate review"');
+    expect(transactionGrid).toContain('label: "Review state"');
   });
 
   it("does not let the all-time period control erase a deep-linked check date", () => {

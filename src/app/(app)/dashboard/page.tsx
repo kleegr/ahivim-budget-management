@@ -155,6 +155,7 @@ export default async function DashboardPage({
           programBudgets,
           budgetBoard,
           strategies: strategyResult.rows,
+          asOf: new Date(`${today}T12:00:00Z`),
           activitySelection,
         }),
         activityOptions: buildOwnerActivityFilterOptions(transactions),
@@ -165,8 +166,8 @@ export default async function DashboardPage({
     if (!ownerResult.ok) {
       return (
         <>
-          <PageHeader eyebrow="Ahivim" title="Owner overview" action={<GoogleSheetSyncButton />} />
-          <ErrorPanel title="Owner overview could not load">
+          <PageHeader eyebrow="Ahivim" title="Home" action={<GoogleSheetSyncButton />} />
+          <ErrorPanel title="Home could not load">
             Refresh the page and try again.
           </ErrorPanel>
         </>
