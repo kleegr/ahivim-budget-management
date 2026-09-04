@@ -30,7 +30,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   let canEditDocuments = false;
   let canUsePortal = false;
   let canManageAgencies = false;
-  let accountLabel = resolveAccountProfile(user.role, null, null).label;
+  let accountLabel = resolveAccountProfile(user.role, null, null, user.accountPreset).label;
   const access = await withDb(async (pool) => {
     const [scope, portal] = await Promise.all([
       resolveAccessScope(pool, user),
@@ -56,7 +56,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         || portal.individualLinks.length > 0
         || portal.employeeLinks.length > 0,
       canManageAgencies: hasPortalCapability(portal, "agencies.manage"),
-      accountLabel: resolveAccountProfile(user.role, scope, portal).label,
+      accountLabel: resolveAccountProfile(user.role, scope, portal, user.accountPreset).label,
     };
   });
   if (access.ok) {
