@@ -301,9 +301,10 @@ export async function listPlannerDirectPayTargets(
      ), latest_program_routing AS (
        SELECT DISTINCT ON (t.employee_id, t.program_id)
               t.employee_id, t.program_id, t.payment_recipient
-         FROM payroll_transactions t
+        FROM payroll_transactions t
         WHERE t.employee_id IS NOT NULL AND t.program_id IS NOT NULL
           AND canonical_service_date(t.period_begin, t.check_date, t.period_end) IS NOT NULL
+          AND canonical_service_date(t.period_begin, t.check_date, t.period_end) <= $2::date
         ORDER BY t.employee_id, t.program_id,
                  canonical_service_date(t.period_begin, t.check_date, t.period_end) DESC NULLS LAST,
                  t.id DESC
@@ -320,6 +321,7 @@ export async function listPlannerDirectPayTargets(
                  ) = 'employee'
                  AND canonical_service_date(t.period_begin, t.check_date, t.period_end)
                      BETWEEN w."startDate" AND w."endDate"
+                 AND canonical_service_date(t.period_begin, t.check_date, t.period_end) <= $2::date
             ), 0)::text AS recorded_hours,
             COALESCE((
               SELECT sum(s.duration_hours)
@@ -330,13 +332,14 @@ export async function listPlannerDirectPayTargets(
                WHERE s.employee_id = w."employeeId"
                  AND s.status = 'pending' AND s.matched_transaction_id IS NULL
                  AND s.session_date BETWEEN w."startDate" AND w."endDate"
+                 AND s.session_date >= $2::date
                  AND effective_payment_recipient(
                    routing.payment_recipient,
                    p.payment_recipient
                  ) = 'employee'
             ), 0)::text AS scheduled_hours
        FROM target_windows w`,
-    [JSON.stringify(windows)],
+    [JSON.stringify(windows), asOf],
   );
   const byId = new Map(activity.rows.map((row) => [row.target_id, row]));
   return targets.map((target) => {

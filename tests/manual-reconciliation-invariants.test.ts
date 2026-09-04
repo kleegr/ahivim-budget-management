@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PgLikePool } from "@/lib/import/commit";
-import { manualMatch } from "@/lib/manage/reconciliation";
+import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
+import { manualMatch, unmatchSession } from "@/lib/manage/reconciliation";
 
 const SESSION_ID = "123e4567-e89b-42d3-a456-426614174000";
 const TRANSACTION_ID = "123e4567-e89b-42d3-a456-426614174001";
@@ -20,6 +20,7 @@ function reconciliationPool(overrides: {
     id: string;
     individual_id: string | null;
     program_id: string | null;
+    check_date: string | null;
     period_begin: string | null;
     period_end: string | null;
   }>;
@@ -37,6 +38,7 @@ function reconciliationPool(overrides: {
     id: TRANSACTION_ID,
     individual_id: INDIVIDUAL_ID,
     program_id: PROGRAM_ID,
+    check_date: null,
     period_begin: "2026-08-01",
     period_end: "2026-08-31",
     ...overrides.transaction,
@@ -79,6 +81,21 @@ describe("manual reconciliation invariants", () => {
     expect(client.release).toHaveBeenCalledOnce();
   });
 
+  it("uses the canonical check-date fallback when a complete service period is absent", async () => {
+    const { pool, query } = reconciliationPool({
+      transaction: {
+        check_date: "2026-08-15",
+        period_begin: null,
+        period_end: null,
+      },
+    });
+
+    await expect(manualMatch(pool, SESSION_ID, TRANSACTION_ID, null, "Reviewed source"))
+      .resolves.toEqual({ ok: true, data: { id: SESSION_ID } });
+
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("UPDATE scheduled_sessions"))).toBe(true);
+  });
+
   it.each([
     {
       label: "another individual",
@@ -93,7 +110,7 @@ describe("manual reconciliation invariants", () => {
     {
       label: "a period outside the visit date",
       overrides: { transaction: { period_begin: "2026-08-16", period_end: "2026-08-31" } },
-      message: "Choose a transaction whose service period includes this visit date.",
+      message: "Choose a transaction whose service date or service period includes this visit date.",
     },
   ])("rejects a transaction for $label without mutating", async ({ overrides, message }) => {
     const { pool, query } = reconciliationPool(overrides);
@@ -122,5 +139,47 @@ describe("manual reconciliation invariants", () => {
       code: "validation",
     });
     expect(query.mock.calls.some(([sql]) => String(sql).includes("UPDATE scheduled_sessions"))).toBe(false);
+  });
+});
+
+describe("unmatch reconciliation integrity", () => {
+  function unmatchPool(options: { failAudit?: boolean } = {}) {
+    const statements: string[] = [];
+    const query = vi.fn(async (sql: string) => {
+      statements.push(sql);
+      if (sql.includes("SELECT matched_transaction_id")) {
+        return { rows: [{ matched_transaction_id: TRANSACTION_ID }], rowCount: 1 };
+      }
+      if (sql.includes("INSERT INTO audit_logs") && options.failAudit) {
+        throw new Error("audit unavailable");
+      }
+      return { rows: [], rowCount: 1 };
+    }) as PgLikeClient["query"];
+    const client = { query, release: vi.fn() } as PgLikeClient;
+    const pool = { query, connect: vi.fn(async () => client) } as PgLikePool;
+    return { pool, client, statements };
+  }
+
+  it("audits an unmatch before committing it", async () => {
+    const { pool, client, statements } = unmatchPool();
+
+    await expect(unmatchSession(pool, SESSION_ID, null, "Wrong payroll row"))
+      .resolves.toEqual({ ok: true, data: { id: SESSION_ID } });
+
+    expect(statements).toContain("BEGIN");
+    expect(statements.findIndex((sql) => sql.includes("INSERT INTO audit_logs")))
+      .toBeLessThan(statements.indexOf("COMMIT"));
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it("rolls the unmatch back when its audit record cannot be written", async () => {
+    const { pool, client, statements } = unmatchPool({ failAudit: true });
+
+    await expect(unmatchSession(pool, SESSION_ID, null, "Wrong payroll row"))
+      .rejects.toThrow("audit unavailable");
+
+    expect(statements).toContain("ROLLBACK");
+    expect(statements).not.toContain("COMMIT");
+    expect(client.release).toHaveBeenCalledOnce();
   });
 });

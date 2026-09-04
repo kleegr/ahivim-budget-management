@@ -245,7 +245,12 @@ export async function candidatesForSession(
      FROM s
      JOIN payroll_transactions t
        ON t.individual_id = s.individual_id AND t.program_id = s.program_id
-      AND s.session_date BETWEEN t.period_begin AND t.period_end
+      AND (
+        (t.period_begin IS NOT NULL AND t.period_end IS NOT NULL
+          AND s.session_date BETWEEN t.period_begin AND t.period_end)
+        OR ((t.period_begin IS NULL OR t.period_end IS NULL)
+          AND canonical_service_date(t.period_begin, t.check_date, t.period_end) = s.session_date)
+      )
      LEFT JOIN programs p ON p.id = t.program_id
      LEFT JOIN individuals i ON i.id = t.individual_id
      WHERE NOT EXISTS (SELECT 1 FROM scheduled_sessions x WHERE x.matched_transaction_id = t.id)
@@ -320,10 +325,12 @@ export async function manualMatch(
       id: string;
       individual_id: string | null;
       program_id: string | null;
+      check_date: string | null;
       period_begin: string | null;
       period_end: string | null;
     }>(
-      `SELECT id, individual_id, program_id, period_begin::text, period_end::text
+      `SELECT id, individual_id, program_id, check_date::text,
+              period_begin::text, period_end::text
          FROM payroll_transactions
         WHERE id = $1
         FOR UPDATE`,
@@ -340,14 +347,17 @@ export async function manualMatch(
       await client.query("ROLLBACK");
       return fail("validation", "Choose a transaction for this visit's individual and program.");
     }
-    if (
-      !transaction.period_begin
-      || !transaction.period_end
-      || session.session_date < transaction.period_begin
-      || session.session_date > transaction.period_end
-    ) {
+    const completePeriod = transaction.period_begin && transaction.period_end;
+    const canonicalDate = transaction.period_begin
+      ?? transaction.check_date
+      ?? transaction.period_end;
+    const coversSession = completePeriod
+      ? session.session_date >= transaction.period_begin!
+        && session.session_date <= transaction.period_end!
+      : canonicalDate === session.session_date;
+    if (!coversSession) {
       await client.query("ROLLBACK");
-      return fail("validation", "Choose a transaction whose service period includes this visit date.");
+      return fail("validation", "Choose a transaction whose service date or service period includes this visit date.");
     }
 
     const other = await client.query<{ id: string }>(
@@ -394,23 +404,36 @@ export async function unmatchSession(
   reason?: string | null,
 ): Promise<Result<{ id: string }>> {
   if (!isUuid(scheduledSessionId)) return fail("not_found", "That session no longer exists.");
-  const s = await pool.query<{ matched_transaction_id: string | null }>(
-    `SELECT matched_transaction_id FROM scheduled_sessions WHERE id = $1`,
-    [scheduledSessionId],
-  );
-  if (!s.rows[0]) return fail("not_found", "That session no longer exists.");
-  await pool.query(
-    `UPDATE scheduled_sessions
-       SET matched_transaction_id = NULL, reconciliation_status = 'unmatched',
-           reconciled_by_user_id = $2, reconciled_at = now(), reconciliation_reason = $3, updated_at = now()
-     WHERE id = $1`,
-    [scheduledSessionId, actorId, reason ?? null],
-  );
-  await recordChange(pool, {
-    actorId, action: "reconciliation_unmatched", entityType: "scheduled_session", entityId: scheduledSessionId,
-    previous: { transactionId: s.rows[0].matched_transaction_id }, reason,
-  });
-  return ok({ id: scheduledSessionId });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const s = await client.query<{ matched_transaction_id: string | null }>(
+      `SELECT matched_transaction_id FROM scheduled_sessions WHERE id = $1 FOR UPDATE`,
+      [scheduledSessionId],
+    );
+    if (!s.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail("not_found", "That session no longer exists.");
+    }
+    await client.query(
+      `UPDATE scheduled_sessions
+         SET matched_transaction_id = NULL, reconciliation_status = 'unmatched',
+             reconciled_by_user_id = $2, reconciled_at = now(), reconciliation_reason = $3, updated_at = now()
+       WHERE id = $1`,
+      [scheduledSessionId, actorId, reason ?? null],
+    );
+    await recordChange(client, {
+      actorId, action: "reconciliation_unmatched", entityType: "scheduled_session", entityId: scheduledSessionId,
+      previous: { transactionId: s.rows[0].matched_transaction_id }, reason,
+    });
+    await client.query("COMMIT");
+    return ok({ id: scheduledSessionId });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 interface AutoMatchSession {
@@ -522,41 +545,61 @@ export async function autoReconcile(
     }
   }
 
+  const exactPairs = sessions.flatMap((session) => {
+    const candidates = candidatesBySession.get(session.id) ?? [];
+    if (candidates.length !== 1) return [];
+    const transactionId = candidates[0]!;
+    if (sessionsByCandidate.get(transactionId)?.size !== 1) return [];
+    return [{ sessionId: session.id, transactionId }];
+  });
+  if (exactPairs.length === 0) return ok({ matched: 0, considered });
+
+  const client = await pool.connect();
   let matched = 0;
-  for (const s of sessions) {
-    const candidates = candidatesBySession.get(s.id) ?? [];
-    if (candidates.length !== 1) continue;
-    const candidateId = candidates[0]!;
-    if (sessionsByCandidate.get(candidateId)?.size !== 1) continue;
-    try {
-      const { rows: updated } = await pool.query<{ id: string }>(
-        `UPDATE scheduled_sessions
-           SET matched_transaction_id = $2, reconciliation_status = 'matched',
-               reconciled_by_user_id = $3, reconciled_at = now(),
-               reconciliation_reason = 'auto-matched', updated_at = now()
-         WHERE id = $1
-           AND matched_transaction_id IS NULL
-           AND NOT EXISTS (
-             SELECT 1 FROM scheduled_sessions claimed WHERE claimed.matched_transaction_id = $2
-           )
-         RETURNING id`,
-        [s.id, candidateId, actorId],
-      );
-      if (updated.length === 1) matched += 1;
-    } catch (error) {
-      // The partial unique index is the final arbiter when two matching runs race.
-      if (isTransactionMatchConflict(error)) continue;
-      throw error;
+  try {
+    await client.query("BEGIN");
+    for (const pair of exactPairs) {
+      // A savepoint lets a racing unique-index claim skip only this candidate;
+      // every successful match and the aggregate audit still commit together.
+      await client.query("SAVEPOINT auto_match_candidate");
+      try {
+        const { rows: updated } = await client.query<{ id: string }>(
+          `UPDATE scheduled_sessions
+             SET matched_transaction_id = $2, reconciliation_status = 'matched',
+                 reconciled_by_user_id = $3, reconciled_at = now(),
+                 reconciliation_reason = 'auto-matched', updated_at = now()
+           WHERE id = $1
+             AND matched_transaction_id IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM scheduled_sessions claimed WHERE claimed.matched_transaction_id = $2
+             )
+           RETURNING id`,
+          [pair.sessionId, pair.transactionId, actorId],
+        );
+        if (updated.length === 1) matched += 1;
+        await client.query("RELEASE SAVEPOINT auto_match_candidate");
+      } catch (error) {
+        // The partial unique index is the final arbiter when two matching runs race.
+        if (!isTransactionMatchConflict(error)) throw error;
+        await client.query("ROLLBACK TO SAVEPOINT auto_match_candidate");
+        await client.query("RELEASE SAVEPOINT auto_match_candidate");
+      }
     }
+    if (matched > 0) {
+      await recordChange(client, {
+        actorId, action: "reconciliation_auto", entityType: "scheduled_session", entityId: null,
+        next: { matched, considered, range: `${f.from}..${f.to}` },
+        reason: "auto-reconcile",
+      });
+    }
+    await client.query("COMMIT");
+    return ok({ matched, considered });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
   }
-  if (matched > 0) {
-    await recordChange(pool, {
-      actorId, action: "reconciliation_auto", entityType: "scheduled_session", entityId: null,
-      next: { matched, considered, range: `${f.from}..${f.to}` },
-      reason: "auto-reconcile",
-    });
-  }
-  return ok({ matched, considered });
 }
 
 /* -------------------------------------------------------------------------- */

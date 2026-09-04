@@ -41,27 +41,39 @@ describe("employee planning availability", () => {
           ],
         };
       }
-      if (sql.includes("FROM employee_weekly_availability")) {
+      if (sql.includes("AS fact_type")) {
         return {
-          rows: [{
-            employee_id: EMPLOYEE_IDS.alice,
-            weekday: 1,
-            start_time: "09:00",
-            end_time: "12:00",
-            effective_from: "2026-01-01",
-            effective_to: null,
-          }],
+          rows: [
+            {
+              fact_type: "weekly",
+              employee_id: EMPLOYEE_IDS.alice,
+              session_date: null,
+              weekday: 1,
+              start_time: "09:00",
+              end_time: "12:00",
+              effective_from: "2026-01-01",
+              effective_to: null,
+              start_date: null,
+              end_date: null,
+            },
+            ...[
+              { employee_id: EMPLOYEE_IDS.bob, session_date: "2026-08-24", start_time: "10:00", end_time: "11:00" },
+              { employee_id: EMPLOYEE_IDS.bob, session_date: "2026-08-24", start_time: "09:45", end_time: "10:15" },
+              { employee_id: EMPLOYEE_IDS.bob, session_date: "2026-08-31", start_time: "12:00", end_time: "13:00" },
+              { employee_id: EMPLOYEE_IDS.dana, session_date: "2026-08-31", start_time: null, end_time: null },
+            ].map((row) => ({
+              ...row,
+              fact_type: "conflict",
+              weekday: null,
+              effective_from: null,
+              effective_to: null,
+              start_date: null,
+              end_date: null,
+            })),
+          ],
         };
       }
-      if (sql.includes("FROM employee_unavailability")) return { rows: [] };
-      return {
-        rows: [
-          { employee_id: EMPLOYEE_IDS.bob, session_date: "2026-08-24", start_time: "10:00", end_time: "11:00" },
-          { employee_id: EMPLOYEE_IDS.bob, session_date: "2026-08-24", start_time: "09:45", end_time: "10:15" },
-          { employee_id: EMPLOYEE_IDS.bob, session_date: "2026-08-31", start_time: "12:00", end_time: "13:00" },
-          { employee_id: EMPLOYEE_IDS.dana, session_date: "2026-08-31", start_time: null, end_time: null },
-        ],
-      };
+      return { rows: [] };
     });
     const pool = { query } as unknown as PgLikePool;
 
@@ -184,21 +196,31 @@ describe("employee planning availability", () => {
             }))),
         };
       }
-      if (sql.includes("FROM scheduled_sessions")) return { rows: [] };
-      if (sql.includes("FROM employee_weekly_availability")) {
+      if (sql.includes("AS fact_type")) {
         return {
           rows: [
-            { employee_id: EMPLOYEE_IDS.alice, weekday: 1, start_time: "09:00", end_time: "10:00", effective_from: "2026-01-01", effective_to: null },
-            { employee_id: EMPLOYEE_IDS.bob, weekday: 1, start_time: "10:00", end_time: "12:00", effective_from: "2026-01-01", effective_to: null },
-            { employee_id: EMPLOYEE_IDS.cara, weekday: 1, start_time: "09:00", end_time: "12:00", effective_from: "2026-01-01", effective_to: null },
-          ],
-        };
-      }
-      if (sql.includes("FROM employee_unavailability")) {
-        return {
-          rows: [
-            { employee_id: EMPLOYEE_IDS.alice, start_date: "2026-08-24", end_date: "2026-08-24", start_time: "10:00", end_time: "11:00" },
-            { employee_id: EMPLOYEE_IDS.cara, start_date: "2026-08-31", end_date: "2026-08-31", start_time: null, end_time: null },
+            ...[
+              { employee_id: EMPLOYEE_IDS.alice, weekday: 1, start_time: "09:00", end_time: "10:00", effective_from: "2026-01-01", effective_to: null },
+              { employee_id: EMPLOYEE_IDS.bob, weekday: 1, start_time: "10:00", end_time: "12:00", effective_from: "2026-01-01", effective_to: null },
+              { employee_id: EMPLOYEE_IDS.cara, weekday: 1, start_time: "09:00", end_time: "12:00", effective_from: "2026-01-01", effective_to: null },
+            ].map((row) => ({
+              ...row,
+              fact_type: "weekly",
+              session_date: null,
+              start_date: null,
+              end_date: null,
+            })),
+            ...[
+              { employee_id: EMPLOYEE_IDS.alice, start_date: "2026-08-24", end_date: "2026-08-24", start_time: "10:00", end_time: "11:00" },
+              { employee_id: EMPLOYEE_IDS.cara, start_date: "2026-08-31", end_date: "2026-08-31", start_time: null, end_time: null },
+            ].map((row) => ({
+              ...row,
+              fact_type: "unavailable",
+              session_date: null,
+              weekday: null,
+              effective_from: null,
+              effective_to: null,
+            })),
           ],
         };
       }
@@ -258,5 +280,49 @@ describe("employee planning availability", () => {
 
     expect(query).not.toHaveBeenCalled();
     expect(result.employees).toEqual([]);
+  });
+
+  it("serializes availability reads for a transaction-backed queryable", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const query = vi.fn(async (sql: string) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Promise.resolve();
+      try {
+        if (sql.includes("FROM employees")) {
+          return { rows: [{ employee_id: EMPLOYEE_IDS.alice, employee_name: "Alice" }] };
+        }
+        if (sql.includes("FROM assignments")) {
+          return {
+            rows: INDIVIDUAL_IDS.map((individual_id) => ({
+              employee_id: EMPLOYEE_IDS.alice,
+              individual_id,
+              start_date: null,
+              end_date: null,
+            })),
+          };
+        }
+        return { rows: [] };
+      } finally {
+        inFlight -= 1;
+      }
+    });
+    const pool = { query } as unknown as PgLikePool;
+
+    await listEmployeeAvailability(pool, {
+      programId: PROGRAM_ID,
+      individualIds: INDIVIDUAL_IDS,
+      sessionDate: "2026-08-24",
+      startTime: "09:00",
+      endTime: "10:00",
+    });
+
+    expect(query).toHaveBeenCalledTimes(3);
+    expect(maxInFlight).toBe(1);
+    const factSql = String(query.mock.calls[2]?.[0]);
+    expect(factSql).toContain("FROM scheduled_sessions");
+    expect(factSql).toContain("FROM employee_weekly_availability");
+    expect(factSql).toContain("FROM employee_unavailability");
   });
 });

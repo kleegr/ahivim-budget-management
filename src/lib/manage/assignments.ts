@@ -65,7 +65,14 @@ const toRecord = (r: Row): AssignmentRecord => ({
   createdAt: r.created_at,
 });
 
-const isUuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
+const isUuid = (v: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+
+function isDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
 
 type Queryable = Pick<PgLikePool, "query"> | Pick<PgLikeClient, "query">;
 
@@ -162,6 +169,9 @@ export async function createAssignment(
     return fail("validation", "Choose both an employee and an individual.");
   }
   if (input.programId && !isUuid(input.programId)) return fail("validation", "Invalid program.");
+  if ((input.startDate && !isDate(input.startDate)) || (input.endDate && !isDate(input.endDate))) {
+    return fail("validation", "Use real assignment dates in YYYY-MM-DD form.");
+  }
   if (input.startDate && input.endDate && input.endDate < input.startDate) {
     return fail("validation", "The end date is before the start date.");
   }
@@ -237,6 +247,9 @@ export async function updateAssignment(
   actorId: string | null,
   reason?: string | null,
 ): Promise<Result<AssignmentRecord>> {
+  if ((input.startDate && !isDate(input.startDate)) || (input.endDate && !isDate(input.endDate))) {
+    return fail("validation", "Use real assignment dates in YYYY-MM-DD form.");
+  }
   return inAssignmentTransaction(pool, async (client) => {
     const scope = await getAssignment(client, id);
     if (!scope) return fail("not_found", "That assignment no longer exists.");

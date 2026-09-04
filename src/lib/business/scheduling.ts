@@ -157,9 +157,15 @@ export function generateOccurrences(input: RecurrenceInput): string[] {
 }
 
 function parseISO(s: string): Date | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  if (!isScheduleDate(s)) return null;
+  return new Date(`${s}T00:00:00Z`);
+}
+
+/** True only for a real UTC calendar date written as YYYY-MM-DD. */
+export function isScheduleDate(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
   const d = new Date(`${s}T00:00:00Z`);
-  return Number.isNaN(d.getTime()) ? null : d;
+  return !Number.isNaN(d.getTime()) && isoOf(d) === s;
 }
 function isoOf(d: Date): string {
   return d.toISOString().slice(0, 10);

@@ -96,6 +96,10 @@ describe("planning schedule match review", () => {
     expect(String(sql)).not.toContain("imported_amount");
     expect(String(sql)).not.toContain("imported_rate");
     expect(String(sql)).not.toContain("check_number");
+    expect(String(sql)).toContain("canonical_service_date(");
+    expect(String(sql)).toContain("actual.period_begin IS NULL OR actual.period_end IS NULL");
+    expect(String(sql)).toContain("actual.period_begin IS NOT NULL");
+    expect(String(sql)).toContain("actual.period_end IS NOT NULL");
     expect(params).toEqual([
       "2026-09-01",
       [EMPLOYEE_ID],

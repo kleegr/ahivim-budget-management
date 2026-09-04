@@ -113,11 +113,20 @@ export async function getPlanningMatchReview(
          SELECT count(*)::text AS candidate_count,
                 COALESCE(sum(actual.imported_hours), 0)::text AS candidate_hours,
                 count(*) FILTER (
-                  WHERE actual.period_begin IS DISTINCT FROM actual.period_end
+                  WHERE actual.period_begin IS NOT NULL
+                    AND actual.period_end IS NOT NULL
+                    AND actual.period_begin <> actual.period_end
                 )::text AS pay_period_candidate_count
            FROM payroll_transactions actual
           WHERE actual.program_id = session.program_id
-            AND session.session_date BETWEEN actual.period_begin AND actual.period_end
+            AND (
+              (actual.period_begin IS NOT NULL AND actual.period_end IS NOT NULL
+                AND session.session_date BETWEEN actual.period_begin AND actual.period_end)
+              OR ((actual.period_begin IS NULL OR actual.period_end IS NULL)
+                AND canonical_service_date(
+                  actual.period_begin, actual.check_date, actual.period_end
+                ) = session.session_date)
+            )
             AND (session.employee_id IS NULL OR actual.employee_id = session.employee_id)
             AND EXISTS (
               SELECT 1

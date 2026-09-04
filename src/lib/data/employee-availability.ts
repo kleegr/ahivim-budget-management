@@ -83,6 +83,19 @@ interface EmployeeUnavailabilityRow {
   end_time: string | null;
 }
 
+interface EmployeeAvailabilityFactRow {
+  fact_type: "conflict" | "weekly" | "unavailable";
+  employee_id: string;
+  session_date: string | null;
+  weekday: number | null;
+  start_time: string | null;
+  end_time: string | null;
+  effective_from: string | null;
+  effective_to: string | null;
+  start_date: string | null;
+  end_date: string | null;
+}
+
 function weekdayOf(date: string): number {
   return new Date(`${date}T00:00:00Z`).getUTCDay();
 }
@@ -157,44 +170,104 @@ export async function listEmployeeAvailability(
       && /^\d{4}-\d{2}-\d{2}$/.test(input.excludeSeriesFromDate)
       ? input.excludeSeriesFromDate
       : sessionDates[0]!;
-    const [conflictRows, weeklyRows, unavailableRows] = await Promise.all([
-      pool.query<EmployeeConflictRow>(
-        `SELECT employee_id, session_date::text AS session_date, start_time, end_time
-           FROM scheduled_sessions
-          WHERE employee_id = ANY($1::uuid[])
-            AND session_date = ANY($2::date[])
-            AND status IN ('pending', 'completed')
-            AND archived_at IS NULL
-            AND ($3::uuid IS NULL OR id <> $3::uuid)
-            AND (
-              $4::uuid IS NULL
-              OR series_id IS DISTINCT FROM $4::uuid
-              OR session_date < $5::date
-              OR status <> 'pending'
-            )`,
-        [employeeIds, sessionDates, excludeSessionId, excludeSeriesId, excludeSeriesFromDate],
-      ),
-      pool.query<WeeklyAvailabilityRow>(
-        `SELECT employee_id, weekday, start_time, end_time,
-                effective_from::text, effective_to::text
-           FROM employee_weekly_availability
-          WHERE employee_id = ANY($1::uuid[])
-            AND archived_at IS NULL
-            AND effective_from <= $2::date
-            AND (effective_to IS NULL OR effective_to >= $3::date)`,
-        [employeeIds, sessionDates.at(-1), sessionDates[0]],
-      ),
-      pool.query<EmployeeUnavailabilityRow>(
-        `SELECT employee_id, start_date::text, end_date::text, start_time, end_time
-           FROM employee_unavailability
-          WHERE employee_id = ANY($1::uuid[])
-            AND archived_at IS NULL
-            AND start_date <= $2::date
-            AND end_date >= $3::date`,
-        [employeeIds, sessionDates.at(-1), sessionDates[0]],
-      ),
-    ]);
-    for (const row of conflictRows.rows) {
+    // This queryable may be a checked-out transaction client during schedule
+    // writes. Keep all three independent reads in one statement so pg never
+    // has sibling client.query calls active while a caller may need to roll
+    // back, without adding three network round trips for each recurring visit.
+    const factResult = await pool.query<EmployeeAvailabilityFactRow>(
+      `SELECT 'conflict'::text AS fact_type,
+              employee_id, session_date::text AS session_date,
+              NULL::integer AS weekday,
+              start_time::text AS start_time, end_time::text AS end_time,
+              NULL::text AS effective_from, NULL::text AS effective_to,
+              NULL::text AS start_date, NULL::text AS end_date
+         FROM scheduled_sessions
+        WHERE employee_id = ANY($1::uuid[])
+          AND session_date = ANY($2::date[])
+          AND status IN ('pending', 'completed')
+          AND archived_at IS NULL
+          AND ($3::uuid IS NULL OR id <> $3::uuid)
+          AND (
+            $4::uuid IS NULL
+            OR series_id IS DISTINCT FROM $4::uuid
+            OR session_date < $5::date
+            OR status <> 'pending'
+          )
+       UNION ALL
+       SELECT 'weekly'::text AS fact_type,
+              employee_id, NULL::text AS session_date, weekday,
+              start_time::text AS start_time, end_time::text AS end_time,
+              effective_from::text AS effective_from,
+              effective_to::text AS effective_to,
+              NULL::text AS start_date, NULL::text AS end_date
+         FROM employee_weekly_availability
+        WHERE employee_id = ANY($1::uuid[])
+          AND archived_at IS NULL
+          AND effective_from <= $6::date
+          AND (effective_to IS NULL OR effective_to >= $7::date)
+       UNION ALL
+       SELECT 'unavailable'::text AS fact_type,
+              employee_id, NULL::text AS session_date,
+              NULL::integer AS weekday,
+              start_time::text AS start_time, end_time::text AS end_time,
+              NULL::text AS effective_from, NULL::text AS effective_to,
+              start_date::text AS start_date, end_date::text AS end_date
+         FROM employee_unavailability
+        WHERE employee_id = ANY($1::uuid[])
+          AND archived_at IS NULL
+          AND start_date <= $6::date
+          AND end_date >= $7::date`,
+      [
+        employeeIds,
+        sessionDates,
+        excludeSessionId,
+        excludeSeriesId,
+        excludeSeriesFromDate,
+        sessionDates.at(-1),
+        sessionDates[0],
+      ],
+    );
+    const conflictRows: EmployeeConflictRow[] = [];
+    const weeklyRows: WeeklyAvailabilityRow[] = [];
+    const unavailableRows: EmployeeUnavailabilityRow[] = [];
+    for (const row of factResult.rows) {
+      if (row.fact_type === "conflict" && row.session_date !== null) {
+        conflictRows.push({
+          employee_id: row.employee_id,
+          session_date: row.session_date,
+          start_time: row.start_time,
+          end_time: row.end_time,
+        });
+      } else if (
+        row.fact_type === "weekly"
+        && row.weekday !== null
+        && row.start_time !== null
+        && row.end_time !== null
+        && row.effective_from !== null
+      ) {
+        weeklyRows.push({
+          employee_id: row.employee_id,
+          weekday: row.weekday,
+          start_time: row.start_time,
+          end_time: row.end_time,
+          effective_from: row.effective_from,
+          effective_to: row.effective_to,
+        });
+      } else if (
+        row.fact_type === "unavailable"
+        && row.start_date !== null
+        && row.end_date !== null
+      ) {
+        unavailableRows.push({
+          employee_id: row.employee_id,
+          start_date: row.start_date,
+          end_date: row.end_date,
+          start_time: row.start_time,
+          end_time: row.end_time,
+        });
+      }
+    }
+    for (const row of conflictRows) {
       if (timesOverlap(input.startTime, input.endTime, row.start_time, row.end_time)) {
         conflicts.set(row.employee_id, (conflicts.get(row.employee_id) ?? 0) + 1);
         const dates = conflictingDates.get(row.employee_id) ?? new Set<string>();
@@ -202,12 +275,12 @@ export async function listEmployeeAvailability(
         conflictingDates.set(row.employee_id, dates);
       }
     }
-    for (const row of weeklyRows.rows) {
+    for (const row of weeklyRows) {
       const rows = weeklyByEmployee.get(row.employee_id) ?? [];
       rows.push(row);
       weeklyByEmployee.set(row.employee_id, rows);
     }
-    for (const row of unavailableRows.rows) {
+    for (const row of unavailableRows) {
       const rows = unavailableByEmployee.get(row.employee_id) ?? [];
       rows.push(row);
       unavailableByEmployee.set(row.employee_id, rows);

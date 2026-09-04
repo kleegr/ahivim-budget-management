@@ -4,7 +4,7 @@ import {
   directPayTargetWindow,
 } from "@/lib/business/direct-pay-targets";
 import type { PgLikePool } from "@/lib/import/commit";
-import { saveDirectPayTarget } from "@/lib/manage/direct-pay-operations";
+import { archiveDirectPayTarget, saveDirectPayTarget } from "@/lib/manage/direct-pay-operations";
 import { listPlannerDirectPayTargets } from "@/lib/data/direct-pay-operations";
 
 const EMPLOYEE_ID = "00000000-0000-4000-8000-000000000001";
@@ -126,6 +126,43 @@ describe("direct-pay target management", () => {
     expect(activitySql).toContain(
       "canonical_service_date(t.period_begin, t.check_date, t.period_end) IS NOT NULL",
     );
+    expect(activitySql).toContain(
+      "canonical_service_date(t.period_begin, t.check_date, t.period_end) <= $2::date",
+    );
+    expect(activitySql.match(/canonical_service_date\(t\.period_begin, t\.check_date, t\.period_end\) <= \$2::date/g))
+      .toHaveLength(2);
+    expect(activitySql).toContain("s.session_date >= $2::date");
     expect(activitySql).not.toContain("t.created_at::date");
+    expect(query.mock.calls[1]?.[1]).toEqual([
+      expect.any(String),
+      "2026-08-28",
+    ]);
+  });
+
+  it("archives a target and its audit record in one transaction", async () => {
+    const statements: string[] = [];
+    const query = vi.fn(async (sql: string) => {
+      statements.push(sql);
+      if (sql.includes("SELECT * FROM employee_direct_pay_targets")) {
+        return { rows: [{ id: TARGET_ID, employee_id: EMPLOYEE_ID, status: "active" }] };
+      }
+      if (sql.includes("UPDATE employee_direct_pay_targets")) return { rows: [{ id: TARGET_ID }] };
+      return { rows: [] };
+    });
+    const client = { query, release: vi.fn() };
+    const pool = { connect: vi.fn(async () => client) } as unknown as PgLikePool;
+
+    await expect(archiveDirectPayTarget(pool, TARGET_ID, null)).resolves.toEqual({
+      ok: true,
+      data: { id: TARGET_ID },
+    });
+
+    const updateIndex = statements.findIndex((sql) => sql.includes("UPDATE employee_direct_pay_targets"));
+    const auditIndex = statements.findIndex((sql) => sql.includes("INSERT INTO audit_logs"));
+    const commitIndex = statements.indexOf("COMMIT");
+    expect(updateIndex).toBeGreaterThanOrEqual(0);
+    expect(auditIndex).toBeGreaterThan(updateIndex);
+    expect(commitIndex).toBeGreaterThan(auditIndex);
+    expect(client.release).toHaveBeenCalledOnce();
   });
 });

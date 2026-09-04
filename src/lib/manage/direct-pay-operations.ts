@@ -159,16 +159,30 @@ export async function archiveDirectPayTarget(
   actorId: string | null,
 ): Promise<Result<{ id: string }>> {
   if (!UUID.test(id)) return fail("validation", "Choose a valid target.");
-  const { rows } = await pool.query<{ id: string }>(
-    `UPDATE employee_direct_pay_targets
-        SET status = 'archived', archived_at = now(), archived_by_user_id = $2,
-            updated_by_user_id = $2, updated_at = now()
-      WHERE id = $1 AND status = 'active' RETURNING id`,
-    [id, actorId],
-  );
-  if (!rows[0]) return fail("not_found", "That active target no longer exists.");
-  await recordChange(pool, { actorId, action: "direct_pay_target.archived", entityType: "employee_direct_pay_target", entityId: id });
-  return ok({ id });
+  return inTransaction(pool, async (client) => {
+    const previous = await client.query<Record<string, unknown>>(
+      `SELECT * FROM employee_direct_pay_targets WHERE id = $1 AND status = 'active' FOR UPDATE`,
+      [id],
+    );
+    if (!previous.rows[0]) return fail("not_found", "That active target no longer exists.");
+    const { rows } = await client.query<{ id: string }>(
+      `UPDATE employee_direct_pay_targets
+          SET status = 'archived', archived_at = now(), archived_by_user_id = $2,
+              updated_by_user_id = $2, updated_at = now()
+        WHERE id = $1 AND status = 'active' RETURNING id`,
+      [id, actorId],
+    );
+    if (!rows[0]) return fail("conflict", "That target was changed by another user. Refresh and try again.");
+    await recordChange(client, {
+      actorId,
+      action: "direct_pay_target.archived",
+      entityType: "employee_direct_pay_target",
+      entityId: id,
+      previous: previous.rows[0],
+      next: { status: "archived" },
+    });
+    return ok({ id });
+  });
 }
 
 export interface SavePayrollCheckInput {

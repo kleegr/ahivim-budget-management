@@ -3,7 +3,8 @@ import { recordChange } from "./audit";
 import { ok, fail, type Result } from "./errors";
 import { dec, toHours } from "@/lib/money";
 import {
-  expectedBilling, durationBetween, timesOverlap, generateOccurrences, MAX_SERIES_OCCURRENCES,
+  expectedBilling, durationBetween, timesOverlap, generateOccurrences, isScheduleDate,
+  MAX_SERIES_OCCURRENCES,
 } from "@/lib/business/scheduling";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
 import { individualProgramForecast } from "@/lib/data/schedule-queries";
@@ -20,6 +21,30 @@ class ScheduleOverrideRequiredError extends Error {}
 
 function writtenOverrideReason(reason?: string | null, fallback?: string | null): string | null {
   return reason?.trim() || fallback?.trim() || null;
+}
+
+/**
+ * Resolve one authoritative duration. When clock times are present they win,
+ * so a stale or tampered duration field cannot disagree with the visit time.
+ */
+function normalizedSessionDuration(
+  durationHours: string | null | undefined,
+  startTime: string | null,
+  endTime: string | null,
+): string | null {
+  const hasStart = Boolean(startTime);
+  const hasEnd = Boolean(endTime);
+  if (hasStart || hasEnd) {
+    if (!hasStart || !hasEnd) return null;
+    return durationBetween(startTime, endTime);
+  }
+  if (!durationHours) return null;
+  try {
+    const value = dec(durationHours);
+    return value.isFinite() && value.gt(0) ? toHours(value) : null;
+  } catch {
+    return null;
+  }
 }
 
 const BUDGET_WARNING_CODES = new Set([
@@ -110,6 +135,19 @@ export interface SessionDraft {
   durationHours: string;
 }
 
+type EffectiveScheduleRate = Awaited<ReturnType<typeof currentRate>>;
+
+interface IndividualConflictRow {
+  individual_id: string;
+  status: string | null;
+  display_name: string | null;
+  assigned: boolean;
+  session_id: string | null;
+  employee_id: string | null;
+  start_time: string | null;
+  end_time: string | null;
+}
+
 /**
  * Every reason a planned session might warrant a second look. None of these
  * BLOCK — an authorised user can save anyway with a written reason — but each
@@ -119,6 +157,7 @@ export async function detectConflicts(
   pool: ScheduleQueryable,
   draft: SessionDraft,
   excludeSessionId?: string,
+  knownRate?: EffectiveScheduleRate,
 ): Promise<ScheduleWarning[]> {
   const w: ScheduleWarning[] = [];
   const hours = dec(draft.durationHours);
@@ -136,25 +175,36 @@ export async function detectConflicts(
   const rules = prog.rows[0];
   if (!rules) w.push({ code: "program_missing", severity: "error", message: "The program does not exist." });
   else if (!rules.is_active) w.push({ code: "program_inactive", severity: "warning", message: `Program ${rules.name} is inactive.` });
-  const rate = await currentRate(pool, draft.programId, draft.sessionDate);
+  const rate = knownRate === undefined
+    ? await currentRate(pool, draft.programId, draft.sessionDate)
+    : knownRate;
   if (!rate) w.push({ code: "missing_rate", severity: "warning", message: "No rate is configured for this program on this date; expected billing cannot be computed." });
 
   // Employee active + not double-booked.
   if (draft.employeeId) {
-    const emp = await pool.query<{ status: string; display_name: string }>(
-      `SELECT status, display_name FROM employees WHERE id = $1`,
-      [draft.employeeId],
-    );
-    if (emp.rows[0] && emp.rows[0].status !== "active") {
-      w.push({ code: "employee_inactive", severity: "warning", message: `Employee ${emp.rows[0].display_name} is ${emp.rows[0].status}.` });
-    }
-    const clashes = await pool.query<{ id: string; start_time: string | null; end_time: string | null }>(
-      `SELECT id, start_time, end_time FROM scheduled_sessions
-       WHERE employee_id = $1 AND session_date = $2 AND status IN ('pending','completed')
-         AND ($3::uuid IS NULL OR id <> $3)`,
+    const employeeFacts = await pool.query<{
+      status: string;
+      display_name: string;
+      session_id: string | null;
+      start_time: string | null;
+      end_time: string | null;
+    }>(
+      `SELECT e.status, e.display_name, s.id::text AS session_id, s.start_time, s.end_time
+         FROM employees e
+         LEFT JOIN scheduled_sessions s
+           ON s.employee_id = e.id
+          AND s.session_date = $2::date
+          AND s.status IN ('pending', 'completed')
+          AND ($3::uuid IS NULL OR s.id <> $3::uuid)
+        WHERE e.id = $1`,
       [draft.employeeId, draft.sessionDate, excludeSessionId ?? null],
     );
-    if (clashes.rows.some((c) => timesOverlap(draft.startTime, draft.endTime, c.start_time, c.end_time))) {
+    const employee = employeeFacts.rows[0];
+    if (employee && employee.status !== "active") {
+      w.push({ code: "employee_inactive", severity: "warning", message: `Employee ${employee.display_name} is ${employee.status}.` });
+    }
+    if (employeeFacts.rows.some((fact) => fact.session_id !== null
+      && timesOverlap(draft.startTime, draft.endTime, fact.start_time, fact.end_time))) {
       w.push({ code: "employee_double_booked", severity: "warning", message: "This employee already has an overlapping session that day." });
     }
     const availability = await listEmployeeAvailability(pool, {
@@ -183,50 +233,86 @@ export async function detectConflicts(
     }
   }
 
+  // Status, assignment, and calendar facts are one date-scoped snapshot. Load
+  // them together so a recurring write does not make four network round trips
+  // per participant and occurrence while holding its transaction open.
+  const individualFacts = await pool.query<IndividualConflictRow>(
+    `WITH requested_individuals AS (
+       SELECT individual_id, ordinality
+         FROM unnest($1::uuid[]) WITH ORDINALITY AS requested(individual_id, ordinality)
+     )
+     SELECT requested.individual_id::text,
+            individual.status,
+            individual.display_name,
+            CASE WHEN $4::uuid IS NULL THEN true ELSE EXISTS (
+              SELECT 1
+                FROM assignments assignment
+               WHERE assignment.employee_id = $4::uuid
+                 AND assignment.individual_id = requested.individual_id
+                 AND assignment.status = 'active'
+                 AND assignment.archived_at IS NULL
+                 AND (assignment.program_id IS NULL OR assignment.program_id = $5::uuid)
+                 AND (assignment.start_date IS NULL OR assignment.start_date <= $2::date)
+                 AND (assignment.end_date IS NULL OR assignment.end_date >= $2::date)
+            ) END AS assigned,
+            conflict.session_id::text,
+            conflict.employee_id::text,
+            conflict.start_time,
+            conflict.end_time
+       FROM requested_individuals requested
+       LEFT JOIN individuals individual ON individual.id = requested.individual_id
+       LEFT JOIN LATERAL (
+         SELECT session.id AS session_id, session.employee_id, session.start_time, session.end_time
+           FROM scheduled_allocations allocation
+           JOIN scheduled_sessions session ON session.id = allocation.scheduled_session_id
+          WHERE allocation.individual_id = requested.individual_id
+            AND session.session_date = $2::date
+            AND session.status IN ('pending', 'completed')
+            AND ($3::uuid IS NULL OR session.id <> $3::uuid)
+       ) conflict ON true
+      ORDER BY requested.ordinality`,
+    [
+      draft.individualIds,
+      draft.sessionDate,
+      excludeSessionId ?? null,
+      draft.employeeId,
+      draft.programId,
+    ],
+  );
+  const factsByIndividual = new Map<string, IndividualConflictRow[]>();
+  for (const fact of individualFacts.rows) {
+    const facts = factsByIndividual.get(fact.individual_id) ?? [];
+    facts.push(fact);
+    factsByIndividual.set(fact.individual_id, facts);
+  }
+
   for (const individualId of draft.individualIds) {
-    const ind = await pool.query<{ status: string; display_name: string }>(
-      `SELECT status, display_name FROM individuals WHERE id = $1`,
-      [individualId],
-    );
-    const name = ind.rows[0]?.display_name ?? "individual";
-    if (ind.rows[0] && ind.rows[0].status !== "active") {
-      w.push({ code: "individual_inactive", severity: "warning", message: `${name} is ${ind.rows[0].status}.` });
+    const facts = factsByIndividual.get(individualId) ?? [];
+    const individual = facts[0];
+    const name = individual?.display_name ?? "individual";
+    if (individual?.status && individual.status !== "active") {
+      w.push({ code: "individual_inactive", severity: "warning", message: `${name} is ${individual.status}.` });
     }
     // Individual double-booked.
-    const clashes = await pool.query<{ start_time: string | null; end_time: string | null }>(
-      `SELECT s.start_time, s.end_time FROM scheduled_allocations a
-       JOIN scheduled_sessions s ON s.id = a.scheduled_session_id
-       WHERE a.individual_id = $1 AND s.session_date = $2 AND s.status IN ('pending','completed')
-         AND ($3::uuid IS NULL OR s.id <> $3)`,
-      [individualId, draft.sessionDate, excludeSessionId ?? null],
-    );
-    if (clashes.rows.some((c) => timesOverlap(draft.startTime, draft.endTime, c.start_time, c.end_time))) {
+    if (facts.some((fact) => fact.session_id !== null
+      && timesOverlap(draft.startTime, draft.endTime, fact.start_time, fact.end_time))) {
       w.push({ code: "individual_double_booked", severity: "warning", message: `${name} already has an overlapping session that day.` });
     }
     // Assignment: is this employee allowed to serve this individual for this program?
-    if (draft.employeeId) {
-      const assigned = await pool.query(
-        `SELECT 1 FROM assignments WHERE employee_id = $1 AND individual_id = $2
-           AND status = 'active' AND archived_at IS NULL
-           AND (program_id IS NULL OR program_id = $3)
-           AND (start_date IS NULL OR start_date <= $4::date)
-           AND (end_date IS NULL OR end_date >= $4::date)
-         LIMIT 1`,
-        [draft.employeeId, individualId, draft.programId, draft.sessionDate],
-      );
-      if (!assigned.rows[0]) {
-        w.push({ code: "not_assigned", severity: "warning", message: `The employee is not assigned to ${name} for this program.` });
-      }
+    if (draft.employeeId && !individual?.assigned) {
+      w.push({ code: "not_assigned", severity: "warning", message: `The employee is not assigned to ${name} for this program.` });
     }
-    // Authorization: within dates and within remaining hours.
-    const auth = await pool.query<{ start_date: string; end_date: string }>(
-      `SELECT ea.start_date::text, ea.end_date::text
-         FROM effective_budget_authorizations_at($3::date) ea
-        WHERE ea.individual_id = $1 AND ea.program_id = $2
-        ORDER BY ea.start_date, ea.end_date, ea.authorization_id`,
-      [individualId, draft.programId, draft.sessionDate],
+    // Authorization: the forecast already resolves the effective rows, so use
+    // that result for both coverage and remaining-hours checks instead of
+    // loading the same effective authorization twice for every occurrence.
+    const forecast = await individualProgramForecast(
+      pool,
+      individualId,
+      draft.programId,
+      excludeSessionId ?? null,
+      draft.sessionDate,
     );
-    if (auth.rows.length === 0) {
+    if (forecast.authorizationCount === 0) {
       const explicitPeriods = await pool.query<{ start_date: string; end_date: string }>(
         `SELECT bp.start_date::text, bp.end_date::text
            FROM budget_authorizations ba
@@ -250,13 +336,6 @@ export async function detectConflicts(
         w.push({ code: "missing_authorization", severity: "warning", message: `${name} has no active authorization for this program.` });
       }
     } else {
-      const forecast = await individualProgramForecast(
-        pool,
-        individualId,
-        draft.programId,
-        excludeSessionId ?? null,
-        draft.sessionDate,
-      );
       if (forecast.sourceAmbiguous) {
         w.push({
           code: "ambiguous_authorization",
@@ -295,15 +374,11 @@ export async function detectConflicts(
     // program that requires one-to-one and does not allow multiple employees.
     if (rules.one_to_one_required && !rules.allow_multiple_employees && draft.employeeId) {
       for (const individualId of draft.individualIds) {
-        const others = await pool.query<{ employee_id: string | null; start_time: string | null; end_time: string | null }>(
-          `SELECT s.employee_id, s.start_time, s.end_time
-           FROM scheduled_allocations a JOIN scheduled_sessions s ON s.id = a.scheduled_session_id
-           WHERE a.individual_id = $1 AND s.session_date = $2 AND s.status IN ('pending','completed')
-             AND s.employee_id IS NOT NULL AND s.employee_id <> $3
-             AND ($4::uuid IS NULL OR s.id <> $4)`,
-          [individualId, draft.sessionDate, draft.employeeId, excludeSessionId ?? null],
-        );
-        if (others.rows.some((o) => timesOverlap(draft.startTime, draft.endTime, o.start_time, o.end_time))) {
+        const facts = factsByIndividual.get(individualId) ?? [];
+        if (facts.some((fact) =>
+          fact.employee_id !== null
+            && fact.employee_id !== draft.employeeId
+            && timesOverlap(draft.startTime, draft.endTime, fact.start_time, fact.end_time))) {
           w.push({ code: "individual_two_employees_one_to_one", severity: "warning", message: `${rules.name} is one-to-one, but this individual already has an overlapping session with another employee.` });
           break;
         }
@@ -344,10 +419,11 @@ export async function previewSession(
   draft: SessionDraft,
   excludeSessionId?: string | null,
 ): Promise<SessionPreview> {
-  const duration =
-    draft.durationHours && dec(draft.durationHours).gt(0)
-      ? toHours(draft.durationHours)
-      : durationBetween(draft.startTime, draft.endTime);
+  const duration = normalizedSessionDuration(
+    draft.durationHours,
+    draft.startTime,
+    draft.endTime,
+  );
   const effective: SessionDraft = { ...draft, durationHours: duration ?? "0" };
 
   const warnings = duration
@@ -404,21 +480,23 @@ async function insertSessionRows(
   db: ScheduleQueryable,
   input: CreateSessionInput,
   actorId: string | null,
+  options?: { employeeLockHeld?: boolean },
 ): Promise<{ id: string; warnings: ScheduleWarning[] }> {
-  const duration =
-    input.durationHours && dec(input.durationHours).gt(0)
-      ? toHours(input.durationHours)
-      : durationBetween(input.startTime, input.endTime);
+  const duration = normalizedSessionDuration(
+    input.durationHours,
+    input.startTime,
+    input.endTime,
+  );
   if (!duration) throw new Error("A positive duration (or a valid start/end time) is required.");
 
   const individualIds = [...new Set(input.individualIds)];
   if (individualIds.length === 0) throw new Error("Choose at least one individual.");
   const draft: SessionDraft = { ...input, individualIds, durationHours: duration };
-  if (draft.employeeId) {
+  if (draft.employeeId && !options?.employeeLockHeld) {
     await db.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`employee-availability:${draft.employeeId}`]);
   }
-  const warnings = await detectConflicts(db, draft);
   const rate = await currentRate(db, input.programId, input.sessionDate);
+  const warnings = await detectConflicts(db, draft, undefined, rate);
   const groupSize = individualIds.length;
   const billing = rate
     ? expectedBilling({ hours: duration, groupSize, agencyRate: rate.agencyRate, internalRate: rate.internalRate })
@@ -485,6 +563,19 @@ async function insertSessionWithAllocations(
       && !writtenOverrideReason(input.overrideReason)) {
       throw new ScheduleOverrideRequiredError(SCHEDULE_OVERRIDE_REQUIRED_MESSAGE);
     }
+    await recordChange(client, {
+      actorId,
+      action: "session_scheduled",
+      entityType: "scheduled_session",
+      entityId: result.id,
+      next: {
+        date: input.sessionDate,
+        program: input.programId,
+        individuals: [...new Set(input.individualIds)].length,
+        warnings: result.warnings.length,
+      },
+      reason: input.overrideReason,
+    });
     await client.query("COMMIT");
     return result;
   } catch (error) {
@@ -506,7 +597,7 @@ export async function createSession(
   const individualIds = [...new Set((input.individualIds ?? []).filter(isUuid))];
   if (individualIds.length === 0) return fail("validation", "Choose at least one individual.");
   if (input.employeeId && !isUuid(input.employeeId)) return fail("validation", "Invalid employee.");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.sessionDate)) return fail("validation", "Give a session date.");
+  if (!isScheduleDate(input.sessionDate)) return fail("validation", "Give a valid session date.");
   const overrideReason = writtenOverrideReason(reason, input.overrideReason);
   try {
     const result = await insertSessionWithAllocations(
@@ -515,14 +606,6 @@ export async function createSession(
       actorId,
       warningPolicy,
     );
-    await recordChange(pool, {
-      actorId,
-      action: "session_scheduled",
-      entityType: "scheduled_session",
-      entityId: result.id,
-      next: { date: input.sessionDate, program: input.programId, individuals: individualIds.length, warnings: result.warnings.length },
-      reason: overrideReason,
-    });
     return ok(result);
   } catch (error) {
     if (error instanceof ScheduleOverrideRequiredError) {
@@ -550,9 +633,7 @@ function normalizedWeekdays(input: CreateSeriesInput): number[] {
 }
 
 function seriesDuration(input: CreateSeriesInput): string | null {
-  return input.durationHours && dec(input.durationHours).gt(0)
-    ? toHours(input.durationHours)
-    : durationBetween(input.startTime, input.endTime);
+  return normalizedSessionDuration(input.durationHours, input.startTime, input.endTime);
 }
 
 export function validateSeriesInput(
@@ -566,8 +647,12 @@ export function validateSeriesInput(
   if (input.frequency === "weekly" && normalizedWeekdays(input).length === 0) {
     return "Choose at least one weekday.";
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(input.endDate)) {
+  if (!isScheduleDate(input.startDate) || !isScheduleDate(input.endDate)) {
     return "Give valid effective dates.";
+  }
+  const interval = input.interval ?? 1;
+  if (!Number.isSafeInteger(interval) || interval < 1) {
+    return "The recurrence interval must be a positive whole number.";
   }
   if (!seriesDuration(input)) return "Give a duration or start/end time.";
   const dates = generateOccurrences({
@@ -607,6 +692,9 @@ export async function createSeries(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    if (input.employeeId) {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`employee-availability:${input.employeeId}`]);
+    }
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO schedule_series
          (employee_id, program_id, service_type, frequency, interval, weekdays,
@@ -641,6 +729,7 @@ export async function createSeries(
           overrideReason,
         },
         actorId,
+        { employeeLockHeld: Boolean(input.employeeId) },
       );
       warnings += warningsRequiringScheduleOverride(result.warnings, warningPolicy).length;
     }
@@ -705,7 +794,7 @@ export async function updateSeries(
   if (input.status !== "active" && input.status !== "cancelled") {
     return fail("validation", "Choose an active or cancelled status.");
   }
-  if (input.applyFromDate && !/^\d{4}-\d{2}-\d{2}$/.test(input.applyFromDate)) {
+  if (input.applyFromDate && !isScheduleDate(input.applyFromDate)) {
     return fail("validation", "Give a valid date for applying the changes.");
   }
   const individualIds = normalizedIndividuals(input);
@@ -823,6 +912,9 @@ export async function updateSeries(
       [seriesId, applyFromDate],
     );
     const protectedFutureDates = new Set(protectedFutureRows.map((row) => row.session_date));
+    if (input.employeeId) {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`employee-availability:${input.employeeId}`]);
+    }
 
     let targetSeriesId = seriesId;
     let replaced = 0;
@@ -927,6 +1019,7 @@ export async function updateSeries(
           overrideReason,
         },
         actorId,
+        { employeeLockHeld: Boolean(input.employeeId) },
       );
       warnings += warningsRequiringScheduleOverride(result.warnings, warningPolicy).length;
     }
@@ -1082,6 +1175,9 @@ export async function rescheduleSession(
   warningPolicy?: ScheduleWarningPolicy,
 ): Promise<Result<{ id: string; warnings: ScheduleWarning[] }>> {
   if (!isUuid(id)) return fail("not_found", "That session no longer exists.");
+  if (to.sessionDate !== undefined && !isScheduleDate(to.sessionDate)) {
+    return fail("validation", "Give a valid session date.");
+  }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -1107,6 +1203,14 @@ export async function rescheduleSession(
     const sessionDate = to.sessionDate ?? s.session_date;
     const startTime = to.startTime === undefined ? s.start_time : to.startTime;
     const endTime = to.endTime === undefined ? s.end_time : to.endTime;
+    const timesChanged = to.startTime !== undefined || to.endTime !== undefined;
+    const duration = timesChanged
+      ? normalizedSessionDuration(s.duration_hours, startTime, endTime)
+      : toHours(s.duration_hours);
+    if (!duration) {
+      await client.query("ROLLBACK");
+      return fail("validation", "Give both a valid start and end time, or leave both blank.");
+    }
     const inds = await client.query<{ individual_id: string }>(
       `SELECT individual_id FROM scheduled_allocations WHERE scheduled_session_id = $1`,
       [id],
@@ -1114,24 +1218,63 @@ export async function rescheduleSession(
     if (s.employee_id) {
       await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`employee-availability:${s.employee_id}`]);
     }
+    const rate = await currentRate(client, s.program_id, sessionDate);
     const warnings = await detectConflicts(
       client,
-      { employeeId: s.employee_id, programId: s.program_id, individualIds: inds.rows.map((r) => r.individual_id), sessionDate, startTime, endTime, durationHours: s.duration_hours },
+      { employeeId: s.employee_id, programId: s.program_id, individualIds: inds.rows.map((r) => r.individual_id), sessionDate, startTime, endTime, durationHours: duration },
       id,
+      rate,
     );
     if (warningsRequiringScheduleOverride(warnings, warningPolicy).length > 0
       && !writtenOverrideReason(reason)) {
       await client.query("ROLLBACK");
       return fail("validation", SCHEDULE_OVERRIDE_REQUIRED_MESSAGE);
     }
+    const billing = rate
+      ? expectedBilling({
+          hours: duration,
+          groupSize: inds.rows.length,
+          agencyRate: rate.agencyRate,
+          internalRate: rate.internalRate,
+        })
+      : null;
     await client.query(
-      `UPDATE scheduled_sessions SET session_date = $2, start_time = $3, end_time = $4,
-         warnings = $5, updated_at = now() WHERE id = $1`,
-      [id, sessionDate, startTime, endTime, warnings.length ? JSON.stringify(warnings) : null],
+      `UPDATE scheduled_sessions
+          SET session_date = $2, start_time = $3, end_time = $4,
+              duration_hours = $5, expected_rate = $6,
+              expected_agency_gross = $7, expected_internal_amount = $8,
+              expected_agency_additional = $9, warnings = $10, updated_at = now()
+        WHERE id = $1`,
+      [
+        id,
+        sessionDate,
+        startTime,
+        endTime,
+        duration,
+        billing?.expectedRate ?? null,
+        billing?.agencyGross ?? null,
+        billing?.internalAmount ?? null,
+        billing?.agencyAdditional ?? null,
+        warnings.length ? JSON.stringify(warnings) : null,
+      ],
+    );
+    await client.query(
+      `UPDATE scheduled_allocations
+          SET allocation_hours = $2, allocated_rate = $3,
+              allocated_amount = $4, updated_at = now()
+        WHERE scheduled_session_id = $1`,
+      [
+        id,
+        duration,
+        billing?.perIndividual.rate ?? null,
+        billing?.perIndividual.amount ?? null,
+      ],
     );
     await recordChange(client, {
       actorId, action: "session_rescheduled", entityType: "scheduled_session", entityId: id,
-      previous: { date: s.session_date, start: s.start_time }, next: { date: sessionDate, start: startTime }, reason,
+      previous: { date: s.session_date, start: s.start_time, end: s.end_time, durationHours: s.duration_hours },
+      next: { date: sessionDate, start: startTime, end: endTime, durationHours: duration },
+      reason,
     });
     await client.query("COMMIT");
     return ok({ id, warnings });

@@ -41,4 +41,13 @@ describe("recurring schedule validation", () => {
       endDate: "2027-02-05",
     })).toBe("A recurring schedule can include up to 400 visits. Shorten the date range or use a longer interval.");
   });
+
+  it("rejects invalid calendar dates and non-positive or fractional intervals", () => {
+    expect(validateSeriesInput({ ...base, startDate: "2026-02-29" }))
+      .toBe("Give valid effective dates.");
+    expect(validateSeriesInput({ ...base, interval: 0 }))
+      .toBe("The recurrence interval must be a positive whole number.");
+    expect(validateSeriesInput({ ...base, interval: 1.5 }))
+      .toBe("The recurrence interval must be a positive whole number.");
+  });
 });

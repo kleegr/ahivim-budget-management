@@ -338,8 +338,13 @@ async function authorizationUsage(
   authorization: EffectiveAuthorizationRow,
   excludeSessionId?: string | null,
 ): Promise<AuthorizationUsage> {
-  const actual = await pool.query<{ h: string; amt: string }>(
-    `SELECT effective_billed_hours($1, $2, $3::date, $4::date, $5::numeric)::text AS h,
+  const usage = await pool.query<{
+    actual_h: string;
+    actual_amt: string;
+    scheduled_h: string;
+    scheduled_amt: string;
+  }>(
+    `SELECT effective_billed_hours($1, $2, $3::date, $4::date, $5::numeric)::text AS actual_h,
             COALESCE((
               SELECT sum(COALESCE(
                 t.calculated_internal_amount,
@@ -351,38 +356,45 @@ async function authorizationUsage(
               WHERE t.individual_id = $1 AND t.program_id = $2
                  AND canonical_service_date(t.period_begin, t.check_date, t.period_end)
                      BETWEEN $3::date AND $4::date
-            ), 0)::text AS amt`,
+            ), 0)::text AS actual_amt,
+            COALESCE((
+              SELECT sum(sa.allocation_hours)
+                FROM scheduled_allocations sa
+                JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
+               WHERE sa.individual_id = $1
+                 AND s.program_id = $2
+                 AND s.status = 'pending'
+                 AND s.matched_transaction_id IS NULL
+                 AND s.session_date BETWEEN $3::date AND $4::date
+                 AND ($6::uuid IS NULL OR s.id <> $6)
+            ), 0)::text AS scheduled_h,
+            COALESCE((
+              SELECT sum(sa.allocated_amount)
+                FROM scheduled_allocations sa
+                JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
+               WHERE sa.individual_id = $1
+                 AND s.program_id = $2
+                 AND s.status = 'pending'
+                 AND s.matched_transaction_id IS NULL
+                 AND s.session_date BETWEEN $3::date AND $4::date
+                 AND ($6::uuid IS NULL OR s.id <> $6)
+            ), 0)::text AS scheduled_amt`,
     [
       individualId,
       authorization.program_id,
       authorization.start_date,
       authorization.end_date,
       authorization.internal_rate,
-    ],
-  );
-  const scheduled = await pool.query<{ h: string; amt: string }>(
-    `SELECT COALESCE(sum(sa.allocation_hours),0)::text AS h,
-            COALESCE(sum(sa.allocated_amount),0)::text AS amt
-       FROM scheduled_allocations sa
-       JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
-      WHERE sa.individual_id = $1 AND s.program_id = $2 AND s.status = 'pending'
-        AND s.matched_transaction_id IS NULL
-        AND s.session_date BETWEEN $3::date AND $4::date
-        AND ($5::uuid IS NULL OR s.id <> $5)`,
-    [
-      individualId,
-      authorization.program_id,
-      authorization.start_date,
-      authorization.end_date,
       excludeSessionId ?? null,
     ],
   );
+  const row = usage.rows[0];
 
   return {
-    actualHours: actual.rows[0]?.h ?? "0",
-    actualAmount: actual.rows[0]?.amt ?? "0",
-    scheduledHours: scheduled.rows[0]?.h ?? "0",
-    scheduledAmount: scheduled.rows[0]?.amt ?? "0",
+    actualHours: row?.actual_h ?? "0",
+    actualAmount: row?.actual_amt ?? "0",
+    scheduledHours: row?.scheduled_h ?? "0",
+    scheduledAmount: row?.scheduled_amt ?? "0",
   };
 }
 

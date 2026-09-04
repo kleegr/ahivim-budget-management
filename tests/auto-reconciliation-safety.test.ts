@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import type { PgLikePool } from "@/lib/import/commit";
+import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { autoReconcile } from "@/lib/manage/reconciliation";
 
 const SESSION_ID = "00000000-0000-4000-8000-000000000001";
@@ -42,9 +42,12 @@ function poolFor(
   sessions: SessionFixture[],
   candidates: Array<typeof exactCandidate>,
   updateError?: unknown,
+  failAudit = false,
 ) {
   const updates: string[] = [];
+  const statements: string[] = [];
   const query = vi.fn(async (sql: string) => {
+    statements.push(sql);
     if (sql.includes("SELECT s.id, s.program_id")) return { rows: sessions };
     if (sql.includes("FROM payroll_transactions t")) return { rows: candidates };
     if (sql.includes("UPDATE scheduled_sessions") && sql.includes("RETURNING id")) {
@@ -52,9 +55,17 @@ function poolFor(
       if (updateError) throw updateError;
       return { rows: [{ id: SESSION_ID }] };
     }
+    if (sql.includes("INSERT INTO audit_logs") && failAudit) throw new Error("audit unavailable");
     return { rows: [] };
   });
-  return { pool: { query } as unknown as PgLikePool, query, updates };
+  const client = { query: query as PgLikeClient["query"], release: vi.fn() } as PgLikeClient;
+  return {
+    pool: { query, connect: vi.fn(async () => client) } as unknown as PgLikePool,
+    query,
+    updates,
+    statements,
+    client,
+  };
 }
 
 async function reconcileWith(candidate: typeof exactCandidate, planned: SessionFixture = session) {
@@ -188,5 +199,36 @@ describe("automatic schedule reconciliation safety", () => {
 
     expect(result).toEqual({ ok: true, data: { matched: 0, considered: 1 } });
     expect(mocked.updates).toHaveLength(1);
+    expect(mocked.statements).toContain("ROLLBACK TO SAVEPOINT auto_match_candidate");
+    expect(mocked.statements).toContain("COMMIT");
+  });
+
+  it("commits exact matches only after their aggregate audit succeeds", async () => {
+    const mocked = poolFor([session], [exactCandidate]);
+
+    await expect(autoReconcile(
+      mocked.pool,
+      { from: "2026-08-01", to: "2026-08-31" },
+      null,
+    )).resolves.toEqual({ ok: true, data: { matched: 1, considered: 1 } });
+
+    const auditIndex = mocked.statements.findIndex((sql) => sql.includes("INSERT INTO audit_logs"));
+    expect(auditIndex).toBeGreaterThan(mocked.statements.findIndex((sql) => sql.includes("UPDATE scheduled_sessions")));
+    expect(auditIndex).toBeLessThan(mocked.statements.indexOf("COMMIT"));
+    expect(mocked.client.release).toHaveBeenCalledOnce();
+  });
+
+  it("rolls every exact match back when its audit record cannot be written", async () => {
+    const mocked = poolFor([session], [exactCandidate], undefined, true);
+
+    await expect(autoReconcile(
+      mocked.pool,
+      { from: "2026-08-01", to: "2026-08-31" },
+      null,
+    )).rejects.toThrow("audit unavailable");
+
+    expect(mocked.statements).toContain("ROLLBACK");
+    expect(mocked.statements).not.toContain("COMMIT");
+    expect(mocked.client.release).toHaveBeenCalledOnce();
   });
 });

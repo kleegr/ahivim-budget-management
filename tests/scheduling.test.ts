@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  expectedBilling, timesOverlap, durationBetween, minutesOf, generateOccurrences, MAX_SERIES_OCCURRENCES,
+  expectedBilling, timesOverlap, durationBetween, minutesOf, generateOccurrences,
+  isScheduleDate, MAX_SERIES_OCCURRENCES,
 } from "@/lib/business/scheduling";
 import { dec } from "@/lib/money";
 
@@ -85,5 +86,15 @@ describe("recurrence", () => {
 
   it("returns nothing for an inverted range", () => {
     expect(generateOccurrences({ frequency: "weekly", weekdays: [1], startDate: "2025-02-01", endDate: "2025-01-01" })).toEqual([]);
+  });
+
+  it("rejects regex-shaped dates that are not real calendar dates", () => {
+    expect(isScheduleDate("2026-02-28")).toBe(true);
+    expect(isScheduleDate("2026-02-29")).toBe(false);
+    expect(generateOccurrences({
+      frequency: "daily",
+      startDate: "2026-02-29",
+      endDate: "2026-03-02",
+    })).toEqual([]);
   });
 });

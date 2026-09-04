@@ -52,8 +52,16 @@ function availabilityQuery(statements: string[]) {
         }],
       };
     }
-    if (sql.includes("SELECT status, display_name FROM employees")) {
-      return { rows: [{ status: "active", display_name: "Alice" }] };
+    if (sql.includes("FROM employees e") && sql.includes("LEFT JOIN scheduled_sessions s")) {
+      return {
+        rows: [{
+          status: "active",
+          display_name: "Alice",
+          session_id: null,
+          start_time: null,
+          end_time: null,
+        }],
+      };
     }
     if (sql.includes("SELECT id AS employee_id")) {
       return { rows: [{ employee_id: EMPLOYEE_ID, employee_name: "Alice" }] };
@@ -65,6 +73,50 @@ function availabilityQuery(statements: string[]) {
           individual_id: INDIVIDUAL_ID,
           start_date: null,
           end_date: null,
+        }],
+      };
+    }
+    if (sql.includes("AS fact_type")) {
+      return {
+        rows: [
+          {
+            fact_type: "weekly",
+            employee_id: EMPLOYEE_ID,
+            session_date: null,
+            weekday: 1,
+            start_time: "10:00",
+            end_time: "17:00",
+            effective_from: "2026-01-01",
+            effective_to: null,
+            start_date: null,
+            end_date: null,
+          },
+          {
+            fact_type: "unavailable",
+            employee_id: EMPLOYEE_ID,
+            session_date: null,
+            weekday: null,
+            start_time: null,
+            end_time: null,
+            effective_from: null,
+            effective_to: null,
+            start_date: "2026-09-07",
+            end_date: "2026-09-07",
+          },
+        ],
+      };
+    }
+    if (sql.includes("WITH requested_individuals AS")) {
+      return {
+        rows: [{
+          individual_id: INDIVIDUAL_ID,
+          status: "active",
+          display_name: "Ari",
+          assigned: true,
+          session_id: null,
+          employee_id: null,
+          start_time: null,
+          end_time: null,
         }],
       };
     }
@@ -140,6 +192,12 @@ describe("save-time employee availability", () => {
         message: "This session is outside the employee's working hours.",
       },
     ]));
+    expect(warnings.map((warning) => warning.code)).not.toEqual(expect.arrayContaining([
+      "employee_double_booked",
+      "individual_double_booked",
+      "not_assigned",
+    ]));
+    expect(statements.filter((sql) => sql.includes("WITH requested_individuals AS"))).toHaveLength(1);
   });
 
   it("locks and rechecks current availability before saving, then requires an override", async () => {
