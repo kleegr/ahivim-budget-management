@@ -84,6 +84,7 @@ export async function POST(request: NextRequest) {
         relationship: typeof body.relationship === "string" ? body.relationship : undefined,
         employeeId: typeof body.employeeId === "string" ? body.employeeId : undefined,
         agencyId: typeof body.agencyId === "string" ? body.agencyId : undefined,
+        internalAccess: body.internalAccess,
         capabilityGrants: body.capabilityGrants as string[] | undefined,
         capabilityDenials: body.capabilityDenials as string[] | undefined,
         reason: typeof body.reason === "string" ? body.reason : null,

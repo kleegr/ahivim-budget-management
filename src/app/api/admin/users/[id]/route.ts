@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import {
+  accountPresetMatchesRole,
   isRole,
   listUsers,
   getUserAccessConfig,
@@ -9,6 +10,11 @@ import {
   userAccessConfigFromInput,
   type UserAccessConfig,
 } from "@/lib/auth/users";
+import {
+  getAccountPreset,
+  isAccountPresetId,
+  type AccountPresetId,
+} from "@/lib/auth/account-presets";
 import { jsonError, redactError, resultResponse, sameOriginOrFail } from "@/lib/http";
 import { isUuid } from "@/lib/data/app-queries";
 
@@ -91,6 +97,22 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const requestedRole = typeof body.role === "string" && isRole(body.role)
       ? body.role
       : target.role;
+    const presetSubmitted = "preset" in body;
+    if (presetSubmitted && (typeof body.preset !== "string" || !isAccountPresetId(body.preset))) {
+      return jsonError("Choose a valid account role.", 400);
+    }
+    const requestedPreset = presetSubmitted ? body.preset as AccountPresetId : undefined;
+    const requestedPresetDefinition = requestedPreset ? getAccountPreset(requestedPreset) : null;
+    if (
+      requestedPresetDefinition
+      && requestedPresetDefinition.binding.kind !== "none"
+      && requestedPresetDefinition.binding.kind !== "owner"
+    ) {
+      return jsonError("Portal-linked account presets must be managed in Portal administration.", 400);
+    }
+    if (requestedPreset && !accountPresetMatchesRole(requestedPreset, requestedRole)) {
+      return jsonError("That account preset is not compatible with the selected role.", 400);
+    }
     const accessSubmitted = ACCESS_KEYS.some((key) => key in body);
     let access: UserAccessConfig | undefined;
     if (typeof body.role === "string" || accessSubmitted) {
@@ -116,9 +138,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
 
     const hasPassword = typeof body.password === "string" && body.password.length > 0;
-    if (typeof body.role === "string" || accessSubmitted || typeof body.isActive === "boolean" || hasPassword) {
+    if (
+      typeof body.role === "string"
+      || presetSubmitted
+      || accessSubmitted
+      || typeof body.isActive === "boolean"
+      || hasPassword
+    ) {
       const outcome = await updateManagedUser(pool, id, {
         role: typeof body.role === "string" || accessSubmitted ? requestedRole : undefined,
+        accountPreset: requestedPreset,
         access,
         isActive: typeof body.isActive === "boolean" ? body.isActive : undefined,
         password: hasPassword ? body.password as string : undefined,

@@ -12,22 +12,28 @@ function filename(value: string): string {
 }
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   const { id } = await params;
   try {
-    const found = await accessibleClassInvoice(id, "view");
+    const preview = new URL(request.url).searchParams.get("preview") === "1";
+    const found = await accessibleClassInvoice(id, preview ? "manage" : "view");
     if ("error" in found) return found.error as Response;
-    if (found.invoice.status !== "issued") {
+    if (found.invoice.status === "void") {
+      return jsonError("Voided class invoices cannot be rendered.", 409);
+    }
+    if (found.invoice.status !== "issued" && !preview) {
       return jsonError("Only issued class invoices can be downloaded.", 409);
     }
-    const bytes = await buildClassInvoicePdf(found.invoice);
+    const bytes = await buildClassInvoicePdf(found.invoice, {
+      draft: found.invoice.status === "draft",
+    });
     return new Response(Buffer.from(bytes), {
       status: 200,
       headers: {
         "content-type": "application/pdf",
-        "content-disposition": `attachment; filename="${filename(found.invoice.invoiceNumber)}"`,
+        "content-disposition": `${preview ? "inline" : "attachment"}; filename="${filename(found.invoice.invoiceNumber)}"`,
         "cache-control": "private, no-store, max-age=0",
         "x-content-type-options": "nosniff",
       },
