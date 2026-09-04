@@ -10,9 +10,8 @@ export const dynamic = "force-dynamic";
  * Live database connectivity check.
  *
  * Readable without a session, because a deployment check has to be able to
- * call it before anyone can sign in. That is also why the anonymous response
- * is deliberately thin: connectivity, latency, whether migrations are applied,
- * and how many tables exist.
+ * call it before anyone can sign in. The anonymous response is deliberately
+ * limited to connectivity and migration health.
  *
  * The table NAMES and the per-table ROW COUNTS are operational detail — a
  * complete map of the schema and how much data is in each part of it — and are
@@ -26,7 +25,7 @@ export async function GET() {
   const envName = resolveConnectionEnvName();
   if (!envName) {
     return NextResponse.json(
-      { connected: false, reason: "No database connection variable is set on this deployment." },
+      { ok: false, connected: false, reason: "Database is not configured." },
       { status: 503 },
     );
   }
@@ -43,20 +42,21 @@ export async function GET() {
     const { rows } = await getPool().query<{ now: string; version: string }>(
       "SELECT now()::text AS now, version() AS version",
     );
-    const tables = await listTables();
     const migrated = await ledgerExists();
 
     const body: Record<string, unknown> = {
+      ok: true,
       connected: true,
-      connectionVariable: envName, // the NAME only, never the value
-      latencyMs: Date.now() - started,
-      serverTime: rows[0]?.now ?? null,
       migrationsApplied: migrated,
-      tableCount: tables.length,
       detail: isAdmin ? "administrator" : "public",
     };
 
     if (isAdmin) {
+      const tables = await listTables();
+      body.connectionVariable = envName; // the NAME only, never the value
+      body.latencyMs = Date.now() - started;
+      body.serverTime = rows[0]?.now ?? null;
+      body.tableCount = tables.length;
       body.serverVersion = rows[0]?.version?.split(" ").slice(0, 2).join(" ") ?? null;
       body.tables = tables;
       body.rowCounts = migrated ? await tableCounts(tables) : {};
@@ -65,7 +65,12 @@ export async function GET() {
     return NextResponse.json(body);
   } catch (error) {
     return NextResponse.json(
-      { connected: false, connectionVariable: envName, reason: summarise(error) },
+      {
+        ok: false,
+        connected: false,
+        reason: isAdmin ? summarise(error) : "Database check failed.",
+        ...(isAdmin ? { connectionVariable: envName } : {}),
+      },
       { status: 503 },
     );
   }

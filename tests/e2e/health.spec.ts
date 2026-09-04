@@ -24,13 +24,15 @@ test.describe("public / health", () => {
     await expect(page.getByRole("button", { name: /^sign in$/i })).toBeVisible();
   });
 
-  test("GET /api/health/db reports a healthy, migrated database", async ({ request }) => {
+  test("GET /api/health/db reports database health without operational detail", async ({ request }) => {
     const res = await request.get("/api/health/db");
     expect(res.status()).toBe(200);
     const body = await res.json();
     expect(body.connected).toBe(true);
     expect(body.migrationsApplied).toBe(true);
-    expect(body.tableCount).toBeGreaterThan(0);
+    expect(body.detail).toBe("public");
+    expect(body).not.toHaveProperty("tableCount");
+    expect(body).not.toHaveProperty("connectionVariable");
   });
 
   test("GET /api/health/schema reports the schema is current", async ({ request }) => {
@@ -41,13 +43,11 @@ test.describe("public / health", () => {
     expect(body.healthy).toBe(true);
   });
 
-  test("GET /api/health/env reports the connection variable and auth secret", async ({ request }) => {
+  test("GET /api/health/env reports aggregate configuration readiness", async ({ request }) => {
     const res = await request.get("/api/health/env");
     expect(res.status()).toBe(200);
     const body = await res.json();
-    expect(body.databaseConnectionVariable).toBe("DATABASE_URL");
-    expect(body.authSecretConfigured).toBe(true);
-    expect(body.candidatesPresent?.DATABASE_URL).toBe(true);
+    expect(body).toEqual({ ok: true, configured: true, detail: "public" });
   });
 
   test("unauthenticated /dashboard redirects to sign-in", async ({ page }) => {

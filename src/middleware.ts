@@ -24,33 +24,33 @@ const PUBLIC_OCR_ASSETS = new Set([
   "/tesseract/7.0.0/lang/eng.traineddata.gz",
 ]);
 
-// The sync cron and one-time bootstrap must be reachable WITHOUT a session
-// cookie: the Vercel Cron calls the endpoint with a CRON_SECRET bearer header
-// (no cookie), and the bootstrap is a one-time self-service trigger. Both do
-// their own authorization at the route level (CRON_SECRET / one-shot flag), so
-// they are safe to let past this cookie-only redirect layer. The interactive
-// sync routes (/api/sync/run, /config, /conflicts, /history) are NOT listed and
-// stay behind the session check.
-const PUBLIC_API_PREFIXES = [
+// These exact endpoints must be reachable WITHOUT a session cookie because
+// they either are genuinely read-only health checks or authenticate the caller
+// inside the route (for example Vercel Cron's bearer secret). Mutating routes
+// on this list still fail closed at the route handler before doing any work.
+// Exact matching prevents similarly named or unknown APIs from bypassing the
+// normal cookie-presence redirect layer.
+const PUBLIC_API_PATHS = new Set([
   "/api/auth/login",
   "/api/auth/logout",
-  "/api/health/",
+  "/api/health/db",
+  "/api/health/env",
+  "/api/health/schema",
+  "/api/health/xlsx",
   "/api/sync/cron",
   "/api/sync/bootstrap",
   // Vercel Blob calls this endpoint without the application's session cookie
   // after a direct upload. The route verifies Blob's signed callback itself;
   // browser token requests still require the normal session and capability.
   "/api/documents/uploads",
-];
+]);
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (PUBLIC_OCR_ASSETS.has(pathname)) return NextResponse.next();
   if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
-  if (PUBLIC_API_PREFIXES.some((p) => pathname === p || pathname.startsWith(p))) {
-    return NextResponse.next();
-  }
+  if (PUBLIC_API_PATHS.has(pathname)) return NextResponse.next();
 
   if (request.cookies.has("ahivim_session")) return NextResponse.next();
 

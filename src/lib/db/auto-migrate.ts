@@ -103,8 +103,8 @@ let ensured: Promise<MigrateOutcome> | null = null;
 
 /**
  * Explicit, idempotent "make the schema current" trigger. Memoised per process
- * and cheap when the schema is already current. Reached from the schema health
- * check.
+ * and cheap when the schema is already current. Reached only from explicitly
+ * authorized maintenance routes; public health checks remain read-only.
  */
 export function ensureMigrationsApplied(): Promise<MigrateOutcome> {
   if (!ensured) ensured = applyPendingMigrations();

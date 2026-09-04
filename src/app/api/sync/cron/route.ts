@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { timingSafeEqual } from "node:crypto";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
 import { jsonError } from "@/lib/http";
@@ -13,15 +14,9 @@ export const maxDuration = 300;
 /**
  * The scheduled sync endpoint hit by Vercel Cron.
  *
- * Auth: Vercel Cron sends `Authorization: Bearer $CRON_SECRET`. When CRON_SECRET
- * is set the header must match (a signed-in admin may also trigger it), so the
- * endpoint is locked down. When CRON_SECRET is NOT set the endpoint is open, so
- * the scheduled sync works out of the box — this is safe because the only thing
- * an unauthenticated call can do is run a sheet sync, which is idempotent,
- * rate-limited by the min-interval guard, non-destructive (it never deletes or
- * overwrites). Anonymous responses are status-only because reconciliation
- * details include agency and internal dollar totals. Setting CRON_SECRET
- * hardens the trigger and enables the detailed response.
+ * Auth: Vercel Cron sends `Authorization: Bearer $CRON_SECRET`. The configured
+ * secret must match, or a signed-in administrator must authorize the request.
+ * A missing secret never makes this database-writing route public.
  *
  * Self-gating makes the schedule configurable without a redeploy:
  *   • disabled              → skip.
@@ -32,15 +27,19 @@ export const maxDuration = 300;
  * So the effective run time follows the configured hour when the cron pings
  * often enough, and still guarantees a daily sync on a once-a-day cron.
  */
-async function authorize(request: NextRequest): Promise<{ allowed: boolean; detailed: boolean }> {
-  const secret = process.env.CRON_SECRET;
+async function authorize(request: NextRequest): Promise<{
+  authorisedBy: "cron_secret" | "admin_session";
+  actorId: string | null;
+} | null> {
+  const secret = process.env.CRON_SECRET?.trim();
   const auth = request.headers.get("authorization");
-  const bearer = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
-  const key = bearer ?? request.nextUrl.searchParams.get("key");
-  if (secret && key === secret) return { allowed: true, detailed: true };
+  const bearer = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : null;
+  if (secret && bearer && safeEqual(secret, bearer)) {
+    return { authorisedBy: "cron_secret", actorId: null };
+  }
   const user = await apiUser("admin").catch(() => null);
-  if (user) return { allowed: true, detailed: true };
-  return { allowed: !secret, detailed: false };
+  if (user) return { authorisedBy: "admin_session", actorId: user.actorId };
+  return null;
 }
 
 async function lastSuccessAt(): Promise<Date | null> {
@@ -54,7 +53,7 @@ async function lastSuccessAt(): Promise<Date | null> {
 
 export async function GET(request: NextRequest) {
   const authorization = await authorize(request);
-  if (!authorization.allowed) return jsonError("Unauthorized", 401);
+  if (!authorization) return jsonError("Unauthorized", 401);
 
   // The cron may be the first request after a deploy that shipped a migration.
   try {
@@ -87,16 +86,27 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const summary = await runSheetSync(pool, { trigger: "scheduled", userId: null, config });
+  const summary = await runSheetSync(pool, {
+    trigger: "scheduled",
+    userId: authorization.actorId,
+    config,
+  });
   return NextResponse.json({
     ok: summary.status !== "failed",
     ran: true,
     status: summary.status,
-    ...(authorization.detailed ? { summary } : {}),
+    authorisedBy: authorization.authorisedBy,
+    summary,
   });
 }
 
 /** Allow a POST trigger too (some cron setups POST). Same behaviour. */
 export async function POST(request: NextRequest) {
   return GET(request);
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
 }

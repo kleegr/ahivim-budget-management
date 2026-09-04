@@ -3,8 +3,6 @@ import { getPool } from "@/lib/db";
 import { listTables, LEDGER_TABLE } from "@/lib/db/migrate";
 import { MIGRATIONS } from "@/lib/db/migrations.generated";
 import { migrationChecksumMatches } from "@/lib/db/migration-checksum";
-import { ensureMigrationsApplied } from "@/lib/db/auto-migrate";
-import { ensurePostMigrationTasks } from "@/lib/db/post-migrate";
 import { apiUser } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
@@ -18,24 +16,15 @@ export const maxDuration = 30;
  * and are all migrations this build ships recorded as applied? No table names,
  * no migration names and no counts are exposed — a deploy can still confirm the
  * schema is current from `healthy: true` without leaking the schema shape.
+ * This handler is deliberately read-only. Applying migrations and post-migrate
+ * data tasks belongs to the instrumentation hook or an explicitly authorized
+ * maintenance route, never a public GET request.
  *
  * Signed-in admins additionally get the detailed table + migration listing,
  * which is useful when diagnosing a deployment.
  */
 export async function GET() {
   const pool = getPool();
-
-  // Bring the schema current on first request (idempotent, once per process),
-  // so a fresh deployment reaches its expected schema without an operator. The
-  // detailed outcome goes to the server log; the public surface stays a boolean.
-  let migrate: Awaited<ReturnType<typeof ensureMigrationsApplied>> | null = null;
-  try {
-    migrate = await ensureMigrationsApplied();
-    // One-time data tasks (e.g. the first name-match scan) after the schema is current.
-    await ensurePostMigrationTasks();
-  } catch {
-    /* never let a maintenance attempt fail the health check */
-  }
 
   // Health is computed server-side; only the boolean crosses the public surface.
   let healthy = false;
@@ -52,7 +41,9 @@ export async function GET() {
     healthy = false;
   }
 
-  const user = await apiUser("admin");
+  // Authentication lookup is diagnostic enrichment only. If session storage is
+  // unhealthy, preserve the minimal public health response instead of masking it.
+  const user = await apiUser("admin").catch(() => null);
   if (!user) {
     // Public surface: healthy / not-healthy only, nothing about the schema shape.
     return NextResponse.json({ ok: true, healthy });
@@ -73,7 +64,6 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       healthy,
-      migrate,
       tableCount: tables.length,
       migrationCount: migrations.length,
       expectedMigrationCount: MIGRATIONS.length,

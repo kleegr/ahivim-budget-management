@@ -12,9 +12,9 @@ import { buildWorkbook } from "./support/workbook";
  * The workbook upload runs in a Node server function on Vercel, where ExcelJS
  * is an external (unbundled) package loaded with CommonJS `require`. ExcelJS
  * does `require('uuid')` and `require('archiver')`. A production incident was
- * caused by an `overrides` block that forced those onto ESM-only majors
- * (uuid@14, archiver@8): every ESM-only version makes ExcelJS's `require`
- * throw ERR_REQUIRE_ESM at runtime, and the whole /api/imports route 500s.
+ * caused by an `overrides` block that forced those onto incompatible ESM-only
+ * majors (uuid@14, archiver@8): ExcelJS's `require` then threw ERR_REQUIRE_ESM
+ * at runtime, and the whole /api/imports route returned 500.
  *
  * It slipped through because Node >= 22 allows `require()` of an ES module by
  * default, so the failure was invisible in local dev and in a normal vitest
@@ -85,15 +85,14 @@ suite("ExcelJS loads and parses under a strict CommonJS runtime", () => {
     expect(out).toMatch(/ROWS:\d+/);
   }, 15_000);
 
-  it("resolves ExcelJS's uuid and archiver to CommonJS builds", () => {
-    // A direct assertion on the resolved dependency shapes, so the reason the
-    // test above passes is legible: both must be requireable CommonJS.
+  it("resolves ExcelJS's uuid and archiver through CommonJS require", () => {
+    // A direct assertion on the resolved dependency behavior, so the reason
+    // the test above passes is legible: both must be requireable from ExcelJS.
     const out = runStrictCjs(`
       const { createRequire } = require('module');
       const excelRequire = createRequire(require.resolve('exceljs'));
       const uuidPkg = excelRequire('uuid/package.json');
       const archiverPkg = excelRequire('archiver/package.json');
-      if (uuidPkg.type === 'module') throw new Error('uuid is ESM-only: ' + uuidPkg.version);
       if (archiverPkg.type === 'module') throw new Error('archiver is ESM-only: ' + archiverPkg.version);
       const { v4 } = excelRequire('uuid');
       if (typeof v4 !== 'function') throw new Error('uuid.v4 missing');

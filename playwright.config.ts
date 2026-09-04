@@ -18,15 +18,17 @@ import {
  * Neon endpoint keeps its native secure transport and bypasses that proxy (see
  * docs/deployment.md, "Running against a local PostgreSQL").
  *
- * Chromium is the pre-installed build under /opt/pw-browsers; we launch it via
- * launchOptions.executablePath and never download a browser.
+ * A managed Playwright browser is used by default. Set PW_CHROMIUM_PATH only
+ * when the runtime provides a pre-installed browser in a nonstandard location.
  *
  * Specs are named *.spec.ts and live in tests/e2e/, so vitest (which only
  * collects tests/ ** /*.test.ts) never picks them up.
  */
 
-const CHROMIUM_PATH =
-  process.env.PW_CHROMIUM_PATH || "/opt/pw-browsers/chromium";
+const CHROMIUM_PATH = process.env.PW_CHROMIUM_PATH?.trim();
+const browserLaunchOptions = CHROMIUM_PATH
+  ? { executablePath: CHROMIUM_PATH }
+  : undefined;
 
 const useWsProxy = shouldUseE2eWsProxy(TEST_DB_URL);
 const proxyServer = {
@@ -69,7 +71,7 @@ export default defineConfig({
     baseURL: BASE_URL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
-    launchOptions: { executablePath: CHROMIUM_PATH },
+    ...(browserLaunchOptions ? { launchOptions: browserLaunchOptions } : {}),
   },
 
   projects: [
@@ -77,7 +79,7 @@ export default defineConfig({
       name: "chromium",
       use: {
         browserName: "chromium",
-        launchOptions: { executablePath: CHROMIUM_PATH },
+        ...(browserLaunchOptions ? { launchOptions: browserLaunchOptions } : {}),
       },
     },
   ],

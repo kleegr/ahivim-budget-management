@@ -1,11 +1,13 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { timingSafeEqual } from "node:crypto";
 import { getPool } from "@/lib/db";
 import type { PgLikePool } from "@/lib/import/commit";
 import { ensureMigrationsApplied } from "@/lib/db/auto-migrate";
 import { getSetting, setSetting } from "@/lib/manage/app-settings";
 import { getSyncConfig } from "@/lib/sheets/config";
 import { runSheetSync } from "@/lib/sheets/sync";
-import { currentUser } from "@/lib/auth/session";
+import { apiUser } from "@/lib/auth/session";
+import { jsonError, sameOriginOrFail } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,21 +36,17 @@ async function verification(pool: PgLikePool) {
  * One-time initial sync bootstrap.
  *
  * Runs the very first full sync of the Google Sheet on a deployed instance,
- * exactly once, then becomes inert. It is intentionally reachable without the
- * cron secret — the same self-service pattern as GET /api/health/schema, which
- * applies migrations for any caller — because the only thing it can do is run a
- * single sheet sync: idempotent, non-destructive (it never deletes or
- * overwrites), and a no-op after the first success. The recurring scheduled
- * sync is a separate endpoint that stays secured by CRON_SECRET.
+ * exactly once, then becomes inert. This is a database-writing POST and always
+ * requires either a signed-in administrator or the same explicit
+ * `x-migration-token` used for first-deploy maintenance. A missing token never
+ * opens an anonymous bootstrap window.
  */
-export async function GET() {
-  const pool = getPool();
-  let isAdmin = false;
-  try {
-    isAdmin = (await currentUser())?.role === "admin";
-  } catch {
-    isAdmin = false;
-  }
+export async function POST(request: NextRequest) {
+  const origin = sameOriginOrFail(request);
+  if (origin) return origin;
+
+  const authorization = await authorize(request);
+  if (!authorization) return jsonError("Unauthorized", 401);
 
   // The bootstrap may be the first request after the deploy that shipped 0011.
   try {
@@ -57,26 +55,54 @@ export async function GET() {
     /* the sync will surface a clear error if the schema is not ready */
   }
 
+  const pool = getPool();
   const done = await getSetting<boolean>(pool, BOOTSTRAP_FLAG);
   if (done) {
     return NextResponse.json({
       ok: true,
       alreadyDone: true,
       note: "The initial sync has already run.",
-      ...(isAdmin ? await verification(pool) : {}),
+      authorisedBy: authorization.authorisedBy,
+      ...(await verification(pool)),
     });
   }
 
   const config = await getSyncConfig(pool);
-  const summary = await runSheetSync(pool, { trigger: "initial", userId: null, config });
+  const summary = await runSheetSync(pool, {
+    trigger: "initial",
+    userId: authorization.actorId,
+    config,
+  });
 
   if (summary.status !== "failed") {
-    await setSetting(pool, BOOTSTRAP_FLAG, true, null);
+    await setSetting(pool, BOOTSTRAP_FLAG, true, authorization.actorId);
   }
 
   return NextResponse.json({
     ok: summary.status !== "failed",
     status: summary.status,
-    ...(isAdmin ? { summary, ...(await verification(pool)) } : {}),
+    authorisedBy: authorization.authorisedBy,
+    summary,
+    ...(await verification(pool)),
   });
+}
+
+async function authorize(request: NextRequest): Promise<{
+  authorisedBy: "migration_token" | "admin_session";
+  actorId: string | null;
+} | null> {
+  const configuredToken = process.env.MIGRATION_TOKEN?.trim();
+  const providedToken = request.headers.get("x-migration-token")?.trim();
+  if (configuredToken && providedToken && safeEqual(configuredToken, providedToken)) {
+    return { authorisedBy: "migration_token", actorId: null };
+  }
+
+  const user = await apiUser("admin").catch(() => null);
+  return user ? { authorisedBy: "admin_session", actorId: user.actorId } : null;
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
 }

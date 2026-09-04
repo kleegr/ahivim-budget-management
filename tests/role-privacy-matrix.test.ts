@@ -196,8 +196,6 @@ describe("protected API route inventory", () => {
       "health/env/route.ts",
       "health/schema/route.ts",
       "health/xlsx/route.ts",
-      "sync/bootstrap/route.ts",
-      "sync/cron/route.ts",
     ]);
     const serverGuard = /(?:apiUser|currentUser|currentSession|apiPortalUser|apiPlanningUser|apiClassFinancialUser|apiDocumentEditorUser|getSettlementOperator|getHourAuthorizationOperator|accessibleClassInvoice|accessibleDocument)\s*\(/;
     const files = routeFiles(apiRoot);
@@ -210,19 +208,4 @@ describe("protected API route inventory", () => {
     }
   });
 
-  it("keeps anonymous bootstrap responses free of ledger totals and sync details", () => {
-    const source = readFileSync(path.join(
-      process.cwd(), "src", "app", "api", "sync", "bootstrap", "route.ts",
-    ), "utf8");
-    expect(source).toContain("isAdmin ? await verification(pool) : {}");
-    expect(source).toContain("isAdmin ? { summary, ...(await verification(pool)) } : {}");
-  });
-
-  it("keeps anonymous cron responses free of monetary reconciliation details", () => {
-    const source = readFileSync(path.join(
-      process.cwd(), "src", "app", "api", "sync", "cron", "route.ts",
-    ), "utf8");
-    expect(source).toContain("detailed: false");
-    expect(source).toContain("authorization.detailed ? { summary } : {}");
-  });
 });

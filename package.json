@@ -60,6 +60,7 @@
     "vitest": "^4.1.10"
   },
   "overrides": {
+    "nanoid": "3.3.18",
     "postcss": "^8.5.24",
     "sharp": "^0.35.3",
     "esbuild": "^0.28.1",
@@ -67,7 +68,7 @@
       "postcss": "^8.5.24"
     },
     "exceljs": {
-      "uuid": "10.0.0"
+      "uuid": "11.1.1"
     }
   }
 }

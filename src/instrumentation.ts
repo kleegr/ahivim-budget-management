@@ -10,5 +10,7 @@ export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const { runMigrationsOnce } = await import("./lib/db/auto-migrate");
     await runMigrationsOnce();
+    const { ensurePostMigrationTasks } = await import("./lib/db/post-migrate");
+    await ensurePostMigrationTasks();
   }
 }

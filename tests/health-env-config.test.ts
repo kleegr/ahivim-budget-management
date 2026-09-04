@@ -1,5 +1,15 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ currentUser: vi.fn() }));
+
+vi.mock("@/lib/auth/session", () => ({ currentUser: mocks.currentUser }));
+
 import { GET } from "@/app/api/health/env/route";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.currentUser.mockResolvedValue({ role: "admin" });
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -31,5 +41,19 @@ describe("deployment integration readiness", () => {
 
     expect(body.googleSheetWritebackConfigured).toBe(true);
     expect(body.documentStorageConfigured).toBe(true);
+  });
+
+  it("returns only aggregate readiness to an anonymous caller", async () => {
+    vi.stubEnv("DATABASE_URL", "postgres://configured.example.test/ahivim");
+    vi.stubEnv("CRON_SECRET", "cron-secret-placeholder");
+    vi.stubEnv("MIGRATION_TOKEN", "migration-token-placeholder");
+    mocks.currentUser.mockResolvedValue(null);
+
+    const body = await (await GET()).json() as Record<string, unknown>;
+
+    expect(body).toEqual({ ok: true, configured: true, detail: "public" });
+    expect(body).not.toHaveProperty("cronSecretConfigured");
+    expect(body).not.toHaveProperty("migrationTokenConfigured");
+    expect(body).not.toHaveProperty("candidatesPresent");
   });
 });

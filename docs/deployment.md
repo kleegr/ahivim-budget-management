@@ -8,8 +8,8 @@
 | `AUTH_SECRET` | recommended | Signs session cookies. If unset, a key is derived from the database connection string with HKDF-SHA256 (see `docs/authentication.md`). |
 | `BOOTSTRAP_ADMIN_EMAIL` | first deploy only | Email of the first administrator. |
 | `BOOTSTRAP_ADMIN_PASSWORD` | first deploy only | Password of the first administrator, minimum 10 characters. |
-| `MIGRATION_TOKEN` | optional | Allows `POST /api/admin/migrate` without a signed-in administrator. Needed only for a database that has no administrator yet, or for automated deploys. |
-| `CRON_SECRET` | recommended | Authenticates Vercel Cron calls to `/api/sync/cron`. Use a separate random secret; signed-in administrators may also trigger the endpoint. |
+| `MIGRATION_TOKEN` | optional | Allows `POST /api/admin/migrate` and the one-time `POST /api/sync/bootstrap` without a signed-in administrator. Needed only for a database that has no administrator yet, or for automated deploys. |
+| `CRON_SECRET` | scheduled sync | Authenticates Vercel Cron calls to `/api/sync/cron`. Use a separate random secret; the route fails closed when it is absent, though a signed-in administrator may still trigger it manually. |
 | `GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL` | private Sheet sync | Service-account email allowed to view the configured sheet and edit its Paid column. |
 | `GOOGLE_SHEETS_PRIVATE_KEY` | private Sheet sync | Private key for that service account. Escaped `\n` line breaks are accepted. |
 | `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` | private Sheet sync alternative | Raw or base64-encoded service-account JSON. Use this instead of the two fields above. |
@@ -35,21 +35,26 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 ## Health checks
 
-Neither endpoint returns a secret value; both are readable without a session so
-a deployment check can call them.
+The health endpoints are read-only and callable without a session. Anonymous
+responses contain only aggregate readiness; signed-in administrators receive
+the detailed diagnostics where applicable. No endpoint returns a secret value.
 
-- `GET /api/health/env` — which variables are **present**, never their values.
-- `GET /api/health/db` — live connectivity, latency, whether migrations are
-  applied, and the table count. The table NAMES and per-table ROW COUNTS are a
-  map of the schema and of how much data sits in each part of it, so they are
-  returned only to a signed-in administrator.
+- `GET /api/health/env` — anonymous callers receive one configuration-readiness
+  boolean. Administrators can see which variables are **present**, never their
+  values, including whether private document storage is configured.
+- `GET /api/health/db` — anonymous callers receive connectivity and migration
+  health. Latency, server time, connection-variable name, table names and row
+  counts are returned only to a signed-in administrator.
+- `GET /api/health/schema` — compares the migration ledger to the migrations in
+  the deployed build without applying anything. Anonymous callers receive only
+  `healthy`; administrators can inspect the table and migration inventory.
 - `GET /api/health/xlsx` — loads ExcelJS and round-trips a workbook (write then
   read) in the deployed runtime. Confirms the upload engine works without an
   authenticated upload; returns `{ok:true}` or, on a require-of-ESM regression,
   `{ok:false, code:"ERR_REQUIRE_ESM"}`. See the dependency note below.
 
-`GET /api/health/env` also reports `documentStorageConfigured`; the PDF library
-cannot accept or serve documents until a private Blob store is connected.
+Health GETs never run migrations, post-migration data tasks, sheet syncs, or
+other database writes.
 
 ## Migrations
 
@@ -82,6 +87,17 @@ curl -X POST https://<host>/api/admin/migrate -H "x-migration-token: $MIGRATION_
 There is **no** unauthenticated migration path. An earlier revision allowed one
 "first run" call while the ledger table did not exist; on a publicly reachable
 deployment that is a race anyone can win, so it was removed.
+
+The one-time Sheet bootstrap is also explicit and fail-closed. Use a signed-in
+administrator or the first-deploy token:
+
+```bash
+curl -X POST https://<host>/api/sync/bootstrap -H "x-migration-token: $MIGRATION_TOKEN"
+```
+
+`GET /api/sync/bootstrap` is not a mutation endpoint and returns method not
+allowed. `/api/sync/cron` accepts the Vercel Cron bearer secret or a signed-in
+administrator; an absent `CRON_SECRET` never opens the route anonymously.
 
 The instrumentation hook applies schema migrations only. It never creates an
 account, generates a password, or prints credentials. Administrator bootstrap
@@ -148,27 +164,16 @@ database or production host.
 ## ExcelJS and the CommonJS dependency chain
 
 ExcelJS is loaded in the Node server runtime with CommonJS `require`, and it
-`require`s `uuid` and `archiver`. Both of those, and much of ExcelJS's
-transitive chain (`glob`, `minimatch`, `brace-expansion`, `zip-stream`,
-`readdir-glob`), have released newer **ESM-only** majors. Forcing ExcelJS onto
-any of them makes its `require` throw `ERR_REQUIRE_ESM` in the serverless
-runtime and takes down `/api/imports` — even though the build succeeds and it
-works locally, because Node >= 22 allows `require()` of an ES module by default
-and the Vercel runtime does not.
+`require`s `uuid` and `archiver`. A previous override forced that dependency
+chain onto incompatible ESM-only majors, causing `ERR_REQUIRE_ESM` in the
+serverless runtime and taking down `/api/imports` even though the build passed.
 
-`package.json` therefore pins, via `overrides`, ExcelJS's `uuid` to `10.0.0`
-(the newest CommonJS uuid) and does **not** force the rest of the chain onto
-ESM-only versions. `tests/exceljs-cjs-runtime.test.ts` guards this: it loads and
-parses a workbook under `node --no-experimental-require-module`, so any future
-ESM-only pin fails the test instead of production.
+`package.json` now pins `nanoid` to `3.3.18` and, specifically within ExcelJS,
+pins `uuid` to `11.1.1`. That `uuid` release provides an explicit CommonJS
+`require` export while retaining the security fixes represented by the current
+lockfile. `tests/exceljs-cjs-runtime.test.ts` guards the runtime contract by
+loading ExcelJS, resolving its `uuid` and `archiver` dependencies, and parsing
+a real workbook under `node --no-experimental-require-module`.
 
-The cost is that `npm audit` reports advisories in ExcelJS's chain that have no
-CommonJS-compatible fix (npm's only suggested fix is a major downgrade to
-`exceljs@3.4.0`). These are **DoS/ReDoS**-class issues (no RCE, no data
-exposure) reached only when parsing an uploaded `.xlsx`, and upload is
-restricted to authenticated `manager`/`admin` roles with an extension and size
-check — the input is a trusted internal workbook, not attacker-controlled web
-input. The remaining `npm audit` entries in the `eslint` chain are
-**dev-only**: eslint is not part of the deployed runtime. A working upload was
-prioritised over a green `npm audit`, deliberately, because the green audit is
-what broke the upload.
+The locked dependency tree currently reports zero vulnerabilities from both
+the full `npm audit` and the production/runtime `npm audit --omit=dev` check.

@@ -103,10 +103,9 @@ spreadsheet format.
 ## A note on ExcelJS and `npm audit`
 
 ExcelJS is loaded with CommonJS `require` in the Node runtime and requires
-`uuid`/`archiver`, whose patched versions are ESM-only. Forcing them throws
-`ERR_REQUIRE_ESM` in production, so `overrides` keeps ExcelJS on a CommonJS
-`uuid` (`10.0.0`) and leaves its chain on CommonJS versions. The residual
-`npm audit` advisories are DoS-class, reached only when parsing an uploaded
-`.xlsx` (authenticated `manager`/`admin` only), or are dev-only eslint findings
-absent from the deployed runtime. `tests/exceljs-cjs-runtime.test.ts` fails if
-an ESM-only pin ever returns. See `docs/deployment.md` for the full rationale.
+`uuid`/`archiver`. The dependency overrides keep ExcelJS on `uuid` `11.1.1`,
+which provides an explicit CommonJS `require` export, and retain a compatible
+archiver chain. `tests/exceljs-cjs-runtime.test.ts` loads and parses a real
+workbook with require-of-ESM disabled, so an incompatible dependency update
+fails before release. The locked dependency tree currently passes `npm audit`.
+See `docs/deployment.md` for the full rationale.
