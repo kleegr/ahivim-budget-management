@@ -1270,7 +1270,9 @@ The system succeeds when a simple user can work without training in the underlyi
 ### 19.1 Navigation
 
 - Show only workspaces relevant to the role.
-- Use familiar business names: Home, Transactions, People & Budgets, Schedule, Masser, Employees, Agencies, Classes, Reports.
+- Keep the primary internal navigation to **Home**, **People & Budgets**, **Activity**, and **Money & Reports**.
+- Group Individuals, Employees, and Agencies under People & Budgets; group Transactions, Schedule, matching, imports, and sync under Activity; group Masser, Financial Setup, Agency Financials, Reports, and Classes under Money & Reports.
+- For external accounts, show My Portal and only the one or two additional work areas required by that role.
 - Keep advanced tools in secondary navigation or Settings.
 - Preserve context when moving from a total to its source and back.
 
