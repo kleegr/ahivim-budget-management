@@ -5,9 +5,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Search, X } from "lucide-react";
 import { getCommandDestinations, type NavigationAccess } from "@/lib/nav/app-navigation";
+import type { AccountPresetId } from "@/lib/auth/account-presets";
 
 export default function CommandBar({
   role = "viewer",
+  accountPreset = null,
   accessResolved = false,
   canSeeTransactions = false,
   canSeeSettlements = false,
@@ -21,6 +23,7 @@ export default function CommandBar({
   onNavigate,
 }: {
   role?: string;
+  accountPreset?: AccountPresetId | null;
   accessResolved?: boolean;
   canSeeTransactions?: boolean;
   canSeeSettlements?: boolean;
@@ -41,8 +44,8 @@ export default function CommandBar({
   const dialogRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const access = useMemo<NavigationAccess>(
-    () => ({ role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies }),
-    [role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies],
+    () => ({ role, accountPreset, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies }),
+    [role, accountPreset, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies],
   );
   const available = useMemo(() => getCommandDestinations(access), [access]);
 
