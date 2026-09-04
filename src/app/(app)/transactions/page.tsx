@@ -9,6 +9,7 @@ import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
 import {
   buildInitialFilters,
   filterTransactionsByCheckIdentity,
+  filterTransactionsBySourcePaymentIdentity,
 } from "@/lib/transactions/initial-filters";
 import { RefreshCw } from "lucide-react";
 import { listSettlementSourceTransactions } from "@/lib/data/settlement-source-transactions";
@@ -28,6 +29,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   const canManage = user.role !== "viewer";
   const sp = await searchParams;
   const requestedCheckIdentity = one(sp.checkIdentity);
+  const requestedSourcePaymentIdentity = one(sp.sourcePaymentIdentity);
   const requestedTransactionIdsFromUrl = many(sp.transactionId);
   const requestedSettlementSource = one(sp.settlementSource);
   const requestedTransactionId = !requestedSettlementSource && requestedTransactionIdsFromUrl.length === 1
@@ -95,9 +97,12 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     );
   }
 
-  const allRows = filterTransactionsByCheckIdentity(
-    result.ok ? result.data.rows : [],
-    requestedCheckIdentity,
+  const allRows = filterTransactionsBySourcePaymentIdentity(
+    filterTransactionsByCheckIdentity(
+      result.ok ? result.data.rows : [],
+      requestedCheckIdentity,
+    ),
+    requestedSourcePaymentIdentity,
   );
   const requestedTransactionIds = result.ok
     ? result.data.requestedTransactionIds
@@ -125,12 +130,14 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
       : seeded.label;
   const hasFilterContext = Object.keys(seeded.filters).length > 0;
   const requestedView = one(sp.view);
-  const normalizedRequestedView: "checks" | "rows" | null = requestedView === "checks" || requestedView === "payroll"
+  const normalizedRequestedView: "checks" | "source-payments" | "rows" | null = requestedView === "checks" || requestedView === "payroll"
     ? "checks"
-    : requestedView === "rows" || requestedView === "services"
-      ? "rows"
-      : null;
-  const initialView: "checks" | "rows" = contextLabel || hasFilterContext
+    : requestedView === "source-payments" || requestedView === "source_payments" || requestedView === "payments"
+      ? "source-payments"
+      : requestedView === "rows" || requestedView === "services"
+        ? "rows"
+        : null;
+  const initialView: "checks" | "source-payments" | "rows" = contextLabel || hasFilterContext
     ? "rows"
     : normalizedRequestedView ?? "rows";
 

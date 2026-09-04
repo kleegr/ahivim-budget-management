@@ -48,6 +48,7 @@ describe("computeGridTotals — Excel-SUBTOTAL parity", () => {
     // Net counted once per check: 10538.05 + 5000.00 — NOT 10538.05 twice.
     expect(t.netPerCheck).toBe("15538.05");
     expect(t.checks).toBe(2);
+    expect(t.sourcePayments).toBe(2);
     expect(t.gross).toBe("689.00"); // gross is still summed per row
   });
 
@@ -98,6 +99,7 @@ describe("computeGridTotals — Excel-SUBTOTAL parity", () => {
     expect(t).toMatchObject({
       netPerCheck: "800.00",
       checks: 2,
+      sourcePayments: 1,
       verifiedCheckGross: "2000.00",
       verifiedCheckNet: "1600.00",
       withholding: "400.00",

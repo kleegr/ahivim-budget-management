@@ -156,31 +156,38 @@ export async function pushPaidChangesToSheet(
 
     const paidColumn = columnName(parsed.columnMap.paid);
     const usedRows = new Set<number>();
+    const trackedKeyCounts = new Map<string, number>();
+    for (const tracked of rows) {
+      const key = tracked.identity ? sheetSourceIdentityKey(tracked.identity) : null;
+      if (key) trackedKeyCounts.set(key, (trackedKeyCounts.get(key) ?? 0) + 1);
+    }
     const cells: SheetCellUpdate[] = [];
     const synchronizedTransactions: SynchronizedPaidTransaction[] = [];
     let skipped = 0;
     for (const tracked of eligible) {
       const key = tracked.identity ? sheetSourceIdentityKey(tracked.identity) : null;
       const candidates = key ? currentByKey.get(key) ?? [] : [];
-      const direct = candidates.find((candidate) =>
-        candidate.rowNumber === tracked.source_row_number && !usedRows.has(candidate.rowNumber),
-      );
       const remaining = candidates.filter((candidate) => !usedRows.has(candidate.rowNumber));
-      const current = direct ?? (remaining.length === 1 ? remaining[0] : null);
-      if (!current) {
+      // Exact duplicate source occurrences collapse to one canonical transaction.
+      // Keep their Paid markers together. Conversely, if several DB transactions
+      // somehow share the exact source identity, refuse to guess between them.
+      const currentRows = key && trackedKeyCounts.get(key) === 1 ? remaining : [];
+      if (currentRows.length === 0) {
         skipped++;
         continue;
       }
-      usedRows.add(current.rowNumber);
+      currentRows.forEach((current) => usedRows.add(current.rowNumber));
       synchronizedTransactions.push({
         transactionId: tracked.payroll_transaction_id,
         isPaid: tracked.is_paid,
       });
-      if (current.paid !== tracked.is_paid) {
-        cells.push({
-          range: `${quotedSheetName(config.sheetName)}!${paidColumn}${current.rowNumber}`,
-          value: tracked.is_paid ? "Paid" : "",
-        });
+      for (const current of currentRows) {
+        if (current.paid !== tracked.is_paid) {
+          cells.push({
+            range: `${quotedSheetName(config.sheetName)}!${paidColumn}${current.rowNumber}`,
+            value: tracked.is_paid ? "Paid" : "",
+          });
+        }
       }
     }
 

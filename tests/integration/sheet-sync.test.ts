@@ -390,6 +390,33 @@ suite("Google Sheet sync (real PostgreSQL)", () => {
     expect(Number(flagged[0]!.c)).toBe(1);
   });
 
+  it("closes a changed conflict when the source row reverts to its recorded value", async () => {
+    const originalCsv = buildSheet([R1, R2, R3]);
+    await runSheetSync(pool, { trigger: "manual", userId: null, fetcher: okFetcher(originalCsv), config: CONFIG });
+    await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, { ...R2, amount: "120" }, R3])),
+      config: CONFIG,
+    });
+
+    const reverted = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(originalCsv),
+      config: CONFIG,
+    });
+    expect(reverted.changed).toBe(0);
+    const { rows: conflicts } = await pool.query<{ status: string; resolution: string | null }>(
+      `SELECT status, resolution FROM sheet_sync_conflicts WHERE type = 'changed'`,
+    );
+    expect(conflicts).toEqual([{ status: "dismissed", resolution: "source_no_longer_changed" }]);
+    const { rows: transactions } = await pool.query<{ reason: string | null }>(
+      `SELECT sync_review_reason AS reason FROM payroll_transactions WHERE check_number = '1002'`,
+    );
+    expect(transactions).toEqual([{ reason: null }]);
+  });
+
   it("never overwrites an audited manual correction; it flags the conflict as audited", async () => {
     await runSheetSync(pool, { trigger: "manual", userId: null, fetcher: okFetcher(buildSheet([R1, R2, R3])), config: CONFIG });
 

@@ -48,8 +48,8 @@ export interface SheetCsvParseResult {
   snapshotSha256: string;
   totalDataRows: number;
   warnings: string[];
-  /** True when a "Paid" column was found by header — then its values are the
-   *  source of truth for each transaction's paid status on this sync. */
+  /** True when a Paid column was found by header or exists at the verified
+   *  positional column — then its values are the source of truth. */
   paidColumnFound: boolean;
 }
 
@@ -310,12 +310,12 @@ export function parseSheetCsv(csvText: string): SheetCsvParseResult {
     signatures.push(sig);
   }
 
-  // The "Paid" column often has a blank header (it's column N in the workbook),
-  // so it can't be found by name. Treat the paid column as present when a "Paid"
-  // header matched OR when the mapped paid column actually carries values — that
-  // way an already-filled paid column flows in, while a sheet with no paid data
-  // at all never touches the in-app paid status.
-  const paidColumnFound = paidHeaderFound || ahivimRows.some((r) => (r.raw.paid ?? "").trim() !== "");
+  // The workbook's Paid column is positional N and its header is intentionally
+  // blank. Presence cannot depend on a non-empty cell: clearing the final Paid
+  // marker must flow back as unpaid. A physically shorter export (no column N)
+  // still remains pull-only for Paid values.
+  const paidColumnPositionPresent = gridRows.some((row) => row.cells.length >= columnMap.paid);
+  const paidColumnFound = paidHeaderFound || paidColumnPositionPresent;
 
   // Sort so row re-ordering in the sheet does not read as a content change.
   signatures.sort();

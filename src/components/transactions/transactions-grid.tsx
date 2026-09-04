@@ -394,6 +394,7 @@ export default function TransactionsGrid({
               ) : null}
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Recorded services</div><div className="text-lg font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Checks</div><div className="text-lg font-semibold tabular-nums">{totals.checks.toLocaleString()}</div></div>
+              <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Source payments</div><div className="text-lg font-semibold tabular-nums">{totals.sourcePayments.toLocaleString()}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Individuals</div><div className="text-lg font-semibold tabular-nums">{totals.individuals.toLocaleString()}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Employees</div><div className="text-lg font-semibold tabular-nums">{totals.employees.toLocaleString()}</div></div>
             </div>

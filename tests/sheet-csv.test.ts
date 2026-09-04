@@ -98,6 +98,23 @@ describe("Ahivim sheet CSV → parsed rows", () => {
     expect(first.parsed!.periodBegin).toBe("2023-05-01");
     // A CSV export never carries formulas.
     expect(first.formulas).toEqual({});
+    expect(parse.paidColumnFound).toBe(true);
+  });
+
+  it("recognizes the blank positional Paid column so clearing its final marker is observable", () => {
+    const withBlankPaidColumn = parseSheetCsv(toCsv(grid));
+    const paidRow = [...grid[2]!];
+    paidRow[13] = "Paid";
+    const withOnePaidMarker = parseSheetCsv(toCsv([grid[0]!, grid[1]!, paidRow, grid[3]!]));
+    const physicallyShort = parseSheetCsv(toCsv([
+      header().slice(0, 13),
+      dataRow({ hours: "1", rate: "25", amount: "25", program: "Com Hab", individual: "Test Person" }).slice(0, 13),
+    ]));
+
+    expect(withBlankPaidColumn.ahivimRows.every((row) => row.raw.paid === "")).toBe(true);
+    expect(withBlankPaidColumn.paidColumnFound).toBe(true);
+    expect(withOnePaidMarker.snapshotSha256).not.toBe(withBlankPaidColumn.snapshotSha256);
+    expect(physicallyShort.paidColumnFound).toBe(false);
   });
 
   it("produces a stable snapshot hash that is order-independent but content-sensitive", () => {

@@ -1,6 +1,7 @@
 import type { FilterState } from "@/components/data-grid/types";
+import { normalizePayee } from "@/lib/business/internal-rate";
 import { normalizePersonName } from "@/lib/business/name-matching";
-import { completeCheckIdentity } from "@/lib/business/transaction-totals";
+import { completeCheckIdentity, sourcePaymentIdentity } from "@/lib/business/transaction-totals";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 
 export type TransactionSearchParams = Record<string, string | string[] | undefined>;
@@ -38,6 +39,15 @@ export function filterTransactionsByCheckIdentity(
 ): GridTransaction[] {
   if (checkIdentity === undefined) return rows;
   return rows.filter((row) => completeCheckIdentity(row) === checkIdentity);
+}
+
+/** Keep a Source-payment-mode drill-through on the exact payment it displayed. */
+export function filterTransactionsBySourcePaymentIdentity(
+  rows: GridTransaction[],
+  paymentIdentity: string | undefined,
+): GridTransaction[] {
+  if (paymentIdentity === undefined) return rows;
+  return rows.filter((row) => sourcePaymentIdentity(row) === paymentIdentity);
 }
 
 /** Resolve stable URL ids to the display values used by the transaction grid. */
@@ -123,10 +133,10 @@ export function buildInitialFilters(
     filters.payTo = { selected: [payTo] };
     labels.push(`paid to ${payTo}`);
   } else {
-    const payToKey = one(search.payToKey)?.trim().toLocaleLowerCase();
+    const payToKey = normalizePayee(one(search.payToKey));
     if (payToKey) {
       const payeeValues = [...new Set(rows
-        .filter((row) => row.payTo?.trim().toLocaleLowerCase() === payToKey)
+        .filter((row) => normalizePayee(row.payTo) === payToKey)
         .map((row) => row.payTo)
         .filter((value): value is string => Boolean(value)))];
       if (payeeValues.length > 0) {

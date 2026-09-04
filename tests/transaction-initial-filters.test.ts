@@ -196,4 +196,17 @@ describe("transaction URL filters", () => {
       checkNumber: { selected: [" CHK-100 ", "CHK-100"] },
     });
   });
+
+  it("keeps every normalized payee spelling visible in a source-payment drill", () => {
+    const rows = [
+      { id: "first", payTo: "Excellent Staffing" },
+      { id: "same-payee", payTo: " excellent staffing, LLC " },
+      { id: "other-payee", payTo: "Direct Employee" },
+    ] as GridTransaction[];
+
+    expect(buildInitialFilters(rows, { payToKey: "excellent staffing" })).toEqual({
+      filters: { payTo: { selected: ["Excellent Staffing", " excellent staffing, LLC "] } },
+      label: "paid to Excellent Staffing",
+    });
+  });
 });

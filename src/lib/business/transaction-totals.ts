@@ -102,6 +102,7 @@ export interface GridTotals {
   withholding: string;
   transactions: number;
   checks: number;
+  sourcePayments: number;
   individuals: number;
   employees: number;
 }
@@ -115,7 +116,8 @@ export function computeGridTotals(rows: TotalsInput[]): GridTotals {
   let verifiedGross = dec(0);
   let verifiedNet = dec(0);
   let withholding = dec(0);
-  const payments = new Set<string>();
+  const checks = new Set<string>();
+  const sourcePayments = new Set<string>();
   const inds = new Set<string>();
   const emps = new Set<string>();
   const seenNetPayment = new Set<string>();
@@ -129,7 +131,7 @@ export function computeGridTotals(rows: TotalsInput[]): GridTotals {
     if (r.agencyAdditional) addl = addl.plus(dec(r.agencyAdditional));
     if (r.hours) hours = hours.plus(dec(r.hours));
     const paymentKey = completeCheckIdentity(r);
-    if (paymentKey) payments.add(paymentKey);
+    if (paymentKey) checks.add(paymentKey);
     const indKey = r.individualId ?? r.individual;
     if (indKey) inds.add(indKey);
     const empKey = r.employeeId ?? r.employee;
@@ -139,6 +141,7 @@ export function computeGridTotals(rows: TotalsInput[]): GridTotals {
     // belong to one source payment. Deduplicate it at the source-payment grain;
     // verified facts below deliberately remain at the complete-check grain.
     const sourcePaymentKey = sourcePaymentIdentity(r);
+    if (sourcePaymentKey) sourcePayments.add(sourcePaymentKey);
     if (sourcePaymentKey && r.totalNetPay && !seenNetPayment.has(sourcePaymentKey)) {
       seenNetPayment.add(sourcePaymentKey);
       net = net.plus(dec(r.totalNetPay));
@@ -169,7 +172,8 @@ export function computeGridTotals(rows: TotalsInput[]): GridTotals {
     verifiedCheckNet: verifiedNet.toFixed(2),
     withholding: withholding.toFixed(2),
     transactions: rows.length,
-    checks: payments.size,
+    checks: checks.size,
+    sourcePayments: sourcePayments.size,
     individuals: inds.size,
     employees: emps.size,
   };

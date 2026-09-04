@@ -233,8 +233,9 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <p className="text-sm font-medium">
-                          {c.individualName ?? "—"}{" "}
-                          <span className="text-[var(--color-ink-faint)]">· {c.programName ?? "—"} · {c.employeeName ?? "—"}</span>
+                          {c.transactionId ? (
+                            <>{c.individualName ?? "—"}{" "}<span className="text-[var(--color-ink-faint)]">· {c.programName ?? "—"} · {c.employeeName ?? "—"}</span></>
+                          ) : "Multiple existing transactions match this source row"}
                           {c.audited ? (
                             <span className="ml-2 rounded-full bg-[var(--color-danger-soft)] px-2 py-0.5 text-xs font-medium text-[var(--color-danger)]">
                               audited — protected
@@ -242,8 +243,7 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
                           ) : null}
                         </p>
                         <p className="mt-1 text-xs text-[var(--color-ink-soft)]">
-                          {money(c.previous, "amount")} → {money(c.incoming, "amount")} ·{" "}
-                          {hours(c.previous)} → {hours(c.incoming)}
+                          {c.transactionId ? `${money(c.previous, "amount")} → ${money(c.incoming, "amount")} · ${hours(c.previous)} → ${hours(c.incoming)}` : `Incoming ${money(c.incoming, "amount")} · ${hours(c.incoming)}`}
                         </p>
                         {c.detail ? <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{c.detail}</p> : null}
                         <div className="mt-2 flex flex-wrap gap-3 text-xs font-semibold">
@@ -256,8 +256,12 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
                           <button
                             type="button"
                             onClick={() => resolve(c.id, "apply")}
-                            disabled={busy !== null || c.audited}
-                            title={c.audited ? "Resolve the audited correction first" : "Apply the sheet's value"}
+                            disabled={busy !== null || c.audited || !c.transactionId}
+                            title={c.audited
+                              ? "Resolve the audited correction first"
+                              : !c.transactionId
+                                ? "Clarify which existing transaction this source row belongs to before applying"
+                                : "Apply the sheet's value"}
                             className="rounded bg-[var(--color-primary)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
                           >
                             {busy === `apply:${c.id}` ? "Applying…" : "Apply"}

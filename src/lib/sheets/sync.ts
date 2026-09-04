@@ -7,7 +7,6 @@ import type { ParsedAhivimRow } from "@/lib/excel/parse-workbook";
 import { transactionNaturalKey, type TransactionIdentity } from "@/lib/business/fingerprint";
 import { recordChange } from "@/lib/manage/audit";
 import { parseSheetCsv } from "./parse-csv";
-import { isPaidCell } from "@/lib/excel/column-map";
 import { fetchSheetCsv, type CsvFetcher, SheetFetchError } from "./fetch";
 import { getSyncConfig, type SheetSyncConfig } from "./config";
 import { sheetSourceIdentity } from "./identity";
@@ -157,6 +156,34 @@ interface Ledger {
   naturalKeys: Set<string>;
   byFingerprint: Map<string, LedgerTxn>;
   byNaturalKey: Map<string, LedgerTxn[]>;
+}
+
+export type ChangedLedgerMatch<T> =
+  | { kind: "missing" }
+  | { kind: "single"; target: T }
+  | { kind: "ambiguous"; candidates: readonly T[] };
+
+/**
+ * A natural key intentionally excludes money and hours, and the schema permits
+ * several legitimate transactions to share one. A changed source row is safe
+ * to associate automatically only when exactly one ledger candidate exists.
+ */
+export function classifyChangedLedgerMatch<T>(candidates: readonly T[]): ChangedLedgerMatch<T> {
+  if (candidates.length === 0) return { kind: "missing" };
+  if (candidates.length === 1) return { kind: "single", target: candidates[0]! };
+  return { kind: "ambiguous", candidates };
+}
+
+export type TrackedSourcePresence = "present" | "changed" | "missing";
+
+/** Exact fingerprints distinguish legitimate line items that share a natural key. */
+export function classifyTrackedSourcePresence(
+  tracked: { fingerprint: string; naturalKey: string },
+  snapshot: { fingerprints: ReadonlySet<string>; changedNaturalKeys: ReadonlySet<string> },
+): TrackedSourcePresence {
+  if (snapshot.fingerprints.has(tracked.fingerprint)) return "present";
+  if (snapshot.changedNaturalKeys.has(tracked.naturalKey)) return "changed";
+  return "missing";
 }
 
 /**
@@ -452,7 +479,7 @@ export async function runSheetSync(
     const parsedByRow = new Map<number, ParsedAhivimRow>(parsedRows.map((r) => [r.sourceRowNumber, r]));
 
     const changed: { staged: StagedRow; parsed: ParsedAhivimRow }[] = [];
-    const snapshotNaturalKeys = new Set<string>();
+    const snapshotFingerprints = new Set<string>();
     let unchangedCount = 0;
     let invalidCount = 0;
 
@@ -461,7 +488,7 @@ export async function runSheetSync(
         invalidCount++;
         continue;
       }
-      snapshotNaturalKeys.add(st.naturalKey);
+      snapshotFingerprints.add(st.fingerprint);
 
       if (ledger.fingerprints.has(st.fingerprint)) {
         unchangedCount++;
@@ -524,7 +551,14 @@ export async function runSheetSync(
     const changedRowNumbers = new Set(changed.map((c) => c.staged.sourceRowNumber));
     const trackByTxn = new Map<
       string,
-      { naturalKey: string; fingerprint: string; sourceRowNumber: number; identity: string; wasUnchanged: boolean }
+      {
+        naturalKey: string;
+        fingerprint: string;
+        sourceRowNumber: number;
+        identity: Record<string, unknown>;
+        sourcePaid: boolean;
+        wasUnchanged: boolean;
+      }
     >();
     for (const st of staging.rows) {
       if (!st.fingerprint || !st.naturalKey) continue;
@@ -537,13 +571,25 @@ export async function runSheetSync(
       if (!txnId) continue; // a genuinely-new row that stayed in review (e.g. unknown program): no transaction yet
 
       const parsed = parsedByRow.get(st.sourceRowNumber);
+      const identity = parsed ? sheetSourceIdentity(parsed) : {};
+      const sourcePaid = "sourcePaid" in identity && identity.sourcePaid === true;
       // De-dup by transaction id: two identical sheet rows share a fingerprint
       // and would otherwise hit the same ON CONFLICT target twice in one insert.
+      // At the canonical transaction grain, any marked duplicate occurrence is
+      // paid; all occurrences must be clear before the source can clear it.
+      const existing = trackByTxn.get(txnId);
+      if (existing) {
+        existing.sourceRowNumber = Math.min(existing.sourceRowNumber, st.sourceRowNumber);
+        existing.sourcePaid = existing.sourcePaid || sourcePaid;
+        existing.identity = { ...existing.identity, sourcePaid: existing.sourcePaid };
+        continue;
+      }
       trackByTxn.set(txnId, {
         naturalKey: st.naturalKey,
         fingerprint: st.fingerprint,
         sourceRowNumber: st.sourceRowNumber,
-        identity: JSON.stringify(parsed ? sheetSourceIdentity(parsed) : {}),
+        identity,
+        sourcePaid,
         wasUnchanged,
       });
     }
@@ -592,7 +638,7 @@ export async function runSheetSync(
           slice.map(([, v]) => v.fingerprint),
           slice.map(([, v]) => v.sourceRowNumber),
           slice.map(([txn]) => txn),
-          slice.map(([, v]) => v.identity),
+          slice.map(([, v]) => JSON.stringify(v.identity)),
           runId,
         ],
       );
@@ -610,8 +656,7 @@ export async function runSheetSync(
       const unpaidIds: string[] = [];
       for (const [txnId, v] of trackByTxn) {
         if (pendingPaidIds.has(txnId)) continue;
-        const parsed = parsedByRow.get(v.sourceRowNumber)?.parsed;
-        if (isPaidCell(parsed?.paid)) paidIds.push(txnId);
+        if (v.sourcePaid) paidIds.push(txnId);
         else unpaidIds.push(txnId);
       }
       for (let i = 0; i < paidIds.length; i += CHUNK) {
@@ -650,19 +695,66 @@ export async function runSheetSync(
     }
 
     // 8. CHANGED conflicts — never overwrite; flag for review, audited-aware.
+    const changedNaturalKeys = new Set(changed.map((row) => row.staged.naturalKey!).filter(Boolean));
+    // Rebuild the open changed set from the current snapshot. Superseding every
+    // prior conflict for a still-changed identity before inserting the current
+    // rows preserves more than one legitimate changed occurrence with the same
+    // coarse natural key, rather than allowing the last row to hide the others.
+    await pool.query(
+      `UPDATE sheet_sync_conflicts
+          SET status = 'superseded', resolution = 'newer_source_snapshot',
+              resolved_at = now(), updated_at = now()
+        WHERE type = 'changed' AND status = 'open'
+          AND natural_key = ANY($1::text[])`,
+      [[...changedNaturalKeys]],
+    );
+    // A prior change is no longer actionable once its natural key is not
+    // changed in the current snapshot (it either reverted or became missing).
+    // Missing detection below will open the current, more accurate state.
+    await pool.query(
+      `UPDATE sheet_sync_conflicts
+          SET status = 'dismissed', resolution = 'source_no_longer_changed',
+              resolved_at = now(), updated_at = now()
+        WHERE type = 'changed' AND status = 'open'
+          AND NOT (natural_key = ANY($1::text[]))`,
+      [[...changedNaturalKeys]],
+    );
+
     let changedCount = 0;
     for (const { staged, parsed } of changed) {
       const ledgerTxns = ledger.byNaturalKey.get(staged.naturalKey!) ?? [];
-      const target = ledgerTxns[0] ?? null;
-      if (!target) continue;
+      const match = classifyChangedLedgerMatch(ledgerTxns);
+      if (match.kind === "missing") continue;
+      if (match.kind === "ambiguous") {
+        // A natural key can legitimately identify more than one line item. Do
+        // not guess which transaction changed: preserve the held source row as
+        // one non-applicable review item with no transaction target.
+        await pool.query(
+          `INSERT INTO sheet_sync_conflicts
+             (run_id, payroll_transaction_id, type, audited, natural_key, previous, incoming, detail, status)
+           VALUES ($1,NULL,'changed',false,$2,$3::jsonb,$4::jsonb,$5,'open')`,
+          [
+            runId,
+            staged.naturalKey,
+            JSON.stringify({
+              candidateCount: match.candidates.length,
+              candidateTransactionIds: match.candidates.map((candidate) => candidate.id),
+              candidates: match.candidates.map((candidate) => candidate.identity),
+            }),
+            JSON.stringify({
+              ...sheetSourceIdentity(parsed),
+              sourceRowNumber: staged.sourceRowNumber,
+            }),
+            `This source row matches ${match.candidates.length} existing transactions with the same identity. ` +
+              "It was NOT assigned or applied automatically; clarify the source identity before changing a transaction.",
+          ],
+        );
+        changedCount++;
+        continue;
+      }
+      const target = match.target;
       const audited = await isTransactionAudited(pool, target.id);
 
-      // Keep a single open changed-conflict per transaction, reflecting the latest snapshot.
-      await pool.query(
-        `UPDATE sheet_sync_conflicts SET status = 'superseded', updated_at = now()
-          WHERE payroll_transaction_id = $1 AND type = 'changed' AND status = 'open'`,
-        [target.id],
-      );
       await pool.query(
         `INSERT INTO sheet_sync_conflicts
            (run_id, payroll_transaction_id, type, audited, natural_key, previous, incoming, detail, status)
@@ -698,13 +790,22 @@ export async function runSheetSync(
 
     // 9. MISSING detection — a previously-synced identity absent from the sheet.
     //    Never deleted; flagged for review.
-    const { rows: tracked } = await pool.query<{ id: string; payroll_transaction_id: string; natural_key: string }>(
-      `SELECT id, payroll_transaction_id, natural_key FROM sheet_sync_rows
+    const { rows: tracked } = await pool.query<{
+      id: string;
+      payroll_transaction_id: string;
+      natural_key: string;
+      fingerprint: string;
+    }>(
+      `SELECT id, payroll_transaction_id, natural_key, fingerprint FROM sheet_sync_rows
         WHERE state IN ('active','conflict') AND payroll_transaction_id IS NOT NULL`,
     );
     let missingCount = 0;
     for (const row of tracked) {
-      if (snapshotNaturalKeys.has(row.natural_key)) continue; // still present (possibly as a change)
+      const presence = classifyTrackedSourcePresence(
+        { fingerprint: row.fingerprint, naturalKey: row.natural_key },
+        { fingerprints: snapshotFingerprints, changedNaturalKeys },
+      );
+      if (presence !== "missing") continue;
       await pool.query(`UPDATE sheet_sync_rows SET state = 'missing', updated_at = now() WHERE id = $1`, [row.id]);
       await pool.query(
         `UPDATE payroll_transactions SET sync_review_reason = 'source_missing', updated_at = now() WHERE id = $1`,

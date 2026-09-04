@@ -138,6 +138,63 @@ describe("Google Sheet paid-marker write-back", () => {
     expect(writes).toEqual([[{ range: "'Ahivim'!N4", value: "Paid" }]]);
   });
 
+  it("writes Paid consistently to every exact source occurrence of one canonical transaction", async () => {
+    const writes: SheetCellUpdate[][] = [];
+    const writer: SheetCellWriter = {
+      write: vi.fn(async (cells) => { writes.push([...cells]); }),
+    };
+    const source = csv("");
+    const lines = source.split("\n");
+    lines.push(lines[2]!);
+
+    const result = await pushPaidChangesToSheet(
+      poolWith([{ payroll_transaction_id: "txn-1", source_row_number: 3, identity, is_paid: true }]),
+      CONFIG,
+      { writer, fetcher: async () => lines.join("\n") },
+    );
+
+    expect(result).toMatchObject({ status: "success", eligible: 1, updated: 2, skipped: 0 });
+    expect(writes).toEqual([[
+      { range: "'Ahivim'!N3", value: "Paid" },
+      { range: "'Ahivim'!N4", value: "Paid" },
+    ]]);
+  });
+
+  it("refuses to guess when several tracked transactions share one exact source identity", async () => {
+    const writer: SheetCellWriter = { write: vi.fn(async () => undefined) };
+    const result = await pushPaidChangesToSheet(
+      poolWith([
+        { payroll_transaction_id: "txn-1", source_row_number: 3, identity, is_paid: true },
+        { payroll_transaction_id: "txn-2", source_row_number: 4, identity, is_paid: true },
+      ]),
+      CONFIG,
+      { writer, fetcher: async () => csv("") },
+    );
+
+    expect(result).toMatchObject({ status: "partial", eligible: 2, updated: 0, skipped: 2 });
+    expect(writer.write).toHaveBeenCalledWith([], CONFIG);
+  });
+
+  it("refuses an ambiguous exact identity even when only one tracked transaction is dirty", async () => {
+    const writer: SheetCellWriter = { write: vi.fn(async () => undefined) };
+    const result = await pushPaidChangesToSheet(
+      poolWith([
+        {
+          payroll_transaction_id: "txn-1",
+          source_row_number: 3,
+          identity: { ...identity, appPaidDirty: true },
+          is_paid: true,
+        },
+        { payroll_transaction_id: "txn-2", source_row_number: 4, identity, is_paid: false },
+      ]),
+      CONFIG,
+      { writer, fetcher: async () => csv("") },
+    );
+
+    expect(result).toMatchObject({ status: "partial", eligible: 1, updated: 0, skipped: 1 });
+    expect(writer.write).toHaveBeenCalledWith([], CONFIG);
+  });
+
   it("does not write when the app has not changed the last pulled value", async () => {
     const writer: SheetCellWriter = { write: vi.fn(async () => undefined) };
     const fetcher = vi.fn(async () => csv(""));

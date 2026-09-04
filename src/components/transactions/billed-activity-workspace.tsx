@@ -3,11 +3,12 @@
 import { useDeferredValue, useMemo, useState, type KeyboardEvent } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { CheckCircle2, ListChecks, RefreshCw, RotateCcw, Search, ShieldAlert, TableProperties } from "lucide-react";
+import { CheckCircle2, Download, ListChecks, ReceiptText, RefreshCw, RotateCcw, Search, ShieldAlert, TableProperties } from "lucide-react";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 import type { ActivityReviewSummary } from "@/lib/data/activity-overview";
 import type { TransactionFieldVisibility } from "@/lib/auth/money-redaction";
+import type { ExportCell, ExportColumn } from "@/lib/export/tabular";
 import type { FilterState } from "@/components/data-grid/types";
 import PeriodControl, { type PeriodRange } from "@/components/period-control";
 import { Card, EmptyState, StatusBadge, Table, Td, Th, Tr } from "@/components/ui";
@@ -16,12 +17,15 @@ import {
   type CheckRouting,
   type CheckSummary,
 } from "@/components/transactions/check-grouping";
+import SourcePaymentsView from "@/components/transactions/source-payments-view";
+import { downloadTransactionSummary } from "@/components/transactions/summary-export";
 
 const TransactionsGrid = dynamic(() => import("@/components/transactions/transactions-grid"), {
   loading: () => <p role="status" className="py-8 text-sm text-[var(--color-ink-soft)]">Loading recorded services…</p>,
 });
 
-type WorkspaceView = "checks" | "rows";
+type WorkspaceView = "checks" | "source-payments" | "rows";
+const WORKSPACE_VIEWS: WorkspaceView[] = ["rows", "checks", "source-payments"];
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -83,6 +87,8 @@ function ChecksView({
   const deferredQuery = useDeferredValue(query);
   const [period, setPeriod] = useState<PeriodRange>(null);
   const [periodControlKey, setPeriodControlKey] = useState(0);
+  const [exporting, setExporting] = useState<"csv" | "xlsx" | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const checks = useMemo(() => groupChecks(rows), [rows]);
   const filtered = useMemo(() => {
     const needle = deferredQuery.trim().toLocaleLowerCase();
@@ -128,22 +134,96 @@ function ChecksView({
     setPeriodControlKey((key) => key + 1);
   };
 
+  const exportView = async (format: "csv" | "xlsx") => {
+    setExporting(format);
+    setNotice(null);
+    const columns: ExportColumn[] = [
+      { key: "checkNumber", header: "Check #", type: "text" },
+      { key: "checkDate", header: "Check date", type: "date" },
+      { key: "employee", header: "Employee", type: "text" },
+      { key: "payTo", header: "Pay to", type: "text" },
+      { key: "routing", header: "Routing", type: "text" },
+      { key: "periodBegin", header: "Period begin", type: "date" },
+      { key: "periodEnd", header: "Period end", type: "date" },
+      { key: "individuals", header: "People served", type: "text" },
+      { key: "programs", header: "Programs", type: "text" },
+      { key: "services", header: "Recorded services", type: "int" },
+      ...(visibility.canSeeHours ? [{ key: "hours", header: "Hours", type: "hours" } as const] : []),
+      ...(visibility.canSeeBilledAmounts ? [{ key: "funderBilled", header: "Funder billed", type: "money" } as const] : []),
+      ...(visibility.canSeeEmployeeAmounts ? [{ key: "employeeBase", header: "Employee base", type: "money" } as const] : []),
+      ...(visibility.canSeeAgencySpread ? [{ key: "agencySpread", header: "Agency spread", type: "money" } as const] : []),
+      ...(visibility.canSeeCheckNet ? [
+        { key: "verifiedGross", header: "Verified check gross", type: "money" } as const,
+        { key: "verifiedNet", header: "Verified check net", type: "money" } as const,
+        { key: "verification", header: "Verification", type: "text" } as const,
+        { key: "sourceNet", header: "Source net", type: "money" } as const,
+      ] : []),
+      ...(visibility.canSeeTaxes ? [{ key: "withholding", header: "Withholding", type: "money" } as const] : []),
+      { key: "review", header: "Review status", type: "text" },
+    ];
+    const exportRows: Record<string, ExportCell>[] = filtered.map((check) => ({
+      checkNumber: check.checkNumber,
+      checkDate: check.checkDate,
+      employee: check.employee,
+      payTo: check.payTo,
+      routing: check.routing === "direct" ? "Direct to employee" : check.routing === "agency" ? "Agency-routed" : "Routing review",
+      periodBegin: check.periodBegin,
+      periodEnd: check.periodEnd,
+      individuals: check.individuals.join(", "),
+      programs: check.programs.join(", "),
+      services: check.rows,
+      hours: check.hours,
+      funderBilled: check.funderBilled,
+      employeeBase: check.employeeBase,
+      agencySpread: check.agencySpread,
+      verifiedGross: check.verifiedCheckGross,
+      verifiedNet: check.verifiedCheckNet,
+      verification: check.verificationStatus === null ? "Not linked" : VERIFICATION_LABEL[check.verificationStatus] ?? check.verificationStatus,
+      sourceNet: check.netPay,
+      withholding: check.withholding,
+      review: check.needsReview ? check.reviewReasons.join("; ") : "Ready",
+    }));
+    try {
+      await downloadTransactionSummary({
+        format,
+        title: "Payroll checks",
+        filename: "payroll-checks",
+        columns,
+        rows: exportRows,
+      });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not export payroll checks.");
+    } finally {
+      setExporting(null);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <PeriodControl key={periodControlKey} onChange={setPeriod} paramKey="period" />
-        <label className="relative block w-full sm:w-72">
-          <span className="sr-only">Search checks</span>
-          <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-ink-faint)]" />
-          <input
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search checks"
-            className="input input-leading-icon w-full"
-          />
-        </label>
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+          <label className="relative block min-w-56 flex-1 sm:w-72">
+            <span className="sr-only">Search checks</span>
+            <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-ink-faint)]" />
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search checks"
+              className="input input-leading-icon w-full"
+            />
+          </label>
+          <button type="button" className="btn btn-sm btn-secondary" disabled={exporting !== null} onClick={() => exportView("csv")}>
+            <Download aria-hidden className="h-4 w-4" /> {exporting === "csv" ? "Exporting…" : "CSV"}
+          </button>
+          <button type="button" className="btn btn-sm btn-secondary" disabled={exporting !== null} onClick={() => exportView("xlsx")}>
+            <Download aria-hidden className="h-4 w-4" /> {exporting === "xlsx" ? "Exporting…" : "Excel"}
+          </button>
+        </div>
       </div>
+
+      {notice ? <p role="alert" className="rounded-lg border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-3 py-2 text-sm text-[var(--color-danger)]">{notice}</p> : null}
 
       <div className="grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)] sm:grid-cols-3 lg:grid-cols-8 lg:divide-y-0">
         <SummaryMetric label="Checks" value={filtered.length.toLocaleString()} />
@@ -370,11 +450,16 @@ export default function BilledActivityWorkspace({
   };
 
   const moveTabFocus = (event: KeyboardEvent<HTMLButtonElement>) => {
-    const nextView = event.key === "ArrowLeft" || event.key === "Home"
-      ? "rows"
-      : event.key === "ArrowRight" || event.key === "End"
-        ? "checks"
-        : null;
+    const currentIndex = WORKSPACE_VIEWS.indexOf(view);
+    const nextView = event.key === "Home"
+      ? WORKSPACE_VIEWS[0]!
+      : event.key === "End"
+        ? WORKSPACE_VIEWS.at(-1)!
+        : event.key === "ArrowLeft"
+          ? WORKSPACE_VIEWS[(currentIndex - 1 + WORKSPACE_VIEWS.length) % WORKSPACE_VIEWS.length]!
+          : event.key === "ArrowRight"
+            ? WORKSPACE_VIEWS[(currentIndex + 1) % WORKSPACE_VIEWS.length]!
+            : null;
     if (!nextView) return;
     event.preventDefault();
     selectView(nextView);
@@ -413,9 +498,25 @@ export default function BilledActivityWorkspace({
             >
               <ListChecks aria-hidden className="h-4 w-4" /> Payroll checks
             </button>
+            <button
+              id="transactions-source-payments-tab"
+              type="button"
+              role="tab"
+              aria-selected={view === "source-payments"}
+              tabIndex={view === "source-payments" ? 0 : -1}
+              aria-controls="transactions-workspace-panel"
+              onKeyDown={moveTabFocus}
+              onClick={() => selectView("source-payments")}
+            >
+              <ReceiptText aria-hidden className="h-4 w-4" /> Source payments
+            </button>
           </div>
           <p className="text-xs text-[var(--color-ink-faint)]">
-            {view === "checks" ? "One line per payroll check" : `${rows.length.toLocaleString()} recorded services`}
+            {view === "checks"
+              ? "One line per employee check"
+              : view === "source-payments"
+                ? "One line per imported payment"
+                : `${rows.length.toLocaleString()} recorded services`}
           </p>
         </div>
       ) : null}
@@ -423,10 +524,12 @@ export default function BilledActivityWorkspace({
       <div
         id="transactions-workspace-panel"
         role="tabpanel"
-        aria-labelledby={contextLabel ? undefined : view === "rows" ? "transactions-rows-tab" : "transactions-checks-tab"}
+        aria-labelledby={contextLabel ? undefined : `transactions-${view}-tab`}
       >
         {view === "checks" ? (
           <ChecksView rows={rows} visibility={visibility} onShowRows={() => selectView("rows")} />
+        ) : view === "source-payments" ? (
+          <SourcePaymentsView rows={rows} visibility={visibility} onShowRows={() => selectView("rows")} />
         ) : (
           <TransactionsGrid
             rows={rows}
