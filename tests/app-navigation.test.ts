@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  destinationIsActive,
   getCommandDestinations,
   getVisibleAdminDestinations,
   getVisibleWorkspaces,
@@ -12,7 +13,7 @@ describe("role-specific workspaces", () => {
     expect(shouldTrackNavigation("/dashboard", "/dashboard")).toBe(false);
   });
 
-  it("gives a finance-only viewer a plain Masser destination without budget navigation", () => {
+  it("gives a finance-only viewer one Money workspace without budget or Activity navigation", () => {
     const access = {
       role: "viewer",
       accessResolved: true,
@@ -24,10 +25,10 @@ describe("role-specific workspaces", () => {
     };
     const workspaces = getVisibleWorkspaces(access);
 
-    expect(workspaces.map((workspace) => workspace.label)).toContain("Masser");
+    expect(workspaces.map((workspace) => workspace.label)).toContain("Money & reports");
     expect(workspaces.map((workspace) => workspace.label)).not.toContain("People & budgets");
-    expect(workspaces.map((workspace) => workspace.label)).not.toContain("Transactions");
-    expect(workspaces.find((workspace) => workspace.id === "payroll")?.href).toBe("/masser");
+    expect(workspaces.map((workspace) => workspace.label)).not.toContain("Activity");
+    expect(workspaces.find((workspace) => workspace.id === "money")?.href).toBe("/masser");
     expect(getCommandDestinations(access).some((item) => item.href === "/individuals")).toBe(false);
   });
 
@@ -41,7 +42,7 @@ describe("role-specific workspaces", () => {
       canPlan: false,
       canEditDocuments: false,
     });
-    expect(workspaces.find((workspace) => workspace.id === "budgets")?.href).toBe("/individuals");
+    expect(workspaces.find((workspace) => workspace.id === "people")?.href).toBe("/individuals");
   });
 
   it("gives a budget planner Schedule and People & budgets without transaction navigation", () => {
@@ -57,15 +58,30 @@ describe("role-specific workspaces", () => {
     };
     const workspaces = getVisibleWorkspaces(access);
 
-    expect(workspaces.find((workspace) => workspace.id === "budgets")?.href).toBe("/individuals");
+    expect(workspaces.find((workspace) => workspace.id === "people")?.href).toBe("/individuals");
     expect(workspaces.find((workspace) => workspace.id === "activity")?.href).toBe("/schedule");
-    expect(workspaces.find((workspace) => workspace.id === "employees")?.href).toBe("/employees");
+    expect(workspaces.find((workspace) => workspace.id === "people")?.destinations.map((item) => item.href)).toContain("/employees");
     expect(getCommandDestinations(access).some((item) => item.href === "/schedule")).toBe(true);
     expect(getCommandDestinations(access).some((item) => item.href === "/transactions")).toBe(false);
-    expect(workspaces.some((workspace) => workspace.id === "payroll")).toBe(false);
+    expect(workspaces.some((workspace) => workspace.id === "money")).toBe(false);
   });
 
-  it("gives an office manager Transactions in the primary workspace list", () => {
+  it("trusts an explicit employee-directory grant for a scoped viewer", () => {
+    const workspaces = getVisibleWorkspaces({
+      role: "viewer",
+      accessResolved: true,
+      canSeeTransactions: false,
+      canSeeSettlements: false,
+      canSeeBudgets: false,
+      canPlan: false,
+      canSeeEmployees: true,
+      canEditDocuments: false,
+    });
+
+    expect(workspaces.find((workspace) => workspace.id === "people")?.href).toBe("/employees");
+  });
+
+  it("gives an office manager Transactions as the Activity landing page", () => {
     const access = {
       role: "manager",
       accessResolved: true,
@@ -76,9 +92,9 @@ describe("role-specific workspaces", () => {
       canEditDocuments: true,
     };
 
-    expect(getVisibleWorkspaces(access).find((workspace) => workspace.id === "transactions")?.href).toBe("/transactions");
-    expect(getVisibleWorkspaces({ ...access, canSeeTransactions: false }).some((workspace) => workspace.id === "transactions")).toBe(false);
-    expect(getCommandDestinations(access).find((item) => item.href === "/transactions")?.label).toBe("Transactions");
+    expect(getVisibleWorkspaces(access).find((workspace) => workspace.id === "activity")?.href).toBe("/transactions");
+    expect(getVisibleWorkspaces({ ...access, canSeeTransactions: false }).find((workspace) => workspace.id === "activity")?.href).toBe("/schedule");
+    expect(getCommandDestinations(access).find((item) => item.href === "/transactions")?.label).toBe("Activity");
   });
 
   it("gives a class-billing operator Classes and documents without employee money", () => {
@@ -128,30 +144,22 @@ describe("role-specific workspaces", () => {
       canPlan: true,
       canSeeClassFinancials: true,
       canEditDocuments: true,
+      canUsePortal: true,
       canManageAgencies: true,
     };
 
     const workspaces = getVisibleWorkspaces(resolved);
-    expect(workspaces.map((workspace) => workspace.id)).toEqual([
-      "overview",
-      "transactions",
-      "budgets",
-      "activity",
-      "payroll",
-      "employees",
-      "agencies",
-      "classes",
-      "reports",
-    ]);
+    expect(workspaces.map((workspace) => workspace.id)).toEqual(["overview", "people", "activity", "money"]);
     const hrefs = getCommandDestinations(resolved).map((item) => item.href);
     expect(hrefs).toContain("/transactions");
-    expect(workspaces.find((workspace) => workspace.id === "transactions")?.href).toBe("/transactions");
+    expect(workspaces.find((workspace) => workspace.id === "activity")?.href).toBe("/transactions");
     expect(hrefs).toContain("/schedule");
     expect(hrefs).toContain("/individuals");
     expect(hrefs).toContain("/employees");
     expect(hrefs).toContain("/classes");
     expect(hrefs).toContain("/reports");
     expect(hrefs).toContain("/documents");
+    expect(hrefs).toContain("/settings/role-preview");
   });
 
   it("shows the PDF workspace only after document access resolves", () => {
@@ -181,9 +189,44 @@ describe("role-specific workspaces", () => {
     };
 
     expect(getVisibleAdminDestinations(base).map((item) => item.href)).not.toContain("/settings/agencies");
-    expect(getVisibleWorkspaces(base).map((item) => item.href)).not.toContain("/agencies");
+    expect(getVisibleWorkspaces(base).flatMap((item) => item.destinations.map((destination) => destination.href))).not.toContain("/agencies");
     expect(getVisibleAdminDestinations({ ...base, canManageAgencies: true }).map((item) => item.href)).toContain("/settings/agencies");
-    expect(getVisibleWorkspaces({ ...base, canManageAgencies: true }).map((item) => item.href)).toContain("/agencies");
+    expect(getVisibleWorkspaces({ ...base, canManageAgencies: true }).flatMap((item) => item.destinations.map((destination) => destination.href))).toContain("/agencies");
+  });
+
+  it("keeps the role preview center owner-only", () => {
+    const base = {
+      role: "manager",
+      accessResolved: true,
+      canSeeTransactions: true,
+      canSeeSettlements: true,
+      canSeeBudgets: true,
+      canPlan: true,
+      canEditDocuments: true,
+    };
+
+    expect(getVisibleAdminDestinations(base).map((item) => item.href)).not.toContain("/settings/role-preview");
+    expect(getVisibleAdminDestinations({ ...base, role: "admin" }).map((item) => item.href)).toContain("/settings/role-preview");
+  });
+
+  it("keeps sync and review routes under one active Activity child", () => {
+    const access = {
+      role: "admin",
+      accessResolved: true,
+      canSeeTransactions: true,
+      canSeeSettlements: true,
+      canSeeBudgets: true,
+      canPlan: true,
+      canEditDocuments: true,
+    };
+    const review = getVisibleWorkspaces(access)
+      .find((workspace) => workspace.id === "activity")
+      ?.destinations.find((destination) => destination.id === "activity-review");
+
+    expect(review).toBeDefined();
+    expect(destinationIsActive("/sync", review!)).toBe(true);
+    expect(destinationIsActive("/imports/batch-1", review!)).toBe(true);
+    expect(getVisibleAdminDestinations(access).map((item) => item.href)).not.toContain("/sync");
   });
 
   it("labels restricted settings as the user's own account", () => {

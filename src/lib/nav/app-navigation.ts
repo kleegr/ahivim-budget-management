@@ -21,11 +21,13 @@ export interface NavigationDestination {
   href: string;
   hint: string;
   keywords?: string;
+  /** Route families represented by this destination in an expanded workspace. */
+  activePrefixes?: readonly string[];
   gate?: NavigationGate;
 }
 
 export interface NavigationWorkspace {
-  id: "overview" | "portal" | "transactions" | "budgets" | "activity" | "payroll" | "employees" | "agencies" | "classes" | "reports";
+  id: "overview" | "portal" | "people" | "activity" | "money";
   label: string;
   hint: string;
   activePrefixes: readonly string[];
@@ -71,75 +73,19 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
     ],
   },
   {
-    id: "transactions",
-    label: "Transactions",
-    hint: "Actual billing and payroll history",
-    activePrefixes: ["/transactions"],
-    destinations: [
-      {
-        id: "transactions",
-        label: "Transactions",
-        href: "/transactions",
-        hint: "Actual billing and payroll history",
-        keywords: "transactions billing payroll checks ledger source actual activity",
-        gate: "manager-transactions",
-      },
-    ],
-  },
-  {
-    id: "budgets",
+    id: "people",
     label: "People & budgets",
-    hint: "People, authorized hours, usage, and renewals",
-    activePrefixes: ["/individuals", "/people"],
+    hint: "People, authorizations, staffing, and organizations",
+    activePrefixes: ["/individuals", "/people", "/employees", "/agencies"],
     destinations: [
       {
         id: "budget-portfolio",
         label: "People & budgets",
         href: "/individuals",
-        hint: "People, authorized hours, usage, and renewals",
-        keywords: "individuals people clients authorizations utilization",
+        hint: "Authorized hours, usage, and renewals",
+        keywords: "individuals people clients authorizations utilization renewals",
         gate: "budgets",
       },
-    ],
-  },
-  {
-    id: "activity",
-    label: "Schedule",
-    hint: "Plan who works with whom and when",
-    activePrefixes: ["/schedule"],
-    destinations: [
-      {
-        id: "schedule",
-        label: "Schedule",
-        href: "/schedule",
-        hint: "Plan who works with whom and when",
-        keywords: "calendar planning sessions coverage assignments",
-        gate: "planning",
-      },
-    ],
-  },
-  {
-    id: "payroll",
-    label: "Masser",
-    hint: "Employee collections and individual set-asides",
-    activePrefixes: ["/collections", "/settlements", "/calculations", "/projections", "/masser"],
-    destinations: [
-      {
-        id: "collections",
-        label: "Masser",
-        href: "/masser",
-        hint: "Employee collections and individual set-asides",
-        keywords: "money collector receivable monthly check gross net reserve put away masser target",
-        gate: "settlements",
-      },
-    ],
-  },
-  {
-    id: "employees",
-    label: "Employees",
-    hint: "Employees, assignments, and availability",
-    activePrefixes: ["/employees"],
-    destinations: [
       {
         id: "employees",
         label: "Employees",
@@ -148,14 +94,6 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         keywords: "staff workers assignments schedules availability",
         gate: "employees",
       },
-    ],
-  },
-  {
-    id: "agencies",
-    label: "Agencies",
-    hint: "Organizations, rosters, and operational activity",
-    activePrefixes: ["/agencies"],
-    destinations: [
       {
         id: "agency-directory",
         label: "Agencies",
@@ -167,11 +105,86 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
     ],
   },
   {
-    id: "classes",
-    label: "Classes",
-    hint: "Class budgets and invoices",
-    activePrefixes: ["/classes"],
+    id: "activity",
+    label: "Activity",
+    hint: "Transactions, schedules, matching, and source review",
+    activePrefixes: [
+      "/transactions",
+      "/schedule",
+      "/reconciliation",
+      "/review",
+      "/sync",
+      "/imports",
+      "/matches",
+      "/exceptions",
+      "/aliases",
+    ],
     destinations: [
+      {
+        id: "transactions",
+        label: "Transactions",
+        href: "/transactions",
+        hint: "Actual billing and payroll history",
+        keywords: "transactions billing payroll checks ledger source actual activity",
+        gate: "manager-transactions",
+      },
+      {
+        id: "schedule",
+        label: "Schedule",
+        href: "/schedule",
+        hint: "Plan who works with whom and when",
+        keywords: "calendar planning sessions coverage assignments",
+        gate: "planning",
+      },
+      {
+        id: "activity-review",
+        label: "Review & sync",
+        href: "/review",
+        hint: "Matching, imports, and source-data review",
+        keywords: "reconciliation review sync import source conflicts matching",
+        activePrefixes: [
+          "/review",
+          "/reconciliation",
+          "/sync",
+          "/imports",
+          "/matches",
+          "/exceptions",
+          "/aliases",
+        ],
+        gate: "manager",
+      },
+    ],
+  },
+  {
+    id: "money",
+    label: "Money & reports",
+    hint: "Amounts to action, financial setup, classes, and reporting",
+    activePrefixes: ["/collections", "/settlements", "/calculations", "/projections", "/masser", "/reports", "/classes"],
+    destinations: [
+      {
+        id: "money-overview",
+        label: "Masser",
+        href: "/masser",
+        hint: "Money to collect, pay, and put away",
+        keywords: "money collector receivable monthly check gross net reserve put away masser target",
+        gate: "settlements",
+      },
+      {
+        id: "financial-setup",
+        label: "Financial setup",
+        href: "/calculations",
+        hint: "Rates, arrangements, sequential cuts, and approved amounts",
+        keywords: "financial setup deals calculations cuts projections rates",
+        gate: "manager",
+      },
+      {
+        id: "agency-financials",
+        label: "Agency financials",
+        href: "/reports/agency-financials",
+        hint: "Actual income, expenses, and agency result",
+        keywords: "owner agency actual income expenses result profit",
+        gate: "owner",
+      },
       {
         id: "class-billing",
         label: "Classes",
@@ -180,20 +193,12 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         keywords: "classes revenue invoice allowance reimbursement idgs",
         gate: "classes",
       },
-    ],
-  },
-  {
-    id: "reports",
-    label: "Reports",
-    hint: "View and export reports",
-    activePrefixes: ["/reports"],
-    destinations: [
       {
         id: "report-library",
-        label: "Report library",
+        label: "Reports",
         href: "/reports",
-        hint: "View and export reports",
-        keywords: "csv excel analysis export",
+        hint: "Answer a business question or export a result",
+        keywords: "reports csv excel analysis export agency financials",
         gate: "manager",
       },
     ],
@@ -201,6 +206,14 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
 ];
 
 const ADMIN_DESTINATIONS: readonly NavigationDestination[] = [
+  {
+    id: "role-preview",
+    label: "Role preview",
+    href: "/settings/role-preview",
+    hint: "See and test every role-specific experience",
+    keywords: "role preview sign in as test account permissions portal",
+    gate: "owner",
+  },
   {
     id: "agency-settings",
     label: "Agencies and roles",
@@ -223,14 +236,6 @@ const ADMIN_DESTINATIONS: readonly NavigationDestination[] = [
     href: "/settings",
     hint: "Users, account, programs, and rates",
     keywords: "password users access programs rates audit system",
-  },
-  {
-    id: "sheet-sync",
-    label: "Google Sheet",
-    href: "/sync",
-    hint: "Bring in the latest Google Sheet information",
-    keywords: "sheet sync source history conflicts",
-    gate: "manager",
   },
 ];
 
@@ -349,11 +354,11 @@ function allowed(gate: NavigationGate | undefined, access: NavigationAccess): bo
   if (gate === "planning") return access.canPlan;
   if (gate === "classes") return access.canSeeClassFinancials ?? false;
   if (gate === "documents") return access.canEditDocuments;
-  if (gate === "portal") return access.canUsePortal ?? false;
+  if (gate === "portal") return access.role === "viewer" && (access.canUsePortal ?? false);
   if (gate === "agencies") return access.canManageAgencies ?? false;
   if (gate === "employees") {
     if (access.canSeeEmployees !== undefined) return access.canSeeEmployees;
-    return access.role === "manager" || access.role === "admin" || !access.canPlan || access.canSeeTransactions || access.canSeeSettlements;
+    return access.role === "manager" || access.role === "admin" || access.canPlan;
   }
   return access.canSeeBudgets;
 }
@@ -390,7 +395,8 @@ export function workspaceIsActive(pathname: string, workspace: NavigationWorkspa
 }
 
 export function destinationIsActive(pathname: string, destination: NavigationDestination): boolean {
-  return pathMatches(pathname, destination.href);
+  const prefixes = destination.activePrefixes ?? [destination.href];
+  return prefixes.some((prefix) => pathMatches(pathname, prefix));
 }
 
 export function getCommandDestinations(access: NavigationAccess): NavigationDestination[] {
