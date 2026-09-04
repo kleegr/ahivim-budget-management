@@ -121,7 +121,11 @@ export const STATUS_LABEL: Record<string, string> = {
  * ------------------------------------------------------------------------- */
 export interface SessionFlags {
   hasConflict: boolean;
+  hasScheduleConflict?: boolean;
+  hasAvailabilityConflict?: boolean;
   hasBudgetRisk: boolean;
+  hasAssignmentGap?: boolean;
+  hasOtherWarning?: boolean;
   warningCount?: number;
 }
 
@@ -205,7 +209,8 @@ export function ModalShell({
     document.body.style.overflow = "hidden";
     const frame = window.requestAnimationFrame(() => {
       const panel = panelRef.current;
-      const initial = panel?.querySelector<HTMLElement>(
+      const initial = panel?.querySelector<HTMLElement>("[data-modal-initial-focus]")
+        ?? panel?.querySelector<HTMLElement>(
         "input:not([disabled]), select:not([disabled]), textarea:not([disabled])",
       ) ?? panel?.querySelector<HTMLElement>("button:not([disabled])");
       initial?.focus();

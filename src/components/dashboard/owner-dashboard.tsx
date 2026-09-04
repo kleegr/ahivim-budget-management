@@ -4,13 +4,14 @@ import {
   AlertTriangle,
   ArrowRight,
   BarChart3,
+  CalendarPlus,
   Calculator,
   CheckCircle2,
-  Clock3,
   Filter,
   HandCoins,
   ReceiptText,
   RotateCcw,
+  UserRoundCog,
   WalletCards,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -28,14 +29,14 @@ import {
 import { formatHours, formatMoney } from "@/lib/money";
 import type { GridView } from "@/lib/manage/grid-views";
 import { getAgencyFinancialReport, type AgencyFinancialReport } from "@/lib/data/agency-financial-report";
-import { getSettlementDashboard, type SettlementSummary } from "@/lib/data/settlements";
+import { getSettlementDashboard } from "@/lib/data/settlements";
+import { getOwnerScheduleAttention } from "@/lib/dashboard/owner-schedule-attention";
 import { withDb } from "@/lib/data/pool";
+import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 
 export interface OwnerActualMoney {
   month: string;
   totals: AgencyFinancialReport["totals"];
-  operations: SettlementSummary;
-  checkIssueCount: number;
 }
 
 const LONG_DATE = new Intl.DateTimeFormat("en-US", {
@@ -62,6 +63,24 @@ function formatDate(value: string | null, formatter = SHORT_DATE): string {
   return value
     ? formatter.format(new Date(`${value}T00:00:00Z`))
     : "No check date";
+}
+
+async function readOnlySnapshot<T>(
+  pool: PgLikePool,
+  read: (client: PgLikeClient) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const value = await read(client);
+    await client.query("COMMIT");
+    return value;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function SectionHeading({
@@ -131,10 +150,10 @@ function SummaryMetric({
 
 function OwnerAttentionSection({
   items,
-  moneyUnavailable = false,
+  unavailableSources = [],
 }: {
   items: OwnerAttentionItem[];
-  moneyUnavailable?: boolean;
+  unavailableSources?: string[];
 }) {
   return (
     <section aria-labelledby="owner-attention-heading">
@@ -173,17 +192,15 @@ function OwnerAttentionSection({
         <div className="mt-4 flex min-h-16 items-center gap-3 border-y border-[var(--color-rule-strong)] px-1 py-3 text-sm text-[var(--color-ink-soft)]">
           <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-success)]" />
           <p>
-            No follow-up appears in the budget, schedule-coverage, check, or financial setup data loaded on Home.
-            {moneyUnavailable ? " Current money status is temporarily unavailable." : " No current money queue is open."}
+            No follow-up appears in the budget, schedule, check, money, or financial setup data loaded on Home.
           </p>
         </div>
       )}
-      {moneyUnavailable && items.length > 0 ? (
-        <p className="mt-2 text-xs text-[var(--color-ink-faint)]">Current money actions are temporarily unavailable; the other follow-up above is still current.</p>
+      {unavailableSources.length > 0 ? (
+        <p role="status" className="mt-2 text-xs text-[var(--color-ink-faint)]">
+          {unavailableSources.join(" and ")} {unavailableSources.length === 1 ? "is" : "are"} temporarily unavailable; the follow-up shown above is still current.
+        </p>
       ) : null}
-      <p className="mt-2 text-xs text-[var(--color-ink-faint)]">
-        Unassigned shifts and calendar conflicts stay in <Link href="/schedule?view=calendar" className="font-medium text-[var(--color-primary)] hover:underline">Schedule</Link> and are not counted here.
-      </p>
     </section>
   );
 }
@@ -214,7 +231,7 @@ function OwnerMoneyShell({ month, children }: { month: string; children: ReactNo
         id="owner-money-heading"
         eyebrow="Actual money"
         title="Money"
-        description={`${MONTH_DATE.format(new Date(`${month}-01T00:00:00Z`))} actual income and expenses, plus today's open money work.`}
+        description={`${MONTH_DATE.format(new Date(`${month}-01T00:00:00Z`))} actual income, counted expenses, and agency result from exact source records.`}
         href={`/reports/agency-financials?month=${month}`}
         action="Open agency financials"
         icon={HandCoins}
@@ -238,95 +255,132 @@ function OwnerMoneyLoading({ month }: { month: string }) {
   );
 }
 
-async function OwnerOperationalSections({
-  month,
+async function OwnerAttentionData({
+  today,
   summary,
 }: {
-  month: string;
+  today: string;
   summary: OwnerDashboardSummary;
 }) {
-  const result = await withDb(async (pool) => {
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
-      const [actualFinancials, settlementDashboard] = await Promise.all([
-        getAgencyFinancialReport(client, month),
-        getSettlementDashboard(client),
-      ]);
-      await client.query("COMMIT");
-      return {
-        month: actualFinancials.month,
-        totals: actualFinancials.totals,
-        operations: settlementDashboard.summary,
-        checkIssueCount: settlementDashboard.checkIssues.length,
-      } satisfies OwnerActualMoney;
-    } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
-  });
+  const [settlementResult, scheduleResult] = await Promise.all([
+    withDb((pool) => readOnlySnapshot(pool, (client) => getSettlementDashboard(client))),
+    withDb((pool) => getOwnerScheduleAttention(pool, today)),
+  ]);
+  const unavailableSources = [
+    settlementResult.ok ? null : "Current money and check status",
+    scheduleResult.ok ? null : "Upcoming schedule status",
+  ].filter((value): value is string => value !== null);
+
+  return (
+    <OwnerAttentionSection
+      items={buildOwnerAttentionItems(
+        summary,
+        settlementResult.ok ? settlementResult.data.summary : undefined,
+        settlementResult.ok ? settlementResult.data.checkIssues.length : 0,
+        scheduleResult.ok ? scheduleResult.data : undefined,
+      )}
+      unavailableSources={unavailableSources}
+    />
+  );
+}
+
+async function OwnerActualMoneySection({ month }: { month: string }) {
+  const result = await withDb((pool) => readOnlySnapshot(
+    pool,
+    async (client) => {
+      const report = await getAgencyFinancialReport(client, month);
+      return { month: report.month, totals: report.totals } satisfies OwnerActualMoney;
+    },
+  ));
 
   if (!result.ok) {
     return (
-      <>
-        <OwnerAttentionSection items={buildOwnerAttentionItems(summary)} moneyUnavailable />
-        <OwnerMoneyShell month={month}>
-          <div role="alert" className="mt-4 flex min-h-24 flex-wrap items-center justify-between gap-3 border-y border-[var(--color-rule-strong)] px-3 py-4 text-sm">
-            <p className="text-[var(--color-ink-soft)]">Actual money is temporarily unavailable. The rest of Home is still current.</p>
-            <ButtonLink href="/dashboard">Try again</ButtonLink>
-          </div>
-        </OwnerMoneyShell>
-      </>
+      <OwnerMoneyShell month={month}>
+        <div role="alert" className="mt-4 flex min-h-24 flex-wrap items-center justify-between gap-3 border-y border-[var(--color-rule-strong)] px-3 py-4 text-sm">
+          <p className="text-[var(--color-ink-soft)]">Actual income, expenses, and result are temporarily unavailable. The rest of Home is still current.</p>
+          <ButtonLink href="/dashboard">Try again</ButtonLink>
+        </div>
+      </OwnerMoneyShell>
     );
   }
 
   const actualMoney = result.data;
   return (
-    <>
-      <OwnerAttentionSection items={buildOwnerAttentionItems(summary, actualMoney.operations, actualMoney.checkIssueCount)} />
-      <OwnerMoneyShell month={actualMoney.month}>
-        <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] md:grid-cols-3 lg:grid-cols-6 lg:divide-y-0">
-          <SummaryMetric
-            label="Actual income"
-            value={formatMoney(actualMoney.totals.income.total)}
-            href={`/reports/agency-financials?month=${actualMoney.month}`}
-            hint="Transactions and recorded receipts"
-          />
-          <SummaryMetric
-            label="Actual expenses"
-            value={formatMoney(actualMoney.totals.expenses.total)}
-            href={`/reports/agency-financials?month=${actualMoney.month}`}
-            hint="Set-asides, taxes, and shares"
-          />
-          <SummaryMetric
-            label="Agency result"
-            value={formatMoney(actualMoney.totals.agencyResult)}
-            href={`/reports/agency-financials?month=${actualMoney.month}`}
-            hint="Income minus listed expenses"
-          />
-          <SummaryMetric
-            label="Agency pays"
-            value={formatMoney(actualMoney.operations.agencyOwes)}
-            href="/settlements?queue=payable"
-            hint="Open employee payments"
-          />
-          <SummaryMetric
-            label="Employees owe"
-            value={formatMoney(actualMoney.operations.employeesOwe)}
-            href="/settlements?queue=receivable"
-            hint="Open collections"
-          />
-          <SummaryMetric
-            label="Set aside"
-            value={formatMoney(actualMoney.operations.reservesToSetAside)}
-            href="/settlements?queue=reserve"
-            hint={`${(actualMoney.operations.openCount + actualMoney.operations.partialCount).toLocaleString()} open money items`}
-          />
-        </div>
-      </OwnerMoneyShell>
-    </>
+    <OwnerMoneyShell month={actualMoney.month}>
+      <div className="mt-4 grid grid-cols-1 divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+        <SummaryMetric
+          label="Actual income"
+          value={formatMoney(actualMoney.totals.income.total)}
+          href={`/reports/agency-financials?month=${actualMoney.month}`}
+          hint="Transactions and recorded receipts"
+        />
+        <SummaryMetric
+          label="Actual expenses"
+          value={formatMoney(actualMoney.totals.expenses.total)}
+          href={`/reports/agency-financials?month=${actualMoney.month}`}
+          hint="Set-asides, taxes, and shares"
+        />
+        <SummaryMetric
+          label="Agency result"
+          value={formatMoney(actualMoney.totals.agencyResult)}
+          href={`/reports/agency-financials?month=${actualMoney.month}`}
+          hint="Income minus listed expenses"
+        />
+      </div>
+    </OwnerMoneyShell>
+  );
+}
+
+function OwnerQuickActions() {
+  const actions = [
+    {
+      href: "/individuals?view=attention",
+      label: "Review budget follow-up",
+      detail: "Open the people who need a budget or renewal decision.",
+      icon: WalletCards,
+    },
+    {
+      href: "/schedule?view=calendar",
+      label: "Plan a visit",
+      detail: "Open the working calendar to add or change service.",
+      icon: CalendarPlus,
+    },
+    {
+      href: "/masser",
+      label: "Open Masser",
+      detail: "Collect, pay, or put away money.",
+      icon: HandCoins,
+    },
+    {
+      href: "/settings#access",
+      label: "Users and role preview",
+      detail: "Create an account or verify what a user will see.",
+      icon: UserRoundCog,
+    },
+  ] as const;
+
+  return (
+    <section aria-labelledby="owner-quick-actions-heading">
+      <h2 id="owner-quick-actions-heading" className="display text-lg font-semibold text-[var(--color-ink)]">Quick actions</h2>
+      <nav aria-label="Owner quick actions" className="mt-3 grid gap-x-6 border-y border-[var(--color-rule-strong)] md:grid-cols-2 xl:grid-cols-4">
+        {actions.map(({ href, label, detail, icon: Icon }, index) => (
+          <Link
+            key={href}
+            href={href}
+            className={`group flex min-h-20 items-center gap-3 px-1 py-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-primary)] ${
+              index > 0 ? "border-t border-[var(--color-rule)] md:[&:nth-child(2)]:border-t-0 md:[&:nth-child(even)]:pl-4 xl:border-l xl:border-t-0" : ""
+            }`}
+          >
+            <Icon aria-hidden className="h-5 w-5 shrink-0 text-[var(--color-primary)]" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold text-[var(--color-ink)] group-hover:text-[var(--color-primary)]">{label}</span>
+              <span className="mt-0.5 block text-xs leading-5 text-[var(--color-ink-soft)]">{detail}</span>
+            </span>
+            <ArrowRight aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-ink-faint)] group-hover:text-[var(--color-primary)]" />
+          </Link>
+        ))}
+      </nav>
+    </section>
   );
 }
 
@@ -406,7 +460,7 @@ function RecentChecks({
   return (
     <div className="mt-6">
       <h3 className="text-sm font-semibold text-[var(--color-ink)]">
-        {selected ? "Checks in this selection" : "Recent checks"}
+        {selected ? "Payroll activity in this selection" : "Recent payroll activity"}
       </h3>
       {checks.length === 0 ? (
         <p className="mt-3 border-y border-[var(--color-rule)] py-5 text-sm text-[var(--color-ink-soft)]">
@@ -469,12 +523,14 @@ export default function OwnerDashboard({
   activityOptions,
   savedViews,
   financialMonth,
+  today,
 }: {
   summary: OwnerDashboardSummary;
   activitySelection: OwnerActivitySelection;
   activityOptions: OwnerActivityFilterOptions;
   savedViews: GridView[];
   financialMonth: string;
+  today: string;
 }) {
   const transactions = summary.transactions;
   const budgets = summary.budgets;
@@ -506,8 +562,12 @@ export default function OwnerDashboard({
       />
 
       <div className="space-y-12">
-        <Suspense fallback={<><OwnerAttentionLoading /><OwnerMoneyLoading month={financialMonth} /></>}>
-          <OwnerOperationalSections month={financialMonth} summary={summary} />
+        <Suspense fallback={<OwnerAttentionLoading />}>
+          <OwnerAttentionData today={today} summary={summary} />
+        </Suspense>
+        <OwnerQuickActions />
+        <Suspense fallback={<OwnerMoneyLoading month={financialMonth} />}>
+          <OwnerActualMoneySection month={financialMonth} />
         </Suspense>
 
         <section aria-labelledby="owner-transactions-heading">
@@ -581,24 +641,6 @@ export default function OwnerDashboard({
           </div>
         </section>
 
-        <nav aria-label="Owner workspaces" className="grid gap-x-8 border-y border-[var(--color-rule-strong)] md:grid-cols-2">
-          <Link href="/reports" className="group flex min-h-20 items-center gap-3 px-1 py-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-primary)]">
-            <BarChart3 aria-hidden className="h-5 w-5 shrink-0 text-[var(--color-primary)]" />
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-[var(--color-ink)] group-hover:text-[var(--color-primary)]">Reports</span>
-              <span className="mt-0.5 block text-xs text-[var(--color-ink-soft)]">Business views and exports</span>
-            </span>
-            <ArrowRight aria-hidden className="h-4 w-4 text-[var(--color-ink-faint)] group-hover:text-[var(--color-primary)]" />
-          </Link>
-          <Link href="/sync" className="group flex min-h-20 items-center gap-3 border-t border-[var(--color-rule)] px-1 py-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-primary)] md:border-l md:border-t-0 md:pl-5">
-            <Clock3 aria-hidden className="h-5 w-5 shrink-0 text-[var(--color-primary)]" />
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-[var(--color-ink)] group-hover:text-[var(--color-primary)]">Google Sheet history</span>
-              <span className="mt-0.5 block text-xs text-[var(--color-ink-soft)]">Last sync and import history</span>
-            </span>
-            <ArrowRight aria-hidden className="h-4 w-4 text-[var(--color-ink-faint)] group-hover:text-[var(--color-primary)]" />
-          </Link>
-        </nav>
       </div>
     </>
   );

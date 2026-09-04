@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  agencyShareOfEmployeeBase,
   agencyRoutedEmployeeShare,
   approvedMonthlySetAside,
   classInvoiceSplit,
   directPayCheckAmounts,
+  transactionAgencySpread,
 } from "@/lib/data/agency-financial-report";
 
 describe("agency financial report math", () => {
@@ -19,6 +21,15 @@ describe("agency financial report math", () => {
       personSharePercent: null,
       employeeAgencyCutPercent: "0.200000",
     })).toEqual({ amount: "640.0000", percent: "0.800000", source: "employee_default" });
+  });
+
+  it("keeps funder spread outside the deal and assigns the exact base residual to the agency", () => {
+    expect(transactionAgencySpread("25.0000", "21.0000")).toBe("4.0000");
+    expect(transactionAgencySpread("19.0000", "21.0000")).toBe("-2.0000");
+    expect(transactionAgencySpread("25.0000", null)).toBeNull();
+
+    expect(agencyShareOfEmployeeBase("21.0000", "15.7500")).toBe("5.2500");
+    expect(agencyShareOfEmployeeBase("21.0000", null)).toBeNull();
   });
 
   it("calculates direct-pay expenses from check net once and excludes negative taxes", () => {
