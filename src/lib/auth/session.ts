@@ -9,6 +9,7 @@ import {
   type ImpersonationPayload,
   type SessionPayload,
 } from "./crypto";
+import type { AccountPresetId } from "./account-presets";
 
 /**
  * Session cookie: HttpOnly, Secure in production, SameSite=Lax, 12h expiry.
@@ -177,6 +178,7 @@ export interface AuthenticatedUser {
   email: string;
   displayName: string;
   role: Role;
+  accountPreset: AccountPresetId | null;
 }
 
 export interface CurrentImpersonation {
@@ -227,6 +229,7 @@ async function loadAuthenticationContext(): Promise<{
     email: record.email,
     displayName: record.displayName,
     role: record.role,
+    accountPreset: record.accountPreset,
   };
 
   const store = await cookies();
@@ -252,6 +255,7 @@ async function loadAuthenticationContext(): Promise<{
         email: ownerRecord.email,
         displayName: ownerRecord.displayName,
         role: ownerRecord.role,
+        accountPreset: ownerRecord.accountPreset,
       },
       target: { ...user, actorId: ownerRecord.id },
       expiresAt: impersonation.exp,

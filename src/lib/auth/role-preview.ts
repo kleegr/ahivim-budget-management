@@ -19,6 +19,12 @@ export const ROLE_PREVIEW_DETAILS = {
     visible: "The full agency roster, programs, budgets, activity, schedules, money, reports, settings, and user administration.",
     hidden: "No agency business area is intentionally hidden; secrets and infrastructure controls remain outside the application UI.",
   },
+  office_manager: {
+    landingHref: "/dashboard",
+    landingLabel: "Agency dashboard",
+    visible: "Everyday agency operations, people, schedules, budgets, financial workspaces, imports, and reports.",
+    hidden: "User administration, owner-only settings, and infrastructure controls.",
+  },
   budget_planner: {
     landingHref: "/schedule",
     landingLabel: "Schedule",
@@ -79,6 +85,12 @@ export const ROLE_PREVIEW_DETAILS = {
     visible: "Read-only approved agency financial, payment, and settlement information for the linked roster.",
     hidden: "The internal global Masser, budget planning, deal editing, records outside the linked agency, and the owner result.",
   },
+  custom_access: {
+    landingHref: "/home",
+    landingLabel: "First permitted workspace",
+    visible: "Only the people, workspaces, and actions explicitly selected by the owner during account setup.",
+    hidden: "Every internal area and record that was not explicitly granted.",
+  },
 } as const satisfies Record<AccountPresetId, RolePreviewDetails>;
 
 const ACCESS_KEYS = [
@@ -113,20 +125,21 @@ function matchesInternalPreset(
 }
 
 /**
- * `accountPreset` is authoritative for portal identities. Internal presets have
- * no portal role row, so they are recognized from the same exact access shape
- * used by the Settings user editor.
+ * Persisted `accountPreset` is authoritative even when an owner safely adjusts
+ * its permissions. Legacy accounts without one are inferred from trusted roles,
+ * portal identity, or the exact access shapes used by the Settings editor.
  */
 export function previewPresetForUser(user: UserWithAccess): AccountPresetId | null {
-  if (user.role === "admin") return "owner";
   if (user.accountPreset) return user.accountPreset;
+  if (user.role === "admin") return "owner";
+  if (user.role === "manager") return "office_manager";
   if (user.role !== "viewer" || user.portalManaged) return null;
 
   for (const preset of ACCOUNT_PRESETS) {
     if (preset.binding.kind !== "none" || !preset.access) continue;
     if (matchesInternalPreset(user, preset.access)) return preset.id;
   }
-  return null;
+  return "custom_access";
 }
 
 export interface RolePreviewLinkedAgency {
