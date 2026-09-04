@@ -839,6 +839,8 @@ describe("portal-safe home read model", () => {
       actual_gross: "125.00",
       actual_net: "100.00",
       tax_withheld: "25.00",
+      direct_rule: "giveback_percent" as const,
+      direct_percent: "0.25",
     }));
     const query = vi.fn(async (sql: string, params?: unknown[]) => {
       void params;
@@ -858,7 +860,17 @@ describe("portal-safe home read model", () => {
         }] };
       }
       if (sql.includes("FROM settlement_obligations o")) {
-        return { rows: [{ scope_id: EMPLOYEE, due_this_month: "50", collected_this_month: "25", remaining: "25" }] };
+        return { rows: [{
+          scope_id: EMPLOYEE,
+          due_this_month: "50",
+          collected_this_month: "25",
+          remaining: "25",
+          credit: "7.5",
+          recent_activity: [
+            { occurredOn: "2024-02-20", eventType: "payment", amount: "25" },
+            { occurredOn: "2024-02-18", eventType: "credit", amount: "7.5" },
+          ],
+        }] };
       }
       throw new Error(`Unexpected employee portal query: ${sql}`);
     });
@@ -875,6 +887,8 @@ describe("portal-safe home read model", () => {
     expect(model.employees[0]?.checks?.[0]).toMatchObject({
       serviceDate: "2024-02-01",
       actualNet: "100.0000",
+      giveBackDue: "25.0000",
+      employeeKeeps: "75.0000",
     });
     expect(model.employees[0]?.checks?.[0]).not.toHaveProperty("actualGross");
     expect(model.employees[0]?.checks?.[0]).not.toHaveProperty("taxWithheld");
@@ -888,10 +902,23 @@ describe("portal-safe home read model", () => {
       hours: "6.5000",
       grossServiceValue: "136.5000",
     }]);
+    expect(model.employees[0]?.giveBack).toMatchObject({
+      dueThisMonth: "50.0000",
+      collectedThisMonth: "25.0000",
+      remaining: "25.0000",
+      credit: "7.5000",
+      recentActivity: [
+        { occurredOn: "2024-02-20", label: "Payment recorded", amount: "25.0000" },
+        { occurredOn: "2024-02-18", label: "Credit applied", amount: "7.5000" },
+      ],
+    });
+    expect(JSON.stringify(model.employees[0])).not.toMatch(/direct_rule|directPercent|givebackFraction|dealRevision/i);
 
     const checkCall = query.mock.calls.find(([sql]) => sql.includes("FROM employee_payroll_checks c"));
     expect(checkCall?.[0]).toContain("date_trunc('month', canonical_service_date(");
     expect(checkCall?.[0]).toContain("= $5::date");
+    expect(checkCall?.[0]).toContain("FROM employee_deals employee_deal");
+    expect(checkCall?.[0]).toContain("employee_deal.effective_from <= canonical_service_date(");
     expect(checkCall?.[0]).not.toMatch(/portal_row|row_number/i);
     expect(checkCall?.[1]?.[4]).toBe("2024-02-01");
     const directPayCall = query.mock.calls.find(([sql]) => sql.includes("FROM payroll_transactions transaction"));
@@ -939,5 +966,53 @@ describe("portal-safe home read model", () => {
       giveBack: null,
     });
     expect(query.mock.calls.map(([sql]) => sql).join("\n")).not.toContain("payroll_transactions");
+  });
+
+  it("does not read deal terms or return keep amounts when give-back visibility is denied", async () => {
+    const context: PortalAccessContext = {
+      userId: "employee-with-net-only",
+      globalRoles: [{
+        role: "employee",
+        grants: [],
+        denials: [
+          "employee_checks.self.gross.read",
+          "employee_checks.self.tax.read",
+          "employee_giveback.self.read",
+        ],
+      }],
+      individualLinks: [],
+      employeeLinks: [{ employeeId: EMPLOYEE, relationship: "self", grants: [], denials: [] }],
+      agencyAccess: [],
+    };
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM employees")) return { rows: [{ id: EMPLOYEE, name: "Employee One" }] };
+      if (sql.includes("FROM employee_payroll_checks c")) {
+        return { rows: [{
+          id: "check-1",
+          employee_id: EMPLOYEE,
+          check_number: "1001",
+          check_date: "2024-02-15",
+          period_begin: "2024-02-01",
+          period_end: "2024-02-14",
+          actual_gross: null,
+          actual_net: "100",
+          tax_withheld: null,
+          direct_rule: null,
+          direct_percent: null,
+        }] };
+      }
+      if (sql.includes("FROM payroll_transactions transaction")) return { rows: [] };
+      throw new Error(`Unexpected net-only employee portal query: ${sql}`);
+    });
+    const pool = { query, connect: vi.fn() } as unknown as PgLikePool;
+
+    const model = await getPortalHomeReadModel(pool, context, "2024-02");
+    const check = model.employees[0]?.checks?.[0];
+
+    expect(check).toMatchObject({ actualNet: "100.0000" });
+    expect(check).not.toHaveProperty("giveBackDue");
+    expect(check).not.toHaveProperty("employeeKeeps");
+    expect(model.employees[0]?.giveBack).toBeNull();
+    expect(query.mock.calls.map(([sql]) => sql).join("\n")).not.toContain("employee_deals");
   });
 });
