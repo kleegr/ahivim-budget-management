@@ -9,6 +9,7 @@ import type { IndividualBudgetBoardRow } from "@/lib/data/queries";
 import type { ProgramBudgetRecord } from "@/lib/data/program-budgets";
 import { summarizeAuthorizationPortfolio } from "@/lib/data/authorization-portfolio";
 import type { StrategyGridRow } from "@/lib/manage/calculation-strategies";
+import type { OwnerScheduleAttention, OwnerScheduleAttentionVisit } from "@/lib/dashboard/owner-schedule-attention";
 import { dec, formatMoney } from "@/lib/money";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -96,7 +97,7 @@ export interface OwnerAttentionMoney {
 
 export interface OwnerAttentionItem {
   key: string;
-  category: "Budget" | "Renewal" | "Schedule" | "Check" | "Money" | "Setup";
+  category: "Budget" | "Renewal" | "Schedule" | "Staffing" | "Check" | "Money" | "Setup";
   title: string;
   detail: string;
   href: string;
@@ -365,10 +366,18 @@ function plural(value: number, singular: string, pluralValue = `${singular}s`): 
   return value === 1 ? singular : pluralValue;
 }
 
-function joinSignals(values: string[]): string {
-  if (values.length <= 1) return values[0] ?? "";
-  if (values.length === 2) return `${values[0]} and ${values[1]}`;
-  return `${values.slice(0, -1).join(", ")}, and ${values.at(-1)}`;
+function ownerScheduleVisitDetail(
+  visit: OwnerScheduleAttentionVisit,
+  remaining: number,
+): string {
+  const people = visit.individualNames.length > 0
+    ? visit.individualNames.join(", ")
+    : "No participant listed";
+  const time = visit.startTime ? ` at ${visit.startTime.slice(0, 5)}` : "";
+  const additional = remaining > 0
+    ? ` ${remaining.toLocaleString()} more ${plural(remaining, "visit")} ${plural(remaining, "needs", "need")} review.`
+    : "";
+  return `${visit.sessionDate}${time} · ${people} · ${visit.programName}.${additional}`;
 }
 
 /**
@@ -380,62 +389,55 @@ export function buildOwnerAttentionItems(
   summary: OwnerDashboardSummary,
   money?: OwnerAttentionMoney,
   canonicalCheckIssueCount = 0,
+  schedule?: OwnerScheduleAttention,
 ): OwnerAttentionItem[] {
   const items: OwnerAttentionItem[] = [];
-  const budgetSignals = [
-    summary.budgets.overLimit > 0
-      ? `${summary.budgets.overLimit.toLocaleString()} over the hour limit`
-      : null,
-    summary.budgets.atLimit > 0
-      ? `${summary.budgets.atLimit.toLocaleString()} at or near the hour limit`
-      : null,
-    summary.budgets.behindPace > 0
-      ? `${summary.budgets.behindPace.toLocaleString()} behind planned pace`
-      : null,
-    summary.budgets.billingWithoutBudget > 0
-      ? `${summary.budgets.billingWithoutBudget.toLocaleString()} with billing but no active hour budget`
-      : null,
-  ].filter((value): value is string => value !== null);
 
-  if (budgetSignals.length > 0) {
-    const singleHref = summary.budgets.overLimit > 0
-      ? "/individuals?view=over"
-      : summary.budgets.atLimit > 0
-        ? "/individuals?view=at_limit"
-        : summary.budgets.behindPace > 0
-          ? "/individuals?view=behind"
-          : "/individuals?view=billing_without_budget";
+  if (canonicalCheckIssueCount > 0) {
+    const count = canonicalCheckIssueCount;
     items.push({
-      key: "budget-exceptions",
-      category: "Budget",
-      title: "Current budgets need review",
-      detail: `${joinSignals(budgetSignals)}.`,
-      href: budgetSignals.length === 1 ? singleHref : "/individuals?view=attention",
-      action: "Review people & budgets",
+      key: "check-verification",
+      category: "Check",
+      title: "Payroll checks need verification",
+      detail: `${count.toLocaleString()} ${plural(count, "check group")} ${plural(count, "has", "have")} missing or conflicting routing, net pay, identity, duplicate, or group-review data.`,
+      href: "/settlements?focus=check-issues",
+      action: "Verify checks",
     });
   }
 
-  const renewalSignals = [
-    summary.budgets.renewalExpired > 0
-      ? `${summary.budgets.renewalExpired.toLocaleString()} expired`
-      : null,
-    summary.budgets.renewalMissing > 0
-      ? `${summary.budgets.renewalMissing.toLocaleString()} missing a renewal date`
-      : null,
-    summary.budgets.renewalDueSoon > 0
-      ? `${summary.budgets.renewalDueSoon.toLocaleString()} due within 60 days`
-      : null,
-  ].filter((value): value is string => value !== null);
-  if (renewalSignals.length > 0) {
+  if (schedule?.nextConflict) {
+    const count = schedule.conflictCount;
     items.push({
-      key: "renewal-exceptions",
-      category: "Renewal",
-      title: "Renewals need follow-up",
-      detail: `${joinSignals(renewalSignals)}.`,
-      href: summary.budgets.renewalExpired === 0 && summary.budgets.renewalMissing === 0
-        ? "/individuals?view=renewing"
-        : "/individuals?view=attention",
-      action: "Review renewals",
+      key: "schedule-conflicts",
+      category: "Schedule",
+      title: `${count.toLocaleString()} upcoming ${plural(count, "visit")} ${plural(count, "has", "have")} a conflict`,
+      detail: ownerScheduleVisitDetail(schedule.nextConflict, count - 1),
+      href: schedule.nextConflict.href,
+      action: "Open first conflict",
+    });
+  }
+
+  if (schedule?.nextUnassigned) {
+    const count = schedule.unassignedCount;
+    items.push({
+      key: "staffing-gaps",
+      category: "Staffing",
+      title: `${count.toLocaleString()} upcoming ${plural(count, "visit")} ${plural(count, "needs", "need")} an employee`,
+      detail: ownerScheduleVisitDetail(schedule.nextUnassigned, count - 1),
+      href: schedule.nextUnassigned.href,
+      action: "Assign first visit",
+    });
+  }
+
+  if (summary.budgets.overLimit > 0) {
+    const count = summary.budgets.overLimit;
+    items.push({
+      key: "budget-over-limit",
+      category: "Budget",
+      title: `${count.toLocaleString()} ${plural(count, "person", "people")} over the hour limit`,
+      detail: "Open the filtered roster to see the exact authorizations and next action.",
+      href: "/individuals?view=over",
+      action: "Review overages",
     });
   }
 
@@ -451,41 +453,105 @@ export function buildOwnerAttentionItems(
     });
   }
 
-  if (canonicalCheckIssueCount > 0) {
-    const count = canonicalCheckIssueCount;
+  if (money && dec(money.agencyOwes).greaterThan(0)) {
     items.push({
-      key: "check-verification",
-      category: "Check",
-      title: "Payroll checks need verification",
-      detail: `${count.toLocaleString()} ${plural(count, "check group")} ${plural(count, "has", "have")} missing or conflicting routing, net pay, identity, duplicate, or group-review data.`,
-      href: "/settlements?focus=check-issues",
-      action: "Verify checks",
+      key: "agency-payments",
+      category: "Money",
+      title: `${formatMoney(money.agencyOwes)} needs to be paid`,
+      detail: "Agency-to-employee obligations with a remaining balance.",
+      href: "/settlements?queue=payable",
+      action: "Review payments",
     });
   }
 
-  const moneySignals = money ? [
-    dec(money.agencyOwes).greaterThan(0) ? `${formatMoney(money.agencyOwes)} to pay` : null,
-    dec(money.employeesOwe).greaterThan(0) ? `${formatMoney(money.employeesOwe)} to collect` : null,
-    dec(money.reservesToSetAside).greaterThan(0) ? `${formatMoney(money.reservesToSetAside)} to set aside` : null,
-    money.creditCount > 0 && dec(money.credits).greaterThan(0)
-      ? `${formatMoney(money.credits)} in ${money.creditCount.toLocaleString()} ${plural(money.creditCount, "credit")}`
-      : null,
-  ].filter((value): value is string => value !== null) : [];
-  if (money && moneySignals.length > 0) {
-    const href = dec(money.agencyOwes).greaterThan(0)
-      ? "/settlements?queue=payable"
-      : dec(money.employeesOwe).greaterThan(0)
-        ? "/settlements?queue=receivable"
-        : dec(money.reservesToSetAside).greaterThan(0)
-          ? "/settlements?queue=reserve"
-          : "/settlements?queue=credit";
+  if (money && dec(money.employeesOwe).greaterThan(0)) {
     items.push({
-      key: "money-queues",
+      key: "employee-collections",
       category: "Money",
-      title: "Current money work is open",
-      detail: `${joinSignals(moneySignals)}.`,
-      href,
-      action: "Open money queues",
+      title: `${formatMoney(money.employeesOwe)} needs to be collected`,
+      detail: "Verified employee give-back obligations with a remaining balance.",
+      href: "/settlements?queue=receivable",
+      action: "Review collections",
+    });
+  }
+
+  if (money && dec(money.reservesToSetAside).greaterThan(0)) {
+    items.push({
+      key: "individual-put-away",
+      category: "Money",
+      title: `${formatMoney(money.reservesToSetAside)} needs to be put away`,
+      detail: "Approved individual set-aside obligations with a remaining balance.",
+      href: "/settlements?queue=reserve",
+      action: "Review put-away",
+    });
+  }
+
+  if (summary.budgets.billingWithoutBudget > 0) {
+    const count = summary.budgets.billingWithoutBudget;
+    items.push({
+      key: "billing-without-budget",
+      category: "Budget",
+      title: `${count.toLocaleString()} ${plural(count, "person", "people")} billed without an active hour budget`,
+      detail: "Open the exact billed-without-budget roster before more activity arrives.",
+      href: "/individuals?view=billing_without_budget",
+      action: "Add or review budgets",
+    });
+  }
+
+  if (summary.budgets.atLimit > 0) {
+    const count = summary.budgets.atLimit;
+    items.push({
+      key: "budget-at-limit",
+      category: "Budget",
+      title: `${count.toLocaleString()} ${plural(count, "person", "people")} at or near the hour limit`,
+      detail: "Open the filtered roster to review remaining hours and renewal timing.",
+      href: "/individuals?view=at_limit",
+      action: "Review tight budgets",
+    });
+  }
+
+  if (summary.budgets.renewalExpired > 0 || summary.budgets.renewalMissing > 0) {
+    const count = summary.budgets.renewalExpired + summary.budgets.renewalMissing;
+    items.push({
+      key: "renewal-repair",
+      category: "Renewal",
+      title: `${count.toLocaleString()} ${plural(count, "person", "people")} ${plural(count, "needs", "need")} renewal repair`,
+      detail: `${summary.budgets.renewalExpired.toLocaleString()} expired · ${summary.budgets.renewalMissing.toLocaleString()} missing a renewal date.`,
+      href: "/individuals?view=attention",
+      action: "Repair renewals",
+    });
+  } else if (summary.budgets.renewalDueSoon > 0) {
+    const count = summary.budgets.renewalDueSoon;
+    items.push({
+      key: "renewals-due-soon",
+      category: "Renewal",
+      title: `${count.toLocaleString()} ${plural(count, "renewal")} due within 60 days`,
+      detail: "Open the upcoming-renewal roster to plan the next authorization period.",
+      href: "/individuals?view=renewing",
+      action: "Review renewals",
+    });
+  }
+
+  if (summary.budgets.behindPace > 0) {
+    const count = summary.budgets.behindPace;
+    items.push({
+      key: "budget-behind-pace",
+      category: "Budget",
+      title: `${count.toLocaleString()} ${plural(count, "person", "people")} behind planned pace`,
+      detail: "Open the exact behind-pace roster to review delivery and future scheduling.",
+      href: "/individuals?view=behind",
+      action: "Review pace",
+    });
+  }
+
+  if (money && money.creditCount > 0 && dec(money.credits).greaterThan(0)) {
+    items.push({
+      key: "money-credits",
+      category: "Money",
+      title: `${formatMoney(money.credits)} is available as credit`,
+      detail: `${money.creditCount.toLocaleString()} ${plural(money.creditCount, "credit")} ${plural(money.creditCount, "needs", "need")} review before another payment is recorded.`,
+      href: "/settlements?queue=credit",
+      action: "Review credits",
     });
   }
 
@@ -504,5 +570,5 @@ export function buildOwnerAttentionItems(
     });
   }
 
-  return items.slice(0, 6);
+  return items.slice(0, 8);
 }

@@ -278,8 +278,8 @@ export default function AppNav({
   const drawerRef = useRef<HTMLElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const access = useMemo<NavigationAccess>(
-    () => ({ role: user.role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies }),
-    [user.role, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies],
+    () => ({ role: user.role, accountPreset: user.accountPreset, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies }),
+    [user.role, user.accountPreset, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies],
   );
 
   const closeDrawer = useCallback(() => setOpen(false), []);
@@ -413,7 +413,7 @@ export default function AppNav({
         Skip to content
       </a>
 
-      <CommandBar role={user.role} accessResolved={accessResolved} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} canSeeBudgets={canSeeBudgets} canPlan={canPlan} canSeeClassFinancials={canSeeClassFinancials} canSeeEmployees={canSeeEmployees} canEditDocuments={canEditDocuments} canUsePortal={canUsePortal} canManageAgencies={canManageAgencies} onNavigate={beginNavigation} />
+      <CommandBar role={user.role} accountPreset={user.accountPreset} accessResolved={accessResolved} canSeeTransactions={canSeeTransactions} canSeeSettlements={canSeeSettlements} canSeeBudgets={canSeeBudgets} canPlan={canPlan} canSeeClassFinancials={canSeeClassFinancials} canSeeEmployees={canSeeEmployees} canEditDocuments={canEditDocuments} canUsePortal={canUsePortal} canManageAgencies={canManageAgencies} onNavigate={beginNavigation} />
 
       {pendingHref ? (
         <div className="pointer-events-none fixed inset-x-0 top-[var(--impersonation-bar-height)] z-[80] h-1 overflow-hidden bg-[var(--color-primary-soft)]" role="progressbar" aria-label="Loading page">
