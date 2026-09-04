@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useState } from "react";
 import {
   CalendarDays,
   ChevronLeft,
@@ -18,529 +18,46 @@ import {
   Users,
 } from "lucide-react";
 import { ModalShell } from "@/components/schedule/shared";
-import { Money, Notice, Td, Th, Tr } from "@/components/ui";
+import {
+  CountSeparatelyForm,
+  EmployeeTermForm,
+  IncomeForm,
+  ProgramSplitForm,
+  VoidIncomeForm,
+  type CountSeparatelyTarget,
+} from "@/components/reports/agency-financial-workspace-forms";
+import {
+  AutomaticSourceLink,
+  SetAsideRuleSource,
+  SimpleTable,
+  SOURCE_LABEL,
+  SummaryMetric,
+  TransactionMoneyBridge,
+  VIEWS,
+  monthLabel,
+  percent,
+  request,
+  ruleEffectiveLabel,
+  shiftMonth,
+  type View,
+} from "@/components/reports/agency-financial-shared";
+import { Money, Notice, Td, Tr } from "@/components/ui";
 import type {
   AgencyFinancialOptions,
   AgencyFinancialReport,
-  AutomaticIncomeSourceMatch,
-  MonthlySetAsideActual,
 } from "@/lib/data/agency-financial-report";
 import type {
   EmployeeIndividualCompensationTerm,
   ManualIncomeEntry,
-  ManualIncomeSource,
   ProgramRevenueTerm,
 } from "@/lib/manage/agency-financials";
 import { agencyDate } from "@/lib/business/agency-time";
 import { collectionsPayrollCheckFocusHref } from "@/lib/nav/collections-links";
-import { dec, formatMoney, formatPercent } from "@/lib/money";
+import { dec } from "@/lib/money";
 
-type View = "summary" | "transactions" | "checks" | "set-asides" | "other-income" | "rules";
 type Modal = "income" | "program-split" | "employee-term" | null;
-type CountSeparatelyTarget = {
-  id: string;
-  label: string;
-  source: AutomaticIncomeSourceMatch;
-  action: "count_separately" | "treat_as_same_payment";
-  splitAlreadyCounted: boolean;
-};
 
-const SOURCE_LABEL: Record<ManualIncomeSource, string> = {
-  class: "Class payment received",
-  reimbursement: "Reimbursement",
-  custom_program: "Custom program",
-  other: "Other income",
-};
 
-const VIEWS: { id: View; label: string }[] = [
-  { id: "summary", label: "Summary" },
-  { id: "transactions", label: "Transactions" },
-  { id: "checks", label: "Checks" },
-  { id: "set-asides", label: "Set-asides" },
-  { id: "other-income", label: "Other income" },
-  { id: "rules", label: "Rules" },
-];
-
-function monthLabel(month: string): string {
-  return new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
-    .format(new Date(`${month}-01T00:00:00Z`));
-}
-
-function shiftMonth(month: string, amount: number): string {
-  const [year, part] = month.split("-").map(Number);
-  return new Date(Date.UTC(year!, part! - 1 + amount, 1)).toISOString().slice(0, 7);
-}
-
-function percent(value: string | null): string {
-  return value === null ? "Not set" : formatPercent(value, 2);
-}
-
-const RULE_EFFECTIVE_TIME = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  timeZone: "America/New_York",
-  timeZoneName: "short",
-});
-
-function ruleEffectiveLabel(value: string | null): string {
-  if (value === null) return "Not reconstructable";
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : RULE_EFFECTIVE_TIME.format(parsed);
-}
-
-function SetAsideRuleSource({ row }: { row: MonthlySetAsideActual }) {
-  if (!row.historyAvailable) {
-    return <span className="font-medium text-[var(--color-danger)]">History unavailable</span>;
-  }
-  if (row.stateSource !== "saved_revision") return <>Current setup</>;
-  return (
-    <div className="min-w-48" title={row.revisionId ?? undefined}>
-      <p className="font-medium text-[var(--color-ink)]">History snapshot #{row.revisionNumber}</p>
-      <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">Superseded because: {row.revisionReason?.trim() || "Not recorded"}</p>
-      <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">Snapshot recorded {ruleEffectiveLabel(row.revisionCreatedAt)}</p>
-    </div>
-  );
-}
-
-async function request(
-  url: string,
-  body: Record<string, unknown>,
-): Promise<{ ok: boolean; error?: string }> {
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const result = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-    if (!response.ok || result.ok === false) {
-      return { ok: false, error: result.error ?? `Request failed (${response.status}).` };
-    }
-    return { ok: true };
-  } catch {
-    return { ok: false, error: "Could not reach the server." };
-  }
-}
-
-function SummaryMetric({
-  label,
-  value,
-  detail,
-  tone = "default",
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  tone?: "default" | "positive" | "negative";
-}) {
-  const color = tone === "positive"
-    ? "text-[var(--color-success)]"
-    : tone === "negative"
-      ? "text-[var(--color-danger)]"
-      : "text-[var(--color-ink)]";
-  return (
-    <div className="card min-h-28 px-4 py-4">
-      <p className="eyebrow">{label}</p>
-      <p className={`tnum mt-2 text-2xl font-semibold ${color}`}>{formatMoney(value)}</p>
-      <p className="mt-1 text-xs leading-5 text-[var(--color-ink-faint)]">{detail}</p>
-    </div>
-  );
-}
-
-function SimpleTable({
-  headers,
-  children,
-  caption,
-}: {
-  headers: { label: string; numeric?: boolean }[];
-  children: ReactNode;
-  caption: string;
-}) {
-  return (
-    <div className="scroll-thin overflow-x-auto">
-      <table className="touch-table min-w-full border-collapse text-sm">
-        <caption className="sr-only">{caption}</caption>
-        <thead><tr className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)]">
-          {headers.map((header) => <Th key={header.label} numeric={header.numeric}>{header.label}</Th>)}
-        </tr></thead>
-        <tbody>{children}</tbody>
-      </table>
-    </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return <label className="block text-xs font-semibold text-[var(--color-ink-soft)]">{label}{children}</label>;
-}
-
-function AutomaticSourceLink({
-  source,
-  month,
-}: {
-  source: AutomaticIncomeSourceMatch;
-  month: string;
-}) {
-  const sheet = source.sourceType === "google_sheet_transaction";
-  return (
-    <Link
-      className="touch-target inline-flex items-center px-1 font-semibold text-[var(--color-primary)] hover:underline"
-      href={sheet ? `/transactions?transactionId=${source.sourceId}` : `/classes?month=${month}`}
-    >
-      {sheet ? "Google Sheet" : "Invoice"} {source.sourceRef}
-    </Link>
-  );
-}
-
-function FormFooter({ saving, onClose }: { saving: boolean; onClose: () => void }) {
-  return (
-    <div className="flex justify-end gap-2 border-t border-[var(--color-rule)] pt-4">
-      <button type="button" className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
-      <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? "Saving..." : "Save"}</button>
-    </div>
-  );
-}
-
-function IncomeForm({
-  month,
-  options,
-  onClose,
-  onSaved,
-  onOpenProgramSplit,
-}: {
-  month: string;
-  options: AgencyFinancialOptions;
-  onClose: () => void;
-  onSaved: () => void;
-  onOpenProgramSplit: (selection: { individualId: string; programId: string; effectiveFrom: string }) => void;
-}) {
-  const [sourceType, setSourceType] = useState<ManualIncomeSource>("other");
-  const [serviceDate, setServiceDate] = useState(`${month}-01`);
-  const [individualId, setIndividualId] = useState("");
-  const [programId, setProgramId] = useState("");
-  const [grossAmount, setGrossAmount] = useState("");
-  const [agencySharePercent, setAgencySharePercent] = useState("100");
-  const [sourceRef, setSourceRef] = useState("");
-  const [notes, setNotes] = useState("");
-  const [overrideReason, setOverrideReason] = useState("");
-  const [separatePaymentReason, setSeparatePaymentReason] = useState("");
-  const [showSeparatePaymentReason, setShowSeparatePaymentReason] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const custom = sourceType === "custom_program";
-  const classReceipt = sourceType === "class";
-  const dimensionsRequired = custom || (classReceipt && !sourceRef.trim());
-
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    setSaving(true);
-    setError(null);
-    const result = await request("/api/agency-financials/income", {
-      serviceDate,
-      sourceType,
-      individualId: individualId || null,
-      programId: programId || null,
-      grossAmount,
-      agencySharePercent: custom ? undefined : agencySharePercent,
-      sourceRef: sourceRef || null,
-      notes: notes || null,
-      overBudgetOverrideReason: overrideReason || null,
-      automaticSourceOverrideReason: separatePaymentReason || null,
-    });
-    setSaving(false);
-    if (!result.ok) {
-      const message = result.error ?? "The income could not be recorded.";
-      setShowSeparatePaymentReason(message.includes("separate-payment reason"));
-      setError(message);
-      return;
-    }
-    onSaved();
-  };
-
-  return (
-    <form className="space-y-4" onSubmit={submit}>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Income type">
-          <select className="select mt-1 w-full" value={sourceType} onChange={(event) => setSourceType(event.target.value as ManualIncomeSource)}>
-            {Object.entries(SOURCE_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </select>
-        </Field>
-        <Field label="Date">
-          <input required className="input mt-1 w-full" type="date" value={serviceDate} onChange={(event) => setServiceDate(event.target.value)} />
-        </Field>
-      </div>
-      <Field label="Gross income">
-        <input required className="input tnum mt-1 w-full" inputMode="decimal" placeholder="0.00" value={grossAmount} onChange={(event) => setGrossAmount(event.target.value)} />
-      </Field>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label={custom ? "Individual (required)" : classReceipt ? "Individual (required without invoice number)" : "Individual (optional)"}>
-          <select required={dimensionsRequired} className="select mt-1 w-full" value={individualId} onChange={(event) => setIndividualId(event.target.value)}>
-            <option value="">None</option>
-            {options.individuals.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-          </select>
-        </Field>
-        <Field label={custom ? "Program (required)" : classReceipt ? "Program (required without invoice number)" : "Program (optional)"}>
-          <select required={dimensionsRequired} className="select mt-1 w-full" value={programId} onChange={(event) => setProgramId(event.target.value)}>
-            <option value="">None</option>
-            {options.programs.map((item) => <option key={item.id} value={item.id}>{item.label}{item.code ? ` (${item.code})` : ""}</option>)}
-          </select>
-        </Field>
-      </div>
-      {!custom ? <Field label="Agency share (%)"><input className="input tnum mt-1 w-full" inputMode="decimal" value={agencySharePercent} onChange={(event) => setAgencySharePercent(event.target.value)} /></Field> : null}
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label={sourceType === "class" ? "Invoice or payment reference (optional)" : "Reference (optional)"}>
-          <input className="input mt-1 w-full" value={sourceRef} onChange={(event) => setSourceRef(event.target.value)} />
-        </Field>
-        <Field label="Budget override reason (only if needed)">
-          <input className="input mt-1 w-full" value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} />
-        </Field>
-      </div>
-      {showSeparatePaymentReason ? (
-        <Field label="Why is this a separate payment?">
-          <input
-            required
-            minLength={5}
-            className="input mt-1 w-full"
-            value={separatePaymentReason}
-            onChange={(event) => setSeparatePaymentReason(event.target.value)}
-            placeholder="Example: Separate reimbursement received the same day"
-          />
-        </Field>
-      ) : null}
-      <Field label="Notes (optional)">
-        <textarea className="input mt-1 min-h-20 w-full py-2" value={notes} onChange={(event) => setNotes(event.target.value)} />
-      </Field>
-      {sourceType === "class" ? (
-        <Notice tone="info" title="Invoices are not cash receipts">Record the payment when it is actually received. You can use the invoice number as the reference; this will not consume the class allowance a second time.</Notice>
-      ) : null}
-      {custom ? (
-        <Notice
-          tone="info"
-          title="The saved program split is authoritative"
-          action={individualId && programId ? <button type="button" className="btn btn-sm btn-secondary" onClick={() => onOpenProgramSplit({ individualId, programId, effectiveFrom: serviceDate })}>Open program split</button> : undefined}
-        >
-          Choose the individual and program above. This also requires an active dollar budget for that program.
-          {individualId ? <> <Link className="font-semibold text-[var(--color-primary)] hover:underline" href={`/individuals/${individualId}?view=budget`}>Open the budget</Link>.</> : null}
-        </Notice>
-      ) : null}
-      {error ? <p role="alert" className="text-sm font-medium text-[var(--color-danger)]">{error}</p> : null}
-      <FormFooter saving={saving} onClose={onClose} />
-    </form>
-  );
-}
-
-function ProgramSplitForm({
-  options,
-  initial,
-  onClose,
-  onSaved,
-}: {
-  options: AgencyFinancialOptions;
-  initial?: { individualId: string; programId: string; effectiveFrom?: string } | null;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [individualId, setIndividualId] = useState(initial?.individualId ?? options.individuals[0]?.id ?? "");
-  const [programId, setProgramId] = useState(initial?.programId ?? options.programs[0]?.id ?? "");
-  const [share, setShare] = useState("100");
-  const [effectiveFrom, setEffectiveFrom] = useState(initial?.effectiveFrom ?? agencyDate());
-  const [effectiveTo, setEffectiveTo] = useState("");
-  const [reason, setReason] = useState("");
-  const [notes, setNotes] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    setSaving(true);
-    setError(null);
-    const result = await request("/api/agency-financials/program-splits", {
-      individualId,
-      programId,
-      agencySharePercent: share,
-      effectiveFrom,
-      effectiveTo: effectiveTo || null,
-      reason,
-      notes: notes || null,
-    });
-    setSaving(false);
-    if (!result.ok) {
-      setError(result.error ?? "The split could not be saved.");
-      return;
-    }
-    onSaved();
-  };
-
-  return (
-    <form className="space-y-4" onSubmit={submit}>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Individual"><select required className="select mt-1 w-full" value={individualId} onChange={(event) => setIndividualId(event.target.value)}>{options.individuals.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>
-        <Field label="Program"><select required className="select mt-1 w-full" value={programId} onChange={(event) => setProgramId(event.target.value)}>{options.programs.map((item) => <option key={item.id} value={item.id}>{item.label}{item.code ? ` (${item.code})` : ""}</option>)}</select></Field>
-      </div>
-      <Field label="Agency share (%)"><input required className="input tnum mt-1 w-full" inputMode="decimal" value={share} onChange={(event) => setShare(event.target.value)} /></Field>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Starts"><input required className="input mt-1 w-full" type="date" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} /></Field>
-        <Field label="Ends (optional)"><input className="input mt-1 w-full" type="date" value={effectiveTo} onChange={(event) => setEffectiveTo(event.target.value)} /></Field>
-      </div>
-      <Field label="Reason"><input required minLength={5} className="input mt-1 w-full" value={reason} onChange={(event) => setReason(event.target.value)} /></Field>
-      <Field label="Notes (optional)"><textarea className="input mt-1 min-h-20 w-full py-2" value={notes} onChange={(event) => setNotes(event.target.value)} /></Field>
-      {error ? <p role="alert" className="text-sm font-medium text-[var(--color-danger)]">{error}</p> : null}
-      <FormFooter saving={saving} onClose={onClose} />
-    </form>
-  );
-}
-
-function EmployeeTermForm({
-  options,
-  initial,
-  onClose,
-  onSaved,
-}: {
-  options: AgencyFinancialOptions;
-  initial?: { employeeId: string; individualId: string; effectiveFrom?: string } | null;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [employeeId, setEmployeeId] = useState(initial?.employeeId ?? options.employees[0]?.id ?? "");
-  const [individualId, setIndividualId] = useState(initial?.individualId ?? options.individuals[0]?.id ?? "");
-  const [share, setShare] = useState("100");
-  const [effectiveFrom, setEffectiveFrom] = useState(initial?.effectiveFrom ?? agencyDate());
-  const [effectiveTo, setEffectiveTo] = useState("");
-  const [reason, setReason] = useState("");
-  const [notes, setNotes] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    setSaving(true);
-    setError(null);
-    const result = await request("/api/agency-financials/employee-terms", {
-      employeeId,
-      individualId,
-      employeeSharePercent: share,
-      effectiveFrom,
-      effectiveTo: effectiveTo || null,
-      reason,
-      notes: notes || null,
-    });
-    setSaving(false);
-    if (!result.ok) {
-      setError(result.error ?? "The employee pay rule could not be saved.");
-      return;
-    }
-    onSaved();
-  };
-
-  return (
-    <form className="space-y-4" onSubmit={submit}>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Employee"><select required className="select mt-1 w-full" value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}>{options.employees.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>
-        <Field label="Individual"><select required className="select mt-1 w-full" value={individualId} onChange={(event) => setIndividualId(event.target.value)}>{options.individuals.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>
-      </div>
-      <Field label="Employee share of base (%)"><input required className="input tnum mt-1 w-full" inputMode="decimal" value={share} onChange={(event) => setShare(event.target.value)} /></Field>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Starts"><input required className="input mt-1 w-full" type="date" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} /></Field>
-        <Field label="Ends (optional)"><input className="input mt-1 w-full" type="date" value={effectiveTo} onChange={(event) => setEffectiveTo(event.target.value)} /></Field>
-      </div>
-      <Field label="Reason"><input required minLength={5} className="input mt-1 w-full" value={reason} onChange={(event) => setReason(event.target.value)} /></Field>
-      <Field label="Notes (optional)"><textarea className="input mt-1 min-h-20 w-full py-2" value={notes} onChange={(event) => setNotes(event.target.value)} /></Field>
-      {error ? <p role="alert" className="text-sm font-medium text-[var(--color-danger)]">{error}</p> : null}
-      <FormFooter saving={saving} onClose={onClose} />
-    </form>
-  );
-}
-
-function VoidIncomeForm({ entry, onClose, onSaved }: { entry: ManualIncomeEntry; onClose: () => void; onSaved: () => void }) {
-  const [reason, setReason] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    setSaving(true);
-    setError(null);
-    const result = await request(`/api/agency-financials/income/${entry.id}/void`, { reason });
-    setSaving(false);
-    if (!result.ok) {
-      setError(result.error ?? "The income could not be voided.");
-      return;
-    }
-    onSaved();
-  };
-  return (
-    <form className="space-y-4" onSubmit={submit}>
-      <p className="text-sm text-[var(--color-ink-soft)]">Void {formatMoney(entry.grossAmount)} recorded on {entry.serviceDate}.{entry.programBudgetEventId ? " The linked program-budget use will be reversed too." : " Invoice and budget history will not change."}</p>
-      <Field label="Reason"><input required minLength={5} className="input mt-1 w-full" value={reason} onChange={(event) => setReason(event.target.value)} /></Field>
-      {error ? <p role="alert" className="text-sm font-medium text-[var(--color-danger)]">{error}</p> : null}
-      <FormFooter saving={saving} onClose={onClose} />
-    </form>
-  );
-}
-
-function CountSeparatelyForm({
-  target,
-  month,
-  onClose,
-  onSaved,
-}: {
-  target: CountSeparatelyTarget;
-  month: string;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [reason, setReason] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    setSaving(true);
-    setError(null);
-    const result = await request(`/api/agency-financials/income/${target.id}/count-separately`, {
-      action: target.action,
-      sourceType: target.source.sourceType,
-      sourceId: target.source.sourceId,
-      reason,
-    });
-    setSaving(false);
-    if (!result.ok) {
-      setError(result.error ?? "The income decision could not be saved.");
-      return;
-    }
-    onSaved();
-  };
-  const isReversal = target.action === "treat_as_same_payment";
-  return (
-    <form className="space-y-4" onSubmit={submit}>
-      <p className="text-sm leading-6 text-[var(--color-ink-soft)]">
-        {target.label} currently matches <AutomaticSourceLink source={target.source} month={month} />.
-        {isReversal
-          ? " Confirm that both records describe the same payment. The matching source will own the income again, and its split rule will apply."
-          : target.splitAlreadyCounted
-            ? " Confirm only when these are genuinely separate payments. This income will then count too; its individual split is already included."
-            : " Confirm only when these are genuinely separate payments. Both this income and its individual split will then count."}
-      </p>
-      <Field label={isReversal ? "Why are these the same payment?" : "Why is this a separate payment?"}>
-        <textarea
-          required
-          minLength={5}
-          className="input mt-1 min-h-24 w-full py-2"
-          value={reason}
-          onChange={(event) => setReason(event.target.value)}
-          placeholder={isReversal
-            ? "Example: Both records refer to the same deposit"
-            : "Example: Separate payment for a different service"}
-        />
-      </Field>
-      {error ? <p role="alert" className="text-sm font-medium text-[var(--color-danger)]">{error}</p> : null}
-      <div className="flex justify-end gap-2 border-t border-[var(--color-rule)] pt-4">
-        <button type="button" className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
-        <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? "Saving..." : isReversal ? "Treat as same payment" : "Count separately"}</button>
-      </div>
-    </form>
-  );
-}
 
 export default function AgencyFinancialWorkspace({
   report,
@@ -637,6 +154,10 @@ export default function AgencyFinancialWorkspace({
         </div>
       </div>
 
+      <p className="-mt-2 mb-5 text-xs leading-5 text-[var(--color-ink-faint)]">
+        <strong className="text-[var(--color-ink-soft)]">Date basis:</strong> service month, using period begin, otherwise check date, otherwise period end. Scheduled work and invoice dates do not become transaction income.
+      </p>
+
       <div className="mb-6 flex gap-1 overflow-x-auto border-b border-[var(--color-rule)]" role="tablist" aria-label="Agency financial report sections">
         {VIEWS.map((item) => (
           <button
@@ -681,6 +202,8 @@ export default function AgencyFinancialWorkspace({
             <Notice tone="success" title="All included records are fully configured">Every amount needed for this month has its source facts and pay rules.</Notice>
           )}
 
+          <TransactionMoneyBridge report={report} onOpenTransactions={() => setView("transactions")} />
+
           <div className="grid gap-5 xl:grid-cols-2">
             <section className="card overflow-hidden">
               <header className="border-b border-[var(--color-rule)] px-5 py-3.5"><h2 className="display text-base font-semibold">Income</h2></header>
@@ -709,13 +232,13 @@ export default function AgencyFinancialWorkspace({
       {view === "transactions" ? (
         <section className="card overflow-hidden">
           <header className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3.5">
-            <div><h2 className="display text-base font-semibold">Transaction actuals</h2><p className="mt-1 text-sm text-[var(--color-ink-soft)]">Gross income is the imported amount. Agency-routed employee expense uses Employee base, never the funder spread.</p></div>
+            <div><h2 className="display text-base font-semibold">Transaction actuals</h2><p className="mt-1 text-sm text-[var(--color-ink-soft)]">Funder billed = Employee base + Agency spread. On agency-routed rows, the pay rule divides Employee base into employee and agency shares; Agency spread stays outside the deal.</p></div>
             <Link className="btn btn-sm btn-secondary" href={`/transactions?serviceFrom=${report.periodStart}&serviceTo=${report.periodEnd}`}><ReceiptText className="h-4 w-4" aria-hidden /> Open transactions</Link>
           </header>
-          {report.transactions.length ? <SimpleTable caption="Transaction actuals" headers={[{ label: "Date" }, { label: "Individual" }, { label: "Employee" }, { label: "Program" }, { label: "Paid to" }, { label: "Gross", numeric: true }, { label: "Employee base", numeric: true }, { label: "Pay rule" }, { label: "Employee expense", numeric: true }, { label: "" }]}>
+          {report.transactions.length ? <SimpleTable caption="Transaction actuals" headers={[{ label: "Date" }, { label: "Individual" }, { label: "Employee" }, { label: "Program" }, { label: "Paid to" }, { label: "Funder billed", numeric: true }, { label: "Employee base", numeric: true }, { label: "Agency spread", numeric: true }, { label: "Pay rule" }, { label: "Employee share of base", numeric: true }, { label: "Agency share of base", numeric: true }, { label: "" }]}>
             {report.transactions.map((row) => <Tr key={row.id}>
               <Td>{row.serviceDate}</Td><Td>{row.individualName ?? "Unmatched"}</Td><Td>{row.employeeName ?? "Unmatched"}</Td><Td>{row.programName ?? "Unmatched"}</Td><Td>{row.paymentRecipient === "excellent_staffing" ? "Agency" : row.paymentRecipient === "employee" ? "Employee" : "Unknown"}</Td>
-              <Td numeric><Money value={row.grossAmount} /></Td><Td numeric><Money value={row.baseAmount} /></Td>
+              <Td numeric><Money value={row.grossAmount} /></Td><Td numeric><Money value={row.baseAmount} /></Td><Td numeric><Money value={row.agencySpread} /></Td>
               <Td>{row.payRuleSource === null
                 ? "Direct check"
                 : row.payRuleSource === "person_rule"
@@ -725,7 +248,9 @@ export default function AgencyFinancialWorkspace({
                     : row.employeeId && row.individualId
                       ? <button type="button" className="font-semibold text-[var(--color-danger)] underline" onClick={() => openPayRule({ employeeId: row.employeeId!, individualId: row.individualId!, effectiveFrom: row.serviceDate })}>Set pay rule</button>
                       : <Link className="font-semibold text-[var(--color-danger)] underline" href={`/transactions?transactionId=${row.id}`}>Fix transaction</Link>}</Td>
-              <Td numeric><Money value={row.employeeExpense} /></Td><Td><Link className="text-xs font-semibold text-[var(--color-primary)] hover:underline" href={`/transactions?transactionId=${row.id}`}>View</Link></Td>
+              <Td numeric>{row.paymentRecipient === "employee" ? <span className="text-[var(--color-ink-faint)]">Check-level</span> : <Money value={row.employeeExpense} />}</Td>
+              <Td numeric>{row.paymentRecipient === "employee" ? <span className="text-[var(--color-ink-faint)]">Check-level</span> : <Money value={row.agencyShareOfBase} />}</Td>
+              <Td><Link className="text-xs font-semibold text-[var(--color-primary)] hover:underline" href={`/transactions?transactionId=${row.id}`}>View</Link></Td>
             </Tr>)}
           </SimpleTable> : <p className="px-5 py-10 text-center text-sm text-[var(--color-ink-faint)]">No transaction actuals in this month.</p>}
         </section>
