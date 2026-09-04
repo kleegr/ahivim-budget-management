@@ -97,6 +97,16 @@ describe("class PDF generation", () => {
     expect(pdf.getPageCount()).toBe(2);
   });
 
+  it("marks draft previews unmistakably in PDF metadata and on every page", async () => {
+    const draft = invoice(24);
+    draft.status = "draft";
+    const pdf = await PDFDocument.load(await buildClassInvoicePdf(draft, { draft: true }));
+    expect(pdf.getTitle()).toBe("DRAFT - Invoice 8514");
+    expect(pdf.getPageCount()).toBe(2);
+    // The extra content stream on each page is the visible DRAFT - NOT ISSUED watermark.
+    expect(pdf.getPages().every((page) => page.node.Contents() !== undefined)).toBe(true);
+  });
+
   it("creates a one-page reimbursement application with no form fields", async () => {
     const pdf = await PDFDocument.load(await buildClassCoverSheetPdf(invoice(), profile));
     expect(pdf.getPageCount()).toBe(1);

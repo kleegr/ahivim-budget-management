@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { fullAccess, type AccessScope } from "@/lib/auth/access";
 import {
   BUDGET_PLANNER_ACCESS,
@@ -8,7 +9,11 @@ import {
   STAFFING_MANAGER_ACCESS,
 } from "@/lib/auth/access-presets";
 import type { PortalAccessContext } from "@/lib/auth/portal-access";
+import { ACCOUNT_PRESET_IDS } from "@/lib/auth/account-presets";
+import { ROLE_PREVIEW_DETAILS } from "@/lib/auth/role-preview";
 import { viewerHomePath, withDeniedNotice } from "@/lib/nav/home-route";
+
+const homePage = readFileSync("src/app/(app)/home/page.tsx", "utf8");
 
 function viewerAccess(patch: Partial<AccessScope> = {}): AccessScope {
   return {
@@ -53,6 +58,44 @@ function portalAccess(patch: Partial<PortalAccessContext>): PortalAccessContext 
 }
 
 describe("viewerHomePath", () => {
+  it("defines a first useful Home for all thirteen account types", () => {
+    const accountHomes = {
+      owner: "/dashboard",
+      office_manager: "/dashboard",
+      budget_planner: ROLE_PREVIEW_DETAILS.budget_planner.landingHref,
+      staffing_manager: ROLE_PREVIEW_DETAILS.staffing_manager.landingHref,
+      money_collector: ROLE_PREVIEW_DETAILS.money_collector.landingHref,
+      class_billing: ROLE_PREVIEW_DETAILS.class_billing.landingHref,
+      individual_parent: ROLE_PREVIEW_DETAILS.individual_parent.landingHref,
+      employee: ROLE_PREVIEW_DETAILS.employee.landingHref,
+      agency: ROLE_PREVIEW_DETAILS.agency.landingHref,
+      agency_scheduler: ROLE_PREVIEW_DETAILS.agency_scheduler.landingHref,
+      agency_staffing_manager: ROLE_PREVIEW_DETAILS.agency_staffing_manager.landingHref,
+      agency_collector: ROLE_PREVIEW_DETAILS.agency_collector.landingHref,
+      custom_access: viewerHomePath(viewerAccess(), EMPTY_PORTAL),
+    } as const;
+
+    expect(Object.keys(accountHomes)).toHaveLength(13);
+    expect(new Set(ACCOUNT_PRESET_IDS)).toEqual(new Set(Object.keys(accountHomes)));
+    expect(accountHomes).toMatchObject({
+      owner: "/dashboard",
+      office_manager: "/dashboard",
+      budget_planner: "/schedule",
+      staffing_manager: "/schedule",
+      money_collector: "/masser",
+      class_billing: "/classes",
+      individual_parent: "/portal",
+      employee: "/portal",
+      agency: "/portal",
+      agency_scheduler: "/schedule",
+      agency_staffing_manager: "/schedule",
+      agency_collector: "/portal",
+      custom_access: "/settings",
+    });
+    expect(homePage).toContain('roleAtLeast(user.role, "manager")');
+    expect(homePage).toContain('redirect(withDeniedNotice("/dashboard", denied))');
+  });
+
   it("preserves a visible explanation after a denied deep link", () => {
     expect(withDeniedNotice("/schedule", true)).toBe("/schedule?denied=1");
     expect(withDeniedNotice("/portal?month=2026-09", true))
