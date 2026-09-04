@@ -9,7 +9,7 @@ import {
 describe("account presets", () => {
   it("defines every supported role exactly once", () => {
     expect(ACCOUNT_PRESETS.map((preset) => preset.id)).toEqual(ACCOUNT_PRESET_IDS);
-    expect(new Set(ACCOUNT_PRESETS.map((preset) => preset.id)).size).toBe(11);
+    expect(new Set(ACCOUNT_PRESETS.map((preset) => preset.id)).size).toBe(13);
   });
 
   it("keeps every external portal preset outside internal application access", () => {
@@ -36,6 +36,18 @@ describe("account presets", () => {
     expect(getAccountPreset("owner")).toMatchObject({
       role: "admin",
       binding: { kind: "owner" },
+    });
+  });
+
+  it("makes Office manager and Custom access first-class presets", () => {
+    expect(getAccountPreset("office_manager")).toMatchObject({
+      role: "manager",
+      binding: { kind: "none" },
+    });
+    expect(getAccountPreset("custom_access")).toMatchObject({
+      role: "viewer",
+      access: PORTAL_ONLY_ACCESS,
+      binding: { kind: "none" },
     });
   });
 

@@ -14,7 +14,7 @@ vi.mock("@/lib/manage/portal-identities", () => ({
   setGlobalPortalRoleAssignmentQuery: mocks.setGlobalPortalRoleAssignmentQuery,
 }));
 
-import { updateManagedUser } from "@/lib/auth/users";
+import { updateManagedUser, userAccessConfigFromInput } from "@/lib/auth/users";
 
 const USER = "00000000-0000-4000-8000-000000000001";
 const ACTOR = "00000000-0000-4000-8000-000000000002";
@@ -22,14 +22,27 @@ const ACTOR = "00000000-0000-4000-8000-000000000002";
 function managedPool(input: {
   role: "viewer" | "manager" | "admin";
   isActive?: boolean;
+  accountPreset?: string | null;
   hasOwner?: boolean;
   otherAdmins?: number;
 }) {
   const statements: string[] = [];
   const query = vi.fn(async (sql: string, _params?: unknown[]) => {
     statements.push(sql);
-    if (sql.includes("SELECT role, is_active FROM users")) {
-      return { rows: [{ role: input.role, is_active: input.isActive ?? true }], rowCount: 1 };
+    if (sql.includes("SELECT role, account_preset, is_active FROM users")) {
+      const defaultPreset = input.role === "admin"
+        ? "owner"
+        : input.role === "manager"
+          ? "office_manager"
+          : "custom_access";
+      return {
+        rows: [{
+          role: input.role,
+          account_preset: input.accountPreset === undefined ? defaultPreset : input.accountPreset,
+          is_active: input.isActive ?? true,
+        }],
+        rowCount: 1,
+      };
     }
     if (sql.includes("active_admin_count")) {
       return { rows: [{ active_admin_count: input.otherAdmins ?? 1 }], rowCount: 1 };
@@ -118,5 +131,37 @@ describe("atomic administrator account updates", () => {
 
     expect(mocks.hashPassword).not.toHaveBeenCalled();
     expect(db.pool.connect).not.toHaveBeenCalled();
+  });
+
+  it("preserves a selected preset while applying adjusted permissions", async () => {
+    const db = managedPool({ role: "viewer", accountPreset: "budget_planner" });
+    const access = userAccessConfigFromInput({
+      accessScope: "scoped",
+      canPlan: true,
+      canSeeHours: true,
+      canSeeBudgets: false,
+    }, "viewer");
+
+    await expect(updateManagedUser(db.pool, USER, {
+      role: "viewer",
+      accountPreset: "budget_planner",
+      access,
+    }, ACTOR)).resolves.toEqual({ ok: true, data: { id: USER } });
+
+    const identityUpdate = db.query.mock.calls.find(([sql]) =>
+      sql.includes("SET role = $2") && sql.includes("account_preset = $4"));
+    expect(identityUpdate?.[1]).toEqual([USER, "viewer", true, "budget_planner"]);
+  });
+
+  it("rejects a preset whose canonical role does not match the account role", async () => {
+    const db = managedPool({ role: "viewer", accountPreset: "custom_access" });
+
+    await expect(updateManagedUser(db.pool, USER, {
+      role: "viewer",
+      accountPreset: "office_manager",
+    }, ACTOR)).resolves.toMatchObject({ ok: false, code: "validation" });
+
+    expect(db.statements).toContain("ROLLBACK");
+    expect(db.statements.some((sql) => sql.startsWith("UPDATE users"))).toBe(false);
   });
 });

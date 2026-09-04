@@ -118,6 +118,15 @@ describe("account portal labels", () => {
     expect(resolveAccountProfile("manager", null, null).label).toBe("Office manager");
   });
 
+  it("preserves the selected preset name after safe permission adjustments", () => {
+    expect(resolveAccountProfile(
+      "viewer",
+      scopeFrom({ ...BUDGET_PLANNER_ACCESS, canSeeTransactions: true }),
+      portal(),
+      "budget_planner",
+    )).toEqual({ id: "budget_planner", label: "Budget planner" });
+  });
+
   it("describes operational capabilities instead of calling every viewer read-only", () => {
     const settings = readFileSync("src/app/(app)/settings/page.tsx", "utf8");
     expect(settings).toContain("canManageSettlements");
