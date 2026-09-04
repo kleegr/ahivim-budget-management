@@ -72,7 +72,7 @@ describe("viewerHomePath", () => {
       agency_scheduler: ROLE_PREVIEW_DETAILS.agency_scheduler.landingHref,
       agency_staffing_manager: ROLE_PREVIEW_DETAILS.agency_staffing_manager.landingHref,
       agency_collector: ROLE_PREVIEW_DETAILS.agency_collector.landingHref,
-      custom_access: viewerHomePath(viewerAccess(), EMPTY_PORTAL),
+      custom_access: ROLE_PREVIEW_DETAILS.custom_access.landingHref,
     } as const;
 
     expect(Object.keys(accountHomes)).toHaveLength(13);
@@ -80,17 +80,17 @@ describe("viewerHomePath", () => {
     expect(accountHomes).toMatchObject({
       owner: "/dashboard",
       office_manager: "/dashboard",
-      budget_planner: "/schedule",
-      staffing_manager: "/schedule",
-      money_collector: "/masser",
-      class_billing: "/classes",
+      budget_planner: "/home",
+      staffing_manager: "/home",
+      money_collector: "/home",
+      class_billing: "/home",
       individual_parent: "/portal",
       employee: "/portal",
       agency: "/portal",
       agency_scheduler: "/schedule",
       agency_staffing_manager: "/schedule",
       agency_collector: "/portal",
-      custom_access: "/settings",
+      custom_access: "/home",
     });
     expect(homePage).toContain('roleAtLeast(user.role, "manager")');
     expect(homePage).toContain('redirect(withDeniedNotice("/dashboard", denied))');

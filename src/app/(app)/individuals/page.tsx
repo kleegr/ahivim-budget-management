@@ -1,5 +1,5 @@
 import { requireUser } from "@/lib/auth/session";
-import { hasDirectIndividualAccess, resolveAccessScope } from "@/lib/auth/access";
+import { canAccessPlanning, hasDirectIndividualAccess, resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listIndividualBudgetBoard } from "@/lib/data/queries";
 import { listCurrentProgramBudgets } from "@/lib/data/program-budgets";
@@ -9,6 +9,7 @@ import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
 import IndividualsList from "@/components/individuals/individuals-list";
 import { agencyDate } from "@/lib/business/agency-time";
 import { resolvePortfolioView } from "@/components/individuals/portfolio-view";
+import { getIndividualPortfolioStaffingContext } from "@/lib/data/individual-profile";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "People & budgets - Ahivim Budget Management" };
@@ -42,11 +43,16 @@ export default async function IndividualsPage({
     const scope = await resolveAccessScope(pool, user);
     const today = agencyDate();
     const asOf = new Date(`${today}T12:00:00Z`);
-    const [rows, authorizationRows] = await Promise.all([
+    const canPlan = canAccessPlanning(scope);
+    const [rows, authorizationRows, staffingContext] = await Promise.all([
       listIndividualBudgetBoard(pool, asOf, scope),
       scope.canSeeBudgets
         ? listCurrentProgramBudgets(pool, { asOf: today, scope })
         : Promise.resolve([]),
+      getIndividualPortfolioStaffingContext(pool, scope, {
+        canViewPlanning: canPlan,
+        from: today,
+      }),
     ]);
     const visibleIds = new Set(rows.map((row) => row.id));
     const authorizationPortfolio = summarizeAuthorizationPortfolio(
@@ -58,10 +64,27 @@ export default async function IndividualsPage({
         .filter((row) => row.requiredAuthType === "hours" || row.requiredAuthType === "both")
         .map((row) => row.individualId),
     );
-    return rows.map((row) => (
+    return rows.map((row) => {
+      const staffing = staffingContext.get(row.id);
+      const nextSession = staffing?.nextSession ?? null;
+      const staffingFacts = {
+        staffingVisible: canPlan,
+        canPlan,
+        assignedEmployees: staffing?.assignedEmployees ?? [],
+        nextScheduledService: nextSession ? {
+          id: nextSession.id,
+          date: nextSession.sessionDate,
+          startTime: nextSession.startTime,
+          programName: nextSession.programName,
+          employeeId: nextSession.employeeId,
+          employeeName: nextSession.employeeName,
+        } : null,
+      };
+      return (
       scope.canSeeBudgets && scope.canSeeHours && hasDirectIndividualAccess(scope, row.id)
         ? {
             ...row,
+            ...staffingFacts,
             programs: [...new Set([
               ...row.programs,
               ...(authorizationPortfolio.get(row.id)?.programs ?? []),
@@ -81,8 +104,18 @@ export default async function IndividualsPage({
             hasCanonicalBudget: canonicalBudgetPeople.has(row.id),
             insightsVisible: true,
           }
-        : { ...row, programs: [], budget: null, hasCanonicalBudget: false, hasBilling: false, lastBilledOn: null, insightsVisible: false }
-    ));
+        : {
+            ...row,
+            ...staffingFacts,
+            programs: [],
+            budget: null,
+            hasCanonicalBudget: false,
+            hasBilling: false,
+            lastBilledOn: null,
+            insightsVisible: false,
+          }
+      );
+    });
   });
 
   return (

@@ -4,29 +4,36 @@ import { getSettlementSummary } from "@/lib/data/settlements";
 import type { PgLikePool } from "@/lib/import/commit";
 
 describe("owner actual-money overview", () => {
-  it("loads actual agency financials and current settlement balances separately from setup", () => {
+  it("keeps attention sources resilient and shows each actual result once", () => {
     const page = readFileSync("src/app/(app)/dashboard/page.tsx", "utf8");
     const dashboard = readFileSync("src/components/dashboard/owner-dashboard.tsx", "utf8");
 
     expect(page).not.toContain("getAgencyFinancialReport(pool, financialMonth)");
     expect(page).not.toContain("getSettlementSummary(pool)");
     expect(page).toContain("financialMonth={financialMonth}");
-    expect(dashboard).toContain("<Suspense fallback={<><OwnerAttentionLoading");
-    expect(dashboard).toContain("async function OwnerOperationalSections");
+    expect(dashboard).toContain("<Suspense fallback={<OwnerAttentionLoading />}");
+    expect(dashboard).toContain("<Suspense fallback={<OwnerMoneyLoading month={financialMonth} />}");
+    expect(dashboard).toContain("async function OwnerAttentionData");
+    expect(dashboard).toContain("async function OwnerActualMoneySection");
     expect(dashboard).toContain("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
     expect(dashboard).toContain("getAgencyFinancialReport(client, month)");
     expect(dashboard).toContain("getSettlementDashboard(client)");
     expect(dashboard.match(/getSettlementDashboard\(client\)/g)).toHaveLength(1);
+    expect(dashboard).toContain("getOwnerScheduleAttention(pool, today)");
     expect(dashboard).toContain('client.query("COMMIT")');
     expect(dashboard).toContain("The rest of Home is still current.");
     expect(dashboard).toContain('title="Home"');
     expect(dashboard).toContain("Needs attention");
-    expect(dashboard).toContain("buildOwnerAttentionItems(summary, actualMoney.operations, actualMoney.checkIssueCount)");
+    expect(dashboard).toContain("buildOwnerAttentionItems(");
     expect(dashboard).toContain('eyebrow="Actual money"');
     expect(dashboard).toContain('title="Money"');
     expect(dashboard).toContain('eyebrow="Financial setup"');
-    expect(dashboard).toContain("actualMoney.totals.income.total");
-    expect(dashboard).toContain("actualMoney.operations.employeesOwe");
+    expect(dashboard.match(/actualMoney\.totals\.income\.total/g)).toHaveLength(1);
+    expect(dashboard.match(/actualMoney\.totals\.expenses\.total/g)).toHaveLength(1);
+    expect(dashboard.match(/actualMoney\.totals\.agencyResult/g)).toHaveLength(1);
+    expect(dashboard).not.toContain("actualMoney.operations");
+    expect(dashboard).toContain("OwnerQuickActions");
+    expect(dashboard).toContain("Recent payroll activity");
   });
 
   it("derives the owner balance band from active ledger balances", async () => {

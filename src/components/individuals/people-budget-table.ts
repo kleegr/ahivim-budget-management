@@ -24,11 +24,14 @@ export type PeopleBudgetTableRow = {
   hasCanonicalBudget: boolean;
   hasBilling: boolean;
   insightsVisible: boolean;
+  canPlan?: boolean;
+  assignedEmployees?: readonly unknown[];
+  nextScheduledService?: { date: string } | null;
 };
 
 export type IndividualNextAction = {
   label: string;
-  destination: "profile" | "budget";
+  destination: "profile" | "budget" | "schedule" | "assignments";
   tone: "danger" | "warn" | "primary" | "muted";
 };
 
@@ -129,7 +132,7 @@ export function individualNextAction(row: PeopleBudgetTableRow): IndividualNextA
   if (budget.hoursAfterScheduled !== null && budget.hoursAfterScheduled < 0) {
     return {
       label: `Reduce schedule by ${formatHours(Math.abs(budget.hoursAfterScheduled))} h`,
-      destination: "budget",
+      destination: row.canPlan ? "schedule" : "budget",
       tone: "danger",
     };
   }
@@ -146,12 +149,28 @@ export function individualNextAction(row: PeopleBudgetTableRow): IndividualNextA
   if (budget.daysToRenewal !== null && budget.daysToRenewal >= 0 && budget.daysToRenewal <= 60) {
     return { label: "Prepare renewal", destination: "budget", tone: "warn" };
   }
+  if (row.assignedEmployees?.length === 0) {
+    return row.canPlan
+      ? { label: "Assign an employee", destination: "assignments", tone: "warn" }
+      : { label: "Review staffing", destination: "profile", tone: "warn" };
+  }
+  if (row.canPlan && row.nextScheduledService === null && (budget.hoursAfterScheduled ?? 0) > 0) {
+    return { label: "Schedule next service", destination: "schedule", tone: "primary" };
+  }
   if ((budget.mustUseWeekly ?? 0) > 0) {
     return {
       label: `Plan ${formatHours(budget.mustUseWeekly)} h/week`,
-      destination: "budget",
+      destination: row.canPlan ? "schedule" : "budget",
       tone: budget.status === "behind_pace" ? "warn" : "primary",
     };
   }
   return { label: "Review budget", destination: "budget", tone: "muted" };
+}
+
+/** Stable multi-person drill-through used by the portfolio selection bar. */
+export function selectedPeopleActualsHref(individualIds: string[]): string {
+  const search = new URLSearchParams();
+  for (const id of [...new Set(individualIds)].sort()) search.append("individualId", id);
+  const query = search.toString();
+  return query ? `/transactions?${query}` : "/transactions";
 }

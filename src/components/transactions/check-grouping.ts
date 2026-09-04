@@ -1,5 +1,6 @@
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 import { dec } from "@/lib/money";
+import { activityNextStep, activityNextStepLabel } from "@/lib/transactions/activity-state";
 
 export type CheckRouting = "direct" | "agency" | "review";
 
@@ -22,6 +23,8 @@ export interface CheckSummary {
   netPay: string | null;
   rows: number;
   transactionIds: string[];
+  needsReview: boolean;
+  reviewReasons: string[];
 }
 
 export function checkGroupIdentity(row: Pick<
@@ -63,6 +66,8 @@ export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
     const employees = new Map<string, { id: string | null; name: string }>();
     const begins = group.map((row) => row.periodBegin).filter((value): value is string => Boolean(value)).sort();
     const ends = group.map((row) => row.periodEnd).filter((value): value is string => Boolean(value)).sort();
+    const netValues = new Map<string, string>();
+    const reviewReasons = new Set<string>();
 
     for (const row of group) {
       if (row.hours) hours = hours.plus(row.hours);
@@ -72,6 +77,8 @@ export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
       if (row.individual) individuals.add(row.individual);
       if (row.program) programs.add(row.program);
       if (row.employee) employees.set(row.employeeId ?? row.employee, { id: row.employeeId, name: row.employee });
+      if (row.totalNetPay) netValues.set(dec(row.totalNetPay).toString(), row.totalNetPay);
+      if (activityNextStep(row) !== "ready") reviewReasons.add(activityNextStepLabel(row));
     }
 
     const routing: CheckRouting = recipients.size === 1 && recipients.has("employee")
@@ -79,6 +86,11 @@ export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
       : recipients.size === 1 && recipients.has("excellent_staffing")
         ? "agency"
         : "review";
+    if (!first.checkNumber?.trim()) reviewReasons.add("Add check number");
+    if (employees.size > 1) reviewReasons.add("Confirm employee");
+    if (routing === "review") reviewReasons.add("Confirm payment recipient");
+    if (routing === "direct" && netValues.size === 0) reviewReasons.add("Add check net");
+    if (netValues.size > 1) reviewReasons.add("Check net values differ");
 
     return {
       key,
@@ -96,9 +108,13 @@ export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
       funderBilled: funderBilled.toFixed(2),
       employeeBase: employeeBase.toFixed(2),
       agencySpread: agencySpread.toFixed(2),
-      netPay: routing === "direct" ? first.totalNetPay : null,
+      netPay: routing === "direct" ? ([...netValues.values()][0] ?? null) : null,
       rows: group.length,
       transactionIds: group.map((row) => row.id),
+      needsReview: reviewReasons.size > 0,
+      reviewReasons: [...reviewReasons],
     };
-  }).sort((a, b) => (b.checkDate ?? "").localeCompare(a.checkDate ?? "") || (a.employee ?? "").localeCompare(b.employee ?? ""));
+  }).sort((a, b) => Number(b.needsReview) - Number(a.needsReview)
+    || (b.checkDate ?? "").localeCompare(a.checkDate ?? "")
+    || (a.employee ?? "").localeCompare(b.employee ?? ""));
 }
