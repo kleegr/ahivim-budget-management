@@ -62,6 +62,7 @@ function planning(): PlanningAccess {
       email: "planner@example.com",
       displayName: "Planner",
       role: "viewer",
+      accountPreset: null,
     },
     access: hoursOnlyScope(),
     agencyIds: [AGENCY_A, AGENCY_B],
