@@ -66,8 +66,10 @@ suite("document persistence (real PostgreSQL)", () => {
   beforeEach(async () => {
     await truncateBusinessTables();
     await pool.query(
-      `INSERT INTO users (id, email, display_name, password_hash, role, can_edit_documents)
-       VALUES ($1, 'documents@example.test', 'Document Editor', 'x', 'viewer', true)`,
+      `INSERT INTO users (
+         id, email, display_name, password_hash, role,
+         can_view_documents, can_edit_documents
+       ) VALUES ($1, 'documents@example.test', 'Document Editor', 'x', 'viewer', true, true)`,
       [ACTOR],
     );
   });

@@ -118,15 +118,6 @@ suite("migration runner (real PostgreSQL)", () => {
 
   it("inherits legacy gross, Planning, and document behavior and enforces write-through-read", async () => {
     const pool = testPool();
-    await pool.query(
-      `INSERT INTO users (
-         email, display_name, password_hash, role,
-         can_see_check_net, can_plan, can_edit_documents
-       ) VALUES
-         ('legacy-off@example.test', 'Legacy off', 'not-a-real-hash', 'viewer', false, false, false),
-         ('legacy-on@example.test', 'Legacy on', 'not-a-real-hash', 'viewer', true, true, true)`,
-    );
-
     // Recreate the exact schema boundary immediately before 0042, then let the
     // production runner apply only the new additive migration.
     await pool.query(`ALTER TABLE users DROP CONSTRAINT users_planning_manage_requires_view_check`);
@@ -135,6 +126,15 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`ALTER TABLE users DROP COLUMN can_manage_planning`);
     await pool.query(`ALTER TABLE users DROP COLUMN can_view_documents`);
     await pool.query(`DELETE FROM ${LEDGER_TABLE} WHERE name = '0042_permission_granularity.sql'`);
+
+    await pool.query(
+      `INSERT INTO users (
+         email, display_name, password_hash, role,
+         can_see_check_net, can_plan, can_edit_documents
+       ) VALUES
+         ('legacy-off@example.test', 'Legacy off', 'not-a-real-hash', 'viewer', false, false, false),
+         ('legacy-on@example.test', 'Legacy on', 'not-a-real-hash', 'viewer', true, true, true)`,
+    );
 
     const result = await runMigrations(pool);
     expect(result.applied).toBe(1);

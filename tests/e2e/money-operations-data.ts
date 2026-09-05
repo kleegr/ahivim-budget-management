@@ -1,4 +1,5 @@
 import type { PgLikePool } from "../../src/lib/import/commit";
+import { dec } from "../../src/lib/money";
 import {
   createClassInvoiceDraft,
   issueClassInvoice,
@@ -154,7 +155,7 @@ export async function seedMoneyOperationsAcceptanceData(
   const issued = unwrap(await issueClassInvoice(pool, draft.id, actorId, {
     reason: "Verify issued invoices remain receivable-only in Agency Financials.",
   }));
-  if (issued.totalAmount !== MONEY_REPORT_GROSS) {
+  if (!dec(issued.totalAmount).eq(MONEY_REPORT_GROSS)) {
     throw new Error(`Unexpected class invoice total ${issued.totalAmount}.`);
   }
 
@@ -168,9 +169,9 @@ export async function seedMoneyOperationsAcceptanceData(
     notes: "Disposable actual class receipt for Agency Financials acceptance",
   }, actorId));
   if (
-    receipt.grossAmount !== MONEY_REPORT_GROSS
-    || receipt.agencyAmount !== MONEY_REPORT_AGENCY_SHARE
-    || receipt.individualAmount !== MONEY_REPORT_INDIVIDUAL_SHARE
+    !dec(receipt.grossAmount).eq(MONEY_REPORT_GROSS)
+    || !dec(receipt.agencyAmount).eq(MONEY_REPORT_AGENCY_SHARE)
+    || !dec(receipt.individualAmount).eq(MONEY_REPORT_INDIVIDUAL_SHARE)
   ) {
     throw new Error(
       `Unexpected class receipt split ${receipt.grossAmount}/${receipt.agencyAmount}/${receipt.individualAmount}.`,
