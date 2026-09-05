@@ -226,12 +226,6 @@ function calculationForClient(
   const result: Record<string, unknown> = {};
   for (const key of keys) if (source[key] !== undefined) result[key] = source[key];
   if (scope) {
-    // During the permission-granularity rollout, scopes created before the new
-    // flag existed retain the prior taxes-based gross visibility. New scopes
-    // carry the independent gross permission explicitly.
-    const canSeeCheckGross = "canSeeCheckGross" in scope
-      ? scope.canSeeCheckGross === true
-      : scope.canSeeTaxes;
     if (!scope.canSeeCheckNet) {
       delete result.checkNet;
       delete result.employeeKeeps;
@@ -241,7 +235,7 @@ function calculationForClient(
       delete result.taxWithheldDisplayOnly;
       delete result.totalDeductionsDisplayOnly;
     }
-    if (!canSeeCheckGross) {
+    if (!scope.canSeeCheckGross) {
       delete result.checkGross;
     }
     if (!scope.canSeeBilledAmounts) delete result.billedAmount;
