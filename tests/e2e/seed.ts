@@ -20,6 +20,7 @@ import { hashPassword } from "../../src/lib/auth/crypto";
 import { provisionUser, type ProvisionUserInput } from "../../src/lib/auth/provision-user";
 import { seedReleaseAcceptanceData } from "./release-data";
 import { seedClassDocumentAcceptanceData } from "./class-document-data";
+import { seedMoneyOperationsAcceptanceData } from "./money-operations-data";
 import {
   TEST_DB_URL,
   EXPECTED_DISPOSABLE_DB_HOST,
@@ -156,6 +157,10 @@ async function main(): Promise<void> {
       actorId,
     );
     await seedClassDocumentAcceptanceData(pool as unknown as PgLikePool, actorId);
+    const moneyData = await seedMoneyOperationsAcceptanceData(
+      pool as unknown as PgLikePool,
+      actorId,
+    );
 
     const { rows } = await pool.query<{ c: string }>(
       "SELECT count(*)::text AS c FROM users",
@@ -165,7 +170,9 @@ async function main(): Promise<void> {
         `users=${rows[0]?.c}; representative-presets=${REPRESENTATIVE_ACCOUNTS.length}; ` +
         `transactions=${releaseData.transactions}; strategies=${releaseData.strategies}; ` +
         `sessions=${releaseData.sessions}; obligations=${releaseData.obligations}; ` +
-        "class-invoices=2",
+        `class-invoices=3; money-obligation=${moneyData.obligationId}; ` +
+        `money-reserve=${moneyData.reserveObligationId}; ` +
+        `class-receipt=${moneyData.classReceiptId}`,
     );
   } finally {
     await pool.end();

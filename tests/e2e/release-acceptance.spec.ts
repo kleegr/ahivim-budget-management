@@ -170,7 +170,7 @@ test("Owner Home, Masser, and Agency Financials reconcile to the same seeded fac
   await expect(individualRow).toContainText("Ready");
 
   main = await openReady(page, "/reports/agency-financials?month=2026-09", /^Agency financials$/i);
-  await expectMetric(main, "Actual income", "$350.00");
+  await expectMetric(main, "Actual income", "$500.00");
   await expect(main.getByText("All included records are fully configured", { exact: true })).toBeVisible();
   const bridge = main.getByRole("row").filter({ hasText: "All transactions with complete base facts" });
   await expect(bridge).toContainText("3");
