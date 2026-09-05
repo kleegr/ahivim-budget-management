@@ -121,6 +121,38 @@ describe("startup migration gate", () => {
     expect(mocks.runMigrations).not.toHaveBeenCalled();
   });
 
+  it("retries a transient externally managed schema check before serving", async () => {
+    const query = vi.fn()
+      .mockRejectedValueOnce(new Error("database is waking"))
+      .mockResolvedValueOnce({ rows: [currentRow] });
+    mocks.getPool.mockReturnValue({ query });
+    process.env.DISABLE_AUTO_MIGRATE = "1";
+    const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
+
+    const startup = runMigrationsOnce();
+    await vi.advanceTimersByTimeAsync(250);
+
+    await expect(startup).resolves.toBeUndefined();
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(mocks.runMigrations).not.toHaveBeenCalled();
+  });
+
+  it("fails closed after bounded retries when the schema cannot be checked", async () => {
+    const query = vi.fn().mockRejectedValue(new Error("database unavailable"));
+    mocks.getPool.mockReturnValue({ query });
+    process.env.DISABLE_AUTO_MIGRATE = "1";
+    const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
+
+    const startup = runMigrationsOnce();
+    const rejection = expect(startup).rejects.toThrow(/could not verify the database schema after 4 attempts/i);
+    await vi.advanceTimersByTimeAsync(750);
+
+    await rejection;
+    await expect(runMigrationsOnce()).rejects.toThrow(/after 4 attempts/i);
+    expect(query).toHaveBeenCalledTimes(4);
+    expect(mocks.runMigrations).not.toHaveBeenCalled();
+  });
+
   it("rejects a behind schema without mutating when auto-migration is disabled", async () => {
     const query = vi.fn().mockResolvedValue({ rows: [] });
     mocks.getPool.mockReturnValue({ query });

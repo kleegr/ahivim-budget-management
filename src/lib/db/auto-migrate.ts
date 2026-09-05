@@ -46,11 +46,17 @@ export interface MigrateOutcome {
   error?: string;
 }
 
-/** Lock-free check: are all shipped migrations recorded with exact checksums? */
-async function isSchemaCurrent(): Promise<boolean> {
+type SchemaCheck = "current" | "behind" | "unavailable";
+
+/**
+ * Lock-free check: are all shipped migrations recorded with exact checksums?
+ * Keep a transient connection failure distinct from a successfully read ledger
+ * that is behind. Externally managed deployments may retry only the former.
+ */
+async function checkSchema(): Promise<SchemaCheck> {
   try {
+    if (MIGRATIONS.length === 0) return "current";
     const pool = getPool();
-    if (MIGRATIONS.length === 0) return true;
     const expected = new Map(MIGRATIONS.map((migration) => [migration.name, migration.sql]));
     const { rows } = await pool.query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} WHERE name = ANY($1::text[])`,
@@ -59,14 +65,18 @@ async function isSchemaCurrent(): Promise<boolean> {
     const applied = new Map(rows.map((row) => [row.name, row.checksum]));
     for (const [name, sql] of expected) {
       const actual = applied.get(name);
-      if (actual === undefined) return false;
+      if (actual === undefined) return "behind";
       if (!migrationChecksumMatches(actual, sql)) throw new MigrationChecksumMismatchError(name);
     }
-    return true;
+    return "current";
   } catch (error) {
     if (error instanceof MigrationChecksumMismatchError) throw error;
-    return false; // ledger missing / unreachable → treat as behind
+    return "unavailable";
   }
+}
+
+async function isSchemaCurrent(): Promise<boolean> {
+  return (await checkSchema()) === "current";
 }
 
 async function applyPendingMigrations(): Promise<MigrateOutcome> {
@@ -93,6 +103,8 @@ async function applyPendingMigrations(): Promise<MigrateOutcome> {
 
 const STARTUP_SCHEMA_WAIT_MS = 30_000;
 const STARTUP_SCHEMA_POLL_MS = 250;
+const EXTERNAL_SCHEMA_CHECK_ATTEMPTS = 4;
+const EXTERNAL_SCHEMA_RETRY_MS = 250;
 
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -128,9 +140,19 @@ async function applyStartupMigrations(): Promise<void> {
 }
 
 async function verifyExternallyManagedSchema(): Promise<void> {
-  if (await isSchemaCurrent()) return;
+  for (let attempt = 1; attempt <= EXTERNAL_SCHEMA_CHECK_ATTEMPTS; attempt += 1) {
+    const status = await checkSchema();
+    if (status === "current") return;
+    if (status === "behind") {
+      throw new Error(
+        "DISABLE_AUTO_MIGRATE=1 requires every shipped migration to be pre-applied; the database schema is not current.",
+      );
+    }
+    if (attempt < EXTERNAL_SCHEMA_CHECK_ATTEMPTS) await wait(EXTERNAL_SCHEMA_RETRY_MS);
+  }
+
   throw new Error(
-    "DISABLE_AUTO_MIGRATE=1 requires every shipped migration to be pre-applied; the database schema is not current.",
+    `DISABLE_AUTO_MIGRATE=1 could not verify the database schema after ${EXTERNAL_SCHEMA_CHECK_ATTEMPTS} attempts; startup was stopped.`,
   );
 }
 
