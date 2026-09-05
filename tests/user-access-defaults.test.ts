@@ -15,6 +15,7 @@ describe("new user access defaults", () => {
       canSeeBilledAmounts: false,
       canSeeEmployeeAmounts: false,
       canSeeAgencySpread: false,
+      canSeeCheckGross: false,
       canSeeCheckNet: false,
       canSeeTaxes: false,
       canSeeEmployeeDeals: false,
@@ -22,7 +23,9 @@ describe("new user access defaults", () => {
       canManageSettlements: false,
       canSeeClassFinancials: false,
       canManageClassInvoices: false,
+      canViewDocuments: false,
       canEditDocuments: false,
+      canManagePlanning: true,
     });
   });
 
@@ -37,6 +40,7 @@ describe("new user access defaults", () => {
       canSeeBilledAmounts: false,
       canSeeEmployeeAmounts: false,
       canSeeAgencySpread: false,
+      canSeeCheckGross: false,
       canSeeCheckNet: false,
       canSeeTaxes: false,
       canSeeBudgets: false,
@@ -45,8 +49,10 @@ describe("new user access defaults", () => {
       canManageSettlements: false,
       canSeeClassFinancials: false,
       canManageClassInvoices: false,
+      canViewDocuments: false,
       canEditDocuments: false,
       canPlan: false,
+      canManagePlanning: false,
       individualIds: [],
       employeeIds: [],
     });
@@ -64,8 +70,10 @@ describe("new user access defaults", () => {
       canManageSettlements: true,
       canSeeClassFinancials: true,
       canManageClassInvoices: true,
+      canViewDocuments: true,
       canEditDocuments: true,
       canPlan: true,
+      canManagePlanning: true,
       individualIds: ["individual-1"],
       employeeIds: ["employee-1"],
     }, "viewer");
@@ -94,6 +102,7 @@ describe("new user access defaults", () => {
       seeAllIndividuals: true,
       seeAllEmployees: true,
       canPlan: true,
+      canManagePlanning: true,
       canSeeHours: true,
       canSeeBudgets: false,
       canSeeTransactions: false,
@@ -141,6 +150,7 @@ describe("new user access defaults", () => {
       canSeeBilledAmounts: true,
       canSeeEmployeeAmounts: true,
       canSeeAgencySpread: true,
+      canSeeCheckGross: true,
       canSeeCheckNet: true,
       canSeeTaxes: true,
       canSeeBudgets: true,
@@ -149,8 +159,60 @@ describe("new user access defaults", () => {
       canManageSettlements: false,
       canSeeClassFinancials: true,
       canManageClassInvoices: true,
+      canViewDocuments: true,
       canEditDocuments: true,
       canPlan: true,
+      canManagePlanning: true,
+    });
+  });
+
+  it("keeps the new visibility and write grants independent while honoring legacy clients", () => {
+    expect(userAccessConfigFromInput({
+      accessScope: "scoped",
+      canSeeMoney: true,
+      canSeeCheckGross: true,
+      canSeeCheckNet: false,
+      canPlan: true,
+      canManagePlanning: false,
+      canViewDocuments: true,
+      canEditDocuments: false,
+    }, "viewer")).toMatchObject({
+      canSeeCheckGross: true,
+      canSeeCheckNet: false,
+      canPlan: true,
+      canManagePlanning: false,
+      canViewDocuments: true,
+      canEditDocuments: false,
+    });
+
+    expect(userAccessConfigFromInput({
+      accessScope: "scoped",
+      canSeeMoney: true,
+      canSeeCheckNet: true,
+      canPlan: true,
+      canEditDocuments: true,
+    }, "viewer")).toMatchObject({
+      canSeeCheckGross: true,
+      canSeeCheckNet: true,
+      canPlan: true,
+      canManagePlanning: true,
+      canViewDocuments: true,
+      canEditDocuments: true,
+    });
+  });
+
+  it("makes Planning manage and document edit grants read through", () => {
+    expect(userAccessConfigFromInput({
+      accessScope: "scoped",
+      canPlan: false,
+      canManagePlanning: true,
+      canViewDocuments: false,
+      canEditDocuments: true,
+    }, "viewer")).toMatchObject({
+      canPlan: true,
+      canManagePlanning: true,
+      canViewDocuments: true,
+      canEditDocuments: true,
     });
   });
 
@@ -194,12 +256,12 @@ describe("new user access defaults", () => {
 
     expect(result.ok).toBe(true);
     const insert = clientQuery.mock.calls.find(([sql]) => sql.includes("INSERT INTO users"));
-    expect(insert?.[1]?.slice(4, 20)).toEqual(["scoped", ...Array(15).fill(false)]);
-    expect(insert?.[1]?.[20]).toBe("custom_access");
+    expect(insert?.[1]?.slice(4, 23)).toEqual(["scoped", ...Array(18).fill(false)]);
+    expect(insert?.[1]?.[23]).toBe("custom_access");
     const accessUpdate = clientQuery.mock.calls.find(([sql]) => sql.includes("SET access_scope"));
     expect(accessUpdate?.[1]).toEqual([
       "scoped",
-      ...Array(18).fill(false),
+      ...Array(21).fill(false),
       "00000000-0000-4000-8000-000000000001",
     ]);
     expect(clientQuery.mock.calls[0]?.[0]).toBe("BEGIN");

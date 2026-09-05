@@ -27,7 +27,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   let canPlan = false;
   let canSeeClassFinancials = false;
   let canSeeEmployees = false;
-  let canEditDocuments = false;
+  let canViewDocuments = false;
   let canUsePortal = false;
   let canManageAgencies = false;
   let accountLabel = resolveAccountProfile(user.role, null, null, user.accountPreset).label;
@@ -49,7 +49,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         internalPlanning
         || (!isPlanningOnlyAccess(scope)
           && (scope.full || scope.allEmployees || scope.employeeIds.length > 0)),
-      canEditDocuments: scope.canEditDocuments,
+      canViewDocuments: scope.canViewDocuments,
       canUsePortal:
         portal.globalRoles.length > 0
         || portal.agencyAccess.length > 0
@@ -67,7 +67,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     canPlan = access.data.canPlan;
     canSeeClassFinancials = access.data.canSeeClassFinancials;
     canSeeEmployees = access.data.canSeeEmployees;
-    canEditDocuments = access.data.canEditDocuments;
+    canViewDocuments = access.data.canViewDocuments;
     canUsePortal = access.data.canUsePortal;
     canManageAgencies = access.data.canManageAgencies;
     accountLabel = access.data.accountLabel;
@@ -87,7 +87,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           canPlan={canPlan}
           canSeeClassFinancials={canSeeClassFinancials}
           canSeeEmployees={canSeeEmployees}
-          canEditDocuments={canEditDocuments}
+          canViewDocuments={canViewDocuments}
           canUsePortal={canUsePortal}
           canManageAgencies={canManageAgencies}
         />

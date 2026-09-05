@@ -38,6 +38,7 @@ function resolvedAccess(scope: AccessScope): UserAccessConfig {
     canSeeBilledAmounts: scope.canSeeBilledAmounts,
     canSeeEmployeeAmounts: scope.canSeeEmployeeAmounts,
     canSeeAgencySpread: scope.canSeeAgencySpread,
+    canSeeCheckGross: scope.canSeeCheckGross,
     canSeeCheckNet: scope.canSeeCheckNet,
     canSeeTaxes: scope.canSeeTaxes,
     canSeeBudgets: scope.canSeeBudgets,
@@ -46,8 +47,10 @@ function resolvedAccess(scope: AccessScope): UserAccessConfig {
     canManageSettlements: scope.canManageSettlements,
     canSeeClassFinancials: scope.canSeeClassFinancials,
     canManageClassInvoices: scope.canManageClassInvoices,
+    canViewDocuments: scope.canViewDocuments,
     canEditDocuments: scope.canEditDocuments,
     canPlan: scope.canPlan,
+    canManagePlanning: scope.canManagePlanning,
     individualIds: scope.grantedIndividualIds,
     employeeIds: scope.grantedEmployeeIds,
   };
@@ -67,6 +70,7 @@ function accessMatches(left: UserAccessConfig, right: UserAccessConfig) {
     && left.canSeeBilledAmounts === right.canSeeBilledAmounts
     && left.canSeeEmployeeAmounts === right.canSeeEmployeeAmounts
     && left.canSeeAgencySpread === right.canSeeAgencySpread
+    && left.canSeeCheckGross === right.canSeeCheckGross
     && left.canSeeCheckNet === right.canSeeCheckNet
     && left.canSeeTaxes === right.canSeeTaxes
     && left.canSeeBudgets === right.canSeeBudgets
@@ -75,8 +79,10 @@ function accessMatches(left: UserAccessConfig, right: UserAccessConfig) {
     && left.canManageSettlements === right.canManageSettlements
     && left.canSeeClassFinancials === right.canSeeClassFinancials
     && left.canManageClassInvoices === right.canManageClassInvoices
+    && left.canViewDocuments === right.canViewDocuments
     && left.canEditDocuments === right.canEditDocuments
     && left.canPlan === right.canPlan
+    && left.canManagePlanning === right.canManagePlanning
     && sameStringSet(left.individualIds, right.individualIds)
     && sameStringSet(left.employeeIds, right.employeeIds);
 }

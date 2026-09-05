@@ -304,12 +304,14 @@ export async function createUserWithAccessQuery(
     `INSERT INTO users (
        email, display_name, password_hash, role, access_scope,
        can_see_transactions, can_see_money, can_see_hours, can_see_billed_amounts,
-       can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
+       can_see_employee_amounts, can_see_agency_spread, can_see_check_gross, can_see_check_net,
        can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements,
-       can_see_class_financials, can_manage_class_invoices, can_edit_documents, can_plan,
+       can_see_class_financials, can_manage_class_invoices,
+       can_view_documents, can_edit_documents,
+       can_plan, can_manage_planning,
        account_preset
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
      ON CONFLICT (email) DO NOTHING
      RETURNING id, email, display_name, password_hash, role, account_preset, is_active,
                last_login_at::text AS last_login_at, created_at::text AS created_at`,
@@ -328,8 +330,11 @@ export async function createUserWithAccessQuery(
       trustedStaff,
       trustedStaff,
       trustedStaff,
+      trustedStaff,
       false,
       false,
+      trustedStaff,
+      trustedStaff,
       trustedStaff,
       trustedStaff,
       trustedStaff,
@@ -432,6 +437,8 @@ export interface UserAccessConfig extends VisibilityPermissions {
   canSeeTransactions: boolean;
   canManageSettlements: boolean;
   canPlan: boolean;
+  canManagePlanning: boolean;
+  canViewDocuments: boolean;
   canEditDocuments: boolean;
   individualIds: string[];
   employeeIds: string[];
@@ -448,6 +455,7 @@ function restrictedViewerDefaults(): UserAccessConfig {
     canSeeBilledAmounts: false,
     canSeeEmployeeAmounts: false,
     canSeeAgencySpread: false,
+    canSeeCheckGross: false,
     canSeeCheckNet: false,
     canSeeTaxes: false,
     canSeeBudgets: false,
@@ -456,8 +464,10 @@ function restrictedViewerDefaults(): UserAccessConfig {
     canManageSettlements: false,
     canSeeClassFinancials: false,
     canManageClassInvoices: false,
+    canViewDocuments: false,
     canEditDocuments: false,
     canPlan: false,
+    canManagePlanning: false,
     individualIds: [],
     employeeIds: [],
   };
@@ -485,6 +495,15 @@ export function userAccessConfigFromInput(
   const canSeeMoney = flag("canSeeMoney");
   const canSeeClassFinancials = canSeeMoney && flag("canSeeClassFinancials");
   const canSeeSettlements = canSeeMoney && flag("canSeeSettlements", false);
+  const canSeeCheckNet = flag("canSeeCheckNet");
+  // Older clients only submitted the net or Planning switches. Treat an
+  // omitted new switch as the legacy combined permission.
+  const canSeeCheckGross = flag("canSeeCheckGross", canSeeCheckNet);
+  const requestedCanPlan = flag("canPlan");
+  const canManagePlanning = flag("canManagePlanning", requestedCanPlan);
+  const canPlan = requestedCanPlan || canManagePlanning;
+  const canEditDocuments = flag("canEditDocuments");
+  const canViewDocuments = flag("canViewDocuments", canEditDocuments) || canEditDocuments;
 
   return {
     accessScope: viewer
@@ -495,13 +514,15 @@ export function userAccessConfigFromInput(
     seeAllIndividuals: flag("seeAllIndividuals", false),
     seeAllEmployees: flag("seeAllEmployees", false),
     canSeeTransactions: flag("canSeeTransactions"),
-    canPlan: flag("canPlan"),
+    canPlan,
+    canManagePlanning,
     canSeeMoney,
     canSeeHours,
     canSeeBilledAmounts: flag("canSeeBilledAmounts"),
     canSeeEmployeeAmounts: flag("canSeeEmployeeAmounts"),
     canSeeAgencySpread: flag("canSeeAgencySpread"),
-    canSeeCheckNet: flag("canSeeCheckNet"),
+    canSeeCheckGross,
+    canSeeCheckNet,
     canSeeTaxes: flag("canSeeTaxes"),
     canSeeBudgets: canSeeHours && flag("canSeeBudgets"),
     canSeeEmployeeDeals: flag("canSeeEmployeeDeals", false),
@@ -511,7 +532,8 @@ export function userAccessConfigFromInput(
     canSeeClassFinancials,
     canManageClassInvoices:
       canSeeClassFinancials && flag("canManageClassInvoices"),
-    canEditDocuments: flag("canEditDocuments"),
+    canViewDocuments,
+    canEditDocuments,
     individualIds: Array.isArray(input.individualIds) ? input.individualIds.map(String) : [],
     employeeIds: Array.isArray(input.employeeIds) ? input.employeeIds.map(String) : [],
   };
@@ -524,6 +546,8 @@ export interface UserWithAccess extends UserRecord, VisibilityPermissions {
   canSeeTransactions: boolean;
   canManageSettlements: boolean;
   canPlan: boolean;
+  canManagePlanning: boolean;
+  canViewDocuments: boolean;
   canEditDocuments: boolean;
   individualCount: number;
   employeeCount: number;
@@ -539,6 +563,7 @@ interface VisibilityRow {
   can_see_billed_amounts: boolean;
   can_see_employee_amounts: boolean;
   can_see_agency_spread: boolean;
+  can_see_check_gross: boolean;
   can_see_check_net: boolean;
   can_see_taxes: boolean;
   can_see_budgets: boolean;
@@ -547,8 +572,10 @@ interface VisibilityRow {
   can_manage_settlements: boolean;
   can_see_class_financials: boolean;
   can_manage_class_invoices: boolean;
+  can_view_documents: boolean;
   can_edit_documents: boolean;
   can_plan: boolean;
+  can_manage_planning: boolean;
 }
 
 interface PortalPresetRow {
@@ -597,6 +624,7 @@ function storedVisibility(row: VisibilityRow): VisibilityPermissions {
     canSeeBilledAmounts: row.can_see_billed_amounts !== false,
     canSeeEmployeeAmounts: row.can_see_employee_amounts !== false,
     canSeeAgencySpread: row.can_see_agency_spread !== false,
+    canSeeCheckGross: row.can_see_check_gross !== false,
     canSeeCheckNet: row.can_see_check_net !== false,
     canSeeTaxes: row.can_see_taxes !== false,
     canSeeBudgets: canSeeHours && row.can_see_budgets !== false,
@@ -627,10 +655,13 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
             u.last_login_at::text AS last_login_at, u.created_at::text AS created_at,
             u.access_scope, u.see_all_individuals, u.see_all_employees, u.can_see_transactions,
             u.can_see_money, u.can_see_hours, u.can_see_billed_amounts,
-            u.can_see_employee_amounts, u.can_see_agency_spread, u.can_see_check_net,
+            u.can_see_employee_amounts, u.can_see_agency_spread,
+            u.can_see_check_gross, u.can_see_check_net,
             u.can_see_taxes, u.can_see_budgets, u.can_see_employee_deals, u.can_see_settlements,
             u.can_manage_settlements,
-            u.can_see_class_financials, u.can_manage_class_invoices, u.can_edit_documents, u.can_plan,
+            u.can_see_class_financials, u.can_manage_class_invoices,
+            u.can_view_documents, u.can_edit_documents,
+            u.can_plan, u.can_manage_planning,
             (SELECT count(*) FROM user_individual_access a WHERE a.user_id = u.id)::int AS individual_count,
             (SELECT count(*) FROM user_employee_access a WHERE a.user_id = u.id)::int AS employee_count,
             ARRAY(SELECT role.portal_role
@@ -656,7 +687,9 @@ export async function listUsersWithAccess(pool: PgLikePool): Promise<UserWithAcc
     canSeeTransactions: r.can_see_transactions !== false,
     canManageSettlements:
       r.can_see_settlements === true && r.can_manage_settlements === true,
-    canPlan: r.can_plan === true,
+    canPlan: r.can_plan === true || r.can_manage_planning === true,
+    canManagePlanning: r.can_manage_planning === true,
+    canViewDocuments: r.can_view_documents === true || r.can_edit_documents === true,
     canEditDocuments: r.can_edit_documents === true,
     ...storedVisibility(r),
     individualCount: Number(r.individual_count ?? 0),
@@ -679,10 +712,13 @@ export async function getUserAccessConfig(
   }>(
     `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions,
             can_see_money, can_see_hours, can_see_billed_amounts,
-            can_see_employee_amounts, can_see_agency_spread, can_see_check_net,
+            can_see_employee_amounts, can_see_agency_spread,
+            can_see_check_gross, can_see_check_net,
             can_see_taxes, can_see_budgets, can_see_employee_deals, can_see_settlements,
             can_manage_settlements,
-            can_see_class_financials, can_manage_class_invoices, can_edit_documents, can_plan
+            can_see_class_financials, can_manage_class_invoices,
+            can_view_documents, can_edit_documents,
+            can_plan, can_manage_planning
        FROM users WHERE id = $1`,
     [userId],
   );
@@ -707,7 +743,9 @@ export async function getUserAccessConfig(
     canSeeTransactions: u.can_see_transactions !== false,
     canManageSettlements:
       u.can_see_settlements === true && u.can_manage_settlements === true,
-    canPlan: u.can_plan === true,
+    canPlan: u.can_plan === true || u.can_manage_planning === true,
+    canManagePlanning: u.can_manage_planning === true,
+    canViewDocuments: u.can_view_documents === true || u.can_edit_documents === true,
     canEditDocuments: u.can_edit_documents === true,
     ...storedVisibility(u),
     individualIds,
@@ -743,6 +781,10 @@ async function writeUserAccessConfigQuery(
   const canManageSettlements = canSeeSettlements && config.canManageSettlements === true;
   const canManageClassInvoices =
     canSeeClassFinancials && config.canManageClassInvoices === true;
+  const canManagePlanning = config.canManagePlanning === true;
+  const canPlan = config.canPlan === true || canManagePlanning;
+  const canEditDocuments = config.canEditDocuments === true;
+  const canViewDocuments = config.canViewDocuments === true || canEditDocuments;
 
   const { rowCount } = await queryable.query(
     `UPDATE users
@@ -755,18 +797,21 @@ async function writeUserAccessConfigQuery(
             can_see_billed_amounts = $7,
             can_see_employee_amounts = $8,
             can_see_agency_spread = $9,
-            can_see_check_net = $10,
-            can_see_taxes = $11,
-            can_see_budgets = $12,
-            can_see_employee_deals = $13,
-            can_see_settlements = $14,
-            can_manage_settlements = $15,
-            can_see_class_financials = $16,
-            can_manage_class_invoices = $17,
-            can_edit_documents = $18,
-            can_plan = $19,
+            can_see_check_gross = $10,
+            can_see_check_net = $11,
+            can_see_taxes = $12,
+            can_see_budgets = $13,
+            can_see_employee_deals = $14,
+            can_see_settlements = $15,
+            can_manage_settlements = $16,
+            can_see_class_financials = $17,
+            can_manage_class_invoices = $18,
+            can_view_documents = $19,
+            can_edit_documents = $20,
+            can_plan = $21,
+            can_manage_planning = $22,
             updated_at = now()
-      WHERE id = $20`,
+      WHERE id = $23`,
     [
       scope,
       config.seeAllIndividuals === true,
@@ -777,6 +822,7 @@ async function writeUserAccessConfigQuery(
       canSeeMoney && config.canSeeBilledAmounts === true,
       canSeeMoney && config.canSeeEmployeeAmounts === true,
       canSeeMoney && config.canSeeAgencySpread === true,
+      canSeeMoney && config.canSeeCheckGross === true,
       canSeeMoney && config.canSeeCheckNet === true,
       canSeeMoney && config.canSeeTaxes === true,
       canSeeBudgets,
@@ -785,8 +831,10 @@ async function writeUserAccessConfigQuery(
       canManageSettlements,
       canSeeClassFinancials,
       canManageClassInvoices,
-      config.canEditDocuments === true,
-      config.canPlan === true,
+      canViewDocuments,
+      canEditDocuments,
+      canPlan,
+      canManagePlanning,
       userId,
     ],
   );
@@ -840,6 +888,7 @@ async function writeUserAccessAuditQuery(
       canSeeBilledAmounts: canSeeMoney && config.canSeeBilledAmounts === true,
       canSeeEmployeeAmounts: canSeeMoney && config.canSeeEmployeeAmounts === true,
       canSeeAgencySpread: canSeeMoney && config.canSeeAgencySpread === true,
+      canSeeCheckGross: canSeeMoney && config.canSeeCheckGross === true,
       canSeeCheckNet: canSeeMoney && config.canSeeCheckNet === true,
       canSeeTaxes: canSeeMoney && config.canSeeTaxes === true,
       canSeeBudgets: canSeeHours && config.canSeeBudgets === true,
@@ -849,8 +898,10 @@ async function writeUserAccessAuditQuery(
       canSeeClassFinancials,
       canManageClassInvoices:
         canSeeClassFinancials && config.canManageClassInvoices === true,
+      canViewDocuments: config.canViewDocuments === true || config.canEditDocuments === true,
       canEditDocuments: config.canEditDocuments === true,
-      canPlan: config.canPlan === true,
+      canPlan: config.canPlan === true || config.canManagePlanning === true,
+      canManagePlanning: config.canManagePlanning === true,
       individuals: individualIds.length,
       employees: employeeIds.length,
     },

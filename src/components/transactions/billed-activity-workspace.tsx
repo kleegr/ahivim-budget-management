@@ -152,12 +152,16 @@ function ChecksView({
       ...(visibility.canSeeBilledAmounts ? [{ key: "funderBilled", header: "Funder billed", type: "money" } as const] : []),
       ...(visibility.canSeeEmployeeAmounts ? [{ key: "employeeBase", header: "Employee base", type: "money" } as const] : []),
       ...(visibility.canSeeAgencySpread ? [{ key: "agencySpread", header: "Agency spread", type: "money" } as const] : []),
-      ...(visibility.canSeeCheckNet ? [
+      ...(visibility.canSeeCheckGross ? [
         { key: "verifiedGross", header: "Verified check gross", type: "money" } as const,
+      ] : []),
+      ...(visibility.canSeeCheckNet ? [
         { key: "verifiedNet", header: "Verified check net", type: "money" } as const,
-        { key: "verification", header: "Verification", type: "text" } as const,
         { key: "sourceNet", header: "Source net", type: "money" } as const,
       ] : []),
+      ...(visibility.canSeeCheckGross || visibility.canSeeCheckNet
+        ? [{ key: "verification", header: "Verification", type: "text" } as const]
+        : []),
       ...(visibility.canSeeTaxes ? [{ key: "withholding", header: "Withholding", type: "money" } as const] : []),
       { key: "review", header: "Review status", type: "text" },
     ];
@@ -230,7 +234,7 @@ function ChecksView({
         {visibility.canSeeBilledAmounts ? <SummaryMetric label="Funder billed" value={formatMoney(totals.funderBilled)} /> : null}
         {visibility.canSeeEmployeeAmounts ? <SummaryMetric label="Employee base" value={formatMoney(totals.employeeBase)} /> : null}
         {visibility.canSeeAgencySpread ? <SummaryMetric label="Agency spread" value={formatMoney(totals.agencySpread)} /> : null}
-        {visibility.canSeeCheckNet ? <SummaryMetric label="Verified gross" value={formatMoney(totals.verifiedGross)} /> : null}
+        {visibility.canSeeCheckGross ? <SummaryMetric label="Verified gross" value={formatMoney(totals.verifiedGross)} /> : null}
         {visibility.canSeeCheckNet ? <SummaryMetric label="Verified net" value={formatMoney(totals.verifiedNet)} /> : null}
         {visibility.canSeeTaxes ? <SummaryMetric label="Withholding" value={formatMoney(totals.withholding)} /> : null}
         {visibility.canSeeHours ? <SummaryMetric label="Hours" value={formatHours(totals.hours)} /> : null}
@@ -267,10 +271,10 @@ function ChecksView({
               {visibility.canSeeBilledAmounts ? <Th numeric>Funder billed</Th> : null}
               {visibility.canSeeEmployeeAmounts ? <Th numeric>Employee base</Th> : null}
               {visibility.canSeeAgencySpread ? <Th numeric>Agency spread</Th> : null}
-              {visibility.canSeeCheckNet ? <Th numeric>Verified gross</Th> : null}
+              {visibility.canSeeCheckGross ? <Th numeric>Verified gross</Th> : null}
               {visibility.canSeeCheckNet ? <Th numeric>Verified net</Th> : null}
               {visibility.canSeeTaxes ? <Th numeric>Withholding</Th> : null}
-              {visibility.canSeeCheckNet ? <Th>Verification</Th> : null}
+              {visibility.canSeeCheckGross || visibility.canSeeCheckNet ? <Th>Verification</Th> : null}
               {visibility.canSeeCheckNet ? <Th numeric>Source net</Th> : null}
               <Th>Status</Th>
               <Th><span className="sr-only">Open</span></Th>
@@ -300,10 +304,10 @@ function ChecksView({
                 {visibility.canSeeBilledAmounts ? <Td numeric>{formatMoney(check.funderBilled)}</Td> : null}
                 {visibility.canSeeEmployeeAmounts ? <Td numeric>{formatMoney(check.employeeBase)}</Td> : null}
                 {visibility.canSeeAgencySpread ? <Td numeric>{formatMoney(check.agencySpread)}</Td> : null}
-                {visibility.canSeeCheckNet ? <Td numeric>{check.verifiedCheckGross !== null ? formatMoney(check.verifiedCheckGross) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
+                {visibility.canSeeCheckGross ? <Td numeric>{check.verifiedCheckGross !== null ? formatMoney(check.verifiedCheckGross) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
                 {visibility.canSeeCheckNet ? <Td numeric>{check.verifiedCheckNet !== null ? formatMoney(check.verifiedCheckNet) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
                 {visibility.canSeeTaxes ? <Td numeric>{check.withholding !== null ? formatMoney(check.withholding) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
-                {visibility.canSeeCheckNet ? (
+                {visibility.canSeeCheckGross || visibility.canSeeCheckNet ? (
                   <Td>{check.verificationStatus === null ? "Not linked" : VERIFICATION_LABEL[check.verificationStatus] ?? check.verificationStatus}</Td>
                 ) : null}
                 {visibility.canSeeCheckNet ? <Td numeric>{check.netPay !== null ? formatMoney(check.netPay) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}

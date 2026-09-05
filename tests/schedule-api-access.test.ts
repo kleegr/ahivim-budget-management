@@ -64,4 +64,25 @@ describe("planning API authorization boundary", () => {
     expect(await response.json()).toEqual({ ok: false, error: "Budget planning access required" });
     expect(mocks.getPool).not.toHaveBeenCalled();
   });
+
+  it("lets a read-only planner reach reads but denies every session and series mutation", async () => {
+    mocks.apiPlanningUser.mockResolvedValue({
+      user: { id: "read-only-planner" },
+      access: { canSeeBudgets: true },
+      canManageSchedules: false,
+    });
+
+    const writes = [
+      await createSession(request("/api/schedule/sessions", "POST")),
+      await updateSession(request(`/api/schedule/sessions/${ID}`, "PATCH"), params),
+      await createSeries(request("/api/schedule/series", "POST")),
+      await updateSeries(request(`/api/schedule/series/${ID}`, "PATCH"), params),
+    ];
+
+    for (const response of writes) {
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ ok: false, error: "Schedule management access required" });
+    }
+    expect(mocks.getPool).not.toHaveBeenCalled();
+  });
 });

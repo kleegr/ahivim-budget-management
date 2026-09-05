@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/session";
 import {
   canAccessPlanning,
+  canManagePlanningAccess,
   canViewEmployee,
   canViewIndividual,
   hasDirectEmployeeAccess,
@@ -177,9 +178,11 @@ export default async function EmployeeDetailPage({
     if (!canViewEmployee(scope, id)) return null;
     const planningOnly = isPlanningOnlyAccess(scope);
     const canPlanProfile = canAccessPlanning(scope);
+    const canManagePlanningProfile = canManagePlanningAccess(scope);
     const directAccess = hasDirectEmployeeAccess(scope, id);
     const canSeeEmployeeDeals = scope.canSeeEmployeeDeals && directAccess;
     const canSeeSettlements = scope.canSeeSettlements && directAccess;
+    const canSeeCheckGross = scope.canSeeCheckGross && directAccess;
     const canSeeCheckNet = scope.canSeeCheckNet && directAccess;
     const canSeeTaxes = scope.canSeeTaxes && directAccess;
     const [
@@ -213,7 +216,7 @@ export default async function EmployeeDetailPage({
       planningOnly ? Promise.resolve([]) : getEmployeeUsageByProgram(pool, id, scope),
       planningOnly ? Promise.resolve([]) : getEmployeeMonthlyPayments(pool, id, scope),
       canPlanProfile ? getEmployeeSchedule(pool, id) : Promise.resolve(EMPTY_SCHEDULE),
-      canSeeCheckNet || canSeeTaxes
+      canSeeCheckGross || canSeeCheckNet || canSeeTaxes
         ? getEmployeeWithholding(pool, id, scope)
         : Promise.resolve({ gross: "0", net: "0", withheld: "0", grossKnownChecks: 0, checks: 0 }),
       // Every transaction for this employee, for the embedded ledger grid.
@@ -221,9 +224,9 @@ export default async function EmployeeDetailPage({
       canSeeEmployeeDeals ? listEmployeeDeals(pool, id) : Promise.resolve([]),
       canSeeSettlements ? getEmployeeMoneyProfile(pool, id) : Promise.resolve(EMPTY_MONEY),
       planningOnly ? getEmployeePlanningSummary(pool, id) : Promise.resolve(null),
-      canSeeCheckNet || canSeeTaxes
+      canSeeCheckGross || canSeeCheckNet || canSeeTaxes
         ? listEmployeeProfileChecks(pool, id, {
-            gross: canSeeCheckNet,
+            gross: canSeeCheckGross,
             net: canSeeCheckNet,
             tax: canSeeTaxes,
             transactions: scope.canSeeTransactions,
@@ -239,12 +242,14 @@ export default async function EmployeeDetailPage({
       employee: planningOnly ? planningEmployeeProfile(employee) : employee,
       report, assignments: activeAssignments, recent, payment,
       individualsServed, usageByProgram, monthly, schedule, withholding,
-      gridRows, deals, money, planningSummary, checks, previewAccounts, planningOnly, canPlanProfile,
+      gridRows, deals, money, planningSummary, checks, previewAccounts, planningOnly,
+      canPlanProfile, canManagePlanningProfile,
       canSeeTransactions: scope.canSeeTransactions,
       canSeeHours: scope.canSeeHours,
       canSeeBilledAmounts: scope.canSeeBilledAmounts,
       canSeeEmployeeAmounts: scope.canSeeEmployeeAmounts,
       canSeeAgencySpread: scope.canSeeAgencySpread,
+      canSeeCheckGross,
       canSeeCheckNet,
       canSeeTaxes,
       canSeeBudgets: scope.canSeeBudgets,
@@ -267,9 +272,9 @@ export default async function EmployeeDetailPage({
   const {
     employee, report, assignments, recent, payment, individualsServed,
     usageByProgram, monthly, schedule, withholding, gridRows, deals, money,
-    planningSummary, checks, previewAccounts, planningOnly, canPlanProfile,
+    planningSummary, checks, previewAccounts, planningOnly, canPlanProfile, canManagePlanningProfile,
     canSeeTransactions, canSeeHours, canSeeBilledAmounts,
-    canSeeEmployeeAmounts, canSeeAgencySpread, canSeeCheckNet, canSeeTaxes,
+    canSeeEmployeeAmounts, canSeeAgencySpread, canSeeCheckGross, canSeeCheckNet, canSeeTaxes,
     canSeeBudgets, canSeeEmployeeDeals, canSeeSettlements, transactionVisibility,
   } = result.data;
   const employeeNotes = "notes" in employee && typeof employee.notes === "string"
@@ -379,6 +384,7 @@ export default async function EmployeeDetailPage({
     || gridRows.length,
   );
   const hasMoneyAccess = canSeeEmployeeAmounts
+    || canSeeCheckGross
     || canSeeCheckNet
     || canSeeTaxes
     || canSeeEmployeeDeals
@@ -564,7 +570,7 @@ export default async function EmployeeDetailPage({
                     </Card>
                     <section>
                       <div className="mb-3"><p className="eyebrow">Availability</p><h2 className="mt-1 text-lg font-semibold">Weekly hours and time off</h2></div>
-                      <EmployeeAvailabilityManager employees={[{ id, label: employee.displayName }]} initialEmployeeId={id} today={today} canManage={canPlanProfile} />
+                      <EmployeeAvailabilityManager employees={[{ id, label: employee.displayName }]} initialEmployeeId={id} today={today} canManage={canManagePlanningProfile} />
                     </section>
                   </>
                 ) : (
@@ -606,17 +612,18 @@ export default async function EmployeeDetailPage({
                     ) : <div className="px-5 py-7 text-sm text-[var(--color-ink-soft)]">Set a deal before calculating route-specific obligations.</div>}
                   </Card>
                 ) : null}
-                {canSeeCheckNet || canSeeTaxes ? (
+                {canSeeCheckGross || canSeeCheckNet || canSeeTaxes ? (
                   <Card title="Canonical payroll checks" description="Actual check facts. Funder-billed revenue is never substituted for check gross.">
                     {checks.length > 0 ? (
-                      <Table head={<><Th>Check</Th><Th>Service period</Th>{canSeeCheckNet ? <><Th numeric>Actual gross</Th><Th numeric>Actual net</Th></> : null}{canSeeTaxes ? <Th numeric>Taxes</Th> : null}<Th>Status</Th><Th numeric>Linked rows</Th></>}>
+                      <Table head={<><Th>Check</Th><Th>Service period</Th>{canSeeCheckGross ? <Th numeric>Actual gross</Th> : null}{canSeeCheckNet ? <Th numeric>Actual net</Th> : null}{canSeeTaxes ? <Th numeric>Taxes</Th> : null}<Th>Status</Th><Th numeric>Linked rows</Th></>}>
                         {checks.map((check) => {
                           const checkMonth = (check.periodBegin ?? check.checkDate ?? check.periodEnd ?? today).slice(0, 7);
                           return (
                             <Tr key={check.id}>
                               <Td><Link className="font-semibold text-[var(--color-primary)] hover:underline" href={collectionsPayrollCheckFocusHref({ payrollCheckId: check.id, month: checkMonth })}>{check.checkNumber ?? "No number"}</Link><p className="tnum text-xs text-[var(--color-ink-faint)]">{profileDate(check.checkDate)}</p></Td>
                               <Td><span className="tnum">{check.periodBegin ?? "—"}</span> to <span className="tnum">{check.periodEnd ?? "—"}</span></Td>
-                              {canSeeCheckNet ? <><Td numeric><Money value={check.actualGross} /></Td><Td numeric><Money value={check.actualNet} /></Td></> : null}
+                              {canSeeCheckGross ? <Td numeric><Money value={check.actualGross} /></Td> : null}
+                              {canSeeCheckNet ? <Td numeric><Money value={check.actualNet} /></Td> : null}
                               {canSeeTaxes ? <Td numeric><Money value={check.taxWithheld} /></Td> : null}
                               <Td className="capitalize">{check.verificationStatus}</Td>
                               <Td numeric>{check.linkedTransactions}</Td>
@@ -626,7 +633,8 @@ export default async function EmployeeDetailPage({
                       </Table>
                     ) : <div className="px-5 py-7 text-sm text-[var(--color-ink-soft)]">No canonical payroll checks are recorded.</div>}
                     <div className="grid gap-3 border-t border-[var(--color-rule)] p-5 sm:grid-cols-3">
-                      {canSeeCheckNet ? <><MoneyTile label="Verified gross" value={formatMoney(withholding.gross)} /><MoneyTile label="Verified net" value={formatMoney(withholding.net)} /></> : null}
+                      {canSeeCheckGross ? <MoneyTile label="Verified gross" value={formatMoney(withholding.gross)} /> : null}
+                      {canSeeCheckNet ? <MoneyTile label="Verified net" value={formatMoney(withholding.net)} /> : null}
                       {canSeeTaxes ? <MoneyTile label="Verified taxes" value={formatMoney(withholding.withheld)} sub={`${withholding.checks} verified check${withholding.checks === 1 ? "" : "s"}`} /> : null}
                     </div>
                   </Card>

@@ -84,7 +84,7 @@ function formatDate(value: string): string {
   }).format(new Date(value));
 }
 
-export default function DocumentLibrary() {
+export default function DocumentLibrary({ canEdit }: { canEdit: boolean }) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const loadSequenceRef = useRef(0);
@@ -134,7 +134,7 @@ export default function DocumentLibrary() {
   }), [documents.length, status]);
 
   const openFile = async (file: File) => {
-    if (uploading) return;
+    if (!canEdit || uploading) return;
     setError(null);
     setLoadFailed(false);
     if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
@@ -205,7 +205,7 @@ export default function DocumentLibrary() {
   };
 
   const setArchived = async (document: DocumentRecord, archived: boolean) => {
-    if (updatingId !== null) return;
+    if (!canEdit || updatingId !== null) return;
     setUpdatingId(document.id);
     setError(null);
     setLoadFailed(false);
@@ -232,22 +232,26 @@ export default function DocumentLibrary() {
         <div>
           <p className="eyebrow">Documents</p>
           <h1 className="display mt-1 text-2xl text-[var(--color-ink)] sm:text-3xl">Document library</h1>
-          <p className="mt-2 text-sm text-[var(--color-ink-soft)]">PDF originals, edited versions, and recoverable history.</p>
+          <p className="mt-2 text-sm text-[var(--color-ink-soft)]">{canEdit
+            ? "PDF originals, edited versions, and recoverable history."
+            : "View saved PDFs, download copies, and browse recoverable history."}</p>
         </div>
-        <button type="button" className="btn btn-primary" disabled={uploading} aria-busy={uploading} onClick={() => fileInputRef.current?.click()}>
-          {uploading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <Upload className="h-4 w-4" aria-hidden />}
-          {uploading ? `Uploading ${uploadProgress}%` : "Upload PDF"}
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="application/pdf,.pdf"
-          hidden
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) void openFile(file);
-          }}
-        />
+        {canEdit ? <>
+          <button type="button" className="btn btn-primary" disabled={uploading} aria-busy={uploading} onClick={() => fileInputRef.current?.click()}>
+            {uploading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <Upload className="h-4 w-4" aria-hidden />}
+            {uploading ? `Uploading ${uploadProgress}%` : "Upload PDF"}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf,.pdf"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void openFile(file);
+            }}
+          />
+        </> : <span className="badge bg-[var(--color-surface-muted)] text-[var(--color-ink-soft)]">View only</span>}
       </header>
 
       {error ? (
@@ -258,9 +262,9 @@ export default function DocumentLibrary() {
       ) : null}
 
       <section aria-label="Document filters" className="flex min-w-0 flex-wrap items-center gap-3 border-b border-[var(--color-rule)] pb-4">
-        <div className="segmented-control scroll-thin grid w-full min-w-0 grid-cols-3 overflow-x-auto [&>button]:flex-1 sm:w-auto" role="group" aria-label="Document status">
+        <div className={`segmented-control scroll-thin grid w-full min-w-0 ${canEdit ? "grid-cols-3" : "grid-cols-2"} overflow-x-auto [&>button]:flex-1 sm:w-auto`} role="group" aria-label="Document status">
           <button type="button" aria-pressed={status === "active"} onClick={() => setStatus("active")}>Documents{counts.active === null ? "" : ` ${counts.active}`}</button>
-          <button type="button" aria-pressed={status === "uploading"} onClick={() => setStatus("uploading")}>Incomplete{counts.uploading === null ? "" : ` ${counts.uploading}`}</button>
+          {canEdit ? <button type="button" aria-pressed={status === "uploading"} onClick={() => setStatus("uploading")}>Incomplete{counts.uploading === null ? "" : ` ${counts.uploading}`}</button> : null}
           <button type="button" aria-pressed={status === "archived"} onClick={() => setStatus("archived")}>Archived{counts.archived === null ? "" : ` ${counts.archived}`}</button>
         </div>
         <label className="relative w-full min-w-0 flex-1 sm:w-auto sm:min-w-56 sm:max-w-sm">
@@ -282,8 +286,8 @@ export default function DocumentLibrary() {
                 {status === "active" ? <FolderOpen className="h-6 w-6" aria-hidden /> : <Archive className="h-6 w-6" aria-hidden />}
               </div>
               <h2 className="mt-4 text-lg font-semibold">{status === "archived" ? "No archived documents" : status === "uploading" ? "No incomplete uploads" : "Your document library is ready"}</h2>
-              <p className="mt-2 text-sm text-[var(--color-ink-soft)]">{status === "archived" ? "Archived PDFs will remain recoverable here." : status === "uploading" ? "Interrupted uploads appear here so they can be removed and uploaded again." : "Upload a PDF to preserve its original and begin a tracked editing history."}</p>
-              {status === "active" ? <button type="button" className="btn btn-secondary mt-5" disabled={uploading} aria-busy={uploading} onClick={() => fileInputRef.current?.click()}>{uploading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <Upload className="h-4 w-4" aria-hidden />} {uploading ? `Uploading ${uploadProgress}%` : "Upload PDF"}</button> : null}
+              <p className="mt-2 text-sm text-[var(--color-ink-soft)]">{status === "archived" ? "Archived PDFs will remain available here." : status === "uploading" ? "Interrupted uploads appear here so they can be removed and uploaded again." : canEdit ? "Upload a PDF to preserve its original and begin a tracked editing history." : "Saved PDFs will appear here when a document editor adds them."}</p>
+              {canEdit && status === "active" ? <button type="button" className="btn btn-secondary mt-5" disabled={uploading} aria-busy={uploading} onClick={() => fileInputRef.current?.click()}>{uploading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <Upload className="h-4 w-4" aria-hidden />} {uploading ? `Uploading ${uploadProgress}%` : "Upload PDF"}</button> : null}
             </div>
           </div>
         ) : (
@@ -304,7 +308,7 @@ export default function DocumentLibrary() {
                         <span className="mt-0.5 block break-all text-xs text-[var(--color-ink-faint)]">{document.currentFilename ?? "PDF upload pending"}</span>
                       </span>
                     </button>
-                    <div className="relative shrink-0">
+                    {canEdit ? <div className="relative shrink-0">
                       <button
                         type="button"
                         className="btn btn-ghost btn-icon h-11 w-11"
@@ -326,7 +330,7 @@ export default function DocumentLibrary() {
                           )}
                         </div>
                       ) : null}
-                    </div>
+                    </div> : null}
                   </div>
                   <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 pl-[3.25rem] text-xs">
                     <div className="min-w-0">
@@ -357,7 +361,7 @@ export default function DocumentLibrary() {
                   <th className="px-3 py-2.5">Version</th>
                   <th className="px-3 py-2.5">Modified</th>
                   <th className="px-3 py-2.5">Size</th>
-                  <th className="w-12 px-2 py-2.5"><span className="sr-only">Actions</span></th>
+                  {canEdit ? <th className="w-12 px-2 py-2.5"><span className="sr-only">Actions</span></th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -381,7 +385,7 @@ export default function DocumentLibrary() {
                     <td className="px-3 py-3"><span className="tnum rounded bg-[var(--color-surface-muted)] px-2 py-1 text-xs font-semibold">v{document.currentVersionNumber ?? 0}</span></td>
                     <td className="px-3 py-3 text-[var(--color-ink-soft)]"><span className="flex items-center gap-1.5"><Clock3 className="h-3.5 w-3.5" aria-hidden />{formatDate(document.updatedAt)}</span></td>
                     <td className="tnum px-3 py-3 text-[var(--color-ink-soft)]">{formatBytes(document.currentByteSize)}</td>
-                    <td className="relative px-2 py-3 text-right">
+                    {canEdit ? <td className="relative px-2 py-3 text-right">
                       <button type="button" className="btn btn-ghost btn-icon h-8 w-8" aria-label={`Actions for ${document.title}`} aria-expanded={menuId === document.id} aria-haspopup="menu" aria-busy={updatingId === document.id} disabled={updatingId === document.id} title="Document actions" onClick={() => setMenuId((current) => current === document.id ? null : document.id)}>{updatingId === document.id ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <MoreHorizontal className="h-4 w-4" aria-hidden />}</button>
                       {menuId === document.id ? (
                         <div className="absolute right-2 top-11 z-20 w-40 rounded-md border border-[var(--color-rule-strong)] bg-white p-1 text-left shadow-lg" role="menu">
@@ -391,7 +395,7 @@ export default function DocumentLibrary() {
                           )}
                         </div>
                       ) : null}
-                    </td>
+                    </td> : null}
                   </tr>
                 ))}
               </tbody>

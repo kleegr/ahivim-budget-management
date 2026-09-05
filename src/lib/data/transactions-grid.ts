@@ -215,7 +215,7 @@ export async function listTransactionsForGrid(
       || scope.allEmployees
       || (r.employee_id !== null && scope.grantedEmployeeIds.includes(r.employee_id))
     )
-      ? { ...scope, canSeeCheckNet: false, canSeeTaxes: false }
+      ? { ...scope, canSeeCheckGross: false, canSeeCheckNet: false, canSeeTaxes: false }
       : scope;
     return redactTransactionFields({
     id: r.id,

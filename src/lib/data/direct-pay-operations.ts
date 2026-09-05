@@ -163,6 +163,7 @@ export interface CollectionsWorkspaceData {
   visibility: {
     canSeeTargetMoney: boolean;
     canSeeTargetHours: boolean;
+    canSeeCheckGross: boolean;
     canSeeCheckNet: boolean;
     canSeeTaxes: boolean;
   };
@@ -369,7 +370,7 @@ export async function listPayrollChecks(
   limit = 100,
   payrollCheckId?: string | null,
 ): Promise<PayrollCheckRow[]> {
-  if (!scope.canSeeCheckNet && !scope.canSeeTaxes) return [];
+  if (!scope.canSeeCheckGross && !scope.canSeeCheckNet && !scope.canSeeTaxes) return [];
   const params: unknown[] = [];
   const scopeClause = employeeFinancialClause(scope, "c.employee_id", params);
   let checkClause = "";
@@ -413,7 +414,7 @@ export async function listPayrollChecks(
     checkDate: row.check_date,
     periodBegin: row.period_begin,
     periodEnd: row.period_end,
-    actualGross: scope.canSeeTaxes && row.actual_gross !== null ? toMoney(row.actual_gross) : null,
+    actualGross: scope.canSeeCheckGross && row.actual_gross !== null ? toMoney(row.actual_gross) : null,
     actualNet: scope.canSeeCheckNet ? toMoney(row.actual_net) : null,
     taxWithheld: scope.canSeeTaxes && row.tax_withheld !== null ? toMoney(row.tax_withheld) : null,
     source: row.source,
@@ -636,6 +637,7 @@ export async function getCollectionsWorkspace(
     visibility: {
       canSeeTargetMoney: scope.canSeeEmployeeAmounts,
       canSeeTargetHours: scope.canSeeHours,
+      canSeeCheckGross: scope.canSeeCheckGross,
       canSeeCheckNet: scope.canSeeCheckNet,
       canSeeTaxes: scope.canSeeTaxes,
     },

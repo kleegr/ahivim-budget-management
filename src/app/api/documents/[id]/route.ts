@@ -33,7 +33,7 @@ export async function PATCH(
   if (cross) return cross;
   const { id } = await params;
   try {
-    const found = await accessibleDocument(id);
+    const found = await accessibleDocument(id, "edit");
     if ("error" in found) return found.error;
     const body = await readJson(request);
     const status = body.status === "active" || body.status === "archived" ? body.status : undefined;

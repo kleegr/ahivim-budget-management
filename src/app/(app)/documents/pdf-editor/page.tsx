@@ -1,5 +1,6 @@
 import PdfEditorWorkspace from "@/components/documents/pdf-editor-workspace";
-import { requireDocumentEditorUser } from "@/lib/auth/document-access";
+import DocumentViewerWorkspace from "@/components/documents/document-viewer-workspace";
+import { requireDocumentViewerUser } from "@/lib/auth/document-access";
 import { normalizePdfEditorSourcePath } from "@/lib/documents/pdf-editor";
 
 export const dynamic = "force-dynamic";
@@ -10,11 +11,14 @@ export default async function PdfEditorPage({
 }: {
   searchParams: Promise<{ source?: string | string[]; document?: string | string[] }>;
 }) {
-  await requireDocumentEditorUser();
+  const access = await requireDocumentViewerUser();
   const params = await searchParams;
   const source = Array.isArray(params.source) ? params.source[0] : params.source;
   const documentId = Array.isArray(params.document) ? params.document[0] : params.document;
   const normalizedDocumentId = documentId && /^[0-9a-f-]{36}$/i.test(documentId) ? documentId : null;
+  if (!access.scope.canEditDocuments) {
+    return <DocumentViewerWorkspace documentId={normalizedDocumentId} />;
+  }
   return (
     <PdfEditorWorkspace
       initialSourcePath={normalizePdfEditorSourcePath(source)}

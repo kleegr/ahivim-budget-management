@@ -21,6 +21,7 @@ function scopeFrom(config: UserAccessConfig): AccessScope {
     canSeeBilledAmounts: config.canSeeBilledAmounts,
     canSeeEmployeeAmounts: config.canSeeEmployeeAmounts,
     canSeeAgencySpread: config.canSeeAgencySpread,
+    canSeeCheckGross: config.canSeeCheckGross,
     canSeeCheckNet: config.canSeeCheckNet,
     canSeeTaxes: config.canSeeTaxes,
     canSeeBudgets: config.canSeeBudgets,
@@ -30,6 +31,8 @@ function scopeFrom(config: UserAccessConfig): AccessScope {
     canSeeClassFinancials: config.canSeeClassFinancials,
     canManageClassInvoices: config.canManageClassInvoices,
     canPlan: config.canPlan,
+    canManagePlanning: config.canManagePlanning,
+    canViewDocuments: config.canViewDocuments,
     canEditDocuments: config.canEditDocuments,
     allIndividuals: config.seeAllIndividuals,
     allEmployees: config.seeAllEmployees,
@@ -85,6 +88,14 @@ describe("account portal labels", () => {
       ...BUDGET_PLANNER_ACCESS,
       canSeeTransactions: true,
     }), portal()).label).toBe("Custom access");
+    expect(resolveAccountProfile("viewer", scopeFrom({
+      ...COLLECTIONS_ACCESS,
+      canSeeCheckGross: false,
+    }), portal()).label).toBe("Custom access");
+    expect(resolveAccountProfile("viewer", scopeFrom({
+      ...BUDGET_PLANNER_ACCESS,
+      canManagePlanning: false,
+    }), portal()).label).toBe("Custom access");
 
     const mixed = portal({
       globalRoles: [{ role: "employee", grants: [], denials: [] }],
@@ -130,6 +141,8 @@ describe("account portal labels", () => {
   it("describes operational capabilities instead of calling every viewer read-only", () => {
     const settings = readFileSync("src/app/(app)/settings/page.tsx", "utf8");
     expect(settings).toContain("canManageSettlements");
+    expect(settings).toContain("canManagePlanning");
+    expect(settings).toContain("canViewDocuments");
     expect(settings).toContain("canManageClassInvoices");
     expect(settings).toContain("canManagePortalSchedules");
     expect(settings).toContain("input.canSeeBudgets");

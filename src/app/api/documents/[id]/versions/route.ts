@@ -29,7 +29,7 @@ export async function POST(
   if (cross) return cross;
   const { id } = await params;
   try {
-    const found = await accessibleDocument(id);
+    const found = await accessibleDocument(id, "edit");
     if ("error" in found) return found.error;
     const body = await readJson(request);
     const exportMode = typeof body.exportMode === "string" ? body.exportMode as DocumentExportMode : undefined;

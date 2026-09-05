@@ -1,5 +1,5 @@
 import {
-  canAccessPlanning,
+  canManagePlanningAccess,
   hasDirectIndividualAccess,
   resolveAccessScope,
   type AccessScope,
@@ -25,10 +25,11 @@ export interface HourAuthorizationOperator {
 export function canManageHourAuthorizations(
   scope: Pick<
     AccessScope,
-    "canPlan" | "canSeeHours" | "canSeeBudgets" | "full" | "allIndividuals" | "allEmployees"
+    "canPlan" | "canManagePlanning" | "canSeeHours" | "canSeeBudgets"
+      | "full" | "allIndividuals" | "allEmployees"
   >,
 ): boolean {
-  return scope.canSeeHours && scope.canSeeBudgets && canAccessPlanning(scope);
+  return scope.canSeeHours && scope.canSeeBudgets && canManagePlanningAccess(scope);
 }
 
 /** Resolve a manager/admin, or the narrow internal hours-only planner. */

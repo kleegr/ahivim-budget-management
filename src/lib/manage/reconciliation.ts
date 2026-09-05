@@ -1,4 +1,4 @@
-import type { PgLikePool } from "@/lib/import/commit";
+import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { recordChange } from "./audit";
 import { ok, fail, type Result } from "./errors";
 import { toHours, toMoney, closeEnough } from "@/lib/money";
@@ -457,6 +457,93 @@ interface AutoMatchCandidate {
   is_group_service: boolean;
 }
 
+const AUTO_RECONCILE_TRANSACTION_ATTEMPTS = 3;
+
+function isRetryableTransactionError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? String(error.code) : "";
+  return code === "40001" || code === "40P01";
+}
+
+/**
+ * Re-read and lock both sides of a proposed automatic match. Discovery is only
+ * an optimization: this query is the transactional authority and deliberately
+ * repeats every exact-pair and one-to-one ambiguity predicate immediately
+ * before the update.
+ */
+async function lockExactAutoMatch(
+  client: PgLikeClient,
+  sessionId: string,
+  transactionId: string,
+): Promise<boolean> {
+  const { rows } = await client.query<{ session_id: string; transaction_id: string }>(
+    `SELECT s.id AS session_id, t.id AS transaction_id
+       FROM scheduled_sessions s
+       JOIN payroll_transactions t ON t.id = $2
+       JOIN scheduled_allocations a ON a.scheduled_session_id = s.id
+      WHERE s.id = $1
+        AND s.status IN ('pending','completed')
+        AND s.archived_at IS NULL
+        AND s.matched_transaction_id IS NULL
+        AND s.is_group = false
+        AND s.group_size = 1
+        AND a.individual_id = t.individual_id
+        AND (SELECT count(*) FROM scheduled_allocations own_a
+              WHERE own_a.scheduled_session_id = s.id) = 1
+        AND t.program_id = s.program_id
+        AND t.employee_id = s.employee_id
+        AND t.period_begin = s.session_date
+        AND t.period_end = s.session_date
+        AND t.imported_hours = s.duration_hours
+        AND t.is_group_service = false
+        AND NOT EXISTS (
+              SELECT 1 FROM scheduled_sessions claimed
+               WHERE claimed.matched_transaction_id = t.id
+            )
+        AND NOT EXISTS (
+              SELECT 1
+                FROM payroll_transactions competing_t
+               WHERE competing_t.id <> t.id
+                 AND competing_t.individual_id = a.individual_id
+                 AND competing_t.program_id = s.program_id
+                 AND competing_t.employee_id = s.employee_id
+                 AND competing_t.period_begin = s.session_date
+                 AND competing_t.period_end = s.session_date
+                 AND competing_t.imported_hours = s.duration_hours
+                 AND competing_t.is_group_service = false
+                 AND NOT EXISTS (
+                       SELECT 1 FROM scheduled_sessions competing_claim
+                        WHERE competing_claim.matched_transaction_id = competing_t.id
+                     )
+            )
+        AND NOT EXISTS (
+              SELECT 1
+                FROM scheduled_sessions competing_s
+               WHERE competing_s.id <> s.id
+                 AND competing_s.status IN ('pending','completed')
+                 AND competing_s.archived_at IS NULL
+                 AND competing_s.matched_transaction_id IS NULL
+                 AND competing_s.is_group = false
+                 AND competing_s.group_size = 1
+                 AND competing_s.program_id = t.program_id
+                 AND competing_s.employee_id = t.employee_id
+                 AND competing_s.session_date = t.period_begin
+                 AND competing_s.session_date = t.period_end
+                 AND competing_s.duration_hours = t.imported_hours
+                 AND (SELECT count(*) FROM scheduled_allocations competing_a
+                       WHERE competing_a.scheduled_session_id = competing_s.id) = 1
+                 AND EXISTS (
+                       SELECT 1 FROM scheduled_allocations competing_a
+                        WHERE competing_a.scheduled_session_id = competing_s.id
+                          AND competing_a.individual_id = t.individual_id
+                     )
+            )
+      FOR UPDATE OF s, t, a`,
+    [sessionId, transactionId],
+  );
+  return rows.length === 1;
+}
+
 function isExactDailyCandidate(session: AutoMatchSession, candidate: AutoMatchCandidate): boolean {
   return session.allocation_count === 1
     && session.is_group === false
@@ -555,48 +642,64 @@ export async function autoReconcile(
   if (exactPairs.length === 0) return ok({ matched: 0, considered });
 
   const client = await pool.connect();
-  let matched = 0;
   try {
-    await client.query("BEGIN");
-    for (const pair of exactPairs) {
-      // A savepoint lets a racing unique-index claim skip only this candidate;
-      // every successful match and the aggregate audit still commit together.
-      await client.query("SAVEPOINT auto_match_candidate");
+    for (let attempt = 1; attempt <= AUTO_RECONCILE_TRANSACTION_ATTEMPTS; attempt += 1) {
+      let matched = 0;
       try {
-        const { rows: updated } = await client.query<{ id: string }>(
-          `UPDATE scheduled_sessions
-             SET matched_transaction_id = $2, reconciliation_status = 'matched',
-                 reconciled_by_user_id = $3, reconciled_at = now(),
-                 reconciliation_reason = 'auto-matched', updated_at = now()
-           WHERE id = $1
-             AND matched_transaction_id IS NULL
-             AND NOT EXISTS (
-               SELECT 1 FROM scheduled_sessions claimed WHERE claimed.matched_transaction_id = $2
-             )
-           RETURNING id`,
-          [pair.sessionId, pair.transactionId, actorId],
-        );
-        if (updated.length === 1) matched += 1;
-        await client.query("RELEASE SAVEPOINT auto_match_candidate");
+        await client.query("BEGIN");
+        // Serializable makes allocation/candidate/session predicate reads safe
+        // from phantoms. A bounded retry revalidates the frozen discovery pairs
+        // against a fresh snapshot after a concurrent edit or insert.
+        await client.query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE");
+        for (const pair of exactPairs) {
+          // A savepoint lets a racing unique-index claim skip only this candidate;
+          // every successful match and the aggregate audit still commit together.
+          await client.query("SAVEPOINT auto_match_candidate");
+          try {
+            if (!await lockExactAutoMatch(client, pair.sessionId, pair.transactionId)) {
+              await client.query("RELEASE SAVEPOINT auto_match_candidate");
+              continue;
+            }
+            const { rows: updated } = await client.query<{ id: string }>(
+              `UPDATE scheduled_sessions
+                 SET matched_transaction_id = $2, reconciliation_status = 'matched',
+                     reconciled_by_user_id = $3, reconciled_at = now(),
+                     reconciliation_reason = 'auto-matched', updated_at = now()
+               WHERE id = $1
+                 AND matched_transaction_id IS NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM scheduled_sessions claimed WHERE claimed.matched_transaction_id = $2
+                 )
+               RETURNING id`,
+              [pair.sessionId, pair.transactionId, actorId],
+            );
+            if (updated.length === 1) matched += 1;
+            await client.query("RELEASE SAVEPOINT auto_match_candidate");
+          } catch (error) {
+            // The partial unique index is the final arbiter when two matching runs race.
+            if (!isTransactionMatchConflict(error)) throw error;
+            await client.query("ROLLBACK TO SAVEPOINT auto_match_candidate");
+            await client.query("RELEASE SAVEPOINT auto_match_candidate");
+          }
+        }
+        if (matched > 0) {
+          await recordChange(client, {
+            actorId, action: "reconciliation_auto", entityType: "scheduled_session", entityId: null,
+            next: { matched, considered, range: `${f.from}..${f.to}` },
+            reason: "auto-reconcile",
+          });
+        }
+        await client.query("COMMIT");
+        return ok({ matched, considered });
       } catch (error) {
-        // The partial unique index is the final arbiter when two matching runs race.
-        if (!isTransactionMatchConflict(error)) throw error;
-        await client.query("ROLLBACK TO SAVEPOINT auto_match_candidate");
-        await client.query("RELEASE SAVEPOINT auto_match_candidate");
+        await client.query("ROLLBACK").catch(() => undefined);
+        if (attempt < AUTO_RECONCILE_TRANSACTION_ATTEMPTS && isRetryableTransactionError(error)) {
+          continue;
+        }
+        throw error;
       }
     }
-    if (matched > 0) {
-      await recordChange(client, {
-        actorId, action: "reconciliation_auto", entityType: "scheduled_session", entityId: null,
-        next: { matched, considered, range: `${f.from}..${f.to}` },
-        reason: "auto-reconcile",
-      });
-    }
-    await client.query("COMMIT");
-    return ok({ matched, considered });
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
+    throw new Error("Automatic reconciliation retry limit reached.");
   } finally {
     client.release();
   }

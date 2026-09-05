@@ -236,7 +236,7 @@ describe("role-specific workspaces", () => {
     expect(hrefs).toContain("/settings/role-preview");
   });
 
-  it("shows the PDF workspace only after document access resolves", () => {
+  it("shows the document workspace to a read-only document user", () => {
     const base = {
       role: "viewer",
       accessResolved: true,
@@ -244,11 +244,13 @@ describe("role-specific workspaces", () => {
       canSeeSettlements: false,
       canSeeBudgets: false,
       canPlan: false,
-      canEditDocuments: true,
+      canViewDocuments: true,
+      canEditDocuments: false,
     };
 
     expect(getCommandDestinations(base).map((item) => item.href)).toContain("/documents");
-    expect(getCommandDestinations({ ...base, canEditDocuments: false }).map((item) => item.href)).not.toContain("/documents");
+    expect(getCommandDestinations({ ...base, canViewDocuments: false }).map((item) => item.href)).not.toContain("/documents");
+    expect(getCommandDestinations({ ...base, canViewDocuments: false, canEditDocuments: true }).map((item) => item.href)).toContain("/documents");
   });
 
   it("shows agency administration only to a portal owner", () => {

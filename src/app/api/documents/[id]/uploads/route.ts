@@ -15,7 +15,7 @@ export async function POST(
   if (cross) return cross;
   const { id } = await params;
   try {
-    const found = await accessibleDocument(id);
+    const found = await accessibleDocument(id, "edit");
     if ("error" in found) return found.error;
     if (!hasDocumentStorage()) {
       return jsonError("Private document storage is not configured. Ask an administrator to connect document storage.", 503);

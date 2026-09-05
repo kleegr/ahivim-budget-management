@@ -47,6 +47,7 @@ describe("Transactions verified payroll-check facts", () => {
       canSeeBilledAmounts: true,
       canSeeEmployeeAmounts: false,
       canSeeAgencySpread: true,
+      canSeeCheckGross: false,
       canSeeCheckNet: false,
       canSeeTaxes: false,
       canSeeBudgets: true,
@@ -62,6 +63,50 @@ describe("Transactions verified payroll-check facts", () => {
       verifiedCheckNet: null,
       withholding: null,
       verificationStatus: null,
+    });
+  });
+
+  it("redacts check gross independently from check net", () => {
+    const row = {
+      verifiedCheckGross: "100.00",
+      verifiedCheckNet: "80.00",
+      withholding: "20.00",
+      verificationStatus: "verified",
+      totalNetPay: "80.00",
+    };
+    const base = {
+      canSeeMoney: true,
+      canSeeHours: true,
+      canSeeBilledAmounts: true,
+      canSeeEmployeeAmounts: true,
+      canSeeAgencySpread: true,
+      canSeeTaxes: false,
+      canSeeBudgets: true,
+      canSeeEmployeeDeals: false,
+      canSeeSettlements: false,
+      canSeeClassFinancials: false,
+      canManageClassInvoices: false,
+    };
+
+    expect(redactTransactionFields(row, {
+      ...base,
+      canSeeCheckGross: true,
+      canSeeCheckNet: false,
+    })).toMatchObject({
+      verifiedCheckGross: "100.00",
+      verifiedCheckNet: null,
+      verificationStatus: "verified",
+      totalNetPay: null,
+    });
+    expect(redactTransactionFields(row, {
+      ...base,
+      canSeeCheckGross: false,
+      canSeeCheckNet: true,
+    })).toMatchObject({
+      verifiedCheckGross: null,
+      verifiedCheckNet: "80.00",
+      verificationStatus: "verified",
+      totalNetPay: "80.00",
     });
   });
 });

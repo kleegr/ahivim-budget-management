@@ -31,6 +31,7 @@ function viewerAccess(patch: Partial<AccessScope> = {}): AccessScope {
     canSeeBilledAmounts: false,
     canSeeEmployeeAmounts: false,
     canSeeAgencySpread: false,
+    canSeeCheckGross: false,
     canSeeCheckNet: false,
     canSeeTaxes: false,
     canSeeBudgets: false,
@@ -38,8 +39,10 @@ function viewerAccess(patch: Partial<AccessScope> = {}): AccessScope {
     canSeeSettlements: false,
     canManageSettlements: false,
     canPlan: false,
+    canManagePlanning: false,
     canSeeClassFinancials: false,
     canManageClassInvoices: false,
+    canViewDocuments: false,
     canEditDocuments: false,
     ...patch,
   };
@@ -108,8 +111,8 @@ describe("viewerHomePath", () => {
       .toBe("/classes");
   });
 
-  it("opens the PDF editor for a document-only account", () => {
-    expect(viewerHomePath(viewerAccess({ canEditDocuments: true }), EMPTY_PORTAL))
+  it("opens the document library for a read-only document account", () => {
+    expect(viewerHomePath(viewerAccess({ canViewDocuments: true, canEditDocuments: false }), EMPTY_PORTAL))
       .toBe("/documents");
   });
 

@@ -11,7 +11,7 @@ describe("Classes and Documents first-click recovery affordances", () => {
   });
 
   it("guards archive and restore from duplicate requests while keeping retry text visible", () => {
-    expect(documentLibrary).toContain("if (updatingId !== null) return;");
+    expect(documentLibrary).toContain("if (!canEdit || updatingId !== null) return;");
     expect(documentLibrary).toContain('setUpdatingId(document.id)');
     expect(documentLibrary).toContain('"Archiving..."');
     expect(documentLibrary).toContain('"Restoring..."');

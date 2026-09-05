@@ -10,8 +10,8 @@ export const dynamic = "force-dynamic";
 export async function POST(request: NextRequest) {
   const operator = await getSettlementOperator();
   if (!operator) return jsonError("You do not have permission to manage payroll checks.", 403);
-  if (!operator.scope.canSeeCheckNet || !operator.scope.canSeeTaxes) {
-    return jsonError("Payroll-check editing requires check-net and tax-detail access.", 403);
+  if (!operator.scope.canSeeCheckGross || !operator.scope.canSeeCheckNet || !operator.scope.canSeeTaxes) {
+    return jsonError("Payroll-check editing requires check-gross, check-net, and tax-detail access.", 403);
   }
   const cross = sameOriginOrFail(request);
   if (cross) return cross;

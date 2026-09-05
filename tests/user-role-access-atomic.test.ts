@@ -71,7 +71,7 @@ describe("atomic user role and access changes", () => {
     const roleUpdate = db.query.mock.calls.find(([sql]) => sql.includes("UPDATE users SET role"));
     const accessUpdate = db.query.mock.calls.find(([sql]) => sql.includes("SET access_scope"));
     expect(roleUpdate?.[1]).toEqual(["viewer", "custom_access", USER_ID]);
-    expect(accessUpdate?.[1]).toEqual(["scoped", ...Array(18).fill(false), USER_ID]);
+    expect(accessUpdate?.[1]).toEqual(["scoped", ...Array(21).fill(false), USER_ID]);
     expect(db.query.mock.calls[0]?.[0]).toBe("BEGIN");
     expect(db.query.mock.calls.at(-1)?.[0]).toBe("COMMIT");
     expect(db.committedRole()).toBe("viewer");
@@ -106,6 +106,7 @@ describe("atomic user role and access changes", () => {
       false,
       false,
       false,
+      false,
       true,
       false,
       false,
@@ -113,6 +114,8 @@ describe("atomic user role and access changes", () => {
       false,
       false,
       false,
+      false,
+      true,
       true,
       USER_ID,
     ]);

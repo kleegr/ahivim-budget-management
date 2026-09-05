@@ -11,7 +11,9 @@ export interface NavigationAccess {
   canPlan: boolean;
   canSeeClassFinancials?: boolean;
   canSeeEmployees?: boolean;
-  canEditDocuments: boolean;
+  /** Read access. Legacy callers may still supply edit-only access. */
+  canViewDocuments?: boolean;
+  canEditDocuments?: boolean;
   canUsePortal?: boolean;
   canManageAgencies?: boolean;
   /** Every gated destination stays hidden until capability lookup succeeds. */
@@ -40,6 +42,10 @@ export interface NavigationWorkspace {
 export interface VisibleNavigationWorkspace extends Omit<NavigationWorkspace, "destinations"> {
   href: string;
   destinations: NavigationDestination[];
+}
+
+function hasDocumentAccess(access: NavigationAccess): boolean {
+  return access.canViewDocuments === true || access.canEditDocuments === true;
 }
 
 const WORKSPACES: readonly NavigationWorkspace[] = [
@@ -365,7 +371,7 @@ function usesExternalLanding(access: NavigationAccess): boolean {
     && !access.canSeeSettlements
     && !access.canSeeBudgets
     && !(access.canSeeClassFinancials ?? false)
-    && !access.canEditDocuments;
+    && !hasDocumentAccess(access);
 }
 
 function allowed(gate: NavigationGate | undefined, access: NavigationAccess): boolean {
@@ -382,7 +388,7 @@ function allowed(gate: NavigationGate | undefined, access: NavigationAccess): bo
   if (gate === "settlements") return access.canSeeSettlements;
   if (gate === "planning") return access.canPlan;
   if (gate === "classes") return access.canSeeClassFinancials ?? false;
-  if (gate === "documents") return access.canEditDocuments;
+  if (gate === "documents") return hasDocumentAccess(access);
   if (gate === "portal") return access.role === "viewer" && (access.canUsePortal ?? false);
   if (gate === "agencies") return access.canManageAgencies ?? false;
   if (gate === "employees") {

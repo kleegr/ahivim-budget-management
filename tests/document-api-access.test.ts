@@ -2,11 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
+  apiDocumentViewerUser: vi.fn(),
   apiDocumentEditorUser: vi.fn(),
   accessibleDocument: vi.fn(),
 }));
 
-vi.mock("@/lib/auth/document-access", () => ({ apiDocumentEditorUser: mocks.apiDocumentEditorUser }));
+vi.mock("@/lib/auth/document-access", () => ({
+  apiDocumentViewerUser: mocks.apiDocumentViewerUser,
+  apiDocumentEditorUser: mocks.apiDocumentEditorUser,
+}));
 vi.mock("@/lib/document-route-helpers", () => ({ accessibleDocument: mocks.accessibleDocument }));
 
 import { GET as listDocuments, POST as createDocument } from "@/app/api/documents/route";
@@ -33,6 +37,7 @@ function request(path: string, method: "GET" | "POST" | "PATCH" | "PUT" | "DELET
 describe("document API authorization boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.apiDocumentViewerUser.mockResolvedValue(null);
     mocks.apiDocumentEditorUser.mockResolvedValue(null);
     mocks.accessibleDocument.mockResolvedValue({
       error: Response.json({ ok: false, error: "That document was not found." }, { status: 404 }),
@@ -41,6 +46,17 @@ describe("document API authorization boundary", () => {
 
   it("denies collection access without the document capability", async () => {
     expect((await listDocuments(request("/api/documents"))).status).toBe(403);
+    expect((await createDocument(request("/api/documents", "POST"))).status).toBe(403);
+  });
+
+  it("allows a read-only user to list documents but not create one", async () => {
+    mocks.apiDocumentViewerUser.mockResolvedValue({
+      user: { id: "viewer-1" },
+      scope: { canViewDocuments: true, canEditDocuments: false },
+      pool: { query: vi.fn(async () => ({ rows: [] })) },
+    });
+
+    expect((await listDocuments(request("/api/documents"))).status).toBe(200);
     expect((await createDocument(request("/api/documents", "POST"))).status).toBe(403);
   });
 
@@ -61,5 +77,33 @@ describe("document API authorization boundary", () => {
     const response = await invoke();
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ ok: false, error: "That document was not found." });
+  });
+
+  it("uses view access for reads and edit access for every mutation", async () => {
+    const readCalls = [
+      () => getDocument(request(`/api/documents/${ID}`), params),
+      () => getDraft(request(`/api/documents/${ID}/draft`), params),
+      () => listVersions(request(`/api/documents/${ID}/versions`), params),
+      () => getVersionFile(request(`/api/documents/${ID}/versions/${VERSION}/file`), versionParams),
+    ];
+    for (const invoke of readCalls) {
+      mocks.accessibleDocument.mockClear();
+      await invoke();
+      expect(mocks.accessibleDocument).toHaveBeenCalledWith(ID);
+    }
+
+    const writeCalls = [
+      () => updateDocument(request(`/api/documents/${ID}`, "PATCH"), params),
+      () => reserveVersion(request(`/api/documents/${ID}/uploads`, "POST"), params),
+      () => saveDraft(request(`/api/documents/${ID}/draft`, "PUT"), params),
+      () => discardDraft(request(`/api/documents/${ID}/draft`, "DELETE"), params),
+      () => saveVersion(request(`/api/documents/${ID}/versions`, "POST"), params),
+      () => restoreVersion(request(`/api/documents/${ID}/versions/${VERSION}/restore`, "POST"), versionParams),
+    ];
+    for (const invoke of writeCalls) {
+      mocks.accessibleDocument.mockClear();
+      await invoke();
+      expect(mocks.accessibleDocument).toHaveBeenCalledWith(ID, "edit");
+    }
   });
 });

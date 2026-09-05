@@ -292,7 +292,10 @@ export default function CollectionsWorkspace({
   }, [focusedCheckId, view]);
   const [notice, setNotice] = useState<WorkspaceNotice | null>(null);
   const canManageTargets = canManage && data.visibility.canSeeTargetMoney;
-  const canManageChecks = canManage && data.visibility.canSeeCheckNet && data.visibility.canSeeTaxes;
+  const canManageChecks = canManage
+    && data.visibility.canSeeCheckGross
+    && data.visibility.canSeeCheckNet
+    && data.visibility.canSeeTaxes;
   const checksToReview = data.payrollChecks.filter((check) => check.verificationStatus === "unverified");
   const missingRenewalPlans = data.individualSetAsides.reduce(
     (total, row) => total + row.missingRenewalPlans,
@@ -306,7 +309,7 @@ export default function CollectionsWorkspace({
     ...(data.visibility.canSeeTargetMoney || data.visibility.canSeeTargetHours
       ? [{ id: "targets" as const, label: "Direct-pay targets", icon: Target }]
       : []),
-    ...(data.visibility.canSeeCheckNet || data.visibility.canSeeTaxes
+    ...(data.visibility.canSeeCheckGross || data.visibility.canSeeCheckNet || data.visibility.canSeeTaxes
       ? [{ id: "checks" as const, label: "Payroll checks", icon: ReceiptText }]
       : []),
   ];
@@ -537,7 +540,74 @@ export default function CollectionsWorkspace({
         <Card title="Actual payroll checks" action={canManageChecks ? <div className="flex flex-wrap gap-2">{canRepairImports ? <button type="button" disabled={repairingImports} className="btn btn-secondary" onClick={() => void repairImportedChecks()}>{repairingImports ? "Checking..." : "Find imported checks"}</button> : null}<button type="button" className="btn btn-secondary" onClick={() => { setEditingCheck(null); setCheckDraft(null); setCreatingCheck(true); }}><Plus size={15} aria-hidden /> Add check</button></div> : null}>
           {canManageChecks && (creatingCheck || editingCheck) ? <PayrollCheckForm key={editingCheck?.id ?? `new-check:${checkDraft?.employeeId ?? "blank"}:${checkDraft?.sourceTransactionIds.join(",") ?? "manual"}`} data={data} initial={editingCheck} draft={editingCheck ? null : checkDraft} onCancel={() => { setCreatingCheck(false); setEditingCheck(null); setCheckDraft(null); }} onDone={(nextNotice) => { setNotice(nextNotice); setCreatingCheck(false); setEditingCheck(null); setCheckDraft(null); }} /> : null}
           {focusedCheckId ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] pb-3 text-sm"><span>Showing the payroll check opened from the financial report.</span><Link className="font-semibold text-[var(--color-primary)] hover:underline" href={`/masser?view=checks&month=${data.month}`}>Show all checks</Link></div> : null}
-          {data.payrollChecks.length === 0 ? <EmptyState compact title={focusedCheckId ? "This payroll check is not available" : "No payroll checks recorded"} /> : <div className="overflow-x-auto"><table className="touch-table w-full min-w-[760px] text-sm"><thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]"><tr><th className="px-4 py-2.5 text-left">Employee / check</th><th className="px-3 py-2.5">Date</th>{data.visibility.canSeeTaxes ? <th className="px-3 py-2.5 text-right">Gross</th> : null}{data.visibility.canSeeCheckNet ? <th className="px-3 py-2.5 text-right">Net</th> : null}{data.visibility.canSeeTaxes ? <th className="px-3 py-2.5 text-right">Tax</th> : null}<th className="px-3 py-2.5 text-right">Source</th><th className="px-3 py-2.5">Status</th>{canManageChecks ? <th className="px-3 py-2.5 text-right">Action</th> : null}</tr></thead><tbody className="divide-y divide-[var(--color-rule)]">{data.payrollChecks.map((row) => <tr id={`payroll-check-${row.id}`} key={row.id} aria-current={row.id === focusedCheckId ? "true" : undefined} className={row.id === focusedCheckId ? "bg-[var(--color-primary-soft)]" : row.verificationStatus === "unverified" ? "bg-[var(--color-warn-soft)]" : undefined}><td className="px-4 py-3"><p className="font-medium">{row.employeeName}</p><p className="text-xs text-[var(--color-ink-faint)]">{row.checkNumber || "No check number"}</p></td><td className="px-3 py-3">{row.checkDate ?? row.periodEnd ?? row.periodBegin ?? "-"}</td>{data.visibility.canSeeTaxes ? <td className="tnum px-3 py-3 text-right">{row.actualGross ? formatMoney(row.actualGross) : "-"}</td> : null}{data.visibility.canSeeCheckNet ? <td className="tnum px-3 py-3 text-right font-semibold">{row.actualNet ? formatMoney(row.actualNet) : "-"}</td> : null}{data.visibility.canSeeTaxes ? <td className="tnum px-3 py-3 text-right">{row.taxWithheld ? formatMoney(row.taxWithheld) : "-"}</td> : null}<td className="tnum px-3 py-3 text-right">{row.linkedTransactions > 0 ? canSeeTransactions ? <Link href={payrollCheckRowsHref(row)} className="font-semibold text-[var(--color-primary)] hover:underline">{row.linkedTransactions} {row.linkedTransactions === 1 ? "row" : "rows"}</Link> : <span>{row.linkedTransactions} {row.linkedTransactions === 1 ? "row" : "rows"}</span> : "-"}</td><td className="px-3 py-3"><span className={`inline-flex items-center gap-1 text-xs font-semibold ${row.verificationStatus === "verified" ? "text-[var(--color-success)]" : "text-[var(--color-warn)]"}`}>{row.verificationStatus === "verified" ? <CheckCircle2 size={13} aria-hidden /> : null}{row.verificationStatus === "unverified" ? "Needs review" : row.verificationStatus}</span></td>{canManageChecks ? <td className="px-3 py-3 text-right"><div className="flex justify-end gap-1">{row.verificationStatus === "unverified" ? <button type="button" disabled={verifyingCheckId !== null} onClick={() => void verifyCheck(row)} className="btn btn-sm btn-primary whitespace-nowrap">{verifyingCheckId === row.id ? "Verifying..." : "Verify & calculate"}</button> : null}<button type="button" title="Edit payroll check" onClick={() => { setCheckDraft(null); setCreatingCheck(false); setEditingCheck(row); }} className="icon-button"><Pencil size={15} aria-hidden /></button></div></td> : null}</tr>)}</tbody></table></div>}
+          {data.payrollChecks.length === 0 ? (
+            <EmptyState compact title={focusedCheckId ? "This payroll check is not available" : "No payroll checks recorded"} />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="touch-table w-full min-w-[760px] text-sm">
+                <thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left">Employee / check</th>
+                    <th className="px-3 py-2.5">Date</th>
+                    {data.visibility.canSeeCheckGross ? <th className="px-3 py-2.5 text-right">Gross</th> : null}
+                    {data.visibility.canSeeCheckNet ? <th className="px-3 py-2.5 text-right">Net</th> : null}
+                    {data.visibility.canSeeTaxes ? <th className="px-3 py-2.5 text-right">Tax</th> : null}
+                    <th className="px-3 py-2.5 text-right">Source</th>
+                    <th className="px-3 py-2.5">Status</th>
+                    {canManageChecks ? <th className="px-3 py-2.5 text-right">Action</th> : null}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--color-rule)]">
+                  {data.payrollChecks.map((row) => (
+                    <tr
+                      id={`payroll-check-${row.id}`}
+                      key={row.id}
+                      aria-current={row.id === focusedCheckId ? "true" : undefined}
+                      className={row.id === focusedCheckId ? "bg-[var(--color-primary-soft)]" : row.verificationStatus === "unverified" ? "bg-[var(--color-warn-soft)]" : undefined}
+                    >
+                      <td className="px-4 py-3">
+                        <p className="font-medium">{row.employeeName}</p>
+                        <p className="text-xs text-[var(--color-ink-faint)]">{row.checkNumber || "No check number"}</p>
+                      </td>
+                      <td className="px-3 py-3">{row.checkDate ?? row.periodEnd ?? row.periodBegin ?? "-"}</td>
+                      {data.visibility.canSeeCheckGross ? <td className="tnum px-3 py-3 text-right">{row.actualGross ? formatMoney(row.actualGross) : "-"}</td> : null}
+                      {data.visibility.canSeeCheckNet ? <td className="tnum px-3 py-3 text-right font-semibold">{row.actualNet ? formatMoney(row.actualNet) : "-"}</td> : null}
+                      {data.visibility.canSeeTaxes ? <td className="tnum px-3 py-3 text-right">{row.taxWithheld ? formatMoney(row.taxWithheld) : "-"}</td> : null}
+                      <td className="tnum px-3 py-3 text-right">
+                        {row.linkedTransactions > 0 ? canSeeTransactions ? (
+                          <Link href={payrollCheckRowsHref(row)} className="font-semibold text-[var(--color-primary)] hover:underline">
+                            {row.linkedTransactions} {row.linkedTransactions === 1 ? "row" : "rows"}
+                          </Link>
+                        ) : (
+                          <span>{row.linkedTransactions} {row.linkedTransactions === 1 ? "row" : "rows"}</span>
+                        ) : "-"}
+                      </td>
+                      <td className="px-3 py-3">
+                        <span className={`inline-flex items-center gap-1 text-xs font-semibold ${row.verificationStatus === "verified" ? "text-[var(--color-success)]" : "text-[var(--color-warn)]"}`}>
+                          {row.verificationStatus === "verified" ? <CheckCircle2 size={13} aria-hidden /> : null}
+                          {row.verificationStatus === "unverified" ? "Needs review" : row.verificationStatus}
+                        </span>
+                      </td>
+                      {canManageChecks ? (
+                        <td className="px-3 py-3 text-right">
+                          <div className="flex justify-end gap-1">
+                            {row.verificationStatus === "unverified" ? (
+                              <button type="button" disabled={verifyingCheckId !== null} onClick={() => void verifyCheck(row)} className="btn btn-sm btn-primary whitespace-nowrap">
+                                {verifyingCheckId === row.id ? "Verifying..." : "Verify & calculate"}
+                              </button>
+                            ) : null}
+                            <button type="button" title="Edit payroll check" onClick={() => { setCheckDraft(null); setCreatingCheck(false); setEditingCheck(row); }} className="icon-button">
+                              <Pencil size={15} aria-hidden />
+                            </button>
+                          </div>
+                        </td>
+                      ) : null}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </Card>
         </div>
       )}

@@ -7,7 +7,9 @@ export interface RoleHomeCapabilities {
   canPlan: boolean;
   canSeeSettlements: boolean;
   canSeeClassFinancials: boolean;
-  canEditDocuments: boolean;
+  /** Read access. `canEditDocuments` is accepted for legacy fixture/caller compatibility. */
+  canViewDocuments?: boolean;
+  canEditDocuments?: boolean;
   canUsePortal: boolean;
 }
 
@@ -146,7 +148,7 @@ function permittedActions(capabilities: RoleHomeCapabilities): Set<RoleHomeActio
     ids.add("settlements");
   }
   if (capabilities.canSeeClassFinancials) ids.add("classes");
-  if (capabilities.canEditDocuments) ids.add("documents");
+  if (capabilities.canViewDocuments || capabilities.canEditDocuments) ids.add("documents");
   if (capabilities.canUsePortal) ids.add("portal");
   ids.add("account");
   return ids;

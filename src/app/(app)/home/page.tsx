@@ -67,7 +67,7 @@ export default async function HomePage({
           canPlan,
           canSeeSettlements: access.canSeeSettlements,
           canSeeClassFinancials: access.canSeeClassFinancials,
-          canEditDocuments: access.canEditDocuments,
+          canViewDocuments: access.canViewDocuments,
           canUsePortal:
             portal.globalRoles.length > 0
             || portal.agencyAccess.length > 0

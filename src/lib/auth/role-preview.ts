@@ -111,6 +111,7 @@ const ACCESS_KEYS = [
   "canSeeBilledAmounts",
   "canSeeEmployeeAmounts",
   "canSeeAgencySpread",
+  "canSeeCheckGross",
   "canSeeCheckNet",
   "canSeeTaxes",
   "canSeeBudgets",
@@ -119,8 +120,10 @@ const ACCESS_KEYS = [
   "canManageSettlements",
   "canSeeClassFinancials",
   "canManageClassInvoices",
+  "canViewDocuments",
   "canEditDocuments",
   "canPlan",
+  "canManagePlanning",
 ] as const;
 
 function matchesInternalPreset(
@@ -208,6 +211,7 @@ type EffectiveAccessKey =
   | "canSeeBilledAmounts"
   | "canSeeEmployeeAmounts"
   | "canSeeAgencySpread"
+  | "canSeeCheckGross"
   | "canSeeCheckNet"
   | "canSeeTaxes"
   | "canSeeBudgets"
@@ -216,8 +220,10 @@ type EffectiveAccessKey =
   | "canManageSettlements"
   | "canSeeClassFinancials"
   | "canManageClassInvoices"
+  | "canViewDocuments"
   | "canEditDocuments"
-  | "canPlan";
+  | "canPlan"
+  | "canManagePlanning";
 
 const EFFECTIVE_ACCESS_FIELDS = [
   { key: "canSeeTransactions", label: "Transactions" },
@@ -226,6 +232,7 @@ const EFFECTIVE_ACCESS_FIELDS = [
   { key: "canSeeBilledAmounts", label: "Funder billed amounts" },
   { key: "canSeeEmployeeAmounts", label: "Employee base amounts" },
   { key: "canSeeAgencySpread", label: "Agency spread" },
+  { key: "canSeeCheckGross", label: "Check gross" },
   { key: "canSeeCheckNet", label: "Check net" },
   { key: "canSeeTaxes", label: "Taxes and withholding" },
   { key: "canSeeBudgets", label: "Budgets" },
@@ -234,8 +241,10 @@ const EFFECTIVE_ACCESS_FIELDS = [
   { key: "canManageSettlements", label: "Collection changes" },
   { key: "canSeeClassFinancials", label: "Class financials" },
   { key: "canManageClassInvoices", label: "Class invoice changes" },
+  { key: "canViewDocuments", label: "Documents" },
   { key: "canEditDocuments", label: "Document editing" },
-  { key: "canPlan", label: "Schedule planning" },
+  { key: "canPlan", label: "Planning workspace" },
+  { key: "canManagePlanning", label: "Planning changes" },
 ] as const satisfies readonly { key: EffectiveAccessKey; label: string }[];
 
 function effectiveAccountAccess(user: UserWithAccess): {

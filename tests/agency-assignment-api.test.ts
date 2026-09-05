@@ -62,6 +62,25 @@ describe("agency assignment mutation scope", () => {
     mocks.updateAssignment.mockResolvedValue({ ok: true, data: { id: ASSIGNMENT } });
   });
 
+  it("denies assignment changes to a read-only planner before opening the database", async () => {
+    mocks.apiPlanningUser.mockResolvedValue({
+      user: { id: "read-only-planner" },
+      canManageAssignments: false,
+      access: { canSeeBudgets: true },
+    });
+    const request = new NextRequest(`http://localhost/api/assignments/${ASSIGNMENT}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ notes: "blocked" }),
+    });
+
+    const response = await PATCH(request, { params: Promise.resolve({ id: ASSIGNMENT }) });
+
+    expect(response.status).toBe(403);
+    expect(mocks.getAssignment).not.toHaveBeenCalled();
+    expect(mocks.updateAssignment).not.toHaveBeenCalled();
+  });
+
   it("rejects proposed subjects outside the agency even when the existing assignment is in scope", async () => {
     const request = new NextRequest(`http://localhost/api/assignments/${ASSIGNMENT}`, {
       method: "PATCH",

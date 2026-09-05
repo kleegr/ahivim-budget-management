@@ -35,6 +35,8 @@ export interface VisibilityPermissions {
   canSeeBilledAmounts: boolean;
   canSeeEmployeeAmounts: boolean;
   canSeeAgencySpread: boolean;
+  /** May see canonical payroll-check gross amounts. */
+  canSeeCheckGross: boolean;
   canSeeCheckNet: boolean;
   canSeeTaxes: boolean;
   canSeeBudgets: boolean;
@@ -55,8 +57,12 @@ export interface AccessScope extends VisibilityPermissions {
   canSeeTransactions: boolean;
   /** May create, reverse, or refresh settlement and collection records. */
   canManageSettlements: boolean;
-  /** May this account read and manage the operational Planning workspace. */
+  /** May this account read the operational Planning workspace. */
   canPlan: boolean;
+  /** May this account create or change Planning records. */
+  canManagePlanning: boolean;
+  /** May browse and download documents. */
+  canViewDocuments: boolean;
   /** May use the PDF editing workspace. Independent of money permissions. */
   canEditDocuments: boolean;
   /** No individual filter (full, or the see-all-individuals override). */
@@ -85,6 +91,7 @@ export function fullAccess(userId: string, role: string): AccessScope {
     canSeeBilledAmounts: true,
     canSeeEmployeeAmounts: true,
     canSeeAgencySpread: true,
+    canSeeCheckGross: true,
     canSeeCheckNet: true,
     canSeeTaxes: true,
     canSeeBudgets: true,
@@ -95,6 +102,8 @@ export function fullAccess(userId: string, role: string): AccessScope {
     canManageClassInvoices: true,
     canEditDocuments: true,
     canPlan: true,
+    canManagePlanning: true,
+    canViewDocuments: true,
     allIndividuals: true,
     allEmployees: true,
     individualIds: [],
@@ -114,6 +123,16 @@ export function canAccessPlanning(
   scope: Pick<AccessScope, "canPlan" | "full" | "allIndividuals" | "allEmployees">,
 ): boolean {
   return scope.canPlan && (scope.full || (scope.allIndividuals && scope.allEmployees));
+}
+
+/** Planning mutations require both the write grant and effective read access. */
+export function canManagePlanningAccess(
+  scope: Pick<
+    AccessScope,
+    "canPlan" | "canManagePlanning" | "full" | "allIndividuals" | "allEmployees"
+  >,
+): boolean {
+  return scope.canManagePlanning && canAccessPlanning(scope);
 }
 
 /** Dedicated planner profile: Planning and hours, without ledger or money access. */
@@ -150,6 +169,7 @@ export async function resolveAccessScope(
     can_see_billed_amounts: boolean;
     can_see_employee_amounts: boolean;
     can_see_agency_spread: boolean;
+    can_see_check_gross: boolean;
     can_see_check_net: boolean;
     can_see_taxes: boolean;
     can_see_budgets: boolean;
@@ -157,15 +177,19 @@ export async function resolveAccessScope(
     can_see_settlements: boolean;
     can_manage_settlements: boolean;
     can_plan: boolean;
+    can_manage_planning: boolean;
     can_see_class_financials: boolean;
     can_manage_class_invoices: boolean;
+    can_view_documents: boolean;
     can_edit_documents: boolean;
   }>(
     `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions, can_see_money,
             can_see_hours, can_see_billed_amounts, can_see_employee_amounts,
-            can_see_agency_spread, can_see_check_net, can_see_taxes,
-            can_see_budgets, can_see_employee_deals, can_see_settlements, can_manage_settlements, can_plan,
-            can_see_class_financials, can_manage_class_invoices, can_edit_documents
+            can_see_agency_spread, can_see_check_gross, can_see_check_net, can_see_taxes,
+            can_see_budgets, can_see_employee_deals, can_see_settlements, can_manage_settlements,
+            can_plan, can_manage_planning,
+            can_see_class_financials, can_manage_class_invoices,
+            can_view_documents, can_edit_documents
        FROM users WHERE id = $1`,
     [user.id],
   );
@@ -183,6 +207,7 @@ export async function resolveAccessScope(
       canSeeBilledAmounts: false,
       canSeeEmployeeAmounts: false,
       canSeeAgencySpread: false,
+      canSeeCheckGross: false,
       canSeeCheckNet: false,
       canSeeTaxes: false,
       canSeeBudgets: false,
@@ -191,8 +216,10 @@ export async function resolveAccessScope(
       canManageSettlements: false,
       canSeeClassFinancials: false,
       canManageClassInvoices: false,
+      canViewDocuments: false,
       canEditDocuments: false,
       canPlan: false,
+      canManagePlanning: false,
       allIndividuals: false,
       allEmployees: false,
       individualIds: [],
@@ -210,6 +237,7 @@ export async function resolveAccessScope(
     canSeeBilledAmounts: canSeeMoney && u.can_see_billed_amounts !== false,
     canSeeEmployeeAmounts: canSeeMoney && u.can_see_employee_amounts !== false,
     canSeeAgencySpread: canSeeMoney && u.can_see_agency_spread !== false,
+    canSeeCheckGross: canSeeMoney && u.can_see_check_gross !== false,
     canSeeCheckNet: canSeeMoney && u.can_see_check_net !== false,
     canSeeTaxes: canSeeMoney && u.can_see_taxes !== false,
     canSeeBudgets: canSeeHours && u.can_see_budgets !== false,
@@ -221,8 +249,12 @@ export async function resolveAccessScope(
       && u.can_see_class_financials === true
       && u.can_manage_class_invoices === true,
   };
-  const canPlan = u.can_plan === true;
+  const canManagePlanning = u.can_manage_planning === true;
+  // A write grant always reads through even if a legacy/manual row is
+  // temporarily inconsistent with the database constraint.
+  const canPlan = u.can_plan === true || canManagePlanning;
   const canEditDocuments = u.can_edit_documents === true;
+  const canViewDocuments = u.can_view_documents === true || canEditDocuments;
   const canManageSettlements = visibility.canSeeSettlements && u.can_manage_settlements === true;
 
   if (u.access_scope !== "scoped") {
@@ -233,6 +265,8 @@ export async function resolveAccessScope(
       ...visibility,
       canManageSettlements,
       canPlan,
+      canManagePlanning,
+      canViewDocuments,
       canEditDocuments,
     };
   }
@@ -295,6 +329,8 @@ export async function resolveAccessScope(
     ...visibility,
     canManageSettlements,
     canPlan,
+    canManagePlanning,
+    canViewDocuments,
     canEditDocuments,
     allIndividuals: seeAllIndividuals,
     allEmployees: seeAllEmployees,

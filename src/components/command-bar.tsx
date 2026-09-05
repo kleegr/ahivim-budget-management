@@ -17,7 +17,7 @@ export default function CommandBar({
   canPlan = false,
   canSeeClassFinancials = false,
   canSeeEmployees = false,
-  canEditDocuments = false,
+  canViewDocuments = false,
   canUsePortal = false,
   canManageAgencies = false,
   onNavigate,
@@ -31,7 +31,7 @@ export default function CommandBar({
   canPlan?: boolean;
   canSeeClassFinancials?: boolean;
   canSeeEmployees?: boolean;
-  canEditDocuments?: boolean;
+  canViewDocuments?: boolean;
   canUsePortal?: boolean;
   canManageAgencies?: boolean;
   onNavigate?: (href: string) => void;
@@ -44,8 +44,8 @@ export default function CommandBar({
   const dialogRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const access = useMemo<NavigationAccess>(
-    () => ({ role, accountPreset, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies }),
-    [role, accountPreset, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canEditDocuments, canUsePortal, canManageAgencies],
+    () => ({ role, accountPreset, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canViewDocuments, canUsePortal, canManageAgencies }),
+    [role, accountPreset, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canViewDocuments, canUsePortal, canManageAgencies],
   );
   const available = useMemo(() => getCommandDestinations(access), [access]);
 

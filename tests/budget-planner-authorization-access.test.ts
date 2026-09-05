@@ -72,9 +72,19 @@ function resultRecord() {
 }
 
 describe("budget planner hour-authorization capability", () => {
-  it("requires full-roster planning plus hour-budget visibility", () => {
+  it("requires planning-management, full-roster, and hour-budget visibility", () => {
     expect(canManageHourAuthorizations({
       canPlan: true,
+      canManagePlanning: false,
+      canSeeHours: true,
+      canSeeBudgets: true,
+      full: false,
+      allIndividuals: true,
+      allEmployees: true,
+    })).toBe(false);
+    expect(canManageHourAuthorizations({
+      canPlan: true,
+      canManagePlanning: true,
       canSeeHours: true,
       canSeeBudgets: true,
       full: false,
@@ -83,6 +93,7 @@ describe("budget planner hour-authorization capability", () => {
     })).toBe(true);
     expect(canManageHourAuthorizations({
       canPlan: true,
+      canManagePlanning: true,
       canSeeHours: true,
       canSeeBudgets: false,
       full: false,
@@ -91,6 +102,7 @@ describe("budget planner hour-authorization capability", () => {
     })).toBe(false);
     expect(canManageHourAuthorizations({
       canPlan: true,
+      canManagePlanning: true,
       canSeeHours: true,
       canSeeBudgets: true,
       full: false,
@@ -139,6 +151,32 @@ describe("budget planner authorization routes", () => {
     mocks.createAuthorization.mockResolvedValue({ ok: true, data: resultRecord() });
     mocks.reviseAuthorization.mockResolvedValue({ ok: true, data: resultRecord() });
     mocks.cancelAuthorization.mockResolvedValue({ ok: true, data: resultRecord() });
+  });
+
+  it("denies hour-authorization mutations when Planning is read-only", async () => {
+    mocks.getHourAuthorizationOperator.mockResolvedValue(null);
+
+    const createPeriodResponse = await createProgramBudget(request("/api/program-budgets", "POST", {
+      individualId: INDIVIDUAL_ID,
+      programId: PROGRAM_ID,
+      authorizedHours: "120",
+    }));
+    const createAuthorizationResponse = await createAuthorization(request("/api/authorizations", "POST", {
+      budgetPeriodId: PERIOD_ID,
+      programId: PROGRAM_ID,
+      authorizedHours: "80",
+    }));
+    const changeAuthorizationResponse = await changeAuthorization(
+      request(`/api/authorizations/${AUTHORIZATION_ID}`, "PATCH", { authorizedHours: "140" }),
+      { params: Promise.resolve({ id: AUTHORIZATION_ID }) },
+    );
+
+    expect(createPeriodResponse.status).toBe(403);
+    expect(createAuthorizationResponse.status).toBe(403);
+    expect(changeAuthorizationResponse.status).toBe(403);
+    expect(mocks.createProgramBudget).not.toHaveBeenCalled();
+    expect(mocks.createAuthorization).not.toHaveBeenCalled();
+    expect(mocks.reviseAuthorization).not.toHaveBeenCalled();
   });
 
   it("creates an hours-only program authorization and redacts its server response", async () => {

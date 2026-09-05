@@ -104,6 +104,7 @@ interface UserRow {
   canSeeBilledAmounts: boolean;
   canSeeEmployeeAmounts: boolean;
   canSeeAgencySpread: boolean;
+  canSeeCheckGross: boolean;
   canSeeCheckNet: boolean;
   canSeeTaxes: boolean;
   canSeeBudgets: boolean;
@@ -112,8 +113,10 @@ interface UserRow {
   canManageSettlements: boolean;
   canSeeClassFinancials: boolean;
   canManageClassInvoices: boolean;
+  canViewDocuments: boolean;
   canEditDocuments: boolean;
   canPlan: boolean;
+  canManagePlanning: boolean;
   accountPreset: AccountPresetId | null;
   portalManaged: boolean;
   individualCount: number;
@@ -130,6 +133,7 @@ interface AccessState {
   canSeeBilledAmounts: boolean;
   canSeeEmployeeAmounts: boolean;
   canSeeAgencySpread: boolean;
+  canSeeCheckGross: boolean;
   canSeeCheckNet: boolean;
   canSeeTaxes: boolean;
   canSeeBudgets: boolean;
@@ -138,8 +142,10 @@ interface AccessState {
   canManageSettlements: boolean;
   canSeeClassFinancials: boolean;
   canManageClassInvoices: boolean;
+  canViewDocuments: boolean;
   canEditDocuments: boolean;
   canPlan: boolean;
+  canManagePlanning: boolean;
   individualIds: Set<string>;
   employeeIds: Set<string>;
 }
@@ -154,6 +160,7 @@ const emptyAccess = (): AccessState => ({
   canSeeBilledAmounts: false,
   canSeeEmployeeAmounts: false,
   canSeeAgencySpread: false,
+  canSeeCheckGross: false,
   canSeeCheckNet: false,
   canSeeTaxes: false,
   canSeeBudgets: false,
@@ -162,8 +169,10 @@ const emptyAccess = (): AccessState => ({
   canManageSettlements: false,
   canSeeClassFinancials: false,
   canManageClassInvoices: false,
+  canViewDocuments: false,
   canEditDocuments: false,
   canPlan: false,
+  canManagePlanning: false,
   individualIds: new Set(),
   employeeIds: new Set(),
 });
@@ -190,6 +199,7 @@ const accessToBody = (a: AccessState) => ({
   canSeeBilledAmounts: a.canSeeBilledAmounts,
   canSeeEmployeeAmounts: a.canSeeEmployeeAmounts,
   canSeeAgencySpread: a.canSeeAgencySpread,
+  canSeeCheckGross: a.canSeeCheckGross,
   canSeeCheckNet: a.canSeeCheckNet,
   canSeeTaxes: a.canSeeTaxes,
   canSeeBudgets: a.canSeeBudgets && a.canSeeHours,
@@ -198,8 +208,10 @@ const accessToBody = (a: AccessState) => ({
   canManageSettlements: a.canSeeSettlements && a.canManageSettlements,
   canSeeClassFinancials: a.canSeeMoney && a.canSeeClassFinancials,
   canManageClassInvoices: a.canSeeMoney && a.canSeeClassFinancials && a.canManageClassInvoices,
+  canViewDocuments: a.canViewDocuments || a.canEditDocuments,
   canEditDocuments: a.canEditDocuments,
-  canPlan: a.canPlan,
+  canPlan: a.canPlan || a.canManagePlanning,
+  canManagePlanning: a.canManagePlanning,
   individualIds: [...a.individualIds],
   employeeIds: [...a.employeeIds],
 });
@@ -234,6 +246,7 @@ const ACCESS_PROFILE_KEYS = [
   "canSeeBilledAmounts",
   "canSeeEmployeeAmounts",
   "canSeeAgencySpread",
+  "canSeeCheckGross",
   "canSeeCheckNet",
   "canSeeTaxes",
   "canSeeBudgets",
@@ -242,8 +255,10 @@ const ACCESS_PROFILE_KEYS = [
   "canManageSettlements",
   "canSeeClassFinancials",
   "canManageClassInvoices",
+  "canViewDocuments",
   "canEditDocuments",
   "canPlan",
+  "canManagePlanning",
 ] as const;
 
 type AccessWithPeople = Pick<AccessState, (typeof ACCESS_PROFILE_KEYS)[number]> & (
@@ -372,6 +387,7 @@ type VisibilityKey =
   | "canSeeBilledAmounts"
   | "canSeeEmployeeAmounts"
   | "canSeeAgencySpread"
+  | "canSeeCheckGross"
   | "canSeeCheckNet"
   | "canSeeTaxes"
   | "canSeeBudgets"
@@ -389,8 +405,9 @@ const VISIBILITY_OPTIONS: Array<{
   { key: "canSeeBilledAmounts", label: "Funder amounts", description: "rates and totals billed to the funder", requiresMoney: true },
   { key: "canSeeEmployeeAmounts", label: "Employee base", description: "base amounts earned or payable", requiresMoney: true },
   { key: "canSeeAgencySpread", label: "Agency spread", description: "the billed-to-base difference", requiresMoney: true },
+  { key: "canSeeCheckGross", label: "Check gross", description: "gross pay recorded on employee checks", requiresMoney: true },
   { key: "canSeeCheckNet", label: "Check net", description: "net pay recorded on employee checks", requiresMoney: true },
-  { key: "canSeeTaxes", label: "Taxes and withholding", description: "gross, net and payroll withholding details", requiresMoney: true },
+  { key: "canSeeTaxes", label: "Taxes and withholding", description: "payroll withholding and deduction details", requiresMoney: true },
   { key: "canSeeBudgets", label: "Budgets", description: "individual budgets and annual plans; enabling this also enables Hours" },
   { key: "canSeeEmployeeDeals", label: "Employee deals", description: "deal terms and calculated obligations", requiresMoney: true },
   { key: "canSeeSettlements", label: "Collection reports", description: "balances, collections, credits, and set-aside reporting", requiresMoney: true },
@@ -606,14 +623,48 @@ function AccessConfig({
         <span className="text-xs text-[var(--color-ink-faint)]">— the billing ledger and every drill-through into it</span>
       </label>
       <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={value.canPlan} onChange={(e) => set({ canPlan: e.target.checked })} />
-        <span>Can manage Planning</span>
-        <span className="text-xs text-[var(--color-ink-faint)]">recurring schedules and hour-based coverage; requires all people</span>
+        <input
+          type="checkbox"
+          checked={value.canPlan}
+          onChange={(event) => set(event.target.checked
+            ? { canPlan: true }
+            : { canPlan: false, canManagePlanning: false })}
+        />
+        <span>Can view Planning</span>
+        <span className="text-xs text-[var(--color-ink-faint)]">calendar, assignments, availability, and hour-based coverage; requires all people</span>
       </label>
       <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={value.canEditDocuments} onChange={(e) => set({ canEditDocuments: e.target.checked })} />
+        <input
+          type="checkbox"
+          checked={value.canManagePlanning}
+          onChange={(event) => set(event.target.checked
+            ? { canPlan: true, canManagePlanning: true }
+            : { canManagePlanning: false })}
+        />
+        <span>Can manage Planning</span>
+        <span className="text-xs text-[var(--color-ink-faint)]">create or change assignments, employee hours, time off, authorizations, sessions, and series</span>
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={value.canViewDocuments}
+          onChange={(event) => set(event.target.checked
+            ? { canViewDocuments: true }
+            : { canViewDocuments: false, canEditDocuments: false })}
+        />
+        <span>Can view documents</span>
+        <span className="text-xs text-[var(--color-ink-faint)]">browse versions and download saved files</span>
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={value.canEditDocuments}
+          onChange={(event) => set(event.target.checked
+            ? { canViewDocuments: true, canEditDocuments: true }
+            : { canEditDocuments: false })}
+        />
         <span>Can edit PDF documents</span>
-        <span className="text-xs text-[var(--color-ink-faint)]">source-preserving cover sheets and form edits</span>
+        <span className="text-xs text-[var(--color-ink-faint)]">upload, archive, restore, and save source-preserving edits</span>
       </label>
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={value.canSeeMoney} onChange={(e) => set({ canSeeMoney: e.target.checked })} />
@@ -840,6 +891,7 @@ export default function UserAccessAdmin({
           canSeeBilledAmounts: boolean;
           canSeeEmployeeAmounts: boolean;
           canSeeAgencySpread: boolean;
+          canSeeCheckGross?: boolean;
           canSeeCheckNet: boolean;
           canSeeTaxes: boolean;
           canSeeBudgets: boolean;
@@ -848,8 +900,10 @@ export default function UserAccessAdmin({
           canManageSettlements: boolean;
           canSeeClassFinancials: boolean;
           canManageClassInvoices: boolean;
+          canViewDocuments?: boolean;
           canEditDocuments: boolean;
           canPlan: boolean;
+          canManagePlanning?: boolean;
           individualIds: string[];
           employeeIds: string[];
         };
@@ -867,6 +921,7 @@ export default function UserAccessAdmin({
           canSeeBilledAmounts: data.access.canSeeBilledAmounts !== false,
           canSeeEmployeeAmounts: data.access.canSeeEmployeeAmounts !== false,
           canSeeAgencySpread: data.access.canSeeAgencySpread !== false,
+          canSeeCheckGross: data.access.canSeeCheckGross ?? (data.access.canSeeCheckNet !== false),
           canSeeCheckNet: data.access.canSeeCheckNet !== false,
           canSeeTaxes: data.access.canSeeTaxes !== false,
           canSeeBudgets: data.access.canSeeBudgets !== false && data.access.canSeeHours !== false,
@@ -875,8 +930,10 @@ export default function UserAccessAdmin({
           canManageSettlements: data.access.canManageSettlements === true,
           canSeeClassFinancials: data.access.canSeeClassFinancials === true,
           canManageClassInvoices: data.access.canManageClassInvoices === true,
+          canViewDocuments: data.access.canViewDocuments ?? (data.access.canEditDocuments === true),
           canEditDocuments: data.access.canEditDocuments === true,
-          canPlan: data.access.canPlan === true,
+          canPlan: data.access.canPlan === true || data.access.canManagePlanning === true,
+          canManagePlanning: data.access.canManagePlanning ?? (data.access.canPlan === true),
           individualIds: new Set(data.access.individualIds),
           employeeIds: new Set(data.access.employeeIds),
         };

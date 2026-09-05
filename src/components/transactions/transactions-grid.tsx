@@ -145,6 +145,7 @@ export default function TransactionsGrid({
     canSeeBilledAmounts: canSeeMoney,
     canSeeEmployeeAmounts: canSeeMoney,
     canSeeAgencySpread: canSeeMoney,
+    canSeeCheckGross: canSeeMoney,
     canSeeCheckNet: canSeeMoney,
     canSeeTaxes: canSeeMoney,
   }), [canSeeMoney, visibility]);
@@ -157,7 +158,9 @@ export default function TransactionsGrid({
       if (column.key === "rate" || column.key === "gross") return fields.canSeeBilledAmounts;
       if (column.key === "employeeRate" || column.key === "internalAmount") return fields.canSeeEmployeeAmounts;
       if (column.key === "agencyAdditional") return fields.canSeeAgencySpread;
-      if (column.key === "totalNetPay" || column.key === "verifiedCheckGross" || column.key === "verifiedCheckNet" || column.key === "verificationStatus") return fields.canSeeCheckNet;
+      if (column.key === "verifiedCheckGross") return fields.canSeeCheckGross;
+      if (column.key === "totalNetPay" || column.key === "verifiedCheckNet") return fields.canSeeCheckNet;
+      if (column.key === "verificationStatus") return fields.canSeeCheckGross || fields.canSeeCheckNet;
       if (column.key === "withholding") return fields.canSeeTaxes;
       return true;
     }),
@@ -380,7 +383,7 @@ export default function TransactionsGrid({
           </button>
           {showMore ? (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-              {fields.canSeeCheckNet ? (
+              {fields.canSeeCheckGross ? (
                 <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Verified check gross</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.verifiedCheckGross)}</div></div>
               ) : null}
               {fields.canSeeCheckNet ? (
@@ -710,10 +713,10 @@ function DetailDrawer({
         {visibility.canSeeEmployeeAmounts ? line("Employee rate", hasAmount(row.employeeRate) ? formatMoney(row.employeeRate) : "—") : null}
         {visibility.canSeeEmployeeAmounts ? line("Employee base", hasAmount(row.internalAmount) ? formatMoney(row.internalAmount) : "—") : null}
         {visibility.canSeeAgencySpread ? line("Agency spread", hasAmount(row.agencyAdditional) ? formatMoney(row.agencyAdditional) : "—") : null}
-        {visibility.canSeeCheckNet ? line("Verified check gross", hasAmount(row.verifiedCheckGross) ? formatMoney(row.verifiedCheckGross) : "—") : null}
+        {visibility.canSeeCheckGross ? line("Verified check gross", hasAmount(row.verifiedCheckGross) ? formatMoney(row.verifiedCheckGross) : "—") : null}
         {visibility.canSeeCheckNet ? line("Verified check net", hasAmount(row.verifiedCheckNet) ? formatMoney(row.verifiedCheckNet) : "—") : null}
         {visibility.canSeeTaxes ? line("Withholding", hasAmount(row.withholding) ? formatMoney(row.withholding) : "—") : null}
-        {visibility.canSeeCheckNet ? line("Check status", VERIFICATION_LABEL[row.verificationStatus ?? ""] ?? row.verificationStatus ?? "Not linked") : null}
+        {visibility.canSeeCheckGross || visibility.canSeeCheckNet ? line("Check status", VERIFICATION_LABEL[row.verificationStatus ?? ""] ?? row.verificationStatus ?? "Not linked") : null}
         {visibility.canSeeCheckNet ? line("Source net pay", hasAmount(row.totalNetPay) ? formatMoney(row.totalNetPay) : "—") : null}
         {line("Paid status", row.isPaid ? `Paid${row.paidAt ? ` on ${row.paidAt}` : ""}` : "Not paid")}
         {line("Period", `${row.periodBegin ?? "—"} → ${row.periodEnd ?? "—"}`)}

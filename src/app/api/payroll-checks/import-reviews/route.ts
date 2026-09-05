@@ -19,8 +19,8 @@ export async function POST(request: NextRequest) {
   if (!operator.scope.allEmployees || !operator.scope.allIndividuals) {
     return jsonError("Historical check repair requires access to the full employee and individual roster.", 403);
   }
-  if (!operator.scope.canSeeCheckNet || !operator.scope.canSeeTaxes) {
-    return jsonError("Historical check repair requires check-net and tax-detail access.", 403);
+  if (!operator.scope.canSeeCheckGross || !operator.scope.canSeeCheckNet || !operator.scope.canSeeTaxes) {
+    return jsonError("Historical check repair requires check-gross, check-net, and tax-detail access.", 403);
   }
 
   try {

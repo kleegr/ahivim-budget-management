@@ -1,6 +1,11 @@
 import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
-import { canAccessPlanning, resolveAccessScope, type AccessScope } from "./access";
+import {
+  canAccessPlanning,
+  canManagePlanningAccess,
+  resolveAccessScope,
+  type AccessScope,
+} from "./access";
 import {
   agencyIdsWithPlanningAccess,
   hasPortalCapability,
@@ -131,6 +136,7 @@ function hoursOnlyScope(
     canSeeBilledAmounts: false,
     canSeeEmployeeAmounts: false,
     canSeeAgencySpread: false,
+    canSeeCheckGross: false,
     canSeeCheckNet: false,
     canSeeTaxes: false,
     canSeeBudgets: true,
@@ -138,8 +144,10 @@ function hoursOnlyScope(
     canSeeSettlements: false,
     canManageSettlements: false,
     canPlan: true,
+    canManagePlanning: false,
     canSeeClassFinancials: false,
     canManageClassInvoices: false,
+    canViewDocuments: false,
     canEditDocuments: false,
     allIndividuals: false,
     allEmployees: false,
@@ -157,6 +165,7 @@ async function resolvePlanningAccess(user: AuthenticatedUser): Promise<PlanningA
     resolvePortalAccess(pool, user),
   ]);
   if (canAccessPlanning(access)) {
+    const canManagePlanning = canManagePlanningAccess(access);
     return {
       user,
       access,
@@ -164,8 +173,8 @@ async function resolvePlanningAccess(user: AuthenticatedUser): Promise<PlanningA
       agencyRosters: [],
       scheduleManageAgencyIds: [],
       assignmentManageAgencyIds: [],
-      canManageSchedules: true,
-      canManageAssignments: true,
+      canManageSchedules: canManagePlanning,
+      canManageAssignments: canManagePlanning,
     };
   }
 

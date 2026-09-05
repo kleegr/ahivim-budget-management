@@ -33,6 +33,7 @@ function account(patch: Partial<UserWithAccess> = {}): UserWithAccess {
     canSeeBilledAmounts: false,
     canSeeEmployeeAmounts: false,
     canSeeAgencySpread: false,
+    canSeeCheckGross: false,
     canSeeCheckNet: false,
     canSeeTaxes: false,
     canSeeBudgets: false,
@@ -41,8 +42,10 @@ function account(patch: Partial<UserWithAccess> = {}): UserWithAccess {
     canManageSettlements: false,
     canSeeClassFinancials: false,
     canManageClassInvoices: false,
+    canViewDocuments: false,
     canEditDocuments: false,
     canPlan: false,
+    canManagePlanning: false,
     individualCount: 0,
     employeeCount: 0,
     accountPreset: null,
@@ -165,7 +168,8 @@ describe("owner Role Preview Center", () => {
       "All employees",
       "Service hours",
       "Budgets",
-      "Schedule planning",
+      "Planning workspace",
+      "Planning changes",
     ]));
     expect(result.budget_planner[0]?.effectiveDenials).toEqual(expect.arrayContaining([
       "Transactions",
@@ -191,7 +195,11 @@ describe("owner Role Preview Center", () => {
       "All employees",
       "Transactions",
       "Money workspaces",
-      "Schedule planning",
+      "Check gross",
+      "Planning workspace",
+      "Planning changes",
+      "Documents",
+      "Document editing",
     ]));
     expect(result.owner[0]?.effectiveDenials).toEqual([]);
   });

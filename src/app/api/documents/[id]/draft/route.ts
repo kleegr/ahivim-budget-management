@@ -32,7 +32,7 @@ export async function PUT(
   if (cross) return cross;
   const { id } = await params;
   try {
-    const found = await accessibleDocument(id);
+    const found = await accessibleDocument(id, "edit");
     if ("error" in found) return found.error;
     const body = await readJson(request);
     const expectedRevision = body.expectedRevision === null ? null : Number(body.expectedRevision);
@@ -58,7 +58,7 @@ export async function DELETE(
   if (cross) return cross;
   const { id } = await params;
   try {
-    const found = await accessibleDocument(id);
+    const found = await accessibleDocument(id, "edit");
     if ("error" in found) return found.error;
     return resultResponse(await discardDocumentDraft(found.access.pool, id, found.access.user.id));
   } catch (error) {

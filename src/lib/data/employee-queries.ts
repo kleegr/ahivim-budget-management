@@ -169,10 +169,10 @@ export async function getEmployeeWithholding(
   const r = rows[0];
   if (!r) return empty;
   return {
-    withheld: toMoney(r.withheld),
-    gross: toMoney(r.gross),
-    net: toMoney(r.net),
-    grossKnownChecks: Number(r.gross_known_checks),
+    withheld: scope && !scope.canSeeTaxes ? toMoney(0) : toMoney(r.withheld),
+    gross: scope && !scope.canSeeCheckGross ? toMoney(0) : toMoney(r.gross),
+    net: scope && !scope.canSeeCheckNet ? toMoney(0) : toMoney(r.net),
+    grossKnownChecks: scope && !scope.canSeeCheckGross ? 0 : Number(r.gross_known_checks),
     checks: Number(r.checks),
   };
 }

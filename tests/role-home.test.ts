@@ -8,6 +8,7 @@ const none: RoleHomeCapabilities = {
   canPlan: false,
   canSeeSettlements: false,
   canSeeClassFinancials: false,
+  canViewDocuments: false,
   canEditDocuments: false,
   canUsePortal: false,
 };
@@ -47,7 +48,8 @@ describe("role-specific Home", () => {
     const home = buildRoleHomeDefinition("custom_access", {
       ...none,
       canSeeTransactions: true,
-      canEditDocuments: true,
+      canViewDocuments: true,
+      canEditDocuments: false,
     });
     expect(home.actions.map((action) => action.id)).toEqual(["transactions", "documents", "account"]);
   });

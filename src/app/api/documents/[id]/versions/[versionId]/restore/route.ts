@@ -14,7 +14,7 @@ export async function POST(
   if (cross) return cross;
   const { id, versionId } = await params;
   try {
-    const found = await accessibleDocument(id);
+    const found = await accessibleDocument(id, "edit");
     if ("error" in found) return found.error;
     const body = await readJson(request);
     return resultResponse(await restoreDocumentVersion(found.access.pool, id, versionId, {

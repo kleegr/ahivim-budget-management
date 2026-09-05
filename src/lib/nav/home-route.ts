@@ -19,7 +19,7 @@ export function viewerHomePath(access: AccessScope, portal: PortalAccessContext)
   if (access.canSeeSettlements) return "/masser";
   if (access.canSeeTransactions) return "/transactions";
   if (access.canSeeClassFinancials) return "/classes";
-  if (access.canEditDocuments) return "/documents";
+  if (access.canViewDocuments) return "/documents";
   if (access.full || access.allEmployees || access.employeeIds.length > 0) return "/employees";
   return "/settings";
 }

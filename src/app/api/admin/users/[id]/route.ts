@@ -31,6 +31,7 @@ const ACCESS_KEYS = [
   "canSeeBilledAmounts",
   "canSeeEmployeeAmounts",
   "canSeeAgencySpread",
+  "canSeeCheckGross",
   "canSeeCheckNet",
   "canSeeTaxes",
   "canSeeBudgets",
@@ -39,8 +40,10 @@ const ACCESS_KEYS = [
   "canManageSettlements",
   "canSeeClassFinancials",
   "canManageClassInvoices",
+  "canViewDocuments",
   "canEditDocuments",
   "canPlan",
+  "canManagePlanning",
   "individualIds",
   "employeeIds",
 ] as const;

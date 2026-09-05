@@ -43,6 +43,9 @@ function poolFor(
   candidates: Array<typeof exactCandidate>,
   updateError?: unknown,
   failAudit = false,
+  revalidatedPairs: Array<{ session_id: string; transaction_id: string }> = [
+    { session_id: SESSION_ID, transaction_id: TRANSACTION_ID },
+  ],
 ) {
   const updates: string[] = [];
   const statements: string[] = [];
@@ -50,6 +53,9 @@ function poolFor(
     statements.push(sql);
     if (sql.includes("SELECT s.id, s.program_id")) return { rows: sessions };
     if (sql.includes("FROM payroll_transactions t")) return { rows: candidates };
+    if (sql.includes("SELECT s.id AS session_id, t.id AS transaction_id")) {
+      return { rows: revalidatedPairs };
+    }
     if (sql.includes("UPDATE scheduled_sessions") && sql.includes("RETURNING id")) {
       updates.push(sql);
       if (updateError) throw updateError;
@@ -200,6 +206,30 @@ describe("automatic schedule reconciliation safety", () => {
     expect(result).toEqual({ ok: true, data: { matched: 0, considered: 1 } });
     expect(mocked.updates).toHaveLength(1);
     expect(mocked.statements).toContain("ROLLBACK TO SAVEPOINT auto_match_candidate");
+    expect(mocked.statements).toContain("COMMIT");
+  });
+
+  it("revalidates and locks the exact pair before a stale discovery can update it", async () => {
+    const mocked = poolFor([session], [exactCandidate], undefined, false, []);
+
+    const result = await autoReconcile(
+      mocked.pool,
+      { from: "2026-08-01", to: "2026-08-31" },
+      null,
+    );
+
+    expect(result).toEqual({ ok: true, data: { matched: 0, considered: 1 } });
+    expect(mocked.updates).toHaveLength(0);
+    const validationSql = mocked.query.mock.calls.find(([sql]) =>
+      String(sql).includes("SELECT s.id AS session_id, t.id AS transaction_id"))?.[0];
+    expect(validationSql).toContain("FOR UPDATE OF s, t, a");
+    expect(validationSql).toContain("t.program_id = s.program_id");
+    expect(validationSql).toContain("t.employee_id = s.employee_id");
+    expect(validationSql).toContain("t.imported_hours = s.duration_hours");
+    expect(validationSql).toContain("competing_t.id <> t.id");
+    expect(validationSql).toContain("competing_s.id <> s.id");
+    expect(mocked.statements).toContain("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE");
+    expect(mocked.statements).not.toContain(expect.stringContaining("INSERT INTO audit_logs"));
     expect(mocked.statements).toContain("COMMIT");
   });
 

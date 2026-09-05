@@ -16,8 +16,8 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`CREATE SCHEMA public`);
 
     const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
-    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 42]);
-    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 42]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 43]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 43]);
   }, 60_000);
 
   it("creates the ledger and every expected table", async () => {
@@ -61,7 +61,7 @@ suite("migration runner (real PostgreSQL)", () => {
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(42);
+    expect(again.skipped).toBe(43);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -69,7 +69,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(42);
+    expect(rows).toHaveLength(43);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -112,7 +112,79 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[39].name).toBe("0039_agency_roster_only.sql");
     expect(rows[40].name).toBe("0040_user_account_preset.sql");
     expect(rows[41].name).toBe("0041_calculation_workbook_provenance.sql");
+    expect(rows[42].name).toBe("0042_permission_granularity.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("inherits legacy gross, Planning, and document behavior and enforces write-through-read", async () => {
+    const pool = testPool();
+    await pool.query(
+      `INSERT INTO users (
+         email, display_name, password_hash, role,
+         can_see_check_net, can_plan, can_edit_documents
+       ) VALUES
+         ('legacy-off@example.test', 'Legacy off', 'not-a-real-hash', 'viewer', false, false, false),
+         ('legacy-on@example.test', 'Legacy on', 'not-a-real-hash', 'viewer', true, true, true)`,
+    );
+
+    // Recreate the exact schema boundary immediately before 0042, then let the
+    // production runner apply only the new additive migration.
+    await pool.query(`ALTER TABLE users DROP CONSTRAINT users_planning_manage_requires_view_check`);
+    await pool.query(`ALTER TABLE users DROP CONSTRAINT users_document_edit_requires_view_check`);
+    await pool.query(`ALTER TABLE users DROP COLUMN can_see_check_gross`);
+    await pool.query(`ALTER TABLE users DROP COLUMN can_manage_planning`);
+    await pool.query(`ALTER TABLE users DROP COLUMN can_view_documents`);
+    await pool.query(`DELETE FROM ${LEDGER_TABLE} WHERE name = '0042_permission_granularity.sql'`);
+
+    const result = await runMigrations(pool);
+    expect(result.applied).toBe(1);
+    expect(result.skipped).toBe(42);
+
+    const { rows } = await pool.query<{
+      email: string;
+      can_see_check_gross: boolean;
+      can_see_check_net: boolean;
+      can_plan: boolean;
+      can_manage_planning: boolean;
+      can_view_documents: boolean;
+      can_edit_documents: boolean;
+    }>(
+      `SELECT email, can_see_check_gross, can_see_check_net,
+              can_plan, can_manage_planning,
+              can_view_documents, can_edit_documents
+         FROM users
+        WHERE email IN ('legacy-off@example.test', 'legacy-on@example.test')
+        ORDER BY email`,
+    );
+    expect(rows).toEqual([
+      {
+        email: "legacy-off@example.test",
+        can_see_check_gross: false,
+        can_see_check_net: false,
+        can_plan: false,
+        can_manage_planning: false,
+        can_view_documents: false,
+        can_edit_documents: false,
+      },
+      {
+        email: "legacy-on@example.test",
+        can_see_check_gross: true,
+        can_see_check_net: true,
+        can_plan: true,
+        can_manage_planning: true,
+        can_view_documents: true,
+        can_edit_documents: true,
+      },
+    ]);
+
+    await expect(pool.query(
+      `UPDATE users SET can_plan = false, can_manage_planning = true
+        WHERE email = 'legacy-off@example.test'`,
+    )).rejects.toThrow(/users_planning_manage_requires_view_check/i);
+    await expect(pool.query(
+      `UPDATE users SET can_view_documents = false, can_edit_documents = true
+        WHERE email = 'legacy-off@example.test'`,
+    )).rejects.toThrow(/users_document_edit_requires_view_check/i);
   });
 
   it("supports roster-only agency memberships and constrained account presets", async () => {

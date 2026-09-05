@@ -65,6 +65,8 @@ export const users = pgTable(
     canSeeBilledAmounts: boolean("can_see_billed_amounts").default(true).notNull(),
     canSeeEmployeeAmounts: boolean("can_see_employee_amounts").default(true).notNull(),
     canSeeAgencySpread: boolean("can_see_agency_spread").default(true).notNull(),
+    /** Canonical payroll-check gross, independent of net and withholding. */
+    canSeeCheckGross: boolean("can_see_check_gross").default(true).notNull(),
     canSeeCheckNet: boolean("can_see_check_net").default(true).notNull(),
     canSeeTaxes: boolean("can_see_taxes").default(true).notNull(),
     canSeeBudgets: boolean("can_see_budgets").default(true).notNull(),
@@ -72,11 +74,15 @@ export const users = pgTable(
     canSeeSettlements: boolean("can_see_settlements").default(false).notNull(),
     /** May create, reverse, or refresh settlement and collection records. */
     canManageSettlements: boolean("can_manage_settlements").default(false).notNull(),
-    /** Operational planning permission (mirror of drizzle/0021_planner_access.sql). */
+    /** Read access to Planning (introduced by drizzle/0021_planner_access.sql). */
     canPlan: boolean("can_plan").default(false).notNull(),
+    /** Mutation access within Planning (drizzle/0042_permission_granularity.sql). */
+    canManagePlanning: boolean("can_manage_planning").default(false).notNull(),
     /** Class revenue is financial and remains separate from hours-only planning. */
     canSeeClassFinancials: boolean("can_see_class_financials").default(false).notNull(),
     canManageClassInvoices: boolean("can_manage_class_invoices").default(false).notNull(),
+    /** May browse and download the internal document library. */
+    canViewDocuments: boolean("can_view_documents").default(false).notNull(),
     /** May use the source-preserving PDF editing workspace. */
     canEditDocuments: boolean("can_edit_documents").default(false).notNull(),
     createdAt: createdAt(),
@@ -92,6 +98,14 @@ export const users = pgTable(
         'agency', 'agency_scheduler', 'agency_staffing_manager',
         'agency_collector', 'custom_access'
       )`,
+    ),
+    check(
+      "users_planning_manage_requires_view_check",
+      sql`not ${table.canManagePlanning} or ${table.canPlan}`,
+    ),
+    check(
+      "users_document_edit_requires_view_check",
+      sql`not ${table.canEditDocuments} or ${table.canViewDocuments}`,
     ),
   ],
 );

@@ -1,5 +1,9 @@
 import { requireUser } from "@/lib/auth/session";
-import { canAccessPlanning, resolveAccessScope } from "@/lib/auth/access";
+import {
+  canAccessPlanning,
+  canManagePlanningAccess,
+  resolveAccessScope,
+} from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listUsersWithAccess } from "@/lib/auth/users";
 import { listIndividualsManaged } from "@/lib/manage/individuals";
@@ -32,10 +36,12 @@ function readableList(items: string[]): string {
 function permissionSummary(input: {
   role: string;
   canPlan: boolean;
+  canManagePlanning: boolean;
   canManagePortalSchedules: boolean;
   canManagePortalAssignments: boolean;
   canManageSettlements: boolean;
   canManageClassInvoices: boolean;
+  canViewDocuments: boolean;
   canEditDocuments: boolean;
   canSeeTransactions: boolean;
   canSeeBudgets: boolean;
@@ -46,7 +52,7 @@ function permissionSummary(input: {
   if (input.role === "manager") return "Read everything; upload, commit and discard imports.";
 
   const manage: string[] = [];
-  if (input.canPlan) {
+  if (input.canManagePlanning) {
     manage.push(input.canSeeBudgets
       ? "schedules, assignments, and authorized hours"
       : "schedules and assignments");
@@ -60,10 +66,12 @@ function permissionSummary(input: {
   if (manage.length > 0) return `Can manage ${readableList(manage)}.`;
 
   const view: string[] = [];
+  if (input.canPlan) view.push("planning");
   if (input.canSeeTransactions) view.push("transactions");
   if (input.canSeeBudgets) view.push("budgets");
   if (input.canSeeSettlements) view.push("collections");
   if (input.canSeeClassFinancials) view.push("class billing");
+  if (input.canViewDocuments) view.push("documents");
   return `Can view ${readableList(view)} for the people assigned to this account.`;
 }
 
@@ -112,6 +120,7 @@ export default async function SettingsPage({
       canSeeEmployeeAmounts,
       canViewProgramRates,
       canPlan: canAccessPlanning(scope),
+      canManagePlanning: canManagePlanningAccess(scope),
       canManagePortalSchedules: portal.agencyAccess.some((assignment) => (
         hasPortalCapability(portal, "schedules.agency.manage", assignment.agencyId)
       )),
@@ -120,6 +129,7 @@ export default async function SettingsPage({
       )),
       canManageSettlements: scope.canManageSettlements,
       canManageClassInvoices: scope.canManageClassInvoices,
+      canViewDocuments: scope.canViewDocuments,
       canEditDocuments: scope.canEditDocuments,
       canSeeTransactions: scope.canSeeTransactions,
       canSeeBudgets: scope.canSeeBudgets,
@@ -200,6 +210,7 @@ export default async function SettingsPage({
                   canSeeBilledAmounts: u.canSeeBilledAmounts,
                   canSeeEmployeeAmounts: u.canSeeEmployeeAmounts,
                   canSeeAgencySpread: u.canSeeAgencySpread,
+                  canSeeCheckGross: u.canSeeCheckGross,
                   canSeeCheckNet: u.canSeeCheckNet,
                   canSeeTaxes: u.canSeeTaxes,
                   canSeeBudgets: u.canSeeBudgets,
@@ -208,7 +219,9 @@ export default async function SettingsPage({
                   canManageSettlements: u.canManageSettlements,
                   canSeeClassFinancials: u.canSeeClassFinancials,
                   canManageClassInvoices: u.canManageClassInvoices,
+                  canViewDocuments: u.canViewDocuments,
                   canPlan: u.canPlan,
+                  canManagePlanning: u.canManagePlanning,
                   canEditDocuments: u.canEditDocuments,
                   accountPreset: u.accountPreset,
                   portalManaged: u.portalManaged,

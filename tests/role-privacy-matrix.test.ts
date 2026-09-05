@@ -22,6 +22,7 @@ type InternalSurface =
   | "billed"
   | "employeeAmounts"
   | "spread"
+  | "checkGross"
   | "checkNet"
   | "taxes"
   | "employeeDeals"
@@ -29,8 +30,10 @@ type InternalSurface =
   | "manageSettlements"
   | "classFinancials"
   | "manageClassInvoices"
-  | "documents"
-  | "planning";
+  | "viewDocuments"
+  | "editDocuments"
+  | "planning"
+  | "managePlanning";
 
 const INTERNAL_SURFACES: Record<InternalSurface, string> = {
   transactions: "canSeeTransactions",
@@ -40,6 +43,7 @@ const INTERNAL_SURFACES: Record<InternalSurface, string> = {
   billed: "canSeeBilledAmounts",
   employeeAmounts: "canSeeEmployeeAmounts",
   spread: "canSeeAgencySpread",
+  checkGross: "canSeeCheckGross",
   checkNet: "canSeeCheckNet",
   taxes: "canSeeTaxes",
   employeeDeals: "canSeeEmployeeDeals",
@@ -47,26 +51,35 @@ const INTERNAL_SURFACES: Record<InternalSurface, string> = {
   manageSettlements: "canManageSettlements",
   classFinancials: "canSeeClassFinancials",
   manageClassInvoices: "canManageClassInvoices",
-  documents: "canEditDocuments",
+  viewDocuments: "canViewDocuments",
+  editDocuments: "canEditDocuments",
   planning: "canPlan",
+  managePlanning: "canManagePlanning",
 };
 
 const INTERNAL_ALLOW: Record<AccountPresetId, readonly InternalSurface[]> = {
   owner: Object.keys(INTERNAL_SURFACES) as InternalSurface[],
   office_manager: Object.keys(INTERNAL_SURFACES) as InternalSurface[],
-  budget_planner: ["hours", "budgets", "planning"],
-  staffing_manager: ["hours", "planning"],
+  budget_planner: ["hours", "budgets", "planning", "managePlanning"],
+  staffing_manager: ["hours", "planning", "managePlanning"],
   money_collector: [
     "transactions",
     "money",
     "employeeAmounts",
+    "checkGross",
     "checkNet",
     "taxes",
     "employeeDeals",
     "settlements",
     "manageSettlements",
   ],
-  class_billing: ["money", "classFinancials", "manageClassInvoices", "documents"],
+  class_billing: [
+    "money",
+    "classFinancials",
+    "manageClassInvoices",
+    "viewDocuments",
+    "editDocuments",
+  ],
   individual_parent: [],
   employee: [],
   agency: [],

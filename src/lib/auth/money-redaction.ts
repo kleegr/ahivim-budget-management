@@ -7,6 +7,7 @@ export type TransactionFieldVisibility = Pick<
   | "canSeeBilledAmounts"
   | "canSeeEmployeeAmounts"
   | "canSeeAgencySpread"
+  | "canSeeCheckGross"
   | "canSeeCheckNet"
   | "canSeeTaxes"
 >;
@@ -23,14 +24,14 @@ const EMPLOYEE_FIELDS = [
   "unknownRecipient",
 ] as const;
 const SPREAD_FIELDS = ["agencyAdditional", "agencyAdditionalAmount"] as const;
+const CHECK_GROSS_FIELDS = ["verifiedCheckGross"] as const;
 const CHECK_NET_FIELDS = [
   "totalNetPay",
-  "verifiedCheckGross",
   "verifiedCheckNet",
-  "verificationStatus",
   "net",
   "netPay",
 ] as const;
+const CHECK_STATUS_FIELDS = ["verificationStatus"] as const;
 const TAX_FIELDS = ["withheld", "withholding", "tax", "taxes"] as const;
 
 type TransactionSensitiveField =
@@ -38,7 +39,9 @@ type TransactionSensitiveField =
   | (typeof BILLED_FIELDS)[number]
   | (typeof EMPLOYEE_FIELDS)[number]
   | (typeof SPREAD_FIELDS)[number]
+  | (typeof CHECK_GROSS_FIELDS)[number]
   | (typeof CHECK_NET_FIELDS)[number]
+  | (typeof CHECK_STATUS_FIELDS)[number]
   | (typeof TAX_FIELDS)[number];
 
 type TransactionSensitiveShape = Partial<Record<TransactionSensitiveField, string | null>>;
@@ -54,6 +57,7 @@ export function transactionFieldVisibility(
       canSeeBilledAmounts: true,
       canSeeEmployeeAmounts: true,
       canSeeAgencySpread: true,
+      canSeeCheckGross: true,
       canSeeCheckNet: true,
       canSeeTaxes: true,
     };
@@ -65,6 +69,7 @@ export function transactionFieldVisibility(
     canSeeBilledAmounts: canSeeMoney && permissions.canSeeBilledAmounts !== false,
     canSeeEmployeeAmounts: canSeeMoney && permissions.canSeeEmployeeAmounts !== false,
     canSeeAgencySpread: canSeeMoney && permissions.canSeeAgencySpread !== false,
+    canSeeCheckGross: canSeeMoney && permissions.canSeeCheckGross !== false,
     canSeeCheckNet: canSeeMoney && permissions.canSeeCheckNet !== false,
     canSeeTaxes: canSeeMoney && permissions.canSeeTaxes !== false,
   };
@@ -84,7 +89,11 @@ export function redactTransactionFields<T extends TransactionSensitiveShape>(
   if (!visibility.canSeeBilledAmounts) BILLED_FIELDS.forEach((field) => hidden.add(field));
   if (!visibility.canSeeEmployeeAmounts) EMPLOYEE_FIELDS.forEach((field) => hidden.add(field));
   if (!visibility.canSeeAgencySpread) SPREAD_FIELDS.forEach((field) => hidden.add(field));
+  if (!visibility.canSeeCheckGross) CHECK_GROSS_FIELDS.forEach((field) => hidden.add(field));
   if (!visibility.canSeeCheckNet) CHECK_NET_FIELDS.forEach((field) => hidden.add(field));
+  if (!visibility.canSeeCheckGross && !visibility.canSeeCheckNet) {
+    CHECK_STATUS_FIELDS.forEach((field) => hidden.add(field));
+  }
   if (!visibility.canSeeTaxes) TAX_FIELDS.forEach((field) => hidden.add(field));
   if (hidden.size === 0) return row;
 
@@ -106,6 +115,7 @@ export function redactTransactionMoney<T extends TransactionSensitiveShape>(
     canSeeBilledAmounts: true,
     canSeeEmployeeAmounts: true,
     canSeeAgencySpread: true,
+    canSeeCheckGross: true,
     canSeeCheckNet: true,
     canSeeTaxes: true,
     canSeeBudgets: true,

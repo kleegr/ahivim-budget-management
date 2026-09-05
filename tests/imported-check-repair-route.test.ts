@@ -44,6 +44,7 @@ describe("historical imported-check repair", () => {
       scope: {
         allEmployees: true,
         allIndividuals: true,
+        canSeeCheckGross: true,
         canSeeCheckNet: true,
         canSeeTaxes: true,
       },
@@ -95,6 +96,26 @@ describe("historical imported-check repair", () => {
       scope: {
         allEmployees: false,
         allIndividuals: true,
+        canSeeCheckGross: true,
+        canSeeCheckNet: true,
+        canSeeTaxes: true,
+      },
+    });
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(403);
+    expect(mocks.syncImportedPayrollCheckReviews).not.toHaveBeenCalled();
+  });
+
+  it("requires independent check-gross visibility", async () => {
+    mocks.getSettlementOperator.mockResolvedValue({
+      pool,
+      user: { id: ACTOR },
+      scope: {
+        allEmployees: true,
+        allIndividuals: true,
+        canSeeCheckGross: false,
         canSeeCheckNet: true,
         canSeeTaxes: true,
       },

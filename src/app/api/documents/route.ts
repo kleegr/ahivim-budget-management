@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { apiDocumentEditorUser } from "@/lib/auth/document-access";
+import { apiDocumentEditorUser, apiDocumentViewerUser } from "@/lib/auth/document-access";
 import { listDocuments, type DocumentStatus } from "@/lib/data/documents";
 import { hasDocumentStorage } from "@/lib/documents/document-storage";
 import { jsonError, readJson, redactError, resultResponse, sameOriginOrFail } from "@/lib/http";
@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const access = await apiDocumentEditorUser();
+  const access = await apiDocumentViewerUser();
   if (!access) return jsonError("Document access required", 403);
   const rawStatus = request.nextUrl.searchParams.get("status");
   const status: DocumentStatus | null = rawStatus === "uploading" || rawStatus === "active" || rawStatus === "archived"

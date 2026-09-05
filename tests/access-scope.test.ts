@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   fullAccess,
   canAccessPlanning,
+  canManagePlanningAccess,
   isPlanningOnlyAccess,
   hasDirectEmployeeAccess,
   hasDirectIndividualAccess,
@@ -35,6 +36,7 @@ function scoped(overrides: Partial<AccessScope> = {}): AccessScope {
     canSeeBilledAmounts: true,
     canSeeEmployeeAmounts: true,
     canSeeAgencySpread: true,
+    canSeeCheckGross: true,
     canSeeCheckNet: true,
     canSeeTaxes: true,
     canSeeBudgets: true,
@@ -42,8 +44,10 @@ function scoped(overrides: Partial<AccessScope> = {}): AccessScope {
     canSeeSettlements: false,
     canSeeClassFinancials: false,
     canManageClassInvoices: false,
+    canViewDocuments: false,
     canEditDocuments: false,
     canPlan: false,
+    canManagePlanning: false,
     allIndividuals: false,
     allEmployees: false,
     individualIds: [],
@@ -67,6 +71,18 @@ describe("transaction access scope", () => {
       canSeeMoney: false,
     }))).toBe(true);
     expect(isPlanningOnlyAccess(fullAccess("manager-1", "manager"))).toBe(false);
+  });
+
+  it("keeps Planning readable without allowing mutations", () => {
+    const readOnly = scoped({
+      canPlan: true,
+      canManagePlanning: false,
+      allIndividuals: true,
+      allEmployees: true,
+    });
+    expect(canAccessPlanning(readOnly)).toBe(true);
+    expect(canManagePlanningAccess(readOnly)).toBe(false);
+    expect(canManagePlanningAccess({ ...readOnly, canManagePlanning: true })).toBe(true);
   });
 
   it("does not let an employee grant expose coworker rows through connected individuals", () => {
@@ -314,6 +330,7 @@ describe("server-side transaction money redaction", () => {
       canSeeBilledAmounts: false,
       canSeeEmployeeAmounts: false,
       canSeeAgencySpread: false,
+      canSeeCheckGross: false,
       canSeeCheckNet: false,
       canSeeTaxes: false,
     });

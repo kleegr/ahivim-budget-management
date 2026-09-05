@@ -19,6 +19,7 @@ describe("direct-pay financial redaction", () => {
     const pool = poolWith([]);
     const scope = {
       ...fullAccess("viewer-1", "viewer"),
+      canSeeCheckGross: false,
       canSeeCheckNet: false,
       canSeeTaxes: false,
     };
@@ -48,6 +49,7 @@ describe("direct-pay financial redaction", () => {
     }]);
     const scope = {
       ...fullAccess("viewer-1", "viewer"),
+      canSeeCheckGross: false,
       canSeeCheckNet: true,
       canSeeTaxes: false,
     };
@@ -55,6 +57,38 @@ describe("direct-pay financial redaction", () => {
     const [check] = await listPayrollChecks(pool, scope);
     expect(check).toMatchObject({ actualGross: null, actualNet: "1200.0000", taxWithheld: null });
     expect(JSON.stringify(check)).not.toContain("1500.00");
+    expect(JSON.stringify(check)).not.toContain("300.00");
+  });
+
+  it("returns gross without net or tax when only check gross is granted", async () => {
+    const pool = poolWith([{
+      id: "check-1",
+      employee_id: "employee-1",
+      employee_name: "Employee One",
+      check_number: "1001",
+      check_date: "2026-08-15",
+      period_begin: "2026-08-01",
+      period_end: "2026-08-14",
+      actual_gross: "1500",
+      actual_net: "1200",
+      tax_withheld: "300",
+      source: "manual",
+      source_ref: null,
+      verification_status: "verified",
+      notes: null,
+      linked_transactions: "2",
+      updated_at: "2026-08-15T00:00:00.000Z",
+    }]);
+    const scope = {
+      ...fullAccess("viewer-1", "viewer"),
+      canSeeCheckGross: true,
+      canSeeCheckNet: false,
+      canSeeTaxes: false,
+    };
+
+    const [check] = await listPayrollChecks(pool, scope);
+    expect(check).toMatchObject({ actualGross: "1500.0000", actualNet: null, taxWithheld: null });
+    expect(JSON.stringify(check)).not.toContain("1200.00");
     expect(JSON.stringify(check)).not.toContain("300.00");
   });
 
