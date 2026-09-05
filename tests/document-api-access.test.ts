@@ -84,13 +84,15 @@ describe("document API authorization boundary", () => {
       () => getDocument(request(`/api/documents/${ID}`), params),
       () => getDraft(request(`/api/documents/${ID}/draft`), params),
       () => listVersions(request(`/api/documents/${ID}/versions`), params),
-      () => getVersionFile(request(`/api/documents/${ID}/versions/${VERSION}/file`), versionParams),
     ];
     for (const invoke of readCalls) {
       mocks.accessibleDocument.mockClear();
       await invoke();
       expect(mocks.accessibleDocument).toHaveBeenCalledWith(ID);
     }
+    mocks.accessibleDocument.mockClear();
+    await getVersionFile(request(`/api/documents/${ID}/versions/${VERSION}/file`), versionParams);
+    expect(mocks.accessibleDocument).toHaveBeenCalledWith(ID, "view");
 
     const writeCalls = [
       () => updateDocument(request(`/api/documents/${ID}`, "PATCH"), params),

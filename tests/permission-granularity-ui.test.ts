@@ -5,6 +5,8 @@ const accessEditor = readFileSync("src/components/settings/user-access-admin.tsx
 const documentLibrary = readFileSync("src/components/documents/document-library.tsx", "utf8");
 const documentViewer = readFileSync("src/components/documents/document-viewer-workspace.tsx", "utf8");
 const employeePage = readFileSync("src/app/(app)/employees/[id]/page.tsx", "utf8");
+const masserPage = readFileSync("src/app/(app)/masser/page.tsx", "utf8");
+const settlementsPage = readFileSync("src/app/(app)/settlements/page.tsx", "utf8");
 const transactionsGrid = readFileSync("src/components/transactions/transactions-grid.tsx", "utf8");
 
 describe("permission granularity UI", () => {
@@ -34,5 +36,12 @@ describe("permission granularity UI", () => {
     expect(employeePage).toContain("canSeeCheckGross ? <Th numeric>Actual gross</Th>");
     expect(transactionsGrid).toContain('if (column.key === "verifiedCheckGross") return fields.canSeeCheckGross;');
     expect(transactionsGrid).toContain("visibility.canSeeCheckGross ? line(\"Verified check gross\"");
+  });
+
+  it("offers payroll-check actions only with gross, net, and tax access", () => {
+    expect(masserPage).toContain("canOpenChecks: result.data.data.visibility.canSeeCheckGross\n          || result.data.data.visibility.canSeeCheckNet\n          || result.data.data.visibility.canSeeTaxes");
+    expect(masserPage).toContain("&& scope.canSeeCheckGross\n        && scope.canSeeCheckNet\n        && scope.canSeeTaxes");
+    expect(masserPage).toContain("&& result.data.data.visibility.canSeeCheckGross\n          && result.data.data.visibility.canSeeCheckNet\n          && result.data.data.visibility.canSeeTaxes");
+    expect(settlementsPage).toContain("&& scope.canSeeCheckGross\n        && scope.canSeeCheckNet\n        && scope.canSeeTaxes");
   });
 });

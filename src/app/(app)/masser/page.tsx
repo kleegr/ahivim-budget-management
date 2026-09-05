@@ -63,6 +63,7 @@ export default async function MasserPage({
       canRepairImports: scope.canManageSettlements
         && scope.allEmployees
         && scope.allIndividuals
+        && scope.canSeeCheckGross
         && scope.canSeeCheckNet
         && scope.canSeeTaxes,
       sourceSelection,
@@ -83,9 +84,11 @@ export default async function MasserPage({
     ? collectionsInitialState(raw, {
         canOpenTargets: result.data.data.visibility.canSeeTargetMoney
           || result.data.data.visibility.canSeeTargetHours,
-        canOpenChecks: result.data.data.visibility.canSeeCheckNet
+        canOpenChecks: result.data.data.visibility.canSeeCheckGross
+          || result.data.data.visibility.canSeeCheckNet
           || result.data.data.visibility.canSeeTaxes,
         canCreateCheck: result.data.canManage
+          && result.data.data.visibility.canSeeCheckGross
           && result.data.data.visibility.canSeeCheckNet
           && result.data.data.visibility.canSeeTaxes,
         employeeIds: result.data.data.employees.map((employee) => employee.id),

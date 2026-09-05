@@ -25,10 +25,14 @@ const pool = { query: vi.fn() };
 describe("document version file route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.accessibleDocument.mockResolvedValue({
-      access: { pool, user: { id: "00000000-0000-4000-8000-000000000003" } },
-      document: { id: DOCUMENT_ID },
-    });
+    mocks.accessibleDocument.mockImplementation(async (_id: string, mode: "view" | "edit") => (
+      mode === "edit"
+        ? { error: new Response("Not found", { status: 404 }) }
+        : {
+            access: { pool, user: { id: "00000000-0000-4000-8000-000000000003" } },
+            document: { id: DOCUMENT_ID },
+          }
+    ));
     mocks.getDocumentVersionFile.mockResolvedValue({
       pathname: "documents/source.pdf",
       filename: "source.pdf",
@@ -46,13 +50,41 @@ describe("document version file route", () => {
     });
   });
 
-  it("serves the source representation for editable reopen without changing normal downloads", async () => {
+  it("serves the normal output to a read-only document viewer", async () => {
+    const response = await GET(
+      new NextRequest(`http://localhost/api/documents/${DOCUMENT_ID}/versions/${VERSION_ID}/file`),
+      { params: Promise.resolve({ id: DOCUMENT_ID, versionId: VERSION_ID }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.accessibleDocument).toHaveBeenCalledWith(DOCUMENT_ID, "view");
+    expect(mocks.getDocumentVersionFile).toHaveBeenCalledWith(pool, DOCUMENT_ID, VERSION_ID, "output");
+  });
+
+  it("does not expose the retained source representation to a read-only viewer", async () => {
+    const response = await GET(
+      new NextRequest(`http://localhost/api/documents/${DOCUMENT_ID}/versions/${VERSION_ID}/file?source=1`),
+      { params: Promise.resolve({ id: DOCUMENT_ID, versionId: VERSION_ID }) },
+    );
+
+    expect(response.status).toBe(404);
+    expect(mocks.accessibleDocument).toHaveBeenCalledWith(DOCUMENT_ID, "edit");
+    expect(mocks.getDocumentVersionFile).not.toHaveBeenCalled();
+    expect(mocks.readPrivateDocumentBlob).not.toHaveBeenCalled();
+  });
+
+  it("serves the source representation to an editor for editable reopen", async () => {
+    mocks.accessibleDocument.mockResolvedValueOnce({
+      access: { pool, user: { id: "00000000-0000-4000-8000-000000000003" } },
+      document: { id: DOCUMENT_ID },
+    });
     const response = await GET(
       new NextRequest(`http://localhost/api/documents/${DOCUMENT_ID}/versions/${VERSION_ID}/file?source=1`),
       { params: Promise.resolve({ id: DOCUMENT_ID, versionId: VERSION_ID }) },
     );
 
     expect(response.status).toBe(200);
+    expect(mocks.accessibleDocument).toHaveBeenCalledWith(DOCUMENT_ID, "edit");
     expect(mocks.getDocumentVersionFile).toHaveBeenCalledWith(pool, DOCUMENT_ID, VERSION_ID, "source");
     expect(mocks.writeAudit).toHaveBeenCalledWith(pool, expect.objectContaining({
       metadata: { versionId: VERSION_ID, representation: "source" },

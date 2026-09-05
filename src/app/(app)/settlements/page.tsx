@@ -40,7 +40,10 @@ export default async function SettlementsPage({
       planningOnly: false,
       data: await getSettlementDashboard(pool, scope),
       canManage: scope.canManageSettlements,
-      canManagePayrollChecks: scope.canManageSettlements && scope.canSeeCheckNet && scope.canSeeTaxes,
+      canManagePayrollChecks: scope.canManageSettlements
+        && scope.canSeeCheckGross
+        && scope.canSeeCheckNet
+        && scope.canSeeTaxes,
       canSeeEmployeeDeals: scope.canSeeEmployeeDeals,
       canSeeTransactions: scope.canSeeTransactions,
     };

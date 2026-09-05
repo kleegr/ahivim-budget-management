@@ -21,13 +21,16 @@ export async function GET(
   { params }: { params: Promise<{ id: string; versionId: string }> },
 ) {
   const { id, versionId } = await params;
+  const representation = request.nextUrl.searchParams.get("source") === "1" ? "source" : "output";
   try {
-    const found = await accessibleDocument(id);
+    // The retained source is the editable, pre-flattened PDF. In particular,
+    // it can contain text or pixels that a secure output permanently removed,
+    // so read-only library access must never be enough to retrieve it.
+    const found = await accessibleDocument(id, representation === "source" ? "edit" : "view");
     if ("error" in found) return found.error;
     if (!hasDocumentStorage()) {
       return jsonError("Private document storage is not configured. Ask an administrator to connect document storage.", 503);
     }
-    const representation = request.nextUrl.searchParams.get("source") === "1" ? "source" : "output";
     const file = await getDocumentVersionFile(found.access.pool, id, versionId, representation);
     if (!file) return jsonError("That document version was not found.", 404);
     const blob = await readPrivateDocumentBlob(file.pathname, request.headers.get("if-none-match"));
