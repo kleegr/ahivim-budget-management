@@ -52,7 +52,9 @@ function totalsSource(
   reportKey: string,
   tableSource: ReportTable["source"],
 ): { href: string; label: string } | null {
-  if (rows.length === 0) return null;
+  // Keep the underlying source reachable even when a report is empty. An
+  // empty result is still something an operator may need to verify at source.
+  if (rows.length === 0) return tableSource ?? null;
   if (reportKey === "payroll-checks") {
     const ids = [...new Set(rows.map((row) => row.transactionId).filter((id): id is string => typeof id === "string"))];
     if (ids.length === rows.length && ids.length <= 75) {

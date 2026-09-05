@@ -314,6 +314,7 @@ describe("report completeness and source truth", () => {
     const grid = readFileSync("src/components/reports/report-grid.tsx", "utf8");
     expect(grid).toContain('value.startsWith("/")');
     expect(grid).toContain("return tableSource ?? null");
+    expect(grid).toContain("if (rows.length === 0) return tableSource ?? null");
     expect(grid).not.toContain("#report-source");
     expect(grid).toContain("accessor: (r) => (r[c.key] == null ? null : String(r[c.key]))");
   });
