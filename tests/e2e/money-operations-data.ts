@@ -14,6 +14,7 @@ import {
 } from "./fixtures";
 import {
   MONEY_REPORT_AGENCY_SHARE,
+  MONEY_REPORT_DATE,
   MONEY_REPORT_GROSS,
   MONEY_REPORT_INDIVIDUAL_SHARE,
   MONEY_REPORT_INVOICE_NUMBER,
@@ -28,6 +29,8 @@ import {
   MONEY_WORKFLOW_EMPLOYEE_NAME,
   MONEY_WORKFLOW_OBLIGATION_ID,
   MONEY_WORKFLOW_ORIGINAL_AMOUNT,
+  MONEY_WORKFLOW_PERIOD_END,
+  MONEY_WORKFLOW_PERIOD_START,
 } from "./money-operations-fixtures";
 
 function unwrap<T>(result: { ok: true; data: T } | { ok: false; code: string; message: string }): T {
@@ -36,7 +39,7 @@ function unwrap<T>(result: { ok: true; data: T } | { ok: false; code: string; me
 }
 
 /**
- * Adds isolated facts for the append-only payment workflows and one same-month
+ * Adds August-only facts for the append-only mutation workflows and one September
  * issued-invoice/actual-receipt pair. The invoice remains a receivable reference;
  * only the receipt enters Agency Financials income.
  */
@@ -67,13 +70,15 @@ export async function seedMoneyOperationsAcceptanceData(
     `INSERT INTO settlement_obligations
        (id, source_key, kind, direction, individual_id, original_amount,
         period_begin, period_end, calculation_metadata, created_by_user_id)
-     VALUES ($1, 'e2e:money-workflow:individual-reserve', 'individual_masser',
-             'reserve', $2, $3, '2026-09-01', '2026-09-30',
-             $4::jsonb, $5)`,
+      VALUES ($1, 'e2e:money-workflow:individual-reserve', 'individual_masser',
+              'reserve', $2, $3, $4::date, $5::date,
+              $6::jsonb, $7)`,
     [
       MONEY_RESERVE_OBLIGATION_ID,
       MONEY_RESERVE_INDIVIDUAL_ID,
       MONEY_RESERVE_ORIGINAL_AMOUNT,
+      MONEY_WORKFLOW_PERIOD_START,
+      MONEY_WORKFLOW_PERIOD_END,
       JSON.stringify({
         flow: "e2e_money_acceptance",
         source: "disposable_e2e_seed",
@@ -82,20 +87,24 @@ export async function seedMoneyOperationsAcceptanceData(
       actorId,
     ],
   );
+  // Masser intentionally carries outstanding employee_giveback balances across
+  // months. This fixture-specific kind keeps an interrupted mutation test from
+  // changing September's release-reconciliation balance.
   await pool.query(
     `INSERT INTO settlement_obligations
        (id, source_key, kind, direction, employee_id, original_amount,
         check_number, check_date, period_begin, period_end,
         calculation_metadata, created_by_user_id)
-     VALUES ($1, 'e2e:money-workflow:employee-giveback', 'employee_giveback',
-             'receivable', $2, $3, $4, $5::date, '2026-09-01', '2026-09-04',
-             $6::jsonb, $7)`,
+      VALUES ($1, 'e2e:money-workflow:employee-receivable', 'e2e_money_receivable',
+              'receivable', $2, $3, $4, $5::date, $6::date, $5::date,
+              $7::jsonb, $8)`,
     [
       MONEY_WORKFLOW_OBLIGATION_ID,
       MONEY_WORKFLOW_EMPLOYEE_ID,
       MONEY_WORKFLOW_ORIGINAL_AMOUNT,
       MONEY_WORKFLOW_CHECK_NUMBER,
       MONEY_WORKFLOW_DATE,
+      MONEY_WORKFLOW_PERIOD_START,
       JSON.stringify({
         flow: "e2e_money_acceptance",
         source: "disposable_e2e_seed",
@@ -138,15 +147,15 @@ export async function seedMoneyOperationsAcceptanceData(
   const draft = unwrap(await createClassInvoiceDraft(pool, {
     classBudgetPeriodId: classSource.class_budget_period_id,
     invoiceNumber: MONEY_REPORT_INVOICE_NUMBER,
-    invoiceDate: MONEY_WORKFLOW_DATE,
+    invoiceDate: MONEY_REPORT_DATE,
     servicePeriodStart: "2026-09-01",
-    servicePeriodEnd: MONEY_WORKFLOW_DATE,
+    servicePeriodEnd: MONEY_REPORT_DATE,
     billToName: "Linked Individual",
     purpose: "COMMUNITY CLASSES",
     notes: "Receivable reference for Agency Financials browser acceptance",
     lines: [{
       activityId: classSource.class_activity_id,
-      serviceDate: MONEY_WORKFLOW_DATE,
+      serviceDate: MONEY_REPORT_DATE,
       quantity: "1",
       unitPrice: MONEY_REPORT_GROSS,
       discountAmount: "0",
@@ -160,7 +169,7 @@ export async function seedMoneyOperationsAcceptanceData(
   }
 
   const receipt = unwrap(await createManualIncomeEntry(pool, {
-    serviceDate: MONEY_WORKFLOW_DATE,
+    serviceDate: MONEY_REPORT_DATE,
     sourceType: "class",
     individualId: LINKED_INDIVIDUAL_ID,
     programId: classSource.program_id,

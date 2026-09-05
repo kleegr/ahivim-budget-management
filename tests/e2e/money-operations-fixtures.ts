@@ -4,7 +4,11 @@ export const MONEY_WORKFLOW_OBLIGATION_ID = "60000000-0000-4000-8000-00000000000
 export const MONEY_WORKFLOW_EMPLOYEE_NAME = "E2E Money Workflow Employee";
 export const MONEY_WORKFLOW_CHECK_NUMBER = "E2E-MONEY-001";
 export const MONEY_WORKFLOW_ORIGINAL_AMOUNT = "24.00";
-export const MONEY_WORKFLOW_DATE = "2026-09-04";
+// Keep append-only mutation acceptance outside the September release/Masser
+// reconciliation fixture so spec order cannot change that fixture's totals.
+export const MONEY_WORKFLOW_DATE = "2026-08-04";
+export const MONEY_WORKFLOW_PERIOD_START = "2026-08-01";
+export const MONEY_WORKFLOW_PERIOD_END = "2026-08-31";
 
 export const MONEY_RESERVE_INDIVIDUAL_ID = "60000000-0000-4000-8000-000000000003";
 export const MONEY_RESERVE_OBLIGATION_ID = "60000000-0000-4000-8000-000000000004";
@@ -12,6 +16,7 @@ export const MONEY_RESERVE_INDIVIDUAL_NAME = "E2E Individual Put-away";
 export const MONEY_RESERVE_ORIGINAL_AMOUNT = "15.00";
 
 export const MONEY_REPORT_MONTH = "2026-09";
+export const MONEY_REPORT_DATE = "2026-09-04";
 export const MONEY_REPORT_INVOICE_NUMBER = "E2E-FINANCIAL-ISSUED-001";
 export const MONEY_REPORT_RECEIPT_REFERENCE = MONEY_REPORT_INVOICE_NUMBER;
 export const MONEY_REPORT_GROSS = "150.00";

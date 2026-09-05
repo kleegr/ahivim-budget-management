@@ -182,7 +182,7 @@ test.describe.serial("append-only Money operations", () => {
       amount: "10.00",
       reference: ORIGINAL_PAYMENT_REFERENCE,
       reversal_of_event_id: null,
-      batch_action: "payment",
+      batch_action: "record_payment",
     });
 
     await page.goto(settlementPath);
@@ -370,7 +370,7 @@ test.describe.serial("append-only Money operations", () => {
       amount: "20.00",
       reference: RESERVE_REFERENCE,
       reversal_of_event_id: null,
-      batch_action: "payment",
+      batch_action: "record_payment",
     });
 
     await page.goto(settlementPath);
