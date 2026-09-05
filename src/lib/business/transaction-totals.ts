@@ -10,9 +10,13 @@ import { normalizePayee } from "@/lib/business/internal-rate";
  *
  * Reproduces the workbook's logic while preserving the application's stronger
  * check identity:
- *   - gross / internal / agency-additional / hours are simple column sums;
- *   - agency additional per row is gross − internal (workbook column R = Q − P),
- *     already carried on each row, so the total can be negative or positive;
+ *   - gross / internal / agency-additional reconcile over the same complete
+ *     rows (both gross and canonical Employee base are known);
+ *   - agency additional is derived as gross − internal (workbook column R = Q − P),
+ *     so stale/floored stored values cannot change the total;
+ *   - incomplete money rows are counted explicitly rather than treating an
+ *     unknown Employee base as zero;
+ *   - hours remain a simple column sum;
  *   - checks and verified check facts are counted once per complete check identity:
  *     employee + normalized check number + check date + both period bounds.
  *     Payee text is not part of that identity;
@@ -105,6 +109,7 @@ export interface GridTotals {
   sourcePayments: number;
   individuals: number;
   employees: number;
+  moneyExcludedRows: number;
 }
 
 export function computeGridTotals(rows: TotalsInput[]): GridTotals {
@@ -124,11 +129,18 @@ export function computeGridTotals(rows: TotalsInput[]): GridTotals {
   const seenVerifiedGross = new Set<string>();
   const seenVerifiedNet = new Set<string>();
   const seenWithholding = new Set<string>();
+  let moneyExcludedRows = 0;
 
   for (const r of rows) {
-    if (r.gross) gross = gross.plus(dec(r.gross));
-    if (r.internalAmount) internal = internal.plus(dec(r.internalAmount));
-    if (r.agencyAdditional) addl = addl.plus(dec(r.agencyAdditional));
+    if (r.gross !== null && r.internalAmount !== null) {
+      const rowGross = dec(r.gross);
+      const rowInternal = dec(r.internalAmount);
+      gross = gross.plus(rowGross);
+      internal = internal.plus(rowInternal);
+      addl = addl.plus(rowGross.minus(rowInternal));
+    } else {
+      moneyExcludedRows += 1;
+    }
     if (r.hours) hours = hours.plus(dec(r.hours));
     const paymentKey = completeCheckIdentity(r);
     if (paymentKey) checks.add(paymentKey);
@@ -176,5 +188,6 @@ export function computeGridTotals(rows: TotalsInput[]): GridTotals {
     sourcePayments: sourcePayments.size,
     individuals: inds.size,
     employees: emps.size,
+    moneyExcludedRows,
   };
 }

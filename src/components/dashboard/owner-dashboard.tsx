@@ -543,6 +543,9 @@ export default function OwnerDashboard({
     : transactions.latestCheckDate
       ? `${formatDate(transactions.latestCheckDate, LONG_DATE)} · ${transactions.contextTotals.transactions.toLocaleString()} ${transactions.contextTotals.transactions === 1 ? "row" : "rows"} · ${transactions.contextCheckCount.toLocaleString()} ${transactions.contextCheckCount === 1 ? "check" : "checks"}`
       : null;
+  const reconciliationHint = transactions.contextTotals.moneyExcludedRows > 0
+    ? `${transactions.contextTotals.moneyExcludedRows.toLocaleString()} incomplete money ${transactions.contextTotals.moneyExcludedRows === 1 ? "row is" : "rows are"} excluded.`
+    : undefined;
 
   return (
     <>
@@ -584,9 +587,9 @@ export default function OwnerDashboard({
           />
           <ActivityFilters selection={activitySelection} options={activityOptions} savedViews={savedViews} />
           <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] md:grid-cols-3 xl:grid-cols-5 xl:divide-y-0">
-            <SummaryMetric label="Funder billed" value={formatMoney(transactions.contextTotals.gross)} href={transactions.contextHref} />
-            <SummaryMetric label="Employee base" value={formatMoney(transactions.contextTotals.internal)} href={transactions.contextHref} />
-            <SummaryMetric label="Agency spread" value={formatMoney(transactions.contextTotals.agencyAdditional)} href={transactions.contextHref} />
+            <SummaryMetric label="Funder billed" value={formatMoney(transactions.contextTotals.gross)} href={transactions.contextHref} hint={reconciliationHint} />
+            <SummaryMetric label="Employee base" value={formatMoney(transactions.contextTotals.internal)} href={transactions.contextHref} hint={reconciliationHint} />
+            <SummaryMetric label="Agency spread" value={formatMoney(transactions.contextTotals.agencyAdditional)} href={transactions.contextHref} hint={reconciliationHint} />
             <SummaryMetric label="Net payroll" value={formatMoney(transactions.contextTotals.netPerCheck)} href={transactions.contextHref} hint="Counted once per payment" />
             <SummaryMetric label="Hours" value={formatHours(transactions.contextTotals.hours)} href={transactions.contextHref} />
           </div>

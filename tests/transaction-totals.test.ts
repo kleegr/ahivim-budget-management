@@ -26,7 +26,7 @@ function row(p: Partial<TotalsInput>): TotalsInput {
 }
 
 describe("computeGridTotals — Excel-SUBTOTAL parity", () => {
-  it("sums gross, internal, agency-additional and hours as plain column totals", () => {
+  it("reconciles gross, internal, derived agency spread, and hours", () => {
     const t = computeGridTotals([
       row({ id: "a", gross: "336.75", internalAmount: "282.87", agencyAdditional: "53.88", hours: "13.47" }),
       row({ id: "b", gross: "252.25", internalAmount: "211.89", agencyAdditional: "40.36", hours: "10.09" }),
@@ -36,14 +36,15 @@ describe("computeGridTotals — Excel-SUBTOTAL parity", () => {
     expect(t.agencyAdditional).toBe("94.24"); // 53.88 + 40.36
     expect(t.hours).toBe("23.56");
     expect(t.transactions).toBe(2);
+    expect(t.moneyExcludedRows).toBe(0);
   });
 
   it("counts Total Net Pay once per payment identity", () => {
     // Two rows of the SAME check both carry the check's full net pay (10538.05).
     const t = computeGridTotals([
-      row({ id: "a", checkNumber: "24665", totalNetPay: "10538.05", gross: "336.75" }),
-      row({ id: "b", checkNumber: "24665", totalNetPay: "10538.05", gross: "252.25" }),
-      row({ id: "c", checkNumber: "24666", totalNetPay: "5000.00", gross: "100.00" }),
+      row({ id: "a", checkNumber: "24665", totalNetPay: "10538.05", gross: "336.75", internalAmount: "0" }),
+      row({ id: "b", checkNumber: "24665", totalNetPay: "10538.05", gross: "252.25", internalAmount: "0" }),
+      row({ id: "c", checkNumber: "24666", totalNetPay: "5000.00", gross: "100.00", internalAmount: "0" }),
     ]);
     // Net counted once per check: 10538.05 + 5000.00 — NOT 10538.05 twice.
     expect(t.netPerCheck).toBe("15538.05");
@@ -242,10 +243,25 @@ describe("computeGridTotals — Excel-SUBTOTAL parity", () => {
     expect(Number(t.gross) - Number(t.internal)).toBeCloseTo(Number(t.agencyAdditional), 2);
   });
 
+  it("excludes incomplete money rows and never trusts a stale or floored spread", () => {
+    const t = computeGridTotals([
+      row({ id: "negative", gross: "100", internalAmount: "120", agencyAdditional: "0" }),
+      row({ id: "missing-base", gross: "50", internalAmount: null, agencyAdditional: "50" }),
+      row({ id: "missing-gross", gross: null, internalAmount: "10", agencyAdditional: "-10" }),
+    ]);
+
+    expect(t).toMatchObject({
+      gross: "100.00",
+      internal: "120.00",
+      agencyAdditional: "-20.00",
+      moneyExcludedRows: 2,
+    });
+  });
+
   it("re-computes on a filtered subset (SUBTOTAL semantics)", () => {
     const all = [
-      row({ id: "a", gross: "100", checkNumber: "1", totalNetPay: "1000" }),
-      row({ id: "b", gross: "200", checkNumber: "2", totalNetPay: "2000" }),
+      row({ id: "a", gross: "100", internalAmount: "0", checkNumber: "1", totalNetPay: "1000" }),
+      row({ id: "b", gross: "200", internalAmount: "0", checkNumber: "2", totalNetPay: "2000" }),
     ];
     const filtered = all.filter((r) => r.checkNumber === "1");
     const t = computeGridTotals(filtered);

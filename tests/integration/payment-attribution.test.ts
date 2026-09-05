@@ -226,8 +226,8 @@ suite("payment attribution back-fill (real PostgreSQL)", () => {
     const mine = rows.find((r) => r.employeeName === "Miriam Klein")!;
     expect(dec(mine.paidToEmployee).toNumber()).toBe(17);    // paid directly
     expect(dec(mine.payableByAgency).toNumber()).toBe(20);   // Excellent Staffing owes the employee
-    expect(dec(mine.unknownRecipient).toNumber()).toBe(0);   // unknown recipient: amount not asserted
-    expect(dec(mine.totalPayment).toNumber()).toBe(37);      // 17 (direct) + 20 (agency); unknown contributes 0
+    expect(dec(mine.unknownRecipient).toNumber()).toBe(10);  // canonical base remains visible for review
+    expect(dec(mine.totalPayment).toNumber()).toBe(47);      // every recorded Employee-base amount is included
     // The three buckets always sum to the total.
     expect(dec(mine.paidToEmployee).plus(dec(mine.payableByAgency)).plus(dec(mine.unknownRecipient)).toNumber())
       .toBe(dec(mine.totalPayment).toNumber());

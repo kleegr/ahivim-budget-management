@@ -69,19 +69,24 @@ describe("canonical service-date read models", () => {
     expect(metrics).not.toContain("FROM service_allocations");
 
     const earnings = sql.find((query) => query.includes("AS agency_gross"));
-    expect(earnings).toContain(
-      "canonical_service_date(\n              t.period_begin, t.check_date, t.period_end",
-    );
+    expect(earnings).toMatch(/canonical_service_date\(\s*t\.period_begin, t\.check_date, t\.period_end/);
     expect(earnings).not.toContain("OR t.period_begin >=");
+    expect(earnings).toContain("t.spreadsheet_internal_amount");
+    expect(earnings).toContain("t.internal_rate_applied * t.imported_hours");
+    expect(earnings).not.toContain("sum(t.agency_additional_amount)");
 
     const payable = sql.find((query) => query.includes("AS paid_to_employee"));
     expect(payable).toContain("LEFT JOIN programs p ON p.id = t.program_id");
-    expect(payable).toContain(
-      "effective_payment_recipient(\n                t.payment_recipient, p.payment_recipient",
+    expect(payable).toMatch(
+      /effective_payment_recipient\(\s*t\.payment_recipient,\s*p\.payment_recipient/,
     );
-    expect(payable).toContain(
-      "canonical_service_date(\n              t.period_begin, t.check_date, t.period_end",
-    );
+    expect(payable).toMatch(/canonical_service_date\(\s*t\.period_begin, t\.check_date, t\.period_end/);
+    expect(payable).toContain("t.spreadsheet_internal_amount");
+    expect(payable).toContain("t.internal_rate_applied * t.imported_hours");
+    expect(payable).toContain("FILTER (WHERE t.effective_recipient = 'unknown')");
+    expect(payable).toContain("physical_sessions AS");
+    expect(payable).toContain("'session:' || t.service_session_id::text");
+    expect(payable).not.toContain("sum(t.employee_payment_amount)");
 
     const groups = sql.find((query) => query.includes("ss.group_size > 1"));
     expect(groups).toContain("canonical_service_date(ss.period_begin, NULL, ss.period_end)");

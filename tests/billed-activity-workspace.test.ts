@@ -93,6 +93,7 @@ describe("billed activity check grouping", () => {
       ["employeeRate", "Employee rate"],
       ["internalAmount", "Employee base"],
       ["agencyAdditional", "Agency spread"],
+      ["moneyReconciliation", "Money check"],
       ["verifiedCheckGross", "Verified check gross"],
       ["verifiedCheckNet", "Verified check net"],
       ["withholding", "Withholding"],

@@ -15,12 +15,16 @@ import {
   budgetUtilizationReport,
   employeePayableReport,
   programTotalsReport,
+  actualVsScheduledReport,
+  dashboardReportMetrics,
 } from "@/lib/data/report-queries";
 import {
   getEmployeeMonthlyPayments,
   getEmployeePaymentSummary,
 } from "@/lib/data/employee-queries";
 import { dec } from "@/lib/money";
+import { listTransactionsForGrid } from "@/lib/data/transactions-grid";
+import { fullAccess } from "@/lib/auth/access";
 
 const suite = hasTestDatabase ? describe : describe.skip;
 const ACTOR = "00000000-0000-4000-8000-000000000001";
@@ -213,9 +217,9 @@ suite("phase 4D — reporting read models (real PostgreSQL)", () => {
     const ind = unwrap(await createIndividual(pool, { displayName: "Chava Roth" }, ACTOR));
     const emp = unwrap(await createEmployee(pool, { displayName: "Miriam Klein" }, ACTOR));
 
-    await insertTransaction({ individualId: ind.id, employeeId: emp.id, programId: dayHab, checkNumber: "1001", hours: "5", employeePayment: "100", paymentRecipient: "employee" });
-    await insertTransaction({ individualId: ind.id, employeeId: emp.id, programId: dayHab, checkNumber: "1002", hours: "3", employeePayment: "40", paymentRecipient: "excellent_staffing" });
-    await insertTransaction({ individualId: ind.id, employeeId: emp.id, programId: dayHab, checkNumber: "1003", hours: "1", employeePayment: "10", paymentRecipient: null });
+    await insertTransaction({ individualId: ind.id, employeeId: emp.id, programId: dayHab, checkNumber: "1001", hours: "5", internalAmount: "100", employeePayment: "100", paymentRecipient: "employee" });
+    await insertTransaction({ individualId: ind.id, employeeId: emp.id, programId: dayHab, checkNumber: "1002", hours: "3", internalAmount: "40", employeePayment: "40", paymentRecipient: "excellent_staffing" });
+    await insertTransaction({ individualId: ind.id, employeeId: emp.id, programId: dayHab, checkNumber: "1003", hours: "1", internalAmount: "10", employeePayment: "10", paymentRecipient: null });
 
     const rows = await employeePayableReport(pool, {});
     expect(rows).toHaveLength(1);
@@ -230,6 +234,117 @@ suite("phase 4D — reporting read models (real PostgreSQL)", () => {
     // Buckets reconcile to the total exactly.
     const bucketSum = dec(r.paidToEmployee).plus(dec(r.payableByAgency)).plus(dec(r.unknownRecipient));
     expect(bucketSum.toNumber()).toBe(dec(r.totalPayment).toNumber());
+  });
+
+  it("reconciles canonical base fallbacks, negative spread, unresolved recipients, and group physical hours", async () => {
+    const dayHab = await programId("DAY_HAB");
+    const ind = unwrap(await createIndividual(pool, { displayName: "Canonical Base Person" }, ACTOR));
+    const emp = unwrap(await createEmployee(pool, { displayName: "Canonical Base Employee" }, ACTOR));
+    const session = await pool.query<{ id: string }>(
+      `INSERT INTO service_sessions
+         (employee_id, program_id, period_begin, period_end, physical_hours,
+          group_size, group_detection_status)
+       VALUES ($1, $2, '2025-07-01', '2025-07-01', '5', 2, 'confirmed')
+       RETURNING id`,
+      [emp.id, dayHab],
+    );
+
+    await pool.query(
+      `INSERT INTO payroll_transactions
+         (individual_id, employee_id, program_id, period_begin, period_end,
+          imported_hours, imported_amount, spreadsheet_internal_amount,
+          agency_additional_amount, employee_payment_amount, payment_recipient,
+          service_session_id, is_group_service, transaction_fingerprint)
+       VALUES
+         ($1, $2, $3, '2025-07-01', '2025-07-01', '5', '25', '30', '0', NULL,
+          'employee', $4, true, $5),
+         ($1, $2, $3, '2025-07-01', '2025-07-01', '5', '40', NULL, '0', NULL,
+          'excellent_staffing', $4, true, $6)`,
+      [ind.id, emp.id, dayHab, session.rows[0].id, `rep-fp-${fpSeq++}`, `rep-fp-${fpSeq++}`],
+    );
+    await pool.query(
+      `UPDATE payroll_transactions
+          SET internal_rate_applied = '8'
+        WHERE transaction_fingerprint = $1`,
+      [`rep-fp-${fpSeq - 1}`],
+    );
+    await pool.query(
+      `INSERT INTO payroll_transactions
+         (individual_id, employee_id, program_id, period_begin, period_end,
+          imported_hours, imported_amount, calculated_internal_amount,
+          agency_additional_amount, employee_payment_amount, payment_recipient,
+          transaction_fingerprint)
+       VALUES ($1, $2, NULL, '2025-07-02', '2025-07-02', '2', '12', '10', '2', NULL,
+               NULL, $3)`,
+      [ind.id, emp.id, `rep-fp-${fpSeq++}`],
+    );
+    const missingBase = await pool.query<{ id: string }>(
+      `INSERT INTO payroll_transactions
+         (individual_id, employee_id, program_id, period_begin, period_end,
+          imported_hours, imported_amount, payment_recipient, transaction_fingerprint)
+       VALUES ($1, $2, $3, '2025-07-03', '2025-07-03', '1', '7', 'employee', $4)
+       RETURNING id`,
+      [ind.id, emp.id, dayHab, `rep-fp-${fpSeq++}`],
+    );
+
+    const ledger = await listTransactionsForGrid(pool, fullAccess("report-test", "manager"));
+    expect(ledger.find((row) => row.id === missingBase.rows[0].id)).toMatchObject({
+      internalAmount: null,
+      agencyAdditional: null,
+    });
+
+    const earnings = await agencyEarningsReport(pool, {
+      from: "2025-07-01",
+      to: "2025-07-31",
+    });
+    expect(earnings.find((row) => row.programCode === "DAY_HAB")).toMatchObject({
+      agencyGross: "65.0000",
+      internalAmount: "70.0000",
+      agencyAdditional: "-5.0000",
+      transactionCount: 3,
+      excludedRows: 1,
+    });
+
+    const payable = await employeePayableReport(pool, {
+      from: "2025-07-01",
+      to: "2025-07-31",
+    });
+    expect(payable).toEqual([expect.objectContaining({
+      totalPayment: "80.0000",
+      paidToEmployee: "30.0000",
+      payableByAgency: "40.0000",
+      unknownRecipient: "10.0000",
+      physicalHours: "8.0000",
+      missingBaseRows: 1,
+    })]);
+
+    const programTotals = await programTotalsReport(pool, {
+      from: "2025-07-01",
+      to: "2025-07-31",
+    });
+    expect(programTotals.find((row) => row.programCode === "DAY_HAB")).toMatchObject({
+      agencyGross: "65.0000",
+      internalAmount: "70.0000",
+      agencyAdditional: "-5.0000",
+      creditedIndividualHours: "11.0000",
+      physicalEmployeeHours: "6.0000",
+      moneyExcludedRows: 1,
+    });
+
+    const actual = await actualVsScheduledReport(pool, {
+      from: "2025-07-01",
+      to: "2025-07-31",
+    });
+    expect(actual.find((row) => row.programCode === "DAY_HAB")).toMatchObject({
+      actualHours: "11.0000",
+      actualInternal: null,
+      actualBaseMissingRows: 1,
+      internalVariance: null,
+    });
+
+    const metrics = await dashboardReportMetrics(pool);
+    expect(metrics.agencyAdditional).toEqual({ amount: "-3.0000", available: false });
+    expect(metrics.employeePayable).toEqual({ amount: "80.0000", available: false });
   });
 
   it("counts complete check identities across reused and numberless payroll rows", async () => {

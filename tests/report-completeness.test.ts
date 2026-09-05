@@ -10,6 +10,7 @@ import {
   listScheduledForReconcile,
 } from "@/lib/manage/reconciliation";
 import { REPORT_LIBRARY } from "@/components/reports/report-library";
+import { listTransactionsForGrid } from "@/lib/data/transactions-grid";
 
 const EXPECTED_CATALOG = {
   Budgets: [
@@ -442,5 +443,45 @@ describe("report completeness and source truth", () => {
       linkLabel: "Open check",
     });
     expect(table.rows[0].sourceHref).toMatch(/^\//);
+  });
+
+  it("keeps unknown Employee base and Agency spread null and exports completeness columns", async () => {
+    let ledgerSql = "";
+    const ledgerPool = {
+      query: vi.fn(async (sql: string) => {
+        ledgerSql = sql;
+        return { rows: [] };
+      }),
+    } as unknown as PgLikePool;
+    await listTransactionsForGrid(ledgerPool, fullAccess("manager-1", "manager"));
+    expect(ledgerSql).toContain("t.spreadsheet_internal_amount");
+    expect(ledgerSql).toContain("t.internal_rate_applied * t.imported_hours))::text AS agency_additional");
+    expect(ledgerSql).not.toContain("t.internal_rate_applied * t.imported_hours, 0))::text AS agency_additional");
+
+    const emptyPool = { query: vi.fn(async () => ({ rows: [] })) } as unknown as PgLikePool;
+    const [transactions] = await REPORTS.transactions.run(emptyPool, {});
+    expect(transactions.note).toContain("Money check");
+    expect(transactions.columns.map((column) => column.key)).toContain("moneyReconciliation");
+
+    const [spread] = await REPORTS["agency-earnings"].run(emptyPool, {});
+    expect(spread.note).toContain("excluded");
+    expect(spread.columns.map((column) => column.key)).toContain("excludedRows");
+
+    const [base] = await REPORTS["employee-payable"].run(emptyPool, {});
+    expect(base.note).toContain("Missing base rows");
+    expect(base.columns.map((column) => column.key)).toContain("missingBaseRows");
+
+    const [comparison] = await REPORTS["actual-vs-scheduled"].run(emptyPool, {});
+    expect(comparison.note).toContain("stays blank");
+    expect(comparison.columns.map((column) => column.key)).toEqual(expect.arrayContaining([
+      "scheduledBaseMissingRows",
+      "actualBaseMissingRows",
+    ]));
+
+    const transactionGrid = readFileSync("src/components/transactions/transactions-grid.tsx", "utf8");
+    const reportGrid = readFileSync("src/components/reports/report-grid.tsx", "utf8");
+    expect(transactionGrid).toContain("incomplete money");
+    expect(transactionGrid).toContain('key: "moneyReconciliation"');
+    expect(reportGrid).toContain('header: "Excluded money rows"');
   });
 });

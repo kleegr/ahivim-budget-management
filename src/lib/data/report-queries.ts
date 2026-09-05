@@ -288,6 +288,7 @@ export interface AgencyEarningsRow {
   internalAmount: string;
   agencyAdditional: string;
   transactionCount: number;
+  excludedRows: number;
 }
 
 /**
@@ -309,22 +310,41 @@ export async function agencyEarningsReport(
     internal_amount: string;
     agency_additional: string;
     transaction_count: string;
+    excluded_rows: string;
   }>(
-    `SELECT t.program_id                                        AS program_id,
+    `WITH activity AS (
+       SELECT t.program_id,
+              t.imported_amount,
+              COALESCE(
+                t.calculated_internal_amount,
+                t.spreadsheet_internal_amount,
+                t.internal_rate_applied * t.imported_hours
+              ) AS employee_base
+         FROM payroll_transactions t
+        WHERE ($1::date IS NULL OR canonical_service_date(
+                 t.period_begin, t.check_date, t.period_end
+               ) >= $1)
+          AND ($2::date IS NULL OR canonical_service_date(
+                 t.period_begin, t.check_date, t.period_end
+               ) <= $2)
+     )
+     SELECT t.program_id                                        AS program_id,
             p.code                                             AS program_code,
             p.name                                             AS program_name,
-            COALESCE(sum(t.imported_amount), 0)::text          AS agency_gross,
-            COALESCE(sum(t.calculated_internal_amount), 0)::text AS internal_amount,
-            COALESCE(sum(t.agency_additional_amount), 0)::text AS agency_additional,
-            count(*)::text                                     AS transaction_count
-     FROM payroll_transactions t
+            COALESCE(sum(t.imported_amount)
+              FILTER (WHERE t.imported_amount IS NOT NULL AND t.employee_base IS NOT NULL), 0)::text
+                                                               AS agency_gross,
+            COALESCE(sum(t.employee_base)
+              FILTER (WHERE t.imported_amount IS NOT NULL AND t.employee_base IS NOT NULL), 0)::text
+                                                               AS internal_amount,
+            COALESCE(sum(t.imported_amount - t.employee_base)
+              FILTER (WHERE t.imported_amount IS NOT NULL AND t.employee_base IS NOT NULL), 0)::text
+                                                               AS agency_additional,
+            count(*)::text                                     AS transaction_count,
+            count(*) FILTER (WHERE t.imported_amount IS NULL OR t.employee_base IS NULL)::text
+                                                               AS excluded_rows
+     FROM activity t
      LEFT JOIN programs p ON p.id = t.program_id
-     WHERE ($1::date IS NULL OR canonical_service_date(
-              t.period_begin, t.check_date, t.period_end
-            ) >= $1)
-       AND ($2::date IS NULL OR canonical_service_date(
-              t.period_begin, t.check_date, t.period_end
-            ) <= $2)
      GROUP BY t.program_id, p.code, p.name
      ORDER BY p.code NULLS LAST`,
     [from, to],
@@ -337,6 +357,7 @@ export async function agencyEarningsReport(
     internalAmount: toMoney(r.internal_amount),
     agencyAdditional: toMoney(r.agency_additional),
     transactionCount: Number(r.transaction_count),
+    excludedRows: Number(r.excluded_rows ?? 0),
   }));
 }
 
@@ -353,10 +374,11 @@ export interface EmployeePayableRow {
   unknownRecipient: string;
   physicalHours: string;
   checkCount: number;
+  missingBaseRows: number;
 }
 
 /**
- * Per employee: total employee payment, split three ways by the canonical route
+ * Per employee: canonical Employee base, split three ways by the canonical route
  * (transaction override, then program default), plus physical hours and the
  * number of distinct complete check identities. The three recipient buckets
  * always sum to total.
@@ -376,47 +398,84 @@ export async function employeePayableReport(
     unknown_recipient: string;
     physical_hours: string;
     check_count: string;
+    missing_base_rows: string;
   }>(
-    `SELECT e.id                                          AS employee_id,
-            e.display_name                                AS employee_name,
-            COALESCE(sum(t.employee_payment_amount), 0)::text AS total_payment,
-            COALESCE(sum(t.employee_payment_amount)
-              FILTER (WHERE effective_payment_recipient(
-                t.payment_recipient, p.payment_recipient
-              ) = 'employee'), 0)::text AS paid_to_employee,
-            COALESCE(sum(t.employee_payment_amount)
-              FILTER (WHERE effective_payment_recipient(
-                t.payment_recipient, p.payment_recipient
-              ) = 'excellent_staffing'), 0)::text AS payable_by_agency,
-            COALESCE(sum(t.employee_payment_amount)
-              FILTER (WHERE effective_payment_recipient(
-                t.payment_recipient, p.payment_recipient
-              ) = 'unknown'), 0)::text
-                                                          AS unknown_recipient,
-            COALESCE(sum(t.imported_hours), 0)::text      AS physical_hours,
-            count(DISTINCT ROW(
-              t.employee_id,
-              COALESCE(NULLIF(btrim(t.check_number), ''), ''),
-              COALESCE(t.check_date, 'infinity'::date),
-              COALESCE(t.period_begin, 'infinity'::date),
-              COALESCE(t.period_end, 'infinity'::date)
-            )) FILTER (WHERE
-              NULLIF(btrim(t.check_number), '') IS NOT NULL
-              OR t.check_date IS NOT NULL
-              OR t.period_begin IS NOT NULL
-              OR t.period_end IS NOT NULL
-            )::text                                     AS check_count
-     FROM employees e
-     JOIN payroll_transactions t ON t.employee_id = e.id
-     LEFT JOIN programs p ON p.id = t.program_id
-     WHERE ($1::date IS NULL OR canonical_service_date(
-              t.period_begin, t.check_date, t.period_end
-            ) >= $1)
-       AND ($2::date IS NULL OR canonical_service_date(
-              t.period_begin, t.check_date, t.period_end
-            ) <= $2)
-     GROUP BY e.id, e.display_name
-     ORDER BY e.display_name`,
+    `WITH activity AS (
+       SELECT t.*,
+              COALESCE(
+                t.calculated_internal_amount,
+                t.spreadsheet_internal_amount,
+                t.internal_rate_applied * t.imported_hours
+              ) AS employee_base,
+              effective_payment_recipient(
+                t.payment_recipient,
+                p.payment_recipient
+              ) AS effective_recipient
+         FROM payroll_transactions t
+         LEFT JOIN programs p ON p.id = t.program_id
+        WHERE t.employee_id IS NOT NULL
+          AND ($1::date IS NULL OR canonical_service_date(
+                 t.period_begin, t.check_date, t.period_end
+               ) >= $1)
+          AND ($2::date IS NULL OR canonical_service_date(
+                 t.period_begin, t.check_date, t.period_end
+               ) <= $2)
+     ), transaction_totals AS (
+       SELECT t.employee_id,
+              COALESCE(sum(t.employee_base), 0) AS total_payment,
+              COALESCE(sum(t.employee_base)
+                FILTER (WHERE t.effective_recipient = 'employee'), 0) AS paid_to_employee,
+              COALESCE(sum(t.employee_base)
+                FILTER (WHERE t.effective_recipient = 'excellent_staffing'), 0) AS payable_by_agency,
+              COALESCE(sum(t.employee_base)
+                FILTER (WHERE t.effective_recipient = 'unknown'), 0) AS unknown_recipient,
+              count(*) FILTER (WHERE t.employee_base IS NULL) AS missing_base_rows,
+              count(DISTINCT ROW(
+                t.employee_id,
+                COALESCE(NULLIF(btrim(t.check_number), ''), ''),
+                COALESCE(t.check_date, 'infinity'::date),
+                COALESCE(t.period_begin, 'infinity'::date),
+                COALESCE(t.period_end, 'infinity'::date)
+              )) FILTER (WHERE
+                NULLIF(btrim(t.check_number), '') IS NOT NULL
+                OR t.check_date IS NOT NULL
+                OR t.period_begin IS NOT NULL
+                OR t.period_end IS NOT NULL
+              ) AS check_count
+         FROM activity t
+        GROUP BY t.employee_id
+     ), physical_sessions AS (
+       SELECT t.employee_id,
+              COALESCE(
+                'session:' || t.service_session_id::text,
+                'transaction:' || t.id::text
+              ) AS activity_key,
+              max(COALESCE(session.physical_hours, t.imported_hours, 0)) AS physical_hours
+         FROM activity t
+         LEFT JOIN service_sessions session ON session.id = t.service_session_id
+        GROUP BY t.employee_id,
+                 COALESCE(
+                   'session:' || t.service_session_id::text,
+                   'transaction:' || t.id::text
+                 )
+     ), physical_totals AS (
+       SELECT employee_id, COALESCE(sum(physical_hours), 0) AS physical_hours
+         FROM physical_sessions
+        GROUP BY employee_id
+     )
+     SELECT employee.id                                   AS employee_id,
+            employee.display_name                         AS employee_name,
+            totals.total_payment::text                    AS total_payment,
+            totals.paid_to_employee::text                 AS paid_to_employee,
+            totals.payable_by_agency::text                AS payable_by_agency,
+            totals.unknown_recipient::text                AS unknown_recipient,
+            COALESCE(physical.physical_hours, 0)::text     AS physical_hours,
+            totals.check_count::text                      AS check_count,
+            totals.missing_base_rows::text                AS missing_base_rows
+       FROM transaction_totals totals
+       JOIN employees employee ON employee.id = totals.employee_id
+       LEFT JOIN physical_totals physical ON physical.employee_id = totals.employee_id
+      ORDER BY employee.display_name`,
     [from, to],
   );
   return rows.map((r) => ({
@@ -428,6 +487,7 @@ export async function employeePayableReport(
     unknownRecipient: toMoney(r.unknown_recipient),
     physicalHours: toHours(r.physical_hours),
     checkCount: Number(r.check_count),
+    missingBaseRows: Number(r.missing_base_rows ?? 0),
   }));
 }
 
@@ -449,6 +509,7 @@ export interface ProgramTotalsRow {
   internalAmount: string;
   agencyAdditional: string;
   groupSessions: number;
+  moneyExcludedRows: number;
 }
 
 /**
@@ -478,9 +539,15 @@ export async function programTotalsReport(
     internal_amount: string;
     agency_additional: string;
     group_sessions: string;
+    money_excluded_rows: string;
   }>(
     `WITH activity AS (
-       SELECT t.*
+       SELECT t.*,
+              COALESCE(
+                t.calculated_internal_amount,
+                t.spreadsheet_internal_amount,
+                t.internal_rate_applied * t.imported_hours
+              ) AS employee_base
          FROM payroll_transactions t
         WHERE ($1::date IS NULL OR canonical_service_date(
                  t.period_begin, t.check_date, t.period_end
@@ -494,9 +561,17 @@ export async function programTotalsReport(
               count(DISTINCT t.individual_id) AS individuals_served,
               count(DISTINCT t.employee_id) AS employees,
               COALESCE(sum(t.imported_hours), 0) AS credited_individual_hours,
-              COALESCE(sum(t.imported_amount), 0) AS agency_gross,
-              COALESCE(sum(t.calculated_internal_amount), 0) AS internal_amount,
-              COALESCE(sum(t.agency_additional_amount), 0) AS agency_additional
+               COALESCE(sum(t.imported_amount)
+                 FILTER (WHERE t.imported_amount IS NOT NULL AND t.employee_base IS NOT NULL), 0)
+                 AS agency_gross,
+               COALESCE(sum(t.employee_base)
+                 FILTER (WHERE t.imported_amount IS NOT NULL AND t.employee_base IS NOT NULL), 0)
+                 AS internal_amount,
+               COALESCE(sum(t.imported_amount - t.employee_base)
+                 FILTER (WHERE t.imported_amount IS NOT NULL AND t.employee_base IS NOT NULL), 0)
+                 AS agency_additional,
+               count(*) FILTER (WHERE t.imported_amount IS NULL OR t.employee_base IS NULL)
+                 AS money_excluded_rows
          FROM activity t
         GROUP BY t.program_id
      ),
@@ -533,7 +608,8 @@ export async function programTotalsReport(
             COALESCE(tx.agency_gross, 0)::text                      AS agency_gross,
             COALESCE(tx.internal_amount, 0)::text                   AS internal_amount,
             COALESCE(tx.agency_additional, 0)::text                 AS agency_additional,
-            COALESCE(physical.group_sessions, 0)::text              AS group_sessions
+            COALESCE(physical.group_sessions, 0)::text              AS group_sessions,
+            COALESCE(tx.money_excluded_rows, 0)::text               AS money_excluded_rows
        FROM programs p
        LEFT JOIN transaction_totals tx ON tx.program_id = p.id
        LEFT JOIN physical_totals physical ON physical.program_id = p.id
@@ -552,6 +628,7 @@ export async function programTotalsReport(
     internalAmount: toMoney(r.internal_amount),
     agencyAdditional: toMoney(r.agency_additional),
     groupSessions: Number(r.group_sessions),
+    moneyExcludedRows: Number(r.money_excluded_rows ?? 0),
   }));
 }
 
@@ -740,9 +817,8 @@ export interface DashboardReportMetrics {
 
 /**
  * The extra figures the redesigned dashboard tiles need. Money is summed in
- * SQL and returned as text. "available" is false when there
- * ARE transactions but none carry the figure, so the tile can say why rather
- * than print a misleading $0.
+ * SQL and returned as text. "available" is false when any transaction needed
+ * by a figure is incomplete, so a partial amount cannot look like a final total.
  */
 export async function dashboardReportMetrics(pool: PgLikePool): Promise<DashboardReportMetrics> {
   const today = agencyDate();
@@ -758,10 +834,28 @@ export async function dashboardReportMetrics(pool: PgLikePool): Promise<Dashboar
       unscheduled_billing: string;
     }>(
       `SELECT
-       (SELECT COALESCE(sum(agency_additional_amount), 0) FROM payroll_transactions)::text AS agency_additional,
-       (SELECT count(*) FROM payroll_transactions WHERE agency_additional_amount IS NOT NULL)::text AS agency_additional_rows,
-       (SELECT COALESCE(sum(employee_payment_amount), 0) FROM payroll_transactions)::text AS employee_payable,
-       (SELECT count(*) FROM payroll_transactions WHERE employee_payment_amount IS NOT NULL)::text AS employee_payable_rows,
+       (SELECT COALESCE(sum(
+          imported_amount - COALESCE(
+            calculated_internal_amount,
+            spreadsheet_internal_amount,
+            internal_rate_applied * imported_hours
+          )
+        ), 0) FROM payroll_transactions)::text AS agency_additional,
+       (SELECT count(*) FROM payroll_transactions WHERE imported_amount IS NOT NULL AND COALESCE(
+          calculated_internal_amount,
+          spreadsheet_internal_amount,
+          internal_rate_applied * imported_hours
+        ) IS NOT NULL)::text AS agency_additional_rows,
+       (SELECT COALESCE(sum(COALESCE(
+          calculated_internal_amount,
+          spreadsheet_internal_amount,
+          internal_rate_applied * imported_hours
+        )), 0) FROM payroll_transactions)::text AS employee_payable,
+       (SELECT count(*) FROM payroll_transactions WHERE COALESCE(
+          calculated_internal_amount,
+          spreadsheet_internal_amount,
+          internal_rate_applied * imported_hours
+        ) IS NOT NULL)::text AS employee_payable_rows,
        (SELECT count(*) FROM payroll_transactions)::text                                AS transaction_rows,
        (SELECT count(*) FROM scheduled_sessions
          WHERE status = 'pending' AND matched_transaction_id IS NULL)::text             AS unbilled_schedules,
@@ -797,11 +891,11 @@ export async function dashboardReportMetrics(pool: PgLikePool): Promise<Dashboar
   return {
     agencyAdditional: {
       amount: toMoney(r.agency_additional ?? 0),
-      available: txRows === 0 || Number(r.agency_additional_rows ?? 0) > 0,
+      available: txRows === 0 || Number(r.agency_additional_rows ?? 0) === txRows,
     },
     employeePayable: {
       amount: toMoney(r.employee_payable ?? 0),
-      available: txRows === 0 || Number(r.employee_payable_rows ?? 0) > 0,
+      available: txRows === 0 || Number(r.employee_payable_rows ?? 0) === txRows,
     },
     counts: {
       nearExhaustion,
@@ -1204,11 +1298,13 @@ export interface ActualVsScheduledRow {
   programCode: string | null;
   programName: string | null;
   scheduledHours: string;
-  scheduledInternal: string;
+  scheduledInternal: string | null;
+  scheduledBaseMissingRows: number;
   actualHours: string;
-  actualInternal: string;
+  actualInternal: string | null;
+  actualBaseMissingRows: number;
   hoursVariance: string;
-  internalVariance: string;
+  internalVariance: string | null;
 }
 
 /**
@@ -1241,16 +1337,22 @@ export async function actualVsScheduledReport(
     program_code: string | null;
     program_name: string | null;
     scheduled_hours: string;
-    scheduled_internal: string;
+    scheduled_internal: string | null;
+    scheduled_base_missing_rows: string;
     actual_hours: string;
-    actual_internal: string;
+    actual_internal: string | null;
+    actual_base_missing_rows: string;
     hours_variance: string;
-    internal_variance: string;
+    internal_variance: string | null;
   }>(
     `WITH sched AS (
        SELECT sa.individual_id, s.program_id,
               COALESCE(sum(sa.allocation_hours), 0) AS hours,
-              COALESCE(sum(sa.allocated_amount), 0) AS internal
+              CASE WHEN count(*) FILTER (WHERE sa.allocated_amount IS NULL) > 0
+                   THEN NULL
+                   ELSE COALESCE(sum(sa.allocated_amount), 0)
+              END AS internal,
+              count(*) FILTER (WHERE sa.allocated_amount IS NULL) AS missing_internal_rows
        FROM scheduled_allocations sa
        JOIN scheduled_sessions s ON s.id = sa.scheduled_session_id
        JOIN individuals sched_individual ON sched_individual.id = sa.individual_id
@@ -1267,11 +1369,14 @@ export async function actualVsScheduledReport(
               OR sched_program.name ILIKE '%' || $5 || '%')
        GROUP BY sa.individual_id, s.program_id
      ),
-     actual AS (
-       SELECT t.individual_id, t.program_id,
-              COALESCE(sum(t.imported_hours), 0) AS hours,
-              COALESCE(sum(t.calculated_internal_amount), 0) AS internal
-       FROM payroll_transactions t
+     actual_source AS (
+       SELECT t.individual_id, t.program_id, t.imported_hours,
+              COALESCE(
+                t.calculated_internal_amount,
+                t.spreadsheet_internal_amount,
+                t.internal_rate_applied * t.imported_hours
+              ) AS internal
+        FROM payroll_transactions t
        JOIN individuals actual_individual ON actual_individual.id = t.individual_id
        LEFT JOIN employees actual_employee ON actual_employee.id = t.employee_id
        LEFT JOIN programs actual_program ON actual_program.id = t.program_id
@@ -1286,9 +1391,19 @@ export async function actualVsScheduledReport(
               OR actual_individual.display_name ILIKE '%' || $3 || '%')
          AND ($4::text IS NULL OR t.employee_id::text = $4
               OR actual_employee.display_name ILIKE '%' || $4 || '%')
-         AND ($5::text IS NULL OR actual_program.code ILIKE '%' || $5 || '%'
-              OR actual_program.name ILIKE '%' || $5 || '%')
-       GROUP BY t.individual_id, t.program_id
+          AND ($5::text IS NULL OR actual_program.code ILIKE '%' || $5 || '%'
+               OR actual_program.name ILIKE '%' || $5 || '%')
+     ),
+     actual AS (
+       SELECT individual_id, program_id,
+              COALESCE(sum(imported_hours), 0) AS hours,
+              CASE WHEN count(*) FILTER (WHERE internal IS NULL) > 0
+                   THEN NULL
+                   ELSE COALESCE(sum(internal), 0)
+              END AS internal,
+              count(*) FILTER (WHERE internal IS NULL) AS missing_internal_rows
+         FROM actual_source
+        GROUP BY individual_id, program_id
      ),
      keys AS (
        SELECT individual_id, program_id FROM sched
@@ -1301,11 +1416,20 @@ export async function actualVsScheduledReport(
             p.code                                             AS program_code,
             p.name                                             AS program_name,
             COALESCE(s.hours, 0)::text                         AS scheduled_hours,
-            COALESCE(s.internal, 0)::text                      AS scheduled_internal,
+            (CASE WHEN s.individual_id IS NULL THEN 0 ELSE s.internal END)::text
+                                                               AS scheduled_internal,
+            COALESCE(s.missing_internal_rows, 0)::text          AS scheduled_base_missing_rows,
             COALESCE(a.hours, 0)::text                         AS actual_hours,
-            COALESCE(a.internal, 0)::text                      AS actual_internal,
+            (CASE WHEN a.individual_id IS NULL THEN 0 ELSE a.internal END)::text
+                                                               AS actual_internal,
+            COALESCE(a.missing_internal_rows, 0)::text          AS actual_base_missing_rows,
             (COALESCE(a.hours, 0) - COALESCE(s.hours, 0))::text       AS hours_variance,
-            (COALESCE(a.internal, 0) - COALESCE(s.internal, 0))::text AS internal_variance
+            (CASE
+               WHEN (s.individual_id IS NOT NULL AND s.internal IS NULL)
+                 OR (a.individual_id IS NOT NULL AND a.internal IS NULL)
+                 THEN NULL
+               ELSE COALESCE(a.internal, 0) - COALESCE(s.internal, 0)
+             END)::text                                       AS internal_variance
      FROM keys k
      JOIN individuals i ON i.id = k.individual_id
      LEFT JOIN programs p ON p.id = k.program_id
@@ -1323,11 +1447,13 @@ export async function actualVsScheduledReport(
     programCode: r.program_code,
     programName: r.program_name,
     scheduledHours: toHours(r.scheduled_hours),
-    scheduledInternal: toMoney(r.scheduled_internal),
+    scheduledInternal: r.scheduled_internal === null ? null : toMoney(r.scheduled_internal),
+    scheduledBaseMissingRows: Number(r.scheduled_base_missing_rows ?? 0),
     actualHours: toHours(r.actual_hours),
-    actualInternal: toMoney(r.actual_internal),
+    actualInternal: r.actual_internal === null ? null : toMoney(r.actual_internal),
+    actualBaseMissingRows: Number(r.actual_base_missing_rows ?? 0),
     hoursVariance: toHours(r.hours_variance),
-    internalVariance: toMoney(r.internal_variance),
+    internalVariance: r.internal_variance === null ? null : toMoney(r.internal_variance),
   }));
 }
 
@@ -1804,6 +1930,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
         key: "transactions",
         emptyMessage: "No committed transactions match this scope.",
         source: transactionTableSource(filters),
+        note: "Filtered money totals use only rows with both Funder billed and canonical Employee base. The Money check column keeps every excluded source row visible in screen and export.",
         columns: [
           { key: "serviceDate", header: "Service date", type: "date" },
           { key: "checkNumber", header: "Check number", type: "text" },
@@ -1814,6 +1941,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
           { key: "funderBilled", header: "Funder billed", type: "money" },
           { key: "employeeBase", header: "Employee base", type: "money" },
           { key: "agencySpread", header: "Agency spread", type: "money" },
+          { key: "moneyReconciliation", header: "Money check", type: "text" },
           { key: "checkNet", header: "Source check net (repeated)", type: "money" },
           { key: "recipient", header: "Payment recipient", type: "text" },
           { key: "sourceName", header: "Import source", type: "text" },
@@ -1821,27 +1949,38 @@ export const REPORTS: Record<string, ReportDefinition> = {
           { key: "sourceRowNumber", header: "Source row", type: "int" },
           sourceColumn("Ledger source", "Open transaction"),
         ],
-        rows: rows.map((row) => ({
-          serviceDate: row.serviceDate ?? null,
-          checkNumber: row.checkNumber,
-          employeeName: row.employee,
-          employeeId: row.employeeId,
-          individualName: row.individual,
-          individualId: row.individualId,
-          programName: row.programCode
-            ? `${row.programCode} — ${row.program ?? ""}`.replace(/ — $/, "")
-            : row.program,
-          hours: row.hours,
-          funderBilled: row.gross,
-          employeeBase: transactionEmployeeBase(row),
-          agencySpread: row.agencyAdditional,
-          checkNet: row.totalNetPay == null ? null : toMoney(row.totalNetPay),
-          recipient: row.paymentRecipient,
-          sourceName: row.sourceName ?? null,
-          sourceSheet: row.sourceSheet ?? null,
-          sourceRowNumber: row.sourceRowNumber ?? null,
-          sourceHref: transactionSourceHref(row),
-        })),
+        rows: rows.map((row) => {
+          const employeeBase = transactionEmployeeBase(row);
+          const moneyReconciliation = row.gross == null && employeeBase == null
+            ? "Missing billed + base"
+            : row.gross == null
+              ? "Missing funder billed"
+              : employeeBase == null
+                ? "Missing Employee base"
+                : "Complete";
+          return {
+            serviceDate: row.serviceDate ?? null,
+            checkNumber: row.checkNumber,
+            employeeName: row.employee,
+            employeeId: row.employeeId,
+            individualName: row.individual,
+            individualId: row.individualId,
+            programName: row.programCode
+              ? `${row.programCode} — ${row.program ?? ""}`.replace(/ — $/, "")
+              : row.program,
+            hours: row.hours,
+            funderBilled: row.gross,
+            employeeBase,
+            agencySpread: row.agencyAdditional,
+            moneyReconciliation,
+            checkNet: row.totalNetPay == null ? null : toMoney(row.totalNetPay),
+            recipient: row.paymentRecipient,
+            sourceName: row.sourceName ?? null,
+            sourceSheet: row.sourceSheet ?? null,
+            sourceRowNumber: row.sourceRowNumber ?? null,
+            sourceHref: transactionSourceHref(row),
+          };
+        }),
       }];
     },
   },
@@ -1859,12 +1998,14 @@ export const REPORTS: Record<string, ReportDefinition> = {
           key: "agency-earnings",
           emptyMessage: "No transactions fall in this date range.",
           source: transactionTableSource(filters),
+          note: "Funder billed, Employee base, and Agency spread reconcile only complete source rows. Rows missing gross or base are excluded from all three money totals and counted for review.",
           columns: [
             { key: "programName", header: "Program", type: "text" },
             { key: "agencyGross", header: "Funder billed", type: "money" },
             { key: "internalAmount", header: "Employee base", type: "money" },
             { key: "agencyAdditional", header: "Agency spread", type: "money" },
             { key: "transactionCount", header: "Transactions", type: "int" },
+            { key: "excludedRows", header: "Excluded incomplete rows", type: "int" },
             sourceColumn("Ledger source", "Open transactions"),
           ],
           rows: rows.map((r) => ({
@@ -1873,6 +2014,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             internalAmount: r.internalAmount,
             agencyAdditional: r.agencyAdditional,
             transactionCount: r.transactionCount,
+            excludedRows: r.excludedRows,
             sourceHref: txLink({
               programCode: r.programCode,
               program: r.programCode ? null : r.programName,
@@ -1889,15 +2031,16 @@ export const REPORTS: Record<string, ReportDefinition> = {
     key: "employee-payable",
     title: "Employee Base by recipient",
     description:
-      "Employee payment per employee, split by who it is paid to: directly to the employee, payable by the agency (Excellent Staffing), or an unresolved recipient.",
+      "Canonical Employee base per employee, split by who it is paid to: directly to the employee, payable by the agency (Excellent Staffing), or an unresolved recipient.",
     filters: DATE_FILTERS,
     async run(pool, filters) {
       const rows = await employeePayableReport(pool, { from: filters.from, to: filters.to });
       return [
         {
           key: "employee-payable",
-          emptyMessage: "No employee payments fall in this date range.",
+          emptyMessage: "No Employee-base transactions fall in this date range.",
           source: transactionTableSource(filters),
+          note: "Employee base uses the canonical calculated, spreadsheet, then rate-times-hours fallback. Missing base rows are excluded from recipient totals and counted explicitly.",
           columns: [
             { key: "employeeName", header: "Employee", type: "text" },
             { key: "totalPayment", header: "Employee base", type: "money" },
@@ -1906,6 +2049,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "unknownRecipient", header: "Recipient unresolved", type: "money" },
             { key: "physicalHours", header: "Physical hours", type: "hours" },
             { key: "checkCount", header: "Checks", type: "int" },
+            { key: "missingBaseRows", header: "Missing base rows", type: "int" },
             sourceColumn("Ledger source", "Open transactions"),
           ],
           rows: rows.map((r) => ({
@@ -1917,6 +2061,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             unknownRecipient: r.unknownRecipient,
             physicalHours: r.physicalHours,
             checkCount: r.checkCount,
+            missingBaseRows: r.missingBaseRows,
             sourceHref: txLink({
               employeeId: r.employeeId,
               serviceFrom: asDate(filters.from),
@@ -1941,6 +2086,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
           key: "program-totals",
           emptyMessage: "No programs are configured.",
           source: transactionTableSource(filters),
+          note: "Money columns reconcile only rows with both Funder billed and canonical Employee base; incomplete money rows are counted separately.",
           columns: [
             { key: "programName", header: "Program", type: "text" },
             { key: "individualsServed", header: "Individuals", type: "int" },
@@ -1951,6 +2097,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "internalAmount", header: "Employee base", type: "money" },
             { key: "agencyAdditional", header: "Agency spread", type: "money" },
             { key: "groupSessions", header: "Group sessions", type: "int" },
+            { key: "moneyExcludedRows", header: "Excluded money rows", type: "int" },
             sourceColumn("Ledger source", "Open transactions"),
           ],
           rows: rows.map((r) => ({
@@ -1963,6 +2110,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             internalAmount: r.internalAmount,
             agencyAdditional: r.agencyAdditional,
             groupSessions: r.groupSessions,
+            moneyExcludedRows: r.moneyExcludedRows,
             sourceHref: txLink({
               programCode: r.programCode,
               serviceFrom: asDate(filters.from),
@@ -2591,6 +2739,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
         key: "employee-activity",
         emptyMessage: "No Employee activity matches this scope.",
         source: transactionTableSource(filters),
+        note: "Employee base is shown only when every matching transaction for that Employee has a canonical base; missing rows are counted for review.",
         columns: [
           { key: "employeeName", header: "Employee", type: "text" },
           { key: "firstServiceDate", header: "First service", type: "date" },
@@ -2603,6 +2752,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
           { key: "groupSessions", header: "Group sessions", type: "int" },
           { key: "funderBilled", header: "Funder billed", type: "money" },
           { key: "employeeBase", header: "Employee base", type: "money" },
+          { key: "employeeBaseMissingRows", header: "Missing base rows", type: "int" },
           sourceColumn("Ledger source", "Open transactions"),
         ],
         rows: rows.map((row) => ({
@@ -2618,6 +2768,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
           groupSessions: row.groupSessions,
           funderBilled: row.funderBilled,
           employeeBase: row.employeeBase,
+          employeeBaseMissingRows: row.employeeBaseMissingRows,
           sourceHref: row.sourceHref,
         })),
       }];
@@ -2648,6 +2799,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
           key: "actual-vs-scheduled",
           emptyMessage: "No scheduled or actual activity to compare.",
           source: { href: "/schedule?view=calendar", label: "Open the Schedule calendar" },
+          note: "Employee-base comparison stays blank when a matching scheduled or recorded row lacks its base amount; the missing-row columns show exactly where review is required.",
           columns: [
             { key: "individualName", header: "Individual", type: "text" },
             { key: "programCode", header: "Program", type: "text" },
@@ -2655,7 +2807,9 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "actualHours", header: "Actual hours", type: "hours" },
             { key: "hoursVariance", header: "Hours variance", type: "hours" },
             { key: "scheduledInternal", header: "Scheduled Employee base", type: "money" },
+            { key: "scheduledBaseMissingRows", header: "Scheduled missing base", type: "int" },
             { key: "actualInternal", header: "Recorded Employee base", type: "money" },
+            { key: "actualBaseMissingRows", header: "Recorded missing base", type: "int" },
             { key: "internalVariance", header: "Employee base variance", type: "money" },
             { key: "scheduleHref", header: "Schedule source", type: "text", linkLabel: "Open schedule" },
             { key: "transactionHref", header: "Recorded source", type: "text", linkLabel: "Open transactions" },
@@ -2668,7 +2822,9 @@ export const REPORTS: Record<string, ReportDefinition> = {
             actualHours: r.actualHours,
             hoursVariance: r.hoursVariance,
             scheduledInternal: r.scheduledInternal,
+            scheduledBaseMissingRows: r.scheduledBaseMissingRows,
             actualInternal: r.actualInternal,
+            actualBaseMissingRows: r.actualBaseMissingRows,
             internalVariance: r.internalVariance,
             scheduleHref: `/schedule?view=calendar&individualId=${encodeURIComponent(r.individualId)}${r.programId ? `&programId=${encodeURIComponent(r.programId)}` : ""}${asDate(filters.from) ? `&date=${encodeURIComponent(asDate(filters.from)!)}` : ""}`,
             transactionHref: txLink({

@@ -145,13 +145,14 @@ export default function ReportGrid({
     initialSort: [],
     initialHidden: [],
     computeTotals: (filtered) => {
-      if (reportKey === "payroll-checks") {
+      if (reportKey === "payroll-checks" || reportKey === "transactions") {
         const text = (value: ReportCell) => typeof value === "string" ? value : null;
+        const transactionsReport = reportKey === "transactions";
         const exact = computeGridTotals(filtered.map((row) => ({
           id: text(row.transactionId) ?? "",
-          gross: text(row.gross),
-          internalAmount: text(row.internalAmount),
-          agencyAdditional: text(row.agencyAdditional),
+          gross: text(row[transactionsReport ? "funderBilled" : "gross"]),
+          internalAmount: text(row[transactionsReport ? "employeeBase" : "internalAmount"]),
+          agencyAdditional: text(row[transactionsReport ? "agencySpread" : "agencyAdditional"]),
           hours: text(row.hours),
           totalNetPay: text(row.totalNetPay),
           payTo: text(row.payTo),
@@ -160,20 +161,33 @@ export default function ReportGrid({
           periodBegin: text(row.periodBegin),
           periodEnd: text(row.periodEnd),
           individualId: text(row.individualId),
-          individual: text(row.individual),
+          individual: text(row[transactionsReport ? "individualName" : "individual"]),
           employeeId: text(row.employeeId),
-          employee: text(row.employee),
+          employee: text(row[transactionsReport ? "employeeName" : "employee"]),
         })));
         return {
           tiles: [
             { key: "funderBilled", header: "Funder billed", label: formatMoney(exact.gross) },
             { key: "employeeBase", header: "Employee base", label: formatMoney(exact.internal) },
             { key: "agencySpread", header: "Agency spread", label: formatMoney(exact.agencyAdditional) },
-            { key: "checkNet", header: "Deduplicated source net", label: formatMoney(exact.netPerCheck) },
+            ...(!transactionsReport ? [{
+              key: "checkNet",
+              header: "Deduplicated source net",
+              label: formatMoney(exact.netPerCheck),
+            }] : []),
             { key: "hours", header: "Hours", label: formatHours(exact.hours) },
-            { key: "checks", header: "Checks", label: exact.checks.toLocaleString() },
+            ...(!transactionsReport ? [{
+              key: "checks",
+              header: "Checks",
+              label: exact.checks.toLocaleString(),
+            }] : []),
             { key: "individuals", header: "Individuals", label: exact.individuals.toLocaleString() },
             { key: "employees", header: "Employees", label: exact.employees.toLocaleString() },
+            ...(exact.moneyExcludedRows > 0 ? [{
+              key: "moneyExcludedRows",
+              header: "Excluded money rows",
+              label: exact.moneyExcludedRows.toLocaleString(),
+            }] : []),
           ],
           rowCount: filtered.length,
           source: totalsSource(filtered, reportKey, table.source),

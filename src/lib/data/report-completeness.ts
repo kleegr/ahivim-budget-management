@@ -220,7 +220,8 @@ export interface EmployeeActivityRow {
   physicalHours: string;
   groupSessions: number;
   funderBilled: string;
-  employeeBase: string;
+  employeeBase: string | null;
+  employeeBaseMissingRows: number;
   sourceHref: string;
 }
 
@@ -245,7 +246,8 @@ export async function employeeActivityReport(
     physical_hours: string;
     group_sessions: string;
     funder_billed: string;
-    employee_base: string;
+    employee_base: string | null;
+    employee_base_missing_rows: string;
   }>(
     `WITH activity AS (
        SELECT t.*,
@@ -266,12 +268,23 @@ export async function employeeActivityReport(
               count(DISTINCT program_id)::text AS program_count,
               COALESCE(sum(imported_hours), 0)::text AS credited_hours,
               COALESCE(sum(imported_amount), 0)::text AS funder_billed,
-              COALESCE(sum(COALESCE(
-                calculated_internal_amount,
-                spreadsheet_internal_amount,
-                internal_rate_applied * imported_hours,
-                0
-              )), 0)::text AS employee_base
+               (CASE WHEN count(*) FILTER (WHERE COALESCE(
+                    calculated_internal_amount,
+                    spreadsheet_internal_amount,
+                    internal_rate_applied * imported_hours
+                  ) IS NULL) > 0
+                 THEN NULL
+                 ELSE COALESCE(sum(COALESCE(
+                    calculated_internal_amount,
+                    spreadsheet_internal_amount,
+                    internal_rate_applied * imported_hours
+                  )), 0)
+                END)::text AS employee_base,
+               count(*) FILTER (WHERE COALESCE(
+                 calculated_internal_amount,
+                 spreadsheet_internal_amount,
+                 internal_rate_applied * imported_hours
+               ) IS NULL)::text AS employee_base_missing_rows
          FROM activity
         GROUP BY employee_id
      ), physical_sessions AS (
@@ -301,7 +314,8 @@ export async function employeeActivityReport(
             COALESCE(physical.physical_hours, '0') AS physical_hours,
             COALESCE(physical.group_sessions, '0') AS group_sessions,
             totals.funder_billed,
-            totals.employee_base
+            totals.employee_base,
+            totals.employee_base_missing_rows
        FROM transaction_totals totals
        JOIN employees employee ON employee.id = totals.employee_id
        LEFT JOIN physical_totals physical ON physical.employee_id = totals.employee_id
@@ -320,7 +334,8 @@ export async function employeeActivityReport(
     physicalHours: toHours(row.physical_hours),
     groupSessions: Number(row.group_sessions),
     funderBilled: toMoney(row.funder_billed),
-    employeeBase: toMoney(row.employee_base),
+    employeeBase: row.employee_base === null ? null : toMoney(row.employee_base),
+    employeeBaseMissingRows: Number(row.employee_base_missing_rows ?? 0),
     sourceHref: txLink({
       employeeId: row.employee_id,
       serviceFrom: from,

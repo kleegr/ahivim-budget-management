@@ -21,6 +21,8 @@ import { redactTransactionFields } from "@/lib/auth/money-redaction";
  * agencyAdditional is intentionally *not* floored at zero here, so the filtered
  * total reconciles to the workbook's R total ($145,212.09). The floored
  * "agency retention" figure is a separate business concept kept on the row.
+ * If no canonical internal/base source exists, both internal and spread stay
+ * null; treating an unknown base as zero would invent a valid-looking spread.
  */
 export interface GridTransaction {
   id: string;
@@ -173,7 +175,7 @@ export async function listTransactionsForGrid(
                t.internal_rate_applied * t.imported_hours)::text AS internal_amount,
       (t.imported_amount
          - COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
-                    t.internal_rate_applied * t.imported_hours, 0))::text AS agency_additional,
+                    t.internal_rate_applied * t.imported_hours))::text AS agency_additional,
       t.payment_recipient,
       t.import_batch_id,
       t.import_row_id,

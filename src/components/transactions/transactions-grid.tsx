@@ -91,6 +91,7 @@ const COLUMNS: ColumnDef<GridTransaction>[] = [
   { key: "employeeRate", label: "Employee rate", kind: "money", width: 115, accessor: (r) => r.employeeRate ?? null },
   { key: "internalAmount", label: "Employee base", kind: "money", width: 150, accessor: (r) => r.internalAmount },
   { key: "agencyAdditional", label: "Agency spread", kind: "money", width: 160, accessor: (r) => r.agencyAdditional },
+  { key: "moneyReconciliation", label: "Money check", kind: "text", width: 170, accessor: moneyReconciliationStatus },
   { key: "verifiedCheckGross", label: "Verified check gross", kind: "money", width: 155, accessor: (r) => r.verifiedCheckGross ?? null },
   { key: "verifiedCheckNet", label: "Verified check net", kind: "money", width: 145, accessor: (r) => r.verifiedCheckNet ?? null },
   { key: "withholding", label: "Withholding", kind: "money", width: 110, accessor: (r) => r.withholding ?? null },
@@ -119,6 +120,13 @@ const colWidth = (widths: Record<string, number>, c: ColumnDef<GridTransaction>)
 
 const hasAmount = (value: string | null | undefined): value is string =>
   value !== null && value !== undefined;
+
+function moneyReconciliationStatus(row: GridTransaction): string {
+  if (row.gross == null && row.internalAmount == null) return "Missing billed + base";
+  if (row.gross == null) return "Missing funder billed";
+  if (row.internalAmount == null) return "Missing Employee base";
+  return "Complete";
+}
 
 /* -------------------------------------------------------------- component */
 
@@ -158,6 +166,7 @@ export default function TransactionsGrid({
       if (column.key === "rate" || column.key === "gross") return fields.canSeeBilledAmounts;
       if (column.key === "employeeRate" || column.key === "internalAmount") return fields.canSeeEmployeeAmounts;
       if (column.key === "agencyAdditional") return fields.canSeeAgencySpread;
+      if (column.key === "moneyReconciliation") return fields.canSeeBilledAmounts && fields.canSeeEmployeeAmounts;
       if (column.key === "verifiedCheckGross") return fields.canSeeCheckGross;
       if (column.key === "totalNetPay" || column.key === "verifiedCheckNet") return fields.canSeeCheckNet;
       if (column.key === "verificationStatus") return fields.canSeeCheckGross || fields.canSeeCheckNet;
@@ -192,6 +201,7 @@ export default function TransactionsGrid({
   });
 
   const { visibleColumns, sorted, widths } = grid;
+  const canSeeReconciliationTotals = fields.canSeeBilledAmounts && fields.canSeeEmployeeAmounts;
   const router = useRouter();
 
   const [selected, setSelected] = useState<GridTransaction | null>(null);
@@ -365,14 +375,19 @@ export default function TransactionsGrid({
       {totals ? (
         <div className="space-y-2">
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {fields.canSeeBilledAmounts ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Funder billed</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.gross)}</div></div> : null}
-            {fields.canSeeEmployeeAmounts ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee base</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div> : null}
-            {fields.canSeeAgencySpread ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency spread</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div> : null}
+            {canSeeReconciliationTotals ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Funder billed</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.gross)}</div></div> : null}
+            {canSeeReconciliationTotals ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee base</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div> : null}
+            {canSeeReconciliationTotals && fields.canSeeAgencySpread ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency spread</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div> : null}
             {fields.canSeeHours ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Hours</div><div className="text-xl font-semibold tabular-nums">{formatHours(totals.hours)}</div></div> : null}
-            {!fields.canSeeBilledAmounts && !fields.canSeeEmployeeAmounts && !fields.canSeeAgencySpread ? (
+            {!canSeeReconciliationTotals ? (
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Recorded services</div><div className="text-xl font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
             ) : null}
           </div>
+          {totals.moneyExcludedRows > 0 && canSeeReconciliationTotals ? (
+            <p className="text-xs font-medium text-[var(--color-warn)]">
+              {totals.moneyExcludedRows.toLocaleString()} incomplete money {totals.moneyExcludedRows === 1 ? "row is" : "rows are"} excluded from the money totals above.
+            </p>
+          ) : null}
           <button
             type="button"
             onClick={() => setShowMore((v) => !v)}
@@ -598,9 +613,10 @@ export default function TransactionsGrid({
       {selTotals ? (
         <div className="sticky bottom-0 z-30 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-[var(--color-primary)] bg-[var(--color-primary-tint)] px-3 py-2 text-sm shadow-sm">
           <span role="status" aria-live="polite" className="font-semibold text-[var(--color-ink)]">{selectedRows.length.toLocaleString()} selected</span>
-          {fields.canSeeBilledAmounts ? <span className="text-[var(--color-ink-soft)]">Funder billed <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.gross)}</span></span> : null}
-          {fields.canSeeEmployeeAmounts ? <span className="text-[var(--color-ink-soft)]">Employee base <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.internal)}</span></span> : null}
-          {fields.canSeeAgencySpread ? <span className="text-[var(--color-ink-soft)]">Agency spread <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.agencyAdditional)}</span></span> : null}
+          {canSeeReconciliationTotals ? <span className="text-[var(--color-ink-soft)]">Funder billed <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.gross)}</span></span> : null}
+          {canSeeReconciliationTotals ? <span className="text-[var(--color-ink-soft)]">Employee base <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.internal)}</span></span> : null}
+          {canSeeReconciliationTotals && fields.canSeeAgencySpread ? <span className="text-[var(--color-ink-soft)]">Agency spread <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.agencyAdditional)}</span></span> : null}
+          {selTotals.moneyExcludedRows > 0 && canSeeReconciliationTotals ? <span className="font-medium text-[var(--color-warn)]">{selTotals.moneyExcludedRows.toLocaleString()} incomplete {selTotals.moneyExcludedRows === 1 ? "row" : "rows"} excluded</span> : null}
           {fields.canSeeHours ? <span className="text-[var(--color-ink-soft)]">Hours <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(selTotals.hours)}</span></span> : null}
           {fields.canSeeCheckNet ? (
             <span className="text-[var(--color-ink-soft)]">Verified net <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.verifiedCheckNet)}</span></span>
