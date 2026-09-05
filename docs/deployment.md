@@ -9,6 +9,7 @@
 | `BOOTSTRAP_ADMIN_EMAIL` | first deploy only | Email of the first administrator. |
 | `BOOTSTRAP_ADMIN_PASSWORD` | first deploy only | Password of the first administrator, minimum 10 characters. |
 | `MIGRATION_TOKEN` | optional | Allows `POST /api/admin/migrate` and the one-time `POST /api/sync/bootstrap` without a signed-in administrator. Needed only for a database that has no administrator yet, or for automated deploys. |
+| `DISABLE_AUTO_MIGRATE` | externally managed migrations only | Set to `1` to prevent the application from applying migrations. Startup still performs a read-only checksum verification and fails until every migration shipped in the build has been applied externally. |
 | `CRON_SECRET` | scheduled sync | Authenticates Vercel Cron calls to `/api/sync/cron`. Use a separate random secret; the route fails closed when it is absent, though a signed-in administrator may still trigger it manually. |
 | `GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL` | private Sheet sync | Service-account email allowed to view the configured sheet and edit its Paid column. |
 | `GOOGLE_SHEETS_PRIVATE_KEY` | private Sheet sync | Private key for that service account. Escaped `\n` line breaks are accepted. |
@@ -67,9 +68,15 @@ silently accepting a changed checksum. Add a new migration instead.
 Production also calls the runner from the Node instrumentation hook. The normal
 current-schema path is one lock-free checksum query. When a deployment is
 behind, one instance takes a nonblocking advisory lock and applies the pending
-migrations; other cold starts continue instead of waiting on that lock. Set
-`DISABLE_AUTO_MIGRATE=1` only when migrations are deliberately managed outside
-the application.
+migrations. Other cold starts wait for a bounded period and recheck the ledger;
+they continue only after the exact shipped schema is current. A migration error,
+checksum mismatch, or lock-holder timeout stops that cold start rather than
+serving the new application against an incompatible schema.
+
+Set `DISABLE_AUTO_MIGRATE=1` only when migrations are deliberately managed
+outside the application. Disabled mode performs no migration writes, but it does
+not bypass readiness: apply every pending migration before deploying the build,
+because the read-only startup check rejects an older schema.
 
 The same runner can be invoked manually in three ways:
 

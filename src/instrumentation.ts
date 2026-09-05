@@ -9,6 +9,8 @@
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const { runMigrationsOnce } = await import("./lib/db/auto-migrate");
+    // This rejection is intentionally uncaught: serving the new build against
+    // an older or failed schema is less safe than failing this cold start.
     await runMigrationsOnce();
     const { ensurePostMigrationTasks } = await import("./lib/db/post-migrate");
     await ensurePostMigrationTasks();
