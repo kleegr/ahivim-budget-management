@@ -10,6 +10,7 @@ const workspacePaths = [
 ] as const;
 const workspace = workspacePaths.map((path) => readFileSync(path, "utf8")).join("\n");
 const reportLibrary = readFileSync("src/app/(app)/reports/page.tsx", "utf8");
+const reportAccess = readFileSync("src/lib/data/report-access.ts", "utf8");
 const incomeApi = readFileSync("src/app/api/agency-financials/income/route.ts", "utf8");
 const manualSeparateApi = readFileSync("src/app/api/agency-financials/income/[id]/count-separately/route.ts", "utf8");
 const splitApi = readFileSync("src/app/api/agency-financials/program-splits/route.ts", "utf8");
@@ -38,7 +39,8 @@ describe("owner agency financials access and interface", () => {
 
   it("guards the page as administrator-only and hides its report card from managers", () => {
     expect(page).toContain('requireUser("admin")');
-    expect(reportLibrary).toContain('report.ownerOnly && user.role !== "admin"');
+    expect(reportLibrary).toContain("canAccessReport(report.key, access.data, user.role)");
+    expect(reportAccess).toContain('"agency-financials": { organizationWide: true, adminOnly: true }');
     for (const api of [incomeApi, manualSeparateApi, splitApi, payRuleApi]) {
       expect(api).toContain('apiUser("admin")');
       expect(api).toContain("sameOriginOrFail(request)");
