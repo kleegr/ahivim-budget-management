@@ -47,7 +47,11 @@ function sourceCellLabel(key: string, fallback: string): string {
   return fallback;
 }
 
-function totalsSource(rows: ReportCellRow[], reportKey: string, tableKey: string): { href: string; label: string } | null {
+function totalsSource(
+  rows: ReportCellRow[],
+  reportKey: string,
+  tableSource: ReportTable["source"],
+): { href: string; label: string } | null {
   if (rows.length === 0) return null;
   if (reportKey === "payroll-checks") {
     const ids = [...new Set(rows.map((row) => row.transactionId).filter((id): id is string => typeof id === "string"))];
@@ -56,7 +60,7 @@ function totalsSource(rows: ReportCellRow[], reportKey: string, tableKey: string
       for (const id of ids) query.append("transactionId", id);
       return { href: `/transactions?${query}`, label: `Open ${ids.length.toLocaleString()} exact source row${ids.length === 1 ? "" : "s"}` };
     }
-    return { href: `#report-source-${tableKey}`, label: "Review the filtered source rows below" };
+    return tableSource ?? null;
   }
   if (reportKey === "individual-put-away") {
     if (rows.length === 1 && typeof rows[0]?.statementSource === "string") {
@@ -71,10 +75,7 @@ function totalsSource(rows: ReportCellRow[], reportKey: string, tableKey: string
       label: "Open the source Money workspace",
     };
   }
-  // For aggregate and operational reports, the filtered table is the canonical
-  // source set for its visible totals. Keep every total drillable even when no
-  // narrower record-level destination exists.
-  return { href: `#report-source-${tableKey}`, label: "Review the filtered source rows below" };
+  return tableSource ?? null;
 }
 
 /* ---------------------------------------------------------------- totals type */
@@ -107,7 +108,17 @@ export default function ReportGrid({
           emptyText: "—",
           percentPlaces: 1,
         };
-        if (isEntityKey(c.key)) {
+        if (c.linkLabel) {
+          col.render = (row, text) => {
+            const value = row[c.key];
+            const href = typeof value === "string" && value.startsWith("/") ? value : null;
+            return href ? (
+              <Link href={href} className="font-medium text-[var(--color-primary)] hover:underline">
+                {c.linkLabel}
+              </Link>
+            ) : text;
+          };
+        } else if (isEntityKey(c.key)) {
           col.render = (row, text) => {
             const href = entityHref(row, c.key);
             return href ? (
@@ -163,7 +174,7 @@ export default function ReportGrid({
             { key: "employees", header: "Employees", label: exact.employees.toLocaleString() },
           ],
           rowCount: filtered.length,
-          source: totalsSource(filtered, reportKey, table.key),
+          source: totalsSource(filtered, reportKey, table.source),
         };
       }
       const tiles = table.columns
@@ -193,7 +204,7 @@ export default function ReportGrid({
                 : sum.toDecimalPlaces(0).toNumber().toLocaleString();
           return [{ key: c.key, header: c.header, label }];
         });
-      return { tiles, rowCount: filtered.length, source: totalsSource(filtered, reportKey, table.key) };
+      return { tiles, rowCount: filtered.length, source: totalsSource(filtered, reportKey, table.source) };
     },
     serializeHidden: true,
   });
@@ -207,10 +218,16 @@ export default function ReportGrid({
         <h2 className="display text-[0.95rem] font-semibold text-[var(--color-ink)]">{table.title}</h2>
       ) : null}
 
+      {table.note ? (
+        <p className="border-l-2 border-[var(--color-primary)] pl-3 text-xs leading-5 text-[var(--color-ink-soft)]">
+          {table.note}
+        </p>
+      ) : null}
+
       <Toolbar
         grid={grid}
         searchPlaceholder="Search this report…"
-        exportEndpoint="/api/grid/export"
+        exportEndpoint={`/api/grid/export?report=${encodeURIComponent(reportKey)}`}
         exportTitle={table.title ?? "Report"}
         exportFilename={reportKey}
         showColumnChooser
@@ -251,7 +268,7 @@ export default function ReportGrid({
       ) : null}
 
       {/* grid */}
-      <div id={`report-source-${table.key}`} className="scroll-thin max-h-[62vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
+      <div id={`report-table-${table.key}`} className="scroll-thin max-h-[62vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
         <table className="min-w-full border-collapse text-sm">
           <thead className="sticky top-0 z-20">
             <tr>

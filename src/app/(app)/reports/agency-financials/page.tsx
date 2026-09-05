@@ -57,9 +57,9 @@ export default async function AgencyFinancialsPage({
     <>
       <PageHeader
         eyebrow="Owner only"
-        title="Agency financials"
-        description="Actual income and the expenses tied to it. No budgets or projections are counted as income."
-        meta={<><CircleDollarSign aria-hidden className="h-3.5 w-3.5" /> Income and expenses stay separated to their source records.</>}
+        title="Agency Financials"
+        description="What actual income came in, what actual expenses apply, and what remains for the agency?"
+        meta={<><CircleDollarSign aria-hidden className="h-3.5 w-3.5" /> Selected month, using recorded actuals; budgets and projections are not income.</>}
       />
       {!result.ok ? (
         <ErrorPanel title="Agency financials could not load">{result.error}</ErrorPanel>

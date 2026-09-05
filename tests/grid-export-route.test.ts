@@ -30,8 +30,10 @@ const PAYLOAD = {
   ],
 };
 
-function request(options: { origin?: string; body?: unknown } = {}): NextRequest {
-  return new NextRequest("http://localhost/api/grid/export", {
+function request(options: { origin?: string; body?: unknown; report?: string } = {}): NextRequest {
+  const url = new URL("http://localhost/api/grid/export");
+  if (options.report) url.searchParams.set("report", options.report);
+  return new NextRequest(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -97,6 +99,65 @@ describe("generic grid export route", () => {
     expect(mocks.apiUser).toHaveBeenCalledWith("viewer");
     expect(mocks.getPool).not.toHaveBeenCalled();
     expect(mocks.resolveAccessScope).not.toHaveBeenCalled();
+  });
+
+  it("keeps report-mode export manager-only and applies resolved report permissions", async () => {
+    const user = {
+      id: "00000000-0000-4000-8000-000000000001",
+      actorId: "00000000-0000-4000-8000-000000000001",
+      email: "manager@example.com",
+      displayName: "Adjusted manager",
+      role: "manager",
+    };
+    mocks.apiUser.mockResolvedValue({ ...user, role: "viewer" });
+    const viewerResponse = await POST(request({
+      origin: "http://localhost",
+      report: "payroll-checks",
+    }));
+    expect(viewerResponse.status).toBe(403);
+    expect(mocks.resolveAccessScope).not.toHaveBeenCalled();
+
+    mocks.apiUser.mockResolvedValue(user);
+    mocks.getPool.mockReturnValue({ query: vi.fn() });
+    mocks.resolveAccessScope.mockResolvedValue({
+      userId: user.id,
+      role: "manager",
+      full: true,
+      allIndividuals: true,
+      allEmployees: true,
+      canSeeTransactions: true,
+      canSeeHours: true,
+      canSeeBilledAmounts: true,
+      canSeeEmployeeAmounts: true,
+      canSeeAgencySpread: true,
+      canSeeCheckNet: false,
+    });
+    const deniedResponse = await POST(request({
+      origin: "http://localhost",
+      report: "payroll-checks",
+    }));
+    expect(deniedResponse.status).toBe(403);
+    expect(await deniedResponse.json()).toEqual({ ok: false, error: "Report access denied" });
+    expect(mocks.resolveAccessScope).toHaveBeenCalledWith(mocks.getPool.mock.results[0].value, user);
+
+    mocks.resolveAccessScope.mockResolvedValue({
+      userId: user.id,
+      role: "manager",
+      full: true,
+      allIndividuals: true,
+      allEmployees: true,
+      canSeeTransactions: true,
+      canSeeHours: true,
+      canSeeBilledAmounts: true,
+      canSeeEmployeeAmounts: true,
+      canSeeAgencySpread: true,
+      canSeeCheckNet: true,
+    });
+    const allowedResponse = await POST(request({
+      origin: "http://localhost",
+      report: "payroll-checks",
+    }));
+    expect(allowedResponse.status).toBe(200);
   });
 
   it("rejects resource-heavy or invalid export payloads", async () => {

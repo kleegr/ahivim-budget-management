@@ -1,8 +1,11 @@
 import Link from "next/link";
 import { ArrowRight, Clock3, FileDown, ShieldCheck } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
+import { canAccessReport } from "@/lib/data/report-access";
+import { withDb } from "@/lib/data/pool";
 import { REPORTS } from "@/lib/data/report-queries";
-import { PageHeader } from "@/components/ui";
+import { ErrorPanel, PageHeader } from "@/components/ui";
 import { REPORT_LIBRARY } from "@/components/reports/report-library";
 
 export const dynamic = "force-dynamic";
@@ -10,6 +13,7 @@ export const metadata = { title: "Reports - Ahivim Budget Management" };
 
 export default async function ReportsPage() {
   const user = await requireUser("manager");
+  const access = await withDb((pool) => resolveAccessScope(pool, user));
 
   return (
     <>
@@ -19,8 +23,15 @@ export default async function ReportsPage() {
         description="Choose the decision you need to make. Every report states its time basis, keeps money stages separate, and exports the same filtered rows shown on screen."
       />
 
-      <div className="space-y-10">
+      {!access.ok ? (
+        <ErrorPanel title="Reports could not load">{access.error}</ErrorPanel>
+      ) : <div className="space-y-10">
         {REPORT_LIBRARY.map((group) => {
+          const visibleReports = group.reports.filter((report) => (
+            canAccessReport(report.key, access.data, user.role)
+            && (report.href || REPORTS[report.key])
+          ));
+          if (visibleReports.length === 0) return null;
           const headingId = `report-group-${group.heading.replaceAll(" ", "-").toLowerCase()}`;
           return (
             <section key={group.heading} aria-labelledby={headingId}>
@@ -32,9 +43,7 @@ export default async function ReportsPage() {
               </div>
 
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {group.reports.map((report) => {
-                  if (report.ownerOnly && user.role !== "admin") return null;
-                  if (!report.href && !REPORTS[report.key]) return null;
+                {visibleReports.map((report) => {
                   const Icon = report.icon;
                   return (
                     <Link
@@ -81,7 +90,7 @@ export default async function ReportsPage() {
             </section>
           );
         })}
-      </div>
+      </div>}
     </>
   );
 }

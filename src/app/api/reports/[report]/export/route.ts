@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
+import { canAccessReport } from "@/lib/data/report-access";
 import { jsonError, redactError } from "@/lib/http";
 import { dec, formatHours } from "@/lib/money";
 import { agencyDate } from "@/lib/business/agency-time";
@@ -46,7 +48,12 @@ export async function GET(
 
   try {
     const def = REPORTS[report];
-    const tables = await def.run(getPool(), filters);
+    const pool = getPool();
+    const scope = await resolveAccessScope(pool, user);
+    if (!canAccessReport(report, scope, user.role)) {
+      return jsonError("Report access denied", 403);
+    }
+    const tables = await def.run(pool, filters);
     const stamp = agencyDate();
     const filename = `${report}-${stamp}.${format}`;
 

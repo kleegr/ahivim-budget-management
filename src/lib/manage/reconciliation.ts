@@ -128,9 +128,13 @@ export async function listScheduledForReconcile(
   pool: PgLikePool,
   filter: ReconcileFilter,
   onlyUnmatched = false,
-  limit = 200,
+  limit: number | null = 200,
 ): Promise<ScheduledLine[]> {
   const f = sqlFilter(filter);
+  const params: unknown[] = [f.from, f.to, f.programId, f.individualId, onlyUnmatched];
+  const limitSql = limit === null
+    ? ""
+    : `\n     LIMIT $${params.push(Math.min(Math.max(limit, 1), 500))}`;
   const { rows } = await pool.query<{
     id: string; session_date: string; program_code: string; is_group: boolean;
     duration_hours: string; expected_internal_amount: string | null;
@@ -155,9 +159,8 @@ export async function listScheduledForReconcile(
              SELECT 1 FROM scheduled_allocations aa WHERE aa.scheduled_session_id = s.id AND aa.individual_id = $4))
        AND ($5::boolean IS NOT TRUE OR s.matched_transaction_id IS NULL)
      GROUP BY s.id, p.code, t.imported_amount, t.imported_hours
-     ORDER BY s.session_date
-     LIMIT $6`,
-    [f.from, f.to, f.programId, f.individualId, onlyUnmatched, Math.min(Math.max(limit, 1), 500)],
+     ORDER BY s.session_date${limitSql}`,
+    params,
   );
   return rows.map((r) => ({
     id: r.id,
@@ -189,9 +192,13 @@ export interface BilledLine {
 export async function listBilledNotScheduled(
   pool: PgLikePool,
   filter: ReconcileFilter,
-  limit = 200,
+  limit: number | null = 200,
 ): Promise<BilledLine[]> {
   const f = sqlFilter(filter);
+  const params: unknown[] = [f.from, f.to, f.programId, f.individualId];
+  const limitSql = limit === null
+    ? ""
+    : `\n     LIMIT $${params.push(Math.min(Math.max(limit, 1), 500))}`;
   const { rows } = await pool.query<{
     id: string; service_date: string | null; period_begin: string | null; period_end: string | null; program_code: string | null;
     individual_name: string | null; imported_hours: string | null; imported_amount: string | null;
@@ -207,9 +214,8 @@ export async function listBilledNotScheduled(
        AND ($3::uuid IS NULL OR t.program_id = $3)
        AND ($4::uuid IS NULL OR t.individual_id = $4)
        AND NOT EXISTS (SELECT 1 FROM scheduled_sessions s WHERE s.matched_transaction_id = t.id)
-     ORDER BY canonical_service_date(t.period_begin, t.check_date, t.period_end) NULLS LAST
-     LIMIT $5`,
-    [f.from, f.to, f.programId, f.individualId, Math.min(Math.max(limit, 1), 500)],
+     ORDER BY canonical_service_date(t.period_begin, t.check_date, t.period_end) NULLS LAST${limitSql}`,
+    params,
   );
   return rows.map((r) => ({
     id: r.id,

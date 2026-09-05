@@ -13,6 +13,18 @@ import {
   listCurrentProgramBudgets,
   type ProgramBudgetRecord,
 } from "@/lib/data/program-budgets";
+import {
+  billingWithoutBudgetReport,
+  employeeActivityReport,
+  importConflictsReport,
+  mergeHistoryReport,
+  moneyOperationsReport,
+  transactionEmployeeBase,
+  transactionSourceHref,
+  transactionsReport,
+  unverifiedChecksReport,
+} from "@/lib/data/report-completeness";
+import { txLink } from "@/lib/nav/tx-link";
 
 /**
  * Reporting read models.
@@ -38,6 +50,8 @@ export interface ReportColumn {
   key: string;
   header: string;
   type: ReportFieldType;
+  /** Render a relative URL cell as this friendly link; export keeps the URL. */
+  linkLabel?: string;
 }
 
 /** A cell is a decimal string (money/hours/percent), a count, or null. */
@@ -50,6 +64,10 @@ export interface ReportTable {
   title?: string;
   /** A short line shown when the table is empty. */
   emptyMessage?: string;
+  /** Closest truthful workspace behind this table's totals. */
+  source?: { href: string; label: string };
+  /** Material scope or completeness disclosure displayed above the grid. */
+  note?: string;
   columns: ReportColumn[];
   rows: ReportCellRow[];
 }
@@ -613,7 +631,7 @@ export interface MissingConfigReport {
   missingAssignments: MissingAssignmentRow[];
 }
 
-async function missingRateRows(pool: PgLikePool): Promise<MissingRateRow[]> {
+export async function missingRatesReport(pool: PgLikePool): Promise<MissingRateRow[]> {
   const { rows } = await pool.query<{
     program_id: string;
     program_code: string;
@@ -678,6 +696,13 @@ async function missingAssignmentRows(
   }));
 }
 
+export async function missingConfigurationReport(
+  pool: PgLikePool,
+): Promise<MissingAssignmentRow[]> {
+  const budgets = await listCurrentProgramBudgets(pool, { asOf: agencyDate() });
+  return missingAssignmentRows(pool, budgets);
+}
+
 /**
  * Two gaps that quietly break downstream figures:
  *   - active programs with no rate schedule in force today, and
@@ -685,7 +710,7 @@ async function missingAssignmentRows(
  */
 export async function missingConfigReport(pool: PgLikePool): Promise<MissingConfigReport> {
   const [missingRates, budgets] = await Promise.all([
-    missingRateRows(pool),
+    missingRatesReport(pool),
     listCurrentProgramBudgets(pool, { asOf: agencyDate() }),
   ]);
   const missingAssignments = await missingAssignmentRows(pool, budgets);
@@ -744,7 +769,7 @@ export async function dashboardReportMetrics(pool: PgLikePool): Promise<Dashboar
           WHERE NOT EXISTS (SELECT 1 FROM scheduled_sessions s WHERE s.matched_transaction_id = t.id))::text
                                                                                          AS unscheduled_billing`,
     ),
-    missingRateRows(pool),
+    missingRatesReport(pool),
     missingAssignmentRows(pool, budgets),
   ]);
   const r = metricResult.rows[0]!;
@@ -796,6 +821,7 @@ export async function dashboardReportMetrics(pool: PgLikePool): Promise<Dashboar
 
 export interface CutsMonthlyRow {
   strategyId: string;
+  individualId: string;
   individualName: string;
   setupName: string;
   programCode: string | null;
@@ -849,6 +875,7 @@ export async function cutsMonthlyReport(
     const approved = row.afterAll == null ? null : toMoney(row.afterAll);
     return [{
       strategyId: row.id,
+      individualId: row.individualId,
       individualName: row.individualName,
       setupName: row.label,
       programCode: selectedPrograms.map((program) => program.code).join(", ") || null,
@@ -873,6 +900,7 @@ export async function cutsMonthlyReport(
 export interface AliasDecisionRow {
   sourceText: string;
   normalizedAlias: string;
+  canonicalId: string;
   canonicalName: string;
   /** 'individual' | 'employee' */
   kind: string;
@@ -888,44 +916,52 @@ export interface AliasDecisionRow {
  */
 export async function aliasDecisionsReport(
   pool: PgLikePool,
-  opts: { kind?: string; status?: string } = {},
+  opts: { kind?: string; status?: string; from?: string; to?: string } = {},
 ): Promise<AliasDecisionRow[]> {
   const kind = opts.kind === "individual" || opts.kind === "employee" ? opts.kind : null;
   const status = opts.status === "pending" || opts.status === "approved" ? opts.status : null;
+  const from = asDate(opts.from) ?? null;
+  const to = asDate(opts.to) ?? null;
   const { rows } = await pool.query<{
     source_text: string;
     normalized_alias: string;
+    canonical_id: string;
     canonical_name: string;
     kind: string;
     status: string;
     approved_by: string | null;
     created_at: string;
   }>(
-    `SELECT x.source_text, x.normalized_alias, x.canonical_name, x.kind, x.status,
-            x.approved_by, x.created_at
+    `SELECT x.source_text, x.normalized_alias, x.canonical_id, x.canonical_name,
+            x.kind, x.status, x.approved_by, x.created_at::date::text AS created_at
      FROM (
-       SELECT ia.source_text, ia.normalized_alias, i.display_name AS canonical_name,
+       SELECT ia.source_text, ia.normalized_alias, i.id AS canonical_id,
+              i.display_name AS canonical_name,
               'individual'::text AS kind, ia.status,
-              u.display_name AS approved_by, ia.created_at::date::text AS created_at
+              u.display_name AS approved_by, ia.created_at
        FROM individual_aliases ia
        JOIN individuals i ON i.id = ia.individual_id
        LEFT JOIN users u ON u.id = ia.approved_by_user_id
        UNION ALL
-       SELECT ea.source_text, ea.normalized_alias, e.display_name,
+       SELECT ea.source_text, ea.normalized_alias, e.id,
+              e.display_name,
               'employee'::text, ea.status,
-              u.display_name, ea.created_at::date::text
+              u.display_name, ea.created_at
        FROM employee_aliases ea
        JOIN employees e ON e.id = ea.employee_id
        LEFT JOIN users u ON u.id = ea.approved_by_user_id
      ) x
      WHERE ($1::text IS NULL OR x.kind = $1)
        AND ($2::text IS NULL OR x.status = $2)
+       AND ($3::date IS NULL OR x.created_at::date >= $3)
+       AND ($4::date IS NULL OR x.created_at::date <= $4)
      ORDER BY x.kind, x.canonical_name, x.source_text`,
-    [kind, status],
+    [kind, status, from, to],
   );
   return rows.map((r) => ({
     sourceText: r.source_text,
     normalizedAlias: r.normalized_alias,
+    canonicalId: r.canonical_id,
     canonicalName: r.canonical_name,
     kind: r.kind,
     status: r.status,
@@ -943,7 +979,23 @@ export interface AuditHistoryRow {
   actor: string | null;
   action: string;
   entityType: string | null;
+  entityId: string | null;
   reason: string | null;
+  sourceHref: string | null;
+}
+
+function auditSourceHref(entityType: string | null, entityId: string | null): string | null {
+  if (!entityType || !entityId) return null;
+  if (entityType === "individual") return `/individuals/${encodeURIComponent(entityId)}`;
+  if (entityType === "employee") return `/employees/${encodeURIComponent(entityId)}`;
+  if (entityType === "payroll_transaction") return txLink({ transactionId: entityId });
+  if (entityType === "program") return "/settings#programs";
+  if (entityType === "calculation_strategy") return "/calculations";
+  if (entityType.startsWith("class_")) return "/classes";
+  if (entityType === "document") {
+    return `/documents/pdf-editor?id=${encodeURIComponent(entityId)}`;
+  }
+  return null;
 }
 
 /**
@@ -961,13 +1013,15 @@ export async function auditHistoryReport(
     actor: string | null;
     action: string;
     entity_type: string | null;
+    entity_id: string | null;
     reason: string | null;
   }>(
     `SELECT to_char(a.created_at, 'YYYY-MM-DD HH24:MI') AS ts,
             u.display_name                              AS actor,
             a.action                                    AS action,
             a.entity_type                               AS entity_type,
-            a.metadata->>'reason'                       AS reason
+            a.entity_id::text                           AS entity_id,
+            a.reason                                    AS reason
      FROM audit_logs a
      LEFT JOIN users u ON u.id = a.user_id
      WHERE ($1::text IS NULL OR a.action = $1)
@@ -980,7 +1034,9 @@ export async function auditHistoryReport(
     actor: r.actor,
     action: r.action,
     entityType: r.entity_type,
+    entityId: r.entity_id,
     reason: r.reason,
+    sourceHref: auditSourceHref(r.entity_type, r.entity_id),
   }));
 }
 
@@ -990,8 +1046,10 @@ export async function auditHistoryReport(
 
 export interface GroupServiceRow {
   serviceSessionId: string;
+  programId: string | null;
   programCode: string | null;
   programName: string | null;
+  employeeId: string | null;
   employeeName: string | null;
   periodBegin: string | null;
   periodEnd: string | null;
@@ -999,8 +1057,10 @@ export interface GroupServiceRow {
   memberCount: number;
   combinedAmount: string | null;
   detectionStatus: string;
+  transactionIds: string[];
 }
 export interface ScheduledGroupCountRow {
+  programId: string | null;
   programCode: string | null;
   programName: string | null;
   sessionCount: number;
@@ -1026,8 +1086,10 @@ export async function groupActivityReport(
 
   const sessionsRes = await pool.query<{
     service_session_id: string;
+    program_id: string | null;
     program_code: string | null;
     program_name: string | null;
+    employee_id: string | null;
     employee_name: string | null;
     period_begin: string | null;
     period_end: string | null;
@@ -1035,10 +1097,13 @@ export async function groupActivityReport(
     member_count: string;
     combined_amount: string | null;
     group_detection_status: string;
+    transaction_ids: string[] | null;
   }>(
     `SELECT ss.id                       AS service_session_id,
+            p.id                         AS program_id,
             p.code                       AS program_code,
             p.name                       AS program_name,
+            e.id                         AS employee_id,
             e.display_name               AS employee_name,
             ss.period_begin::text        AS period_begin,
             ss.period_end::text          AS period_end,
@@ -1046,7 +1111,14 @@ export async function groupActivityReport(
             (SELECT count(*) FROM service_allocations sa
               WHERE sa.service_session_id = ss.id)::text AS member_count,
             ss.combined_amount::text     AS combined_amount,
-            ss.group_detection_status    AS group_detection_status
+            ss.group_detection_status    AS group_detection_status,
+            ARRAY(
+              SELECT sa.payroll_transaction_id::text
+                FROM service_allocations sa
+               WHERE sa.service_session_id = ss.id
+                 AND sa.payroll_transaction_id IS NOT NULL
+               ORDER BY sa.payroll_transaction_id
+            ) AS transaction_ids
      FROM service_sessions ss
      LEFT JOIN programs p  ON p.id = ss.program_id
      LEFT JOIN employees e ON e.id = ss.employee_id
@@ -1077,11 +1149,13 @@ export async function groupActivityReport(
   );
 
   const countsRes = await pool.query<{
+    program_id: string | null;
     program_code: string | null;
     program_name: string | null;
     session_count: string;
   }>(
-    `SELECT p.code AS program_code, p.name AS program_name, count(*)::text AS session_count
+    `SELECT p.id AS program_id, p.code AS program_code, p.name AS program_name,
+            count(*)::text AS session_count
      FROM scheduled_sessions s
      LEFT JOIN programs p ON p.id = s.program_id
      WHERE (s.is_group = true OR s.group_size > 1)
@@ -1089,7 +1163,7 @@ export async function groupActivityReport(
        AND ($1::date IS NULL OR s.session_date >= $1)
        AND ($2::date IS NULL OR s.session_date <= $2)
        AND ($3::text IS NULL OR p.code ILIKE '%' || $3 || '%' OR p.name ILIKE '%' || $3 || '%')
-     GROUP BY p.code, p.name
+     GROUP BY p.id, p.code, p.name
      ORDER BY p.code NULLS LAST`,
     [from, to, program],
   );
@@ -1097,8 +1171,10 @@ export async function groupActivityReport(
   return {
     sessions: sessionsRes.rows.map((r) => ({
       serviceSessionId: r.service_session_id,
+      programId: r.program_id,
       programCode: r.program_code,
       programName: r.program_name,
+      employeeId: r.employee_id,
       employeeName: r.employee_name,
       periodBegin: r.period_begin,
       periodEnd: r.period_end,
@@ -1106,8 +1182,10 @@ export async function groupActivityReport(
       memberCount: Number(r.member_count),
       combinedAmount: r.combined_amount === null ? null : toMoney(r.combined_amount),
       detectionStatus: r.group_detection_status,
+      transactionIds: r.transaction_ids ?? [],
     })),
     scheduledCounts: countsRes.rows.map((r) => ({
+      programId: r.program_id,
       programCode: r.program_code,
       programName: r.program_name,
       sessionCount: Number(r.session_count),
@@ -1122,6 +1200,7 @@ export async function groupActivityReport(
 export interface ActualVsScheduledRow {
   individualId: string;
   individualName: string;
+  programId: string | null;
   programCode: string | null;
   programName: string | null;
   scheduledHours: string;
@@ -1158,6 +1237,7 @@ export async function actualVsScheduledReport(
   const { rows } = await pool.query<{
     individual_id: string;
     individual_name: string;
+    program_id: string | null;
     program_code: string | null;
     program_name: string | null;
     scheduled_hours: string;
@@ -1217,6 +1297,7 @@ export async function actualVsScheduledReport(
      )
      SELECT k.individual_id                                    AS individual_id,
             i.display_name                                     AS individual_name,
+            k.program_id                                       AS program_id,
             p.code                                             AS program_code,
             p.name                                             AS program_name,
             COALESCE(s.hours, 0)::text                         AS scheduled_hours,
@@ -1238,6 +1319,7 @@ export async function actualVsScheduledReport(
   return rows.map((r) => ({
     individualId: r.individual_id,
     individualName: r.individual_name,
+    programId: r.program_id,
     programCode: r.program_code,
     programName: r.program_name,
     scheduledHours: toHours(r.scheduled_hours),
@@ -1331,10 +1413,92 @@ const DATE_FILTERS: ReportFilterSpec[] = [
   { key: "to", label: "To", type: "date" },
 ];
 
+const sourceColumn = (
+  header = "Source",
+  linkLabel = "Open source",
+): ReportColumn => ({ key: "sourceHref", header, type: "text", linkLabel });
+
+function transactionTableSource(
+  filters: Record<string, string | undefined>,
+  label = "Open the filtered Transactions ledger",
+): ReportTable["source"] {
+  const exactCheckDate = asDate(filters.checkDate);
+  return {
+    href: txLink({
+      checkNumber: filters.checkNumber,
+      program: filters.program,
+      pbFrom: asDate(filters.periodFrom),
+      pbTo: asDate(filters.periodTo),
+      from: exactCheckDate,
+      to: exactCheckDate,
+      serviceFrom: asDate(filters.from),
+      serviceTo: asDate(filters.to),
+    }),
+    label,
+  };
+}
+
+const MONEY_OPERATION_FILTERS: ReportFilterSpec[] = [
+  ...DATE_FILTERS,
+  { key: "person", label: "Person", type: "text", placeholder: "Name" },
+  {
+    key: "state",
+    label: "Status",
+    type: "select",
+    options: [
+      { value: "", label: "All statuses" },
+      { value: "open", label: "Open" },
+      { value: "partial", label: "Partial" },
+      { value: "settled", label: "Settled" },
+      { value: "credit", label: "Credit" },
+      { value: "void", label: "Void" },
+    ],
+  },
+];
+
+function moneyOperationTable(
+  key: "give-back" | "agency-to-employee-payments" | "credits",
+  queue: "receivable" | "payable" | "credit",
+  rows: Awaited<ReturnType<typeof moneyOperationsReport>>,
+): ReportTable {
+  return {
+    key,
+    emptyMessage: "No Money operations items match this scope.",
+    source: {
+      href: `/settlements?queue=${queue}`,
+      label: "Open the matching Money operations queue",
+    },
+    columns: [
+      { key: "basisDate", header: "Basis date", type: "date" },
+      { key: "personName", header: "Person", type: "text" },
+      { key: "item", header: "Item", type: "text" },
+      { key: "checkNumber", header: "Check number", type: "text" },
+      { key: "originalAmount", header: "Original amount", type: "money" },
+      { key: "recordedAmount", header: "Recorded activity", type: "money" },
+      { key: "balance", header: "Remaining balance", type: "money" },
+      { key: "state", header: "Status", type: "text" },
+      sourceColumn("Money source", "Open item"),
+    ],
+    rows: rows.map((row) => ({
+      basisDate: row.basisDate,
+      personName: row.personName,
+      employeeId: row.personType === "employee" ? row.personId : null,
+      individualId: row.personType === "individual" ? row.personId : null,
+      item: row.item,
+      checkNumber: row.checkNumber,
+      originalAmount: row.originalAmount,
+      recordedAmount: row.recordedAmount,
+      balance: row.balance,
+      state: row.state,
+      sourceHref: row.sourceHref,
+    })),
+  };
+}
+
 export const REPORTS: Record<string, ReportDefinition> = {
   "payroll-checks": {
     key: "payroll-checks",
-    title: "Payroll & checks",
+    title: "Payroll checks",
     description:
       "Committed payroll transaction rows with check identity, people, program, recipient, hours, Funder billed, and Employee base kept traceable to the source ledger.",
     filters: [
@@ -1362,6 +1526,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
       return [{
         key: "payroll-checks",
         emptyMessage: "No committed payroll transactions match this scope.",
+        source: transactionTableSource(filters),
         columns: [
           { key: "checkDate", header: "Check date", type: "date" },
           { key: "checkNumber", header: "Check number", type: "text" },
@@ -1377,7 +1542,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
           { key: "agencySpread", header: "Agency spread", type: "money" },
           { key: "checkNet", header: "Check net (repeated)", type: "money" },
           { key: "paidStatus", header: "Paid status", type: "text" },
-          { key: "transactionId", header: "Source transaction", type: "text" },
+          sourceColumn("Ledger source", "Open transaction"),
         ],
         rows: rows.map((row) => ({
           checkDate: row.checkDate,
@@ -1410,8 +1575,45 @@ export const REPORTS: Record<string, ReportDefinition> = {
           individual: row.individual,
           paidStatus: row.isPaid ? "Paid" : "Not paid",
           transactionId: row.id,
+          sourceHref: transactionSourceHref(row),
         })),
       }];
+    },
+  },
+
+  "give-back": {
+    key: "give-back",
+    title: "Give-Back",
+    description:
+      "Employee receivables from the canonical Money operations ledger, including recorded activity and remaining balance.",
+    filters: MONEY_OPERATION_FILTERS,
+    async run(pool, filters) {
+      const rows = await moneyOperationsReport(pool, "give-back", filters);
+      return [moneyOperationTable("give-back", "receivable", rows)];
+    },
+  },
+
+  "agency-to-employee-payments": {
+    key: "agency-to-employee-payments",
+    title: "Agency-to-Employee payments",
+    description:
+      "Employee payables from the canonical Money operations ledger, including recorded payment activity and remaining balance.",
+    filters: MONEY_OPERATION_FILTERS,
+    async run(pool, filters) {
+      const rows = await moneyOperationsReport(pool, "agency-to-employee", filters);
+      return [moneyOperationTable("agency-to-employee-payments", "payable", rows)];
+    },
+  },
+
+  credits: {
+    key: "credits",
+    title: "Credits",
+    description:
+      "Over-applied Money operations items that carry a credit balance, with the original obligation and recorded activity preserved.",
+    filters: MONEY_OPERATION_FILTERS,
+    async run(pool, filters) {
+      const rows = await moneyOperationsReport(pool, "credits", filters);
+      return [moneyOperationTable("credits", "credit", rows)];
     },
   },
 
@@ -1443,6 +1645,10 @@ export const REPORTS: Record<string, ReportDefinition> = {
           ? undefined
           : "Financial Setup history is unavailable before August 2026; recorded ledger activity remains shown.",
         emptyMessage: "No individual put-away records match this month and filter.",
+        source: {
+          href: `/masser?month=${encodeURIComponent(data.month)}`,
+          label: "Open the source Money workspace",
+        },
         columns: [
           { key: "individualName", header: "Individual", type: "text" },
           { key: "approvedMonthlyPlan", header: "Approved monthly plan", type: "money" },
@@ -1495,6 +1701,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
         {
           key: "budget-utilization",
           emptyMessage: "No active authorizations match this filter.",
+          source: { href: "/individuals", label: "Open People & budgets" },
           columns: [
             { key: "individualName", header: "Individual", type: "text" },
             { key: "programCode", header: "Program", type: "text" },
@@ -1505,6 +1712,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "remainingHours", header: "Remaining", type: "hours" },
             { key: "percentUsed", header: "% used", type: "percent" },
             { key: "percentCommitted", header: "% committed", type: "percent" },
+            sourceColumn("Budget source", "Open budget"),
           ],
           rows: rows.map((r) => ({
             individualName: r.individualName,
@@ -1516,15 +1724,131 @@ export const REPORTS: Record<string, ReportDefinition> = {
             remainingHours: r.remainingHours,
             percentUsed: r.percentUsed,
             percentCommitted: r.percentCommitted,
+            sourceHref: `/individuals/${encodeURIComponent(r.individualId)}?view=budget`,
           })),
         },
       ];
     },
   },
 
+  "billing-without-budget": {
+    key: "billing-without-budget",
+    title: "Billing without budget",
+    description:
+      "Recorded activity whose exact Individual and Program pair lacked hours authorization on its canonical service date. A later budget or a budget for another Program does not clear the exception.",
+    filters: [
+      ...DATE_FILTERS,
+      { key: "individual", label: "Individual", type: "text", placeholder: "Name" },
+      { key: "program", label: "Program", type: "text", placeholder: "Code or name" },
+    ],
+    async run(pool, filters) {
+      const rows = await billingWithoutBudgetReport(pool, {
+        from: filters.from,
+        to: filters.to,
+        individual: filters.individual,
+        program: filters.program,
+      });
+      return [{
+        key: "billing-without-budget",
+        emptyMessage: "No recorded activity lacks matching Program authorization on its service date.",
+        source: transactionTableSource(filters),
+        columns: [
+          { key: "individualName", header: "Individual", type: "text" },
+          { key: "programName", header: "Program", type: "text" },
+          { key: "firstServiceDate", header: "First service", type: "date" },
+          { key: "lastServiceDate", header: "Last service", type: "date" },
+          { key: "transactionCount", header: "Transactions", type: "int" },
+          { key: "recordedHours", header: "Recorded hours", type: "hours" },
+          { key: "funderBilled", header: "Funder billed", type: "money" },
+          sourceColumn("Ledger source", "Open transactions"),
+        ],
+        rows: rows.map((row) => ({
+          individualName: row.individualName,
+          individualId: row.individualId,
+          programName: row.programCode
+            ? `${row.programCode} — ${row.programName ?? ""}`.replace(/ — $/, "")
+            : row.programName ?? "Unassigned",
+          firstServiceDate: row.firstServiceDate,
+          lastServiceDate: row.lastServiceDate,
+          transactionCount: row.transactionCount,
+          recordedHours: row.recordedHours,
+          funderBilled: row.funderBilled,
+          sourceHref: row.sourceHref,
+        })),
+      }];
+    },
+  },
+
+  transactions: {
+    key: "transactions",
+    title: "Transactions",
+    description:
+      "Committed transaction activity with canonical service date, people, Program, hours, money stages, payment route, source check, and exact ledger link.",
+    filters: [
+      ...DATE_FILTERS,
+      { key: "employee", label: "Employee", type: "text", placeholder: "Name" },
+      { key: "individual", label: "Individual", type: "text", placeholder: "Name" },
+      { key: "program", label: "Program", type: "text", placeholder: "Code or name" },
+      { key: "checkNumber", label: "Check number", type: "text", placeholder: "Number" },
+    ],
+    async run(pool, filters) {
+      const rows = await transactionsReport(pool, {
+        from: filters.from,
+        to: filters.to,
+        employee: filters.employee,
+        individual: filters.individual,
+        program: filters.program,
+        checkNumber: filters.checkNumber,
+      });
+      return [{
+        key: "transactions",
+        emptyMessage: "No committed transactions match this scope.",
+        source: transactionTableSource(filters),
+        columns: [
+          { key: "serviceDate", header: "Service date", type: "date" },
+          { key: "checkNumber", header: "Check number", type: "text" },
+          { key: "employeeName", header: "Employee", type: "text" },
+          { key: "individualName", header: "Individual", type: "text" },
+          { key: "programName", header: "Program", type: "text" },
+          { key: "hours", header: "Hours", type: "hours" },
+          { key: "funderBilled", header: "Funder billed", type: "money" },
+          { key: "employeeBase", header: "Employee base", type: "money" },
+          { key: "agencySpread", header: "Agency spread", type: "money" },
+          { key: "checkNet", header: "Source check net (repeated)", type: "money" },
+          { key: "recipient", header: "Payment recipient", type: "text" },
+          { key: "sourceName", header: "Import source", type: "text" },
+          { key: "sourceSheet", header: "Sheet", type: "text" },
+          { key: "sourceRowNumber", header: "Source row", type: "int" },
+          sourceColumn("Ledger source", "Open transaction"),
+        ],
+        rows: rows.map((row) => ({
+          serviceDate: row.serviceDate ?? null,
+          checkNumber: row.checkNumber,
+          employeeName: row.employee,
+          employeeId: row.employeeId,
+          individualName: row.individual,
+          individualId: row.individualId,
+          programName: row.programCode
+            ? `${row.programCode} — ${row.program ?? ""}`.replace(/ — $/, "")
+            : row.program,
+          hours: row.hours,
+          funderBilled: row.gross,
+          employeeBase: transactionEmployeeBase(row),
+          agencySpread: row.agencyAdditional,
+          checkNet: row.totalNetPay == null ? null : toMoney(row.totalNetPay),
+          recipient: row.paymentRecipient,
+          sourceName: row.sourceName ?? null,
+          sourceSheet: row.sourceSheet ?? null,
+          sourceRowNumber: row.sourceRowNumber ?? null,
+          sourceHref: transactionSourceHref(row),
+        })),
+      }];
+    },
+  },
+
   "agency-earnings": {
     key: "agency-earnings",
-    title: "Agency earnings",
+    title: "Billing spread by Program",
     description:
       "Agency gross, internal amount and agency additional per program, kept as three separate columns. Agency additional is agency gross less internal.",
     filters: DATE_FILTERS,
@@ -1534,12 +1858,14 @@ export const REPORTS: Record<string, ReportDefinition> = {
         {
           key: "agency-earnings",
           emptyMessage: "No transactions fall in this date range.",
+          source: transactionTableSource(filters),
           columns: [
             { key: "programName", header: "Program", type: "text" },
             { key: "agencyGross", header: "Funder billed", type: "money" },
             { key: "internalAmount", header: "Employee base", type: "money" },
             { key: "agencyAdditional", header: "Agency spread", type: "money" },
             { key: "transactionCount", header: "Transactions", type: "int" },
+            sourceColumn("Ledger source", "Open transactions"),
           ],
           rows: rows.map((r) => ({
             programName: r.programName ?? r.programCode ?? "Unassigned",
@@ -1547,6 +1873,12 @@ export const REPORTS: Record<string, ReportDefinition> = {
             internalAmount: r.internalAmount,
             agencyAdditional: r.agencyAdditional,
             transactionCount: r.transactionCount,
+            sourceHref: txLink({
+              programCode: r.programCode,
+              program: r.programCode ? null : r.programName,
+              serviceFrom: asDate(filters.from),
+              serviceTo: asDate(filters.to),
+            }),
           })),
         },
       ];
@@ -1555,7 +1887,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
 
   "employee-payable": {
     key: "employee-payable",
-    title: "Employee payable",
+    title: "Employee Base by recipient",
     description:
       "Employee payment per employee, split by who it is paid to: directly to the employee, payable by the agency (Excellent Staffing), or an unresolved recipient.",
     filters: DATE_FILTERS,
@@ -1565,6 +1897,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
         {
           key: "employee-payable",
           emptyMessage: "No employee payments fall in this date range.",
+          source: transactionTableSource(filters),
           columns: [
             { key: "employeeName", header: "Employee", type: "text" },
             { key: "totalPayment", header: "Employee base", type: "money" },
@@ -1573,15 +1906,22 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "unknownRecipient", header: "Recipient unresolved", type: "money" },
             { key: "physicalHours", header: "Physical hours", type: "hours" },
             { key: "checkCount", header: "Checks", type: "int" },
+            sourceColumn("Ledger source", "Open transactions"),
           ],
           rows: rows.map((r) => ({
             employeeName: r.employeeName,
+            employeeId: r.employeeId,
             totalPayment: r.totalPayment,
             paidToEmployee: r.paidToEmployee,
             payableByAgency: r.payableByAgency,
             unknownRecipient: r.unknownRecipient,
             physicalHours: r.physicalHours,
             checkCount: r.checkCount,
+            sourceHref: txLink({
+              employeeId: r.employeeId,
+              serviceFrom: asDate(filters.from),
+              serviceTo: asDate(filters.to),
+            }),
           })),
         },
       ];
@@ -1600,6 +1940,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
         {
           key: "program-totals",
           emptyMessage: "No programs are configured.",
+          source: transactionTableSource(filters),
           columns: [
             { key: "programName", header: "Program", type: "text" },
             { key: "individualsServed", header: "Individuals", type: "int" },
@@ -1610,6 +1951,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "internalAmount", header: "Employee base", type: "money" },
             { key: "agencyAdditional", header: "Agency spread", type: "money" },
             { key: "groupSessions", header: "Group sessions", type: "int" },
+            sourceColumn("Ledger source", "Open transactions"),
           ],
           rows: rows.map((r) => ({
             programName: r.programName,
@@ -1621,6 +1963,11 @@ export const REPORTS: Record<string, ReportDefinition> = {
             internalAmount: r.internalAmount,
             agencyAdditional: r.agencyAdditional,
             groupSessions: r.groupSessions,
+            sourceHref: txLink({
+              programCode: r.programCode,
+              serviceFrom: asDate(filters.from),
+              serviceTo: asDate(filters.to),
+            }),
           })),
         },
       ];
@@ -1629,7 +1976,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
 
   "expiring-authorizations": {
     key: "expiring-authorizations",
-    title: "Expiring authorizations",
+    title: "Renewal pipeline",
     description:
       "Authorizations whose budget period ends or renews within the chosen window, with days remaining and authorized versus used hours.",
     filters: [
@@ -1643,6 +1990,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
         {
           key: "expiring-authorizations",
           emptyMessage: "No authorizations expire or renew in this window.",
+          source: { href: "/individuals?view=renewing", label: "Open the renewal roster" },
           columns: [
             { key: "individualName", header: "Individual", type: "text" },
             { key: "programCode", header: "Program", type: "text" },
@@ -1651,15 +1999,18 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "daysRemaining", header: "Days left", type: "int" },
             { key: "authorizedHours", header: "Authorized", type: "hours" },
             { key: "usedHours", header: "Used", type: "hours" },
+            sourceColumn("Budget source", "Open budget"),
           ],
           rows: rows.map((r) => ({
             individualName: r.individualName,
+            individualId: r.individualId,
             programCode: r.programCode,
             endDate: r.endDate,
             renewalDate: r.renewalDate,
             daysRemaining: r.daysRemaining,
             authorizedHours: r.authorizedHours,
             usedHours: r.usedHours,
+            sourceHref: `/individuals/${encodeURIComponent(r.individualId)}?view=budget`,
           })),
         },
       ];
@@ -1670,58 +2021,75 @@ export const REPORTS: Record<string, ReportDefinition> = {
     key: "missing-config",
     title: "Missing configuration",
     description:
-      "Configuration gaps that quietly distort figures: programs with no current rate, and active individuals with an authorization but no assignment.",
+      "Active individuals with an operational authorization but no active employee assignment.",
     filters: [],
     async run(pool) {
-      const report = await missingConfigReport(pool);
+      const rows = await missingConfigurationReport(pool);
       return [
         {
-          key: "missing-rates",
-          title: "Programs with no current rate",
-          emptyMessage: "Every active program has a rate in force.",
-          columns: [
-            { key: "programCode", header: "Code", type: "text" },
-            { key: "programName", header: "Program", type: "text" },
-          ],
-          rows: report.missingRates.map((r) => ({
-            programCode: r.programCode,
-            programName: r.programName,
-          })),
-        },
-        {
-          key: "missing-assignments",
-          title: "Active authorization but no assignment",
+          key: "missing-config",
           emptyMessage: "Every authorized individual has an active assignment.",
+          source: { href: "/schedule?view=future", label: "Open Assignments" },
           columns: [
             { key: "individualName", header: "Individual", type: "text" },
             { key: "programsAuthorized", header: "Authorized programs", type: "text" },
+            sourceColumn("Configuration source", "Open Individual"),
           ],
-          rows: report.missingAssignments.map((r) => ({
+          rows: rows.map((r) => ({
             individualName: r.individualName,
+            individualId: r.individualId,
             programsAuthorized: r.programsAuthorized,
+            sourceHref: `/individuals/${encodeURIComponent(r.individualId)}?view=activity`,
           })),
         },
       ];
     },
   },
 
+  "missing-rates": {
+    key: "missing-rates",
+    title: "Missing rates",
+    description: "Active programs with no rate schedule in force today.",
+    filters: [],
+    async run(pool) {
+      const rows = await missingRatesReport(pool);
+      return [{
+        key: "missing-rates",
+        emptyMessage: "Every active program has a rate in force.",
+        source: { href: "/settings#programs", label: "Open Program rates" },
+        columns: [
+          { key: "programCode", header: "Code", type: "text" },
+          { key: "programName", header: "Program", type: "text" },
+          sourceColumn("Configuration source", "Open Program rates"),
+        ],
+        rows: rows.map((row) => ({
+          programCode: row.programCode,
+          programName: row.programName,
+          sourceHref: "/settings#programs",
+        })),
+      }];
+    },
+  },
+
   "unbilled-schedules": {
     key: "unbilled-schedules",
-    title: "Unbilled schedules",
+    title: "Scheduled not recorded",
     description:
-      "Planned sessions in the date range that have not been matched to an imported transaction. Group sessions are surfaced but never auto-matched.",
+      "Planned sessions in the date range that have not been linked to an imported transaction. This is match state, not independent proof that no corresponding transaction exists.",
     filters: DATE_FILTERS,
     async run(pool, filters) {
       const lines = await listScheduledForReconcile(
         pool,
         { from: filters.from ?? "", to: filters.to ?? "" },
         true,
-        500,
+        null,
       );
       return [
         {
           key: "unbilled-schedules",
           emptyMessage: "No unmatched planned sessions in this range.",
+          source: { href: "/schedule?view=matching", label: "Open recorded match review" },
+          note: "Complete result set: this report intentionally requests no row cap.",
           columns: [
             { key: "sessionDate", header: "Date", type: "date" },
             { key: "programCode", header: "Program", type: "text" },
@@ -1729,6 +2097,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "isGroup", header: "Group", type: "text" },
             { key: "hours", header: "Hours", type: "hours" },
             { key: "expectedInternal", header: "Expected Employee base", type: "money" },
+            sourceColumn("Schedule source", "Open visit"),
           ],
           rows: lines.map((l) => ({
             sessionDate: l.sessionDate,
@@ -1737,6 +2106,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             isGroup: l.isGroup ? "Group" : "1:1",
             hours: l.hours,
             expectedInternal: l.expectedInternal,
+            sourceHref: `/schedule?view=calendar&calendarView=day&date=${encodeURIComponent(l.sessionDate)}&sessionId=${encodeURIComponent(l.id)}`,
           })),
         },
       ];
@@ -1745,20 +2115,22 @@ export const REPORTS: Record<string, ReportDefinition> = {
 
   "unscheduled-billing": {
     key: "unscheduled-billing",
-    title: "Unscheduled billing",
+    title: "Recorded not scheduled",
     description:
-      "Imported transactions in the date range with no matching planned session, so billing occurred that the schedule did not anticipate.",
+      "Imported transactions in the date range that are not linked to a planned session. This is match state, not independent proof that no corresponding visit was scheduled.",
     filters: DATE_FILTERS,
     async run(pool, filters) {
       const lines = await listBilledNotScheduled(
         pool,
         { from: filters.from ?? "", to: filters.to ?? "" },
-        500,
+        null,
       );
       return [
         {
           key: "unscheduled-billing",
           emptyMessage: "Every transaction in this range matches a planned session.",
+          source: transactionTableSource(filters),
+          note: "Complete result set: this report intentionally requests no row cap.",
           columns: [
             { key: "periodBegin", header: "Period begin", type: "date" },
             { key: "periodEnd", header: "Period end", type: "date" },
@@ -1766,6 +2138,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "individualName", header: "Individual", type: "text" },
             { key: "hours", header: "Hours", type: "hours" },
             { key: "amount", header: "Funder billed", type: "money" },
+            sourceColumn("Ledger source", "Open transaction"),
           ],
           rows: lines.map((l) => ({
             periodBegin: l.periodBegin,
@@ -1774,6 +2147,8 @@ export const REPORTS: Record<string, ReportDefinition> = {
             individualName: l.individualName,
             hours: l.hours,
             amount: l.amount,
+            transactionId: l.id,
+            sourceHref: txLink({ transactionId: l.id }),
           })),
         },
       ];
@@ -1792,6 +2167,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
         {
           key: "cuts-monthly",
           emptyMessage: "No active calculations match this filter.",
+          source: { href: "/calculations", label: "Open Financial setup" },
           columns: [
             { key: "individualName", header: "Individual", type: "text" },
             { key: "setupName", header: "Setup", type: "text" },
@@ -1805,9 +2181,11 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "calculatedNet", header: "Calculated net", type: "money" },
             { key: "approvedFinal", header: "Approved final / month", type: "money" },
             { key: "difference", header: "Override difference", type: "money" },
+            sourceColumn("Setup source", "Open setup"),
           ],
           rows: rows.map((r) => ({
             individualName: r.individualName,
+            individualId: r.individualId,
             setupName: r.setupName,
             programCode: r.programCode,
             annualGross: r.annualGross,
@@ -1819,18 +2197,162 @@ export const REPORTS: Record<string, ReportDefinition> = {
             calculatedNet: r.calculatedNet,
             approvedFinal: r.approvedFinal,
             difference: r.difference,
+            sourceHref: `/individuals/${encodeURIComponent(r.individualId)}?view=financial`,
           })),
         },
       ];
     },
   },
 
+  "unverified-checks": {
+    key: "unverified-checks",
+    title: "Unverified checks",
+    description:
+      "Payroll-check facts still marked unverified. Amounts are intentionally omitted until verification is complete.",
+    filters: [
+      ...DATE_FILTERS,
+      { key: "employee", label: "Employee", type: "text", placeholder: "Name" },
+      { key: "source", label: "Source", type: "text", placeholder: "Source or reference" },
+    ],
+    async run(pool, filters) {
+      const rows = await unverifiedChecksReport(pool, {
+        from: filters.from,
+        to: filters.to,
+        employee: filters.employee,
+        source: filters.source,
+      });
+      return [{
+        key: "unverified-checks",
+        emptyMessage: "No unverified payroll checks match this scope.",
+        source: { href: "/masser", label: "Open Payroll checks" },
+        note: "Gross, net, and withholding are excluded until a check is verified.",
+        columns: [
+          { key: "employeeName", header: "Employee", type: "text" },
+          { key: "checkNumber", header: "Check number", type: "text" },
+          { key: "checkDate", header: "Check date", type: "date" },
+          { key: "periodBegin", header: "Period begin", type: "date" },
+          { key: "periodEnd", header: "Period end", type: "date" },
+          { key: "source", header: "Source", type: "text" },
+          { key: "sourceRef", header: "Source reference", type: "text" },
+          { key: "linkedTransactions", header: "Linked transactions", type: "int" },
+          { key: "createdAt", header: "Recorded", type: "text" },
+          sourceColumn("Check source", "Open check"),
+        ],
+        rows: rows.map((row) => ({
+          employeeName: row.employeeName,
+          employeeId: row.employeeId,
+          checkNumber: row.checkNumber,
+          checkDate: row.checkDate,
+          periodBegin: row.periodBegin,
+          periodEnd: row.periodEnd,
+          source: row.source,
+          sourceRef: row.sourceRef,
+          linkedTransactions: row.linkedTransactions,
+          createdAt: row.createdAt,
+          sourceHref: row.sourceHref,
+        })),
+      }];
+    },
+  },
+
+  "import-conflicts": {
+    key: "import-conflicts",
+    title: "Import conflicts",
+    description:
+      "Changed or missing Sheet rows, including both the open decision queue and retained resolution history.",
+    filters: [
+      ...DATE_FILTERS,
+      {
+        key: "status",
+        label: "Status",
+        type: "select",
+        options: [
+          { value: "", label: "Open and resolved" },
+          { value: "open", label: "Open" },
+          { value: "resolved", label: "Resolved / history" },
+        ],
+      },
+      {
+        key: "type",
+        label: "Conflict",
+        type: "select",
+        options: [
+          { value: "", label: "Changed and missing" },
+          { value: "changed", label: "Changed" },
+          { value: "missing", label: "Missing" },
+        ],
+      },
+    ],
+    async run(pool, filters) {
+      const rows = await importConflictsReport(pool, {
+        from: filters.from,
+        to: filters.to,
+        status: filters.status,
+        type: filters.type,
+      });
+      const table = (
+        key: string,
+        title: string,
+        matching: typeof rows,
+        emptyMessage: string,
+      ): ReportTable => ({
+        key,
+        title,
+        emptyMessage,
+        source: { href: "/sync#sync-conflicts", label: "Open Sync conflicts" },
+        columns: [
+          { key: "createdAt", header: "Detected", type: "text" },
+          { key: "type", header: "Conflict", type: "text" },
+          { key: "status", header: "Status", type: "text" },
+          { key: "individualName", header: "Individual", type: "text" },
+          { key: "employeeName", header: "Employee", type: "text" },
+          { key: "programName", header: "Program", type: "text" },
+          { key: "detail", header: "Detail", type: "text" },
+          { key: "resolution", header: "Resolution", type: "text" },
+          { key: "resolutionNote", header: "Resolution note", type: "text" },
+          { key: "resolvedBy", header: "Resolved by", type: "text" },
+          { key: "resolvedAt", header: "Resolved", type: "text" },
+          sourceColumn("Review source", "Open source"),
+        ],
+        rows: matching.map((row) => ({
+          createdAt: row.createdAt,
+          type: row.type,
+          status: row.status,
+          individualName: row.individualName,
+          employeeName: row.employeeName,
+          programName: row.programName,
+          detail: row.detail,
+          resolution: row.resolution,
+          resolutionNote: row.resolutionNote,
+          resolvedBy: row.resolvedBy,
+          resolvedAt: row.resolvedAt,
+          sourceHref: row.sourceHref,
+        })),
+      });
+      return [
+        table(
+          "open-import-conflicts",
+          "Open conflicts",
+          rows.filter((row) => row.status === "open"),
+          "No open import conflicts match this scope.",
+        ),
+        table(
+          "resolved-import-conflicts",
+          "Resolved / history",
+          rows.filter((row) => row.status !== "open"),
+          "No resolved import conflicts match this scope.",
+        ),
+      ];
+    },
+  },
+
   "alias-decisions": {
     key: "alias-decisions",
-    title: "Alias decisions",
+    title: "Alias and merge history",
     description:
-      "Every individual and employee alias — the imported spelling, its normalized form, the canonical name it resolves to, its kind and status, who approved it and when.",
+      "Alias decisions plus immutable merge lineage: survivor, folded source, repointed records, actor, date, and reason.",
     filters: [
+      ...DATE_FILTERS,
       {
         key: "kind",
         label: "Kind",
@@ -1853,11 +2375,25 @@ export const REPORTS: Record<string, ReportDefinition> = {
       },
     ],
     async run(pool, filters) {
-      const rows = await aliasDecisionsReport(pool, { kind: filters.kind, status: filters.status });
+      const [aliases, merges] = await Promise.all([
+        aliasDecisionsReport(pool, {
+          kind: filters.kind,
+          status: filters.status,
+          from: filters.from,
+          to: filters.to,
+        }),
+        mergeHistoryReport(pool, {
+          kind: filters.kind,
+          from: filters.from,
+          to: filters.to,
+        }),
+      ]);
       return [
         {
           key: "alias-decisions",
+          title: "Alias decisions",
           emptyMessage: "No aliases match this filter.",
+          source: { href: "/aliases", label: "Open Alias review" },
           columns: [
             { key: "sourceText", header: "Imported spelling", type: "text" },
             { key: "normalizedAlias", header: "Normalized", type: "text" },
@@ -1866,8 +2402,9 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "status", header: "Status", type: "text" },
             { key: "approvedBy", header: "Approved by", type: "text" },
             { key: "createdAt", header: "Created", type: "date" },
+            sourceColumn("Canonical source", "Open canonical person"),
           ],
-          rows: rows.map((r) => ({
+          rows: aliases.map((r) => ({
             sourceText: r.sourceText,
             normalizedAlias: r.normalizedAlias,
             canonicalName: r.canonicalName,
@@ -1875,6 +2412,39 @@ export const REPORTS: Record<string, ReportDefinition> = {
             status: r.status,
             approvedBy: r.approvedBy,
             createdAt: r.createdAt,
+            sourceHref: r.kind === "individual"
+              ? `/individuals/${encodeURIComponent(r.canonicalId)}`
+              : `/employees/${encodeURIComponent(r.canonicalId)}`,
+          })),
+        },
+        {
+          key: "merge-history",
+          title: "Merge history",
+          emptyMessage: "No person merges match this filter.",
+          source: { href: "/matches", label: "Open Identity matches" },
+          columns: [
+            { key: "mergedAt", header: "Merged", type: "text" },
+            { key: "kind", header: "Kind", type: "text" },
+            { key: "survivorName", header: "Survivor", type: "text" },
+            { key: "survivorId", header: "Survivor ID", type: "text" },
+            { key: "foldedName", header: "Folded source", type: "text" },
+            { key: "foldedId", header: "Folded source ID", type: "text" },
+            { key: "repointed", header: "Repointed lineage", type: "text" },
+            { key: "actor", header: "Actor", type: "text" },
+            { key: "reason", header: "Reason", type: "text" },
+            sourceColumn("Survivor source", "Open survivor"),
+          ],
+          rows: merges.map((row) => ({
+            mergedAt: row.mergedAt,
+            kind: row.kind,
+            survivorName: row.survivorName,
+            survivorId: row.survivorId,
+            foldedName: row.foldedName,
+            foldedId: row.foldedId,
+            repointed: row.repointed,
+            actor: row.actor,
+            reason: row.reason,
+            sourceHref: row.sourceHref,
           })),
         },
       ];
@@ -1893,19 +2463,24 @@ export const REPORTS: Record<string, ReportDefinition> = {
         {
           key: "audit-history",
           emptyMessage: "No audit entries match this filter.",
+          source: { href: "/settings", label: "Open the audit summary" },
           columns: [
             { key: "timestamp", header: "When", type: "text" },
             { key: "actor", header: "Actor", type: "text" },
             { key: "action", header: "Action", type: "text" },
             { key: "entityType", header: "Entity", type: "text" },
+            { key: "entityId", header: "Entity ID", type: "text" },
             { key: "reason", header: "Reason", type: "text" },
+            sourceColumn("Record source", "Open record"),
           ],
           rows: rows.map((r) => ({
             timestamp: r.timestamp,
             actor: r.actor,
             action: r.action,
             entityType: r.entityType,
+            entityId: r.entityId,
             reason: r.reason,
+            sourceHref: r.sourceHref,
           })),
         },
       ];
@@ -1914,7 +2489,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
 
   "group-activity": {
     key: "group-activity",
-    title: "Group activity",
+    title: "Group services",
     description:
       "Group service sessions (more than one individual) with their combined amount kept whole and their member count, plus a count of planned group sessions per program.",
     filters: [
@@ -1932,6 +2507,15 @@ export const REPORTS: Record<string, ReportDefinition> = {
           key: "group-services",
           title: "Group service sessions",
           emptyMessage: "No group service sessions in this range.",
+          source: {
+            href: txLink({
+              group: "1",
+              program: filters.program,
+              serviceFrom: asDate(filters.from),
+              serviceTo: asDate(filters.to),
+            }),
+            label: "Open group transactions",
+          },
           columns: [
             { key: "programCode", header: "Program", type: "text" },
             { key: "employeeName", header: "Employee", type: "text" },
@@ -1941,40 +2525,108 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "memberCount", header: "Members", type: "int" },
             { key: "combinedAmount", header: "Funder billed", type: "money" },
             { key: "detectionStatus", header: "Detection", type: "text" },
+            sourceColumn("Ledger source", "Open transactions"),
           ],
           rows: data.sessions.map((r) => ({
             programCode: r.programCode,
             employeeName: r.employeeName,
+            employeeId: r.employeeId,
             periodBegin: r.periodBegin,
             periodEnd: r.periodEnd,
             groupSize: r.groupSize,
             memberCount: r.memberCount,
             combinedAmount: r.combinedAmount,
             detectionStatus: r.detectionStatus,
+            sourceHref: r.transactionIds.length > 0
+              ? txLink({ transactionIds: r.transactionIds })
+              : txLink({
+                  employeeId: r.employeeId,
+                  programCode: r.programCode,
+                  group: "1",
+                  serviceFrom: r.periodBegin ?? asDate(filters.from),
+                  serviceTo: r.periodEnd ?? asDate(filters.to),
+                }),
           })),
         },
         {
           key: "scheduled-group-counts",
           title: "Planned group sessions",
           emptyMessage: "No planned group sessions in this range.",
+          source: { href: "/schedule?view=calendar", label: "Open the Schedule calendar" },
           columns: [
             { key: "programCode", header: "Program", type: "text" },
             { key: "programName", header: "Program name", type: "text" },
             { key: "sessionCount", header: "Planned group sessions", type: "int" },
+            sourceColumn("Schedule source", "Open schedule"),
           ],
           rows: data.scheduledCounts.map((r) => ({
             programCode: r.programCode,
             programName: r.programName,
             sessionCount: r.sessionCount,
+            sourceHref: `/schedule?view=calendar${r.programId ? `&programId=${encodeURIComponent(r.programId)}` : ""}`,
           })),
         },
       ];
     },
   },
 
+  "employee-activity": {
+    key: "employee-activity",
+    title: "Employee activity",
+    description:
+      "Recorded activity across all Employees, with credited hours, physical session hours, people served, Programs, Funder billed, and Employee base.",
+    filters: [
+      ...DATE_FILTERS,
+      { key: "employee", label: "Employee", type: "text", placeholder: "Name" },
+      { key: "program", label: "Program", type: "text", placeholder: "Code or name" },
+    ],
+    async run(pool, filters) {
+      const rows = await employeeActivityReport(pool, {
+        from: filters.from,
+        to: filters.to,
+        employee: filters.employee,
+        program: filters.program,
+      });
+      return [{
+        key: "employee-activity",
+        emptyMessage: "No Employee activity matches this scope.",
+        source: transactionTableSource(filters),
+        columns: [
+          { key: "employeeName", header: "Employee", type: "text" },
+          { key: "firstServiceDate", header: "First service", type: "date" },
+          { key: "lastServiceDate", header: "Last service", type: "date" },
+          { key: "transactionCount", header: "Transactions", type: "int" },
+          { key: "individualCount", header: "Individuals", type: "int" },
+          { key: "programCount", header: "Programs", type: "int" },
+          { key: "creditedHours", header: "Credited hours", type: "hours" },
+          { key: "physicalHours", header: "Physical hours", type: "hours" },
+          { key: "groupSessions", header: "Group sessions", type: "int" },
+          { key: "funderBilled", header: "Funder billed", type: "money" },
+          { key: "employeeBase", header: "Employee base", type: "money" },
+          sourceColumn("Ledger source", "Open transactions"),
+        ],
+        rows: rows.map((row) => ({
+          employeeName: row.employeeName,
+          employeeId: row.employeeId,
+          firstServiceDate: row.firstServiceDate,
+          lastServiceDate: row.lastServiceDate,
+          transactionCount: row.transactionCount,
+          individualCount: row.individualCount,
+          programCount: row.programCount,
+          creditedHours: row.creditedHours,
+          physicalHours: row.physicalHours,
+          groupSessions: row.groupSessions,
+          funderBilled: row.funderBilled,
+          employeeBase: row.employeeBase,
+          sourceHref: row.sourceHref,
+        })),
+      }];
+    },
+  },
+
   "actual-vs-scheduled": {
     key: "actual-vs-scheduled",
-    title: "Actual vs scheduled",
+    title: "Actual versus scheduled",
     description:
       "Per individual and program: scheduled hours and expected Employee base compared with committed transaction hours and recorded Employee base.",
     filters: [
@@ -1995,6 +2647,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
         {
           key: "actual-vs-scheduled",
           emptyMessage: "No scheduled or actual activity to compare.",
+          source: { href: "/schedule?view=calendar", label: "Open the Schedule calendar" },
           columns: [
             { key: "individualName", header: "Individual", type: "text" },
             { key: "programCode", header: "Program", type: "text" },
@@ -2004,9 +2657,12 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "scheduledInternal", header: "Scheduled Employee base", type: "money" },
             { key: "actualInternal", header: "Recorded Employee base", type: "money" },
             { key: "internalVariance", header: "Employee base variance", type: "money" },
+            { key: "scheduleHref", header: "Schedule source", type: "text", linkLabel: "Open schedule" },
+            { key: "transactionHref", header: "Recorded source", type: "text", linkLabel: "Open transactions" },
           ],
           rows: rows.map((r) => ({
             individualName: r.individualName,
+            individualId: r.individualId,
             programCode: r.programCode,
             scheduledHours: r.scheduledHours,
             actualHours: r.actualHours,
@@ -2014,6 +2670,13 @@ export const REPORTS: Record<string, ReportDefinition> = {
             scheduledInternal: r.scheduledInternal,
             actualInternal: r.actualInternal,
             internalVariance: r.internalVariance,
+            scheduleHref: `/schedule?view=calendar&individualId=${encodeURIComponent(r.individualId)}${r.programId ? `&programId=${encodeURIComponent(r.programId)}` : ""}${asDate(filters.from) ? `&date=${encodeURIComponent(asDate(filters.from)!)}` : ""}`,
+            transactionHref: txLink({
+              individualId: r.individualId,
+              programCode: r.programCode,
+              serviceFrom: asDate(filters.from),
+              serviceTo: asDate(filters.to),
+            }),
           })),
         },
       ];
@@ -2022,7 +2685,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
 
   "utilization-outliers": {
     key: "utilization-outliers",
-    title: "Utilization outliers",
+    title: "Budget exceptions",
     description:
       "Authorizations under-utilizing (below 50% used past the halfway point of the period) or over-utilizing (over 100% used), with authorized, used and remaining hours and the flag.",
     filters: [
@@ -2047,6 +2710,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
         {
           key: "utilization-outliers",
           emptyMessage: "No authorizations are outliers right now.",
+          source: { href: "/individuals?view=attention", label: "Open the budget attention roster" },
           columns: [
             { key: "individualName", header: "Individual", type: "text" },
             { key: "programCode", header: "Program", type: "text" },
@@ -2056,9 +2720,11 @@ export const REPORTS: Record<string, ReportDefinition> = {
             { key: "remainingHours", header: "Remaining", type: "hours" },
             { key: "percentUsed", header: "% used", type: "percent" },
             { key: "flag", header: "Flag", type: "text" },
+            sourceColumn("Budget source", "Open budget"),
           ],
           rows: rows.map((r) => ({
             individualName: r.individualName,
+            individualId: r.individualId,
             programCode: r.programCode,
             periodLabel: r.periodLabel,
             authorizedHours: r.authorizedHours,
@@ -2066,6 +2732,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
             remainingHours: r.remainingHours,
             percentUsed: r.percentUsed,
             flag: r.flag,
+            sourceHref: `/individuals/${encodeURIComponent(r.individualId)}?view=budget`,
           })),
         },
       ];

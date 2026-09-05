@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import {
   ArrowLeft,
   CalendarDays,
@@ -10,6 +10,8 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
+import { canAccessReport } from "@/lib/data/report-access";
 import { withDb } from "@/lib/data/pool";
 import {
   REPORTS,
@@ -135,17 +137,33 @@ async function attachEntityIds(pool: PgLikePool, tables: ReportTable[]): Promise
 
   const indMap = new Map<string, string>();
   const empMap = new Map<string, string>();
+  const duplicateIndividuals = new Set<string>();
+  const duplicateEmployees = new Set<string>();
   if (needsInd) {
     const { rows } = await pool.query<{ id: string; display_name: string }>(
-      `SELECT id, display_name FROM individuals WHERE status <> 'archived' AND display_name IS NOT NULL`,
+      `SELECT id, display_name FROM individuals WHERE display_name IS NOT NULL`,
     );
-    for (const row of rows) indMap.set(row.display_name, row.id);
+    for (const row of rows) {
+      if (indMap.has(row.display_name)) {
+        indMap.delete(row.display_name);
+        duplicateIndividuals.add(row.display_name);
+      } else if (!duplicateIndividuals.has(row.display_name)) {
+        indMap.set(row.display_name, row.id);
+      }
+    }
   }
   if (needsEmp) {
     const { rows } = await pool.query<{ id: string; display_name: string }>(
       `SELECT id, display_name FROM employees WHERE display_name IS NOT NULL`,
     );
-    for (const row of rows) empMap.set(row.display_name, row.id);
+    for (const row of rows) {
+      if (empMap.has(row.display_name)) {
+        empMap.delete(row.display_name);
+        duplicateEmployees.add(row.display_name);
+      } else if (!duplicateEmployees.has(row.display_name)) {
+        empMap.set(row.display_name, row.id);
+      }
+    }
   }
 
   for (const table of tables) {
@@ -194,21 +212,27 @@ export default async function ReportPage({
   const asOf = agencyDate();
 
   const result = await withDb(async (pool) => {
+    const scope = await resolveAccessScope(pool, user);
+    if (!canAccessReport(report, scope, user.role)) {
+      return { denied: true as const, tables: [] as ReportTable[] };
+    }
     const tables = await def.run(pool, filters);
     await attachEntityIds(pool, tables);
-    return tables.map((table) => ({
+    return { denied: false as const, tables: tables.map((table) => ({
       ...table,
       columns: table.columns.map((column) => ({
         ...column,
         header: presentation?.columnLabels?.[column.key] ?? column.header,
       })),
-    }));
+    })) };
   });
+
+  if (result.ok && result.data.denied) redirect("/reports?denied=1");
 
   const resultCount = result.ok
     ? {
-        rows: result.data.reduce((sum, table) => sum + table.rows.length, 0),
-        sections: result.data.length,
+        rows: result.data.tables.reduce((sum, table) => sum + table.rows.length, 0),
+        sections: result.data.tables.length,
       }
     : null;
   const resultLabel = resultCount == null
@@ -271,7 +295,7 @@ export default async function ReportPage({
         <ErrorPanel title="Could not run this report">{result.error}</ErrorPanel>
       ) : (
         <div className="space-y-7">
-          {result.data.map((table) => (
+          {result.data.tables.map((table) => (
             <section key={table.key} className="space-y-4" aria-label={table.title ?? presentation?.title ?? def.title}>
               <ReportInlineChart table={table} />
               <ReportGrid table={table} reportKey={report} canManage={user.role !== "viewer"} />

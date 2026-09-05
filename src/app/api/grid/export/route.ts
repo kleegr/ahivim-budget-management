@@ -1,5 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { apiUser } from "@/lib/auth/session";
+import { resolveAccessScope } from "@/lib/auth/access";
+import { canAccessReport } from "@/lib/data/report-access";
+import { isReportKey } from "@/lib/data/report-queries";
+import { getPool } from "@/lib/db";
 import { readJson, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { agencyDate } from "@/lib/business/agency-time";
 import {
@@ -39,6 +43,19 @@ export async function POST(request: NextRequest) {
   if (!user) return jsonError("Sign in to continue.", 401);
   const cross = sameOriginOrFail(request);
   if (cross) return cross;
+  const reportKey = request.nextUrl.searchParams.get("report");
+  if (reportKey !== null) {
+    if (!isReportKey(reportKey)) return jsonError("Unknown report", 404);
+    if (user.role === "viewer") return jsonError("Manager role required", 403);
+    try {
+      const scope = await resolveAccessScope(getPool(), user);
+      if (!canAccessReport(reportKey, scope, user.role)) {
+        return jsonError("Report access denied", 403);
+      }
+    } catch (error) {
+      return jsonError(redactError(error), 500);
+    }
+  }
   const declaredSize = Number(request.headers.get("content-length"));
   if (Number.isFinite(declaredSize) && declaredSize > MAX_BODY_BYTES) {
     return jsonError("Export payload is too large.", 413);
