@@ -6,7 +6,7 @@ import type { StagingResult, StagedRow } from "@/lib/import/stage";
 import type { ParsedAhivimRow } from "@/lib/excel/parse-workbook";
 import { transactionNaturalKey, type TransactionIdentity } from "@/lib/business/fingerprint";
 import { recordChange } from "@/lib/manage/audit";
-import { parseSheetCsv } from "./parse-csv";
+import { parseSheetCsv, type SheetCsvParseResult } from "./parse-csv";
 import { fetchSheetCsv, type CsvFetcher, SheetFetchError } from "./fetch";
 import { getSyncConfig, type SheetSyncConfig } from "./config";
 import { sheetSourceIdentity } from "./identity";
@@ -68,6 +68,7 @@ export interface SyncRunSummary {
   reconciliation: (Partial<StagingResult["reconciliation"]> & {
     note: string;
     scheduleMatching?: ScheduleMatchingOutcome;
+    sheetControlAudit?: SheetControlAudit;
   }) | null;
   error: string | null;
   note: string;
@@ -128,6 +129,11 @@ async function acquireSheetSyncLock(pool: PgLikePool): Promise<PgLikeClient> {
   }
 }
 
+interface SheetControlAudit {
+  rawControlTotals: SheetCsvParseResult["rawControlTotals"];
+  controlTotalEvidence: SheetCsvParseResult["controlTotalEvidence"];
+}
+
 /**
  * Schedule matching is a useful follow-up to an import, but it is not part of
  * the transaction commit. A temporary matching failure must never rewrite the
@@ -178,6 +184,39 @@ function scheduleMatchingNote(outcome: ScheduleMatchingOutcome): string {
     return "No new dated transactions needed a schedule-matching check.";
   }
   return `Schedule matching checked ${outcome.considered} eligible planned visit${outcome.considered === 1 ? "" : "s"}; ${outcome.matched} exact daily record${outcome.matched === 1 ? " was" : "s were"} connected. Other records remain in Schedule matching for review.`;
+}
+
+function sheetControlScopeNote(
+  evidence: SheetCsvParseResult["controlTotalEvidence"],
+): string | null {
+  const controls = [
+    { cell: "P1", column: "P", evidence: evidence.internalAmount },
+    { cell: "Q1", column: "G", evidence: evidence.agencyGross },
+  ] as const;
+  const reasons: string[] = [];
+
+  for (const control of controls) {
+    if (control.evidence.status === "scoped_or_mismatched") {
+      reasons.push(
+        `${control.cell} (${control.evidence.supplied}) was excluded from whole-Sheet reconciliation because ` +
+          `all parsed column ${control.column} source rows total ${control.evidence.allRowsTotal}; ` +
+          "the displayed control may be filtered or otherwise partial",
+      );
+    } else if (control.evidence.status === "unverified") {
+      reasons.push(
+        `${control.cell} (${control.evidence.supplied}) was excluded from whole-Sheet reconciliation because ` +
+          `column ${control.column} contains a nonblank, nonnumeric source value, so its all-row total cannot be proved`,
+      );
+    } else if (control.evidence.status === "invalid_control") {
+      reasons.push(
+        `${control.cell} contained a nonnumeric or spreadsheet-error control and was excluded from ` +
+          "whole-Sheet reconciliation",
+      );
+    }
+  }
+
+  if (reasons.length === 0) return null;
+  return `Sheet control scope: ${reasons.join("; ")}. Raw displayed controls were preserved for audit.`;
 }
 
 interface LedgerTxn {
@@ -466,12 +505,18 @@ export async function runSheetSync(
   // bounded non-blocking poll and release their connection between attempts,
   // preventing pool starvation and making a long holder a visible failure.
   let syncLockClient: PgLikeClient | null = null;
+  let sheetControlAudit: SheetControlAudit | null = null;
 
   try {
     // 1. Fetch + parse the sheet.
     const csv = await fetcher(config);
     const parse = parseSheetCsv(csv);
     const parsedRows = parse.ahivimRows;
+    const controlScopeNote = sheetControlScopeNote(parse.controlTotalEvidence);
+    sheetControlAudit = {
+      rawControlTotals: parse.rawControlTotals,
+      controlTotalEvidence: parse.controlTotalEvidence,
+    };
     base.sourceRows = parsedRows.length;
 
     await pool.query(
@@ -501,9 +546,11 @@ export async function runSheetSync(
             () => autoReconcile(pool, { from: pendingMatch.from!, to: pendingMatch.to! }, opts.userId),
           )
         : null;
-      const reconciliationNote = scheduleMatching
-        ? `Sheet unchanged since the last successful sync. ${scheduleMatchingNote(scheduleMatching)}`
-        : "Sheet unchanged since the last successful sync.";
+      const reconciliationNote = [
+        "Sheet unchanged since the last successful sync.",
+        controlScopeNote,
+        scheduleMatching ? scheduleMatchingNote(scheduleMatching) : null,
+      ].filter((note): note is string => note !== null).join(" ");
       await finishRun(pool, runId, {
         status: "no_changes",
         sourceRows: parsedRows.length,
@@ -512,9 +559,11 @@ export async function runSheetSync(
         skipped: parsedRows.length,
         flagged: 0,
         failed: 0,
-        reconciliation: scheduleMatching
-          ? { note: reconciliationNote, scheduleMatching }
-          : { note: reconciliationNote },
+        reconciliation: {
+          note: reconciliationNote,
+          sheetControlAudit,
+          ...(scheduleMatching ? { scheduleMatching } : {}),
+        },
       });
       return {
         ...base,
@@ -523,16 +572,18 @@ export async function runSheetSync(
         reconciliation: scheduleMatching
           ? { note: reconciliationNote, scheduleMatching }
           : null,
-        note: scheduleMatching
-          ? `The sheet is unchanged; no transactions were imported. ${scheduleMatchingNote(scheduleMatching)}`
-          : "The sheet is unchanged since the last successful sync; nothing was imported.",
+        note: [
+          "The sheet is unchanged since the last successful sync; nothing was imported.",
+          controlScopeNote,
+          scheduleMatching ? scheduleMatchingNote(scheduleMatching) : null,
+        ].filter((note): note is string => note !== null).join(" "),
       };
     }
 
     // 3. Stage against the current database (reuses all business logic).
     const staging = await stageAgainstDatabase(pool, parsedRows, {
-      agencyGross: parse.controlTotals.agencyGross,
-      internalAmount: parse.controlTotals.internalAmount,
+      agencyGross: parse.wholeSheetControlTotals.agencyGross,
+      internalAmount: parse.wholeSheetControlTotals.internalAmount,
     }, { canonicalizeSourceDuplicates: true });
 
     // 4. Classify every row against the ledger and hold CHANGED rows out of the commit.
@@ -590,6 +641,8 @@ export async function runSheetSync(
         sheetName: config.sheetName,
         snapshot: parse.snapshotSha256,
         controlTotals: parse.controlTotals,
+        rawControlTotals: parse.rawControlTotals,
+        controlTotalEvidence: parse.controlTotalEvidence,
         totalSourceRows: parsedRows.length,
         warnings: parse.warnings,
         syncRunId: runId,
@@ -927,8 +980,13 @@ export async function runSheetSync(
     }
     const syncReconciliation = {
       ...staging.reconciliation,
-      note: `${staging.reconciliation.note} ${scheduleMatchingNote(scheduleMatching)}`,
+      note: [
+        staging.reconciliation.note,
+        controlScopeNote,
+        scheduleMatchingNote(scheduleMatching),
+      ].filter((note): note is string => note !== null).join(" "),
       scheduleMatching,
+      sheetControlAudit,
     };
     const skippedCount = unchangedCount + sourceDuplicateCount;
     base.reconciliation = syncReconciliation;
@@ -990,7 +1048,16 @@ export async function runSheetSync(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error during sync.";
-    await finishRun(pool, runId, { status: "failed", error: message }).catch(() => undefined);
+    await finishRun(pool, runId, {
+      status: "failed",
+      error: message,
+      reconciliation: sheetControlAudit
+        ? {
+            note: "Sheet controls were read before this sync failed.",
+            sheetControlAudit,
+          }
+        : undefined,
+    }).catch(() => undefined);
     await recordChange(pool, {
       actorId: opts.userId,
       action: "sheet_sync_failed",

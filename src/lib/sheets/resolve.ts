@@ -88,8 +88,8 @@ export async function applyChangedConflict(
   const csv = await fetcher(config);
   const parse = parseSheetCsv(csv);
   const staging = await stageAgainstDatabase(pool, parse.ahivimRows, {
-    agencyGross: parse.controlTotals.agencyGross,
-    internalAmount: parse.controlTotals.internalAmount,
+    agencyGross: parse.wholeSheetControlTotals.agencyGross,
+    internalAmount: parse.wholeSheetControlTotals.internalAmount,
   });
 
   const matches = staging.rows.filter((r) => r.naturalKey === conflict.natural_key && r.status !== "invalid");

@@ -594,8 +594,14 @@ export function stageRows(
       ? null
       : closeEnough(internalTotal, wbInternal, "0.05");
 
-  const reconciled = agencyGrossMatches === true && internalAmountMatches === true;
-  const bothUnchecked = agencyGrossMatches === null && internalAmountMatches === null;
+  const checkedControls = [agencyGrossMatches, internalAmountMatches].filter(
+    (matches): matches is boolean => matches !== null,
+  );
+  const noControlsChecked = checkedControls.length === 0;
+  // Both workbook controls are optional. Reconciliation succeeds when at least
+  // one was supplied and every supplied control agrees; an absent independent
+  // control must not turn a valid comparison into a false failure.
+  const reconciled = !noControlsChecked && checkedControls.every(Boolean);
 
   // A re-import (whole or partial) is not a reconciliation failure. When the
   // rows imported now, PLUS the rows skipped because they already exist in the
@@ -614,7 +620,7 @@ export function stageRows(
       : closeEnough(ledgerInternal, wbInternal, "0.05");
   const explainedByDuplicates =
     !reconciled &&
-    !bothUnchecked &&
+    !noControlsChecked &&
     confirmedDuplicateRows > 0 &&
     agencyAccountedFor &&
     internalAccountedFor;
@@ -629,11 +635,13 @@ export function stageRows(
       : null,
   ].filter((part): part is string => part !== null);
 
-  const baseNote = bothUnchecked
+  const baseNote = noControlsChecked
     ? "No workbook control totals were supplied, so no reconciliation was performed. " +
       "Totals below are the application's own sums only."
     : reconciled
-      ? "Application totals agree with the workbook control totals."
+      ? checkedControls.length === 1
+        ? "Application totals agree with the supplied workbook control total; the other control was not available."
+        : "Application totals agree with the workbook control totals."
       : explainedByDuplicates
         ? `The workbook's control totals are fully accounted for: rows imported now plus ${accountedForParts.join(" and ")} ` +
           "together match the workbook. No duplicate transactions were inserted."

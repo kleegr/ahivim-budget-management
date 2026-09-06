@@ -37,6 +37,7 @@ interface Row {
   checkDate?: string;
   periodBegin?: string;
   periodEnd?: string;
+  internal?: string;
 }
 
 const R1: Row = { checkNumber: "1001", hours: "10", rate: "25", amount: "250", program: "Com Hab", individual: "Aaron Tester", employee: "Zed Worker" };
@@ -48,10 +49,14 @@ function toCsv(grid: string[][]): string {
   return grid.map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
 }
 
-function buildSheet(rows: Row[]): string {
+function buildSheet(
+  rows: Row[],
+  controls: { internal?: string; gross?: string } = {},
+): string {
   const gross = rows.reduce((s, r) => s + Number(r.amount), 0).toFixed(2);
   const totals = new Array(20).fill("");
-  totals[16] = gross; // Q: agency gross (the one total we can assert exactly)
+  totals[15] = controls.internal ?? "";
+  totals[16] = controls.gross ?? gross; // Q: agency gross
 
   const header = new Array(20).fill("");
   header[0] = "Pay to";
@@ -73,6 +78,7 @@ function buildSheet(rows: Row[]): string {
     a[10] = r.program;
     a[11] = r.individual;
     a[12] = r.employee;
+    a[15] = r.internal ?? "";
     return a;
   });
 
@@ -127,8 +133,228 @@ suite("Google Sheet sync (real PostgreSQL)", () => {
     expect(await sumAmount()).toBeCloseTo(545, 2);
     // The workbook agency gross total was supplied and matches the imported sum.
     expect(res.reconciliation?.agencyGrossMatches).toBe(true);
+    expect(res.reconciliation?.internalAmountMatches).toBeNull();
+    expect(res.reconciliation?.reconciled).toBe(true);
+    expect(res.reconciliation?.note).toContain("supplied workbook control total");
+    expect(res.reconciliation?.note).not.toContain("DO NOT agree");
     // Every synced row is tracked back to a transaction.
     expect(await count("sheet_sync_rows")).toBe(3);
+  });
+
+  it("keeps a filtered control in the audit but does not compare it with the whole Sheet", async () => {
+    const csv = buildSheet([R1, R2], { gross: R1.amount });
+    const res = await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      // Q1 represents only R1 while the CSV carries R1 + R2.
+      fetcher: okFetcher(csv),
+      config: CONFIG,
+    });
+
+    expect(res.status).toBe("success");
+    expect(res.added).toBe(2);
+    expect(res.reconciliation?.agencyGrossMatches).toBeNull();
+    expect(res.reconciliation?.note).toContain("No workbook control totals were supplied");
+    expect(res.reconciliation?.note).toContain(
+      "Q1 (250) was excluded from whole-Sheet reconciliation",
+    );
+    expect(res.reconciliation?.note).toContain("filtered or otherwise partial");
+
+    const { rows } = await pool.query<{
+      sheet_summary: {
+        controlTotals: { agencyGross: string };
+        controlTotalEvidence: {
+          agencyGross: {
+            status: string;
+            supplied: string;
+            rawSupplied: string;
+            allRowsTotal: string;
+          };
+        };
+        warnings: string[];
+      };
+    }>(
+      `SELECT f.sheet_summary
+         FROM import_batches b
+         JOIN imported_files f ON f.id = b.imported_file_id
+        WHERE b.id = $1`,
+      [res.importBatchId],
+    );
+    expect(rows[0]!.sheet_summary.controlTotals.agencyGross).toBe(R1.amount);
+    expect(rows[0]!.sheet_summary.controlTotalEvidence.agencyGross).toEqual({
+      status: "scoped_or_mismatched",
+      supplied: R1.amount,
+      rawSupplied: R1.amount,
+      allRowsTotal: "345",
+    });
+    expect(rows[0]!.sheet_summary.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("Q1 control"),
+    ]));
+
+    const { rows: syncRuns } = await pool.query<{
+      note: string;
+    }>(
+      `SELECT reconciliation->>'note' AS note
+         FROM sheet_sync_runs
+        WHERE id = $1`,
+      [res.runId],
+    );
+    expect(syncRuns[0]!.note).toContain(
+      "Q1 (250) was excluded from whole-Sheet reconciliation",
+    );
+    expect(syncRuns[0]!.note).toContain("Raw displayed controls were preserved for audit");
+
+    const repeated = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(csv),
+      config: CONFIG,
+    });
+    expect(repeated).toMatchObject({ status: "no_changes", added: 0, skipped: 2 });
+    const { rows: repeatedRuns } = await pool.query<{ note: string }>(
+      `SELECT reconciliation->>'note' AS note FROM sheet_sync_runs WHERE id = $1`,
+      [repeated.runId],
+    );
+    expect(repeatedRuns[0]!.note).toContain(
+      "Q1 (250) was excluded from whole-Sheet reconciliation",
+    );
+  });
+
+  it("reconciles with a valid internal control when the gross control is partial", async () => {
+    const rows = [
+      { ...R1, internal: "210" },
+      { ...R2, internal: "85" },
+    ];
+    const res = await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet(rows, { internal: "295", gross: R1.amount })),
+      config: CONFIG,
+    });
+
+    expect(res.reconciliation).toMatchObject({
+      agencyGrossMatches: null,
+      internalAmountMatches: true,
+      reconciled: true,
+    });
+    expect(res.reconciliation?.note).toContain("supplied workbook control total");
+    expect(res.reconciliation?.note).toContain("Q1 (250) was excluded");
+    expect(res.reconciliation?.note).not.toContain("DO NOT agree");
+  });
+
+  it("reconciles with a valid gross control when the internal control is partial", async () => {
+    const rows = [
+      { ...R1, internal: "210" },
+      { ...R2, internal: "85" },
+    ];
+    const res = await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet(rows, { internal: "210" })),
+      config: CONFIG,
+    });
+
+    expect(res.reconciliation).toMatchObject({
+      agencyGrossMatches: true,
+      internalAmountMatches: null,
+      reconciled: true,
+    });
+    expect(res.reconciliation?.note).toContain("supplied workbook control total");
+    expect(res.reconciliation?.note).toContain("P1 (210) was excluded");
+    expect(res.reconciliation?.note).not.toContain("DO NOT agree");
+  });
+
+  it("persists an invalid displayed control without discarding its valid peer", async () => {
+    const rows = [
+      { ...R1, internal: "210" },
+      { ...R2, internal: "85" },
+    ];
+    const res = await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet(rows, { internal: "#REF!" })),
+      config: CONFIG,
+    });
+
+    expect(res.reconciliation).toMatchObject({
+      agencyGrossMatches: true,
+      internalAmountMatches: null,
+      reconciled: true,
+    });
+    expect(res.reconciliation?.note).toContain("P1 contained a nonnumeric or spreadsheet-error control");
+    expect(res.reconciliation?.note).not.toContain("DO NOT agree");
+
+    const { rows: summaries } = await pool.query<{
+      sheet_summary: {
+        rawControlTotals: { internalAmount: string };
+        controlTotals: { internalAmount: null };
+        controlTotalEvidence: {
+          internalAmount: {
+            status: string;
+            supplied: null;
+            rawSupplied: string;
+            allRowsTotal: string;
+          };
+        };
+        warnings: string[];
+      };
+    }>(
+      `SELECT f.sheet_summary
+         FROM import_batches b
+         JOIN imported_files f ON f.id = b.imported_file_id
+        WHERE b.id = $1`,
+      [res.importBatchId],
+    );
+    expect(summaries[0]!.sheet_summary.rawControlTotals.internalAmount).toBe("#REF!");
+    expect(summaries[0]!.sheet_summary.controlTotals.internalAmount).toBeNull();
+    expect(summaries[0]!.sheet_summary.controlTotalEvidence.internalAmount).toEqual({
+      status: "invalid_control",
+      supplied: null,
+      rawSupplied: "#REF!",
+      allRowsTotal: "295",
+    });
+    expect(summaries[0]!.sheet_summary.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("#REF!"),
+    ]));
+  });
+
+  it("audits an invalid control-only change even when transaction rows are unchanged", async () => {
+    const rows = [
+      { ...R1, internal: "210" },
+      { ...R2, internal: "85" },
+    ];
+    await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet(rows, { internal: "295" })),
+      config: CONFIG,
+    });
+
+    const changedControl = await runSheetSync(pool, {
+      trigger: "manual",
+      userId: null,
+      fetcher: okFetcher(buildSheet(rows, { internal: "#REF!" })),
+      config: CONFIG,
+    });
+    expect(changedControl).toMatchObject({ status: "no_changes", added: 0, skipped: 2 });
+
+    const { rows: runs } = await pool.query<{
+      raw_internal: string;
+      status: string;
+      raw_supplied: string;
+    }>(
+      `SELECT reconciliation->'sheetControlAudit'->'rawControlTotals'->>'internalAmount' AS raw_internal,
+              reconciliation->'sheetControlAudit'->'controlTotalEvidence'->'internalAmount'->>'status' AS status,
+              reconciliation->'sheetControlAudit'->'controlTotalEvidence'->'internalAmount'->>'rawSupplied' AS raw_supplied
+         FROM sheet_sync_runs
+        WHERE id = $1`,
+      [changedControl.runId],
+    );
+    expect(runs[0]).toEqual({
+      raw_internal: "#REF!",
+      status: "invalid_control",
+      raw_supplied: "#REF!",
+    });
   });
 
   it("keeps exact repeats as source evidence while inserting one canonical transaction", async () => {

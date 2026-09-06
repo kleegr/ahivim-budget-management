@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { closeEnough, dec, tryDec } from "@/lib/money";
 import {
   AHIVIM_POSITIONAL,
   AHIVIM_HEADER_ALIASES,
@@ -39,7 +40,21 @@ export interface SheetCsvParseResult {
   columnMap: Record<AhivimField, number>;
   mappingStrategy: "header" | "positional";
   ahivimRows: ParsedAhivimRow[];
+  /** Numeric row-1 controls accepted for reconciliation. */
   controlTotals: WorkbookControlTotals;
+  /** Exact trimmed values displayed in the source Sheet's row-1 control cells. */
+  rawControlTotals: WorkbookControlTotals;
+  /**
+   * P1/Q1 only when the corresponding source column proves that the displayed
+   * control covers every parsed row. Google CSV exports keep a SUBTOTAL's
+   * displayed value but discard the filter/formula metadata that defines its
+   * scope, so an unproved value must not be compared with a whole-Sheet import.
+   */
+  wholeSheetControlTotals: Pick<WorkbookControlTotals, "internalAmount" | "agencyGross">;
+  controlTotalEvidence: {
+    internalAmount: SheetControlTotalEvidence;
+    agencyGross: SheetControlTotalEvidence;
+  };
   /**
    * A stable content hash of the transaction rows. Identical sheet content
    * yields an identical hash regardless of CSV formatting jitter, so an
@@ -51,6 +66,23 @@ export interface SheetCsvParseResult {
   /** True when a Paid column was found by header or exists at the verified
    *  positional column — then its values are the source of truth. */
   paidColumnFound: boolean;
+}
+
+export type SheetControlTotalStatus =
+  | "whole_source"
+  | "scoped_or_mismatched"
+  | "invalid_control"
+  | "unverified"
+  | "missing";
+
+export interface SheetControlTotalEvidence {
+  status: SheetControlTotalStatus;
+  /** Parsed numeric control, when the displayed value is usable. */
+  supplied: string | null;
+  /** Exact trimmed displayed value, including spreadsheet errors such as #REF!. */
+  rawSupplied: string | null;
+  /** Decimal-safe total of every nonblank numeric source value, when provable. */
+  allRowsTotal: string | null;
 }
 
 /**
@@ -204,16 +236,19 @@ export function normalizeAccountingNumber(value: string): string {
 }
 
 /** Locate the control-total row (the row above the header carrying the four totals). */
-function readControlTotals(
-  grid: string[][],
-  headerRowIndex: number | null,
-): WorkbookControlTotals {
-  const totals: WorkbookControlTotals = {
+function emptyControlTotals(): WorkbookControlTotals {
+  return {
     internalAmount: null,
     agencyGross: null,
     agencyRetention: null,
     deduplicatedNetPay: null,
   };
+}
+
+function readControlTotals(
+  grid: string[][],
+  headerRowIndex: number | null,
+): { controlTotals: WorkbookControlTotals; rawControlTotals: WorkbookControlTotals } {
   const upTo = headerRowIndex ?? 2;
   const numberish = (value: string): string | null => {
     const normalized = normalizeAccountingNumber(value);
@@ -221,23 +256,139 @@ function readControlTotals(
       ? normalized
       : null;
   };
-  // Scan every row above the header for one that carries ANY of the four control
-  // totals in its known column; take all four totals from that row.
+
+  let firstNonblank: WorkbookControlTotals | null = null;
+  // Prefer a row with at least one valid numeric control. If every displayed
+  // control is an error (for example #REF!), retain the first nonblank P:S row
+  // so a broken Sheet control remains visible in the audit instead of silently
+  // becoming indistinguishable from a missing control.
   for (let n = 0; n < upTo; n++) {
-    const internal = cell(grid, n, CONTROL_TOTAL_CELLS.internalAmount.col);
-    const gross = cell(grid, n, CONTROL_TOTAL_CELLS.agencyGross.col);
-    const retention = cell(grid, n, CONTROL_TOTAL_CELLS.agencyRetention.col);
-    const net = cell(grid, n, CONTROL_TOTAL_CELLS.deduplicatedNetPay.col);
-    const parsed = [internal, gross, retention, net].map(numberish);
-    if (parsed.some((value) => value !== null)) {
-      totals.internalAmount = parsed[0];
-      totals.agencyGross = parsed[1];
-      totals.agencyRetention = parsed[2];
-      totals.deduplicatedNetPay = parsed[3];
-      break;
+    const raw: WorkbookControlTotals = {
+      internalAmount: cell(grid, n, CONTROL_TOTAL_CELLS.internalAmount.col) || null,
+      agencyGross: cell(grid, n, CONTROL_TOTAL_CELLS.agencyGross.col) || null,
+      agencyRetention: cell(grid, n, CONTROL_TOTAL_CELLS.agencyRetention.col) || null,
+      deduplicatedNetPay: cell(grid, n, CONTROL_TOTAL_CELLS.deduplicatedNetPay.col) || null,
+    };
+    const rawValues = Object.values(raw);
+    if (!rawValues.some((value) => value !== null)) continue;
+    firstNonblank ??= raw;
+
+    const parsed: WorkbookControlTotals = {
+      internalAmount: raw.internalAmount === null ? null : numberish(raw.internalAmount),
+      agencyGross: raw.agencyGross === null ? null : numberish(raw.agencyGross),
+      agencyRetention: raw.agencyRetention === null ? null : numberish(raw.agencyRetention),
+      deduplicatedNetPay:
+        raw.deduplicatedNetPay === null ? null : numberish(raw.deduplicatedNetPay),
+    };
+    if (Object.values(parsed).some((value) => value !== null)) {
+      return { controlTotals: parsed, rawControlTotals: raw };
     }
   }
-  return totals;
+
+  const rawControlTotals = firstNonblank ?? emptyControlTotals();
+  return {
+    rawControlTotals,
+    controlTotals: {
+      internalAmount:
+        rawControlTotals.internalAmount === null
+          ? null
+          : numberish(rawControlTotals.internalAmount),
+      agencyGross:
+        rawControlTotals.agencyGross === null ? null : numberish(rawControlTotals.agencyGross),
+      agencyRetention:
+        rawControlTotals.agencyRetention === null
+          ? null
+          : numberish(rawControlTotals.agencyRetention),
+      deduplicatedNetPay:
+        rawControlTotals.deduplicatedNetPay === null
+          ? null
+          : numberish(rawControlTotals.deduplicatedNetPay),
+    },
+  };
+}
+
+const CONTROL_TOTAL_TOLERANCE = "0.05";
+
+function proveWholeSheetControl(
+  rows: readonly ParsedAhivimRow[],
+  field: "amount" | "calculatedInternalAmount",
+  rawSupplied: string | null,
+  supplied: string | null,
+): SheetControlTotalEvidence {
+  if (rawSupplied === null) {
+    return { status: "missing", supplied: null, rawSupplied: null, allRowsTotal: null };
+  }
+
+  let allRowsTotal = dec(0);
+  let sourceColumnIsNumeric = true;
+  for (const row of rows) {
+    const raw = normalizeAccountingNumber(row.raw[field]);
+    // SUBTOTAL ignores blanks. A nonblank value that is not numeric makes the
+    // source-column total unknowable; never infer scope from the remaining rows.
+    if (raw === "") continue;
+    const value = tryDec(raw);
+    if (value === null) {
+      sourceColumnIsNumeric = false;
+      break;
+    }
+    allRowsTotal = allRowsTotal.plus(value);
+  }
+
+  const total = sourceColumnIsNumeric ? allRowsTotal.toString() : null;
+  if (supplied === null) {
+    return {
+      status: "invalid_control",
+      supplied: null,
+      rawSupplied,
+      allRowsTotal: total,
+    };
+  }
+  if (!sourceColumnIsNumeric) {
+    return { status: "unverified", supplied, rawSupplied, allRowsTotal: null };
+  }
+  return {
+    status: closeEnough(allRowsTotal, supplied, CONTROL_TOTAL_TOLERANCE)
+      ? "whole_source"
+      : "scoped_or_mismatched",
+    supplied,
+    rawSupplied,
+    allRowsTotal: total,
+  };
+}
+
+function safeDisplayedControl(value: string): string {
+  const compact = value.replace(/\s+/g, " ").slice(0, 80);
+  return JSON.stringify(compact);
+}
+
+function controlScopeWarning(
+  evidence: SheetControlTotalEvidence,
+  cellRef: "P1" | "Q1",
+  sourceColumn: "P" | "G",
+): string | null {
+  if (evidence.status === "scoped_or_mismatched") {
+    return (
+      `The Sheet's ${cellRef} control is ${evidence.supplied}, but all parsed source rows in ` +
+      `column ${sourceColumn} total ${evidence.allRowsTotal}. The control may be filtered or ` +
+      "otherwise partial, so it was preserved for audit but not used as a whole-Sheet " +
+      "reconciliation control."
+    );
+  }
+  if (evidence.status === "unverified") {
+    return (
+      `The Sheet's ${cellRef} control was preserved for audit but not used as a whole-Sheet ` +
+      `reconciliation control because column ${sourceColumn} contains a nonblank, nonnumeric ` +
+      "source value."
+    );
+  }
+  if (evidence.status === "invalid_control") {
+    return (
+      `The Sheet's ${cellRef} control contains the nonnumeric or error value ` +
+      `${safeDisplayedControl(evidence.rawSupplied ?? "")}. It was preserved for audit but not ` +
+      "used as a whole-Sheet reconciliation control."
+    );
+  }
+  return null;
 }
 
 /**
@@ -270,7 +421,7 @@ export function parseSheetCsv(csvText: string): SheetCsvParseResult {
     );
   }
 
-  const controlTotals = readControlTotals(grid, header?.index ?? null);
+  const { controlTotals, rawControlTotals } = readControlTotals(grid, header?.index ?? null);
 
   const firstDataRow = (header?.index ?? 1) + 1;
   const ahivimRows: ParsedAhivimRow[] = [];
@@ -310,6 +461,37 @@ export function parseSheetCsv(csvText: string): SheetCsvParseResult {
     signatures.push(sig);
   }
 
+  const controlTotalEvidence = {
+    internalAmount: proveWholeSheetControl(
+      ahivimRows,
+      "calculatedInternalAmount",
+      rawControlTotals.internalAmount,
+      controlTotals.internalAmount,
+    ),
+    agencyGross: proveWholeSheetControl(
+      ahivimRows,
+      "amount",
+      rawControlTotals.agencyGross,
+      controlTotals.agencyGross,
+    ),
+  };
+  const wholeSheetControlTotals = {
+    internalAmount:
+      controlTotalEvidence.internalAmount.status === "whole_source"
+        ? controlTotals.internalAmount
+        : null,
+    agencyGross:
+      controlTotalEvidence.agencyGross.status === "whole_source"
+        ? controlTotals.agencyGross
+        : null,
+  };
+  for (const warning of [
+    controlScopeWarning(controlTotalEvidence.internalAmount, "P1", "P"),
+    controlScopeWarning(controlTotalEvidence.agencyGross, "Q1", "G"),
+  ]) {
+    if (warning) warnings.push(warning);
+  }
+
   // The workbook's Paid column is positional N and its header is intentionally
   // blank. Presence cannot depend on a non-empty cell: clearing the final Paid
   // marker must flow back as unpaid. A physically shorter export (no column N)
@@ -330,6 +512,9 @@ export function parseSheetCsv(csvText: string): SheetCsvParseResult {
     mappingStrategy,
     ahivimRows,
     controlTotals,
+    rawControlTotals,
+    wholeSheetControlTotals,
+    controlTotalEvidence,
     snapshotSha256,
     totalDataRows: ahivimRows.length,
     warnings,

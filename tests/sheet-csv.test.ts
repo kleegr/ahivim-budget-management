@@ -86,6 +86,7 @@ describe("Ahivim sheet CSV → parsed rows", () => {
       agencyRetention: "7496.34",
       deduplicatedNetPay: "29813.88",
     });
+    expect(parse.rawControlTotals).toEqual(parse.controlTotals);
     expect(parse.ahivimRows).toHaveLength(2);
     const first = parse.ahivimRows[0]!;
     expect(first.parsed).not.toBeNull();
@@ -99,6 +100,171 @@ describe("Ahivim sheet CSV → parsed rows", () => {
     // A CSV export never carries formulas.
     expect(first.formulas).toEqual({});
     expect(parse.paidColumnFound).toBe(true);
+  });
+
+  it("uses row-1 controls only when Decimal-safe source-column totals prove whole-Sheet scope", () => {
+    const wholeSheet = [
+      totalsRow("456.006", "528.55", "72.544", ""),
+      header(),
+      grid[2]!,
+      grid[3]!,
+    ];
+
+    const parse = parseSheetCsv(toCsv(wholeSheet));
+
+    expect(parse.wholeSheetControlTotals).toEqual({
+      internalAmount: "456.006",
+      agencyGross: "528.55",
+    });
+    expect(parse.controlTotalEvidence).toEqual({
+      internalAmount: {
+        status: "whole_source",
+        supplied: "456.006",
+        rawSupplied: "456.006",
+        allRowsTotal: "456.006",
+      },
+      agencyGross: {
+        status: "whole_source",
+        supplied: "528.55",
+        rawSupplied: "528.55",
+        allRowsTotal: "528.55",
+      },
+    });
+  });
+
+  it("keeps each proved whole-Sheet control independent of a partial peer", () => {
+    const internalOnly = parseSheetCsv(toCsv([
+      totalsRow("456.006", "453.4", "", ""),
+      header(),
+      grid[2]!,
+      grid[3]!,
+    ]));
+    const grossOnly = parseSheetCsv(toCsv([
+      totalsRow("380.856", "528.55", "", ""),
+      header(),
+      grid[2]!,
+      grid[3]!,
+    ]));
+
+    expect(internalOnly.wholeSheetControlTotals).toEqual({
+      internalAmount: "456.006",
+      agencyGross: null,
+    });
+    expect(grossOnly.wholeSheetControlTotals).toEqual({
+      internalAmount: null,
+      agencyGross: "528.55",
+    });
+  });
+
+  it("preserves filtered or partial controls for audit but does not use them as whole-Sheet controls", () => {
+    const filteredControls = [
+      totalsRow("380.856", "453.4", "72.544", ""),
+      header(),
+      grid[2]!,
+      grid[3]!,
+    ];
+
+    const parse = parseSheetCsv(toCsv(filteredControls));
+
+    expect(parse.controlTotals.internalAmount).toBe("380.856");
+    expect(parse.controlTotals.agencyGross).toBe("453.4");
+    expect(parse.wholeSheetControlTotals).toEqual({
+      internalAmount: null,
+      agencyGross: null,
+    });
+    expect(parse.controlTotalEvidence).toEqual({
+      internalAmount: {
+        status: "scoped_or_mismatched",
+        supplied: "380.856",
+        rawSupplied: "380.856",
+        allRowsTotal: "456.006",
+      },
+      agencyGross: {
+        status: "scoped_or_mismatched",
+        supplied: "453.4",
+        rawSupplied: "453.4",
+        allRowsTotal: "528.55",
+      },
+    });
+    expect(parse.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("P1 control"),
+      expect.stringContaining("Q1 control"),
+      expect.stringContaining("filtered or otherwise partial"),
+    ]));
+  });
+
+  it("marks a nonblank nonnumeric source column unverified instead of inferring a partial total", () => {
+    const unparseable = [
+      totalsRow("380.856", "453.4", "72.544", ""),
+      header(),
+      grid[2]!,
+      dataRow({
+        hours: "1",
+        rate: "20",
+        amount: "not-money",
+        program: "Com Hab",
+        individual: "Unreadable Amount",
+        internal: "not-money",
+      }),
+    ];
+
+    const parse = parseSheetCsv(toCsv(unparseable));
+
+    expect(parse.controlTotals.internalAmount).toBe("380.856");
+    expect(parse.controlTotals.agencyGross).toBe("453.4");
+    expect(parse.wholeSheetControlTotals).toEqual({
+      internalAmount: null,
+      agencyGross: null,
+    });
+    expect(parse.controlTotalEvidence.internalAmount).toEqual({
+      status: "unverified",
+      supplied: "380.856",
+      rawSupplied: "380.856",
+      allRowsTotal: null,
+    });
+    expect(parse.controlTotalEvidence.agencyGross).toEqual({
+      status: "unverified",
+      supplied: "453.4",
+      rawSupplied: "453.4",
+      allRowsTotal: null,
+    });
+    expect(parse.warnings.filter((warning) => warning.includes("nonblank, nonnumeric"))).toHaveLength(2);
+  });
+
+  it("retains a broken displayed control and independently accepts its valid peer", () => {
+    const parse = parseSheetCsv(toCsv([
+      totalsRow("#REF!", "528.55", "#N/A", ""),
+      header(),
+      grid[2]!,
+      grid[3]!,
+    ]));
+
+    expect(parse.rawControlTotals).toEqual({
+      internalAmount: "#REF!",
+      agencyGross: "528.55",
+      agencyRetention: "#N/A",
+      deduplicatedNetPay: null,
+    });
+    expect(parse.controlTotals).toEqual({
+      internalAmount: null,
+      agencyGross: "528.55",
+      agencyRetention: null,
+      deduplicatedNetPay: null,
+    });
+    expect(parse.wholeSheetControlTotals).toEqual({
+      internalAmount: null,
+      agencyGross: "528.55",
+    });
+    expect(parse.controlTotalEvidence.internalAmount).toEqual({
+      status: "invalid_control",
+      supplied: null,
+      rawSupplied: "#REF!",
+      allRowsTotal: "456.006",
+    });
+    expect(parse.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("#REF!"),
+      expect.stringContaining("preserved for audit"),
+    ]));
   });
 
   it("recognizes the blank positional Paid column so clearing its final marker is observable", () => {
@@ -182,7 +348,14 @@ describe("Ahivim sheet CSV → parsed rows", () => {
       header(),
       grid[2],
     ];
-    expect(parseSheetCsv(toCsv(accountingTotals)).controlTotals).toEqual({
+    const parsed = parseSheetCsv(toCsv(accountingTotals));
+    expect(parsed.rawControlTotals).toEqual({
+      internalAmount: "$ (531.25)",
+      agencyGross: "$ (625.00)",
+      agencyRetention: "93.75",
+      deduplicatedNetPay: "(600.00)",
+    });
+    expect(parsed.controlTotals).toEqual({
       internalAmount: "-531.25",
       agencyGross: "-625.00",
       agencyRetention: "93.75",
