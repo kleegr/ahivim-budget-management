@@ -138,3 +138,33 @@ describe("import effective-dated rates", () => {
     expect(rateConfigForStagedRow({}, current)).toEqual(current);
   });
 });
+
+describe("ordinary workbook source repeats", () => {
+  it("keeps the default preserve-and-warn policy when canonicalization is not requested", () => {
+    const first = sourceRow(10, {
+      checkNumber: "DUP-1",
+      individual: "Same Person",
+      employee: "Same Employee",
+    });
+    const repeated: ParsedAhivimRow = {
+      ...first,
+      sourceRowNumber: 11,
+      raw: { ...first.raw },
+      formulas: { ...first.formulas },
+      parsed: { ...first.parsed! },
+      errors: [...first.errors],
+    };
+
+    const result = stageRows([first, repeated], baseContext());
+
+    expect(result.rows.map((row) => ({
+      status: row.status,
+      duplicateStatus: row.duplicateStatus,
+    }))).toEqual([
+      { status: "valid", duplicateStatus: "new" },
+      { status: "valid", duplicateStatus: "possible" },
+    ]);
+    expect(result.counts).toMatchObject({ confirmedDuplicates: 0, possibleDuplicates: 1 });
+    expect(result.reconciliation.importedAgencyGross).toBe("200.0000");
+  });
+});

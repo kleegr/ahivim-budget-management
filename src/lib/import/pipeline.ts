@@ -10,6 +10,7 @@ import {
   stageRows,
   type EffectiveRateConfig,
   type RateConfig,
+  type StageRowsOptions,
   type StagingContext,
   type StagingResult,
 } from "./stage";
@@ -285,10 +286,11 @@ export async function stageAgainstDatabase(
   pool: PgLikePool,
   parsedRows: ParsedAhivimRow[],
   controlTotals: { agencyGross: string | null; internalAmount: string | null },
+  options: StageRowsOptions = {},
 ): Promise<StagingResult> {
   const context = await loadStagingContext(pool, {
     agencyGross: controlTotals.agencyGross ?? undefined,
     internalAmount: controlTotals.internalAmount ?? undefined,
   });
-  return stageRows(parsedRows, context);
+  return stageRows(parsedRows, context, options);
 }

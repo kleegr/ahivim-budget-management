@@ -1,4 +1,4 @@
-import type { PgLikePool } from "@/lib/import/commit";
+import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { commitStagedImport } from "@/lib/import/commit";
 import { stageAgainstDatabase } from "@/lib/import/pipeline";
 import { currentRatesByProgram } from "@/lib/data/queries";
@@ -26,6 +26,9 @@ import { autoReconcile } from "@/lib/manage/reconciliation";
  * nothing more:
  *
  *   • NEW rows (identity never seen in the ledger) → imported as transactions.
+ *   • REPEATED rows (same fingerprint later in one Sheet snapshot) → the
+ *     source occurrence is preserved as import evidence, but only one canonical
+ *     transaction is inserted.
  *   • UNCHANGED rows (fingerprint already in the ledger) → skipped, never
  *     re-imported. This is the pipeline's own duplicate guard.
  *   • CHANGED rows (same identity, different money/hours) → NEVER silently
@@ -80,6 +83,50 @@ export interface ScheduleMatchingOutcome {
 }
 
 const SCHEDULE_MATCH_REVIEW_HREF = "/schedule?view=matching" as const;
+const SHEET_SYNC_ADVISORY_LOCK = "ahivim:sheet-sync:canonical-ledger:v1";
+const SHEET_SYNC_LOCK_WAIT_MS = 120_000;
+const SHEET_SYNC_LOCK_POLL_MS = 250;
+
+async function acquireSheetSyncLock(pool: PgLikePool): Promise<PgLikeClient> {
+  const deadline = Date.now() + SHEET_SYNC_LOCK_WAIT_MS;
+  while (true) {
+    const client = await pool.connect();
+    let transactionOpen = false;
+    try {
+      // Transaction-pinned advisory locks are safe through Neon/PgBouncer
+      // transaction-pooling endpoints. A session lock could be stranded on a
+      // different backend when the client is returned to the pool.
+      await client.query("BEGIN");
+      transactionOpen = true;
+      const { rows } = await client.query<{ acquired: boolean }>(
+        `SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired`,
+        [SHEET_SYNC_ADVISORY_LOCK],
+      );
+      if (rows[0]?.acquired === true) return client;
+      await client.query("ROLLBACK");
+      transactionOpen = false;
+    } catch (error) {
+      let destroyConnection = false;
+      if (transactionOpen) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          destroyConnection = true;
+        }
+      }
+      client.release(destroyConnection ? true : error instanceof Error ? error : true);
+      throw error;
+    }
+    client.release();
+
+    if (Date.now() >= deadline) {
+      throw new Error(
+        "Another Google Sheet sync is still running. This run stopped without changing transactions; retry after the active sync finishes.",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, SHEET_SYNC_LOCK_POLL_MS));
+  }
+}
 
 /**
  * Schedule matching is a useful follow-up to an import, but it is not part of
@@ -411,6 +458,15 @@ export async function runSheetSync(
     note: "",
   };
 
+  // Fingerprints are deliberately not globally unique because ordinary manual
+  // imports may contain legitimate repeated lines. Sheet sync has a stricter
+  // canonical identity contract, so every Sheet run is serialized before it
+  // stages against the ledger. The dedicated, open PostgreSQL transaction owns
+  // this lock while the existing pool performs the work. Contenders use a
+  // bounded non-blocking poll and release their connection between attempts,
+  // preventing pool starvation and making a long holder a visible failure.
+  let syncLockClient: PgLikeClient | null = null;
+
   try {
     // 1. Fetch + parse the sheet.
     const csv = await fetcher(config);
@@ -429,6 +485,11 @@ export async function runSheetSync(
           "and that the sheet still contains data.",
       );
     }
+
+    // Fetching does not inspect or mutate the ledger. Acquire the cross-instance
+    // transaction lock before the no-op decision and every staging/commit query,
+    // without holding an idle database transaction during a slow Sheet request.
+    syncLockClient = await acquireSheetSyncLock(pool);
 
     // 2. No-op fast path: the sheet is byte-for-content identical to the last good run.
     const priorSync = await lastSuccessfulSync(pool, runId);
@@ -472,7 +533,7 @@ export async function runSheetSync(
     const staging = await stageAgainstDatabase(pool, parsedRows, {
       agencyGross: parse.controlTotals.agencyGross,
       internalAmount: parse.controlTotals.internalAmount,
-    });
+    }, { canonicalizeSourceDuplicates: true });
 
     // 4. Classify every row against the ledger and hold CHANGED rows out of the commit.
     const ledger = await loadLedger(pool);
@@ -480,7 +541,9 @@ export async function runSheetSync(
 
     const changed: { staged: StagedRow; parsed: ParsedAhivimRow }[] = [];
     const snapshotFingerprints = new Set<string>();
+    const seenSourceFingerprints = new Set<string>();
     let unchangedCount = 0;
+    let sourceDuplicateCount = 0;
     let invalidCount = 0;
 
     for (const st of staging.rows) {
@@ -488,8 +551,14 @@ export async function runSheetSync(
         invalidCount++;
         continue;
       }
+      const repeatedInSource = seenSourceFingerprints.has(st.fingerprint);
+      seenSourceFingerprints.add(st.fingerprint);
       snapshotFingerprints.add(st.fingerprint);
 
+      if (repeatedInSource && st.status === "duplicate") {
+        sourceDuplicateCount++;
+        continue; // preserved in import_rows, never inserted into the canonical ledger
+      }
       if (ledger.fingerprints.has(st.fingerprint)) {
         unchangedCount++;
         continue; // pipeline will treat this as a confirmed duplicate: not re-imported
@@ -861,13 +930,14 @@ export async function runSheetSync(
       note: `${staging.reconciliation.note} ${scheduleMatchingNote(scheduleMatching)}`,
       scheduleMatching,
     };
+    const skippedCount = unchangedCount + sourceDuplicateCount;
     base.reconciliation = syncReconciliation;
     await finishRun(pool, runId, {
       status: "success",
       sourceRows: parsedRows.length,
       added,
       updated: 0,
-      skipped: unchangedCount,
+      skipped: skippedCount,
       flagged,
       failed: invalidCount,
       importBatchId: commitResult.importBatchId,
@@ -881,7 +951,8 @@ export async function runSheetSync(
       entityId: runId,
       extra: {
         added,
-        skipped: unchangedCount,
+        skipped: skippedCount,
+        repeatedSourceOccurrences: sourceDuplicateCount,
         changed: changedCount,
         missing: missingCount,
         failed: invalidCount,
@@ -893,6 +964,9 @@ export async function runSheetSync(
 
     const note =
       `${added} added, ${unchangedCount} unchanged` +
+      (sourceDuplicateCount
+        ? `, ${sourceDuplicateCount} repeated source occurrence${sourceDuplicateCount === 1 ? "" : "s"} preserved without duplicate transactions`
+        : "") +
       (changedCount ? `, ${changedCount} changed flagged for review` : "") +
       (missingCount ? `, ${missingCount} missing flagged for review` : "") +
       (invalidCount ? `, ${invalidCount} could not be parsed` : "") +
@@ -905,7 +979,7 @@ export async function runSheetSync(
       status: "success",
       sourceRows: parsedRows.length,
       added,
-      skipped: unchangedCount,
+      skipped: skippedCount,
       flagged,
       failed: invalidCount,
       changed: changedCount,
@@ -925,5 +999,18 @@ export async function runSheetSync(
       extra: { message },
     }).catch(() => undefined);
     return { ...base, status: "failed", error: message, note: `Sync failed: ${message}` };
+  } finally {
+    if (syncLockClient) {
+      let destroyConnection = false;
+      try {
+        // No business writes use this transaction. ROLLBACK simply releases
+        // its transaction-scoped lock on every return/error path.
+        await syncLockClient.query("ROLLBACK");
+      } catch {
+        // Never return a client that might still have an open transaction.
+        destroyConnection = true;
+      }
+      syncLockClient.release(destroyConnection);
+    }
   }
 }

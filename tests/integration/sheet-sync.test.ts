@@ -131,6 +131,217 @@ suite("Google Sheet sync (real PostgreSQL)", () => {
     expect(await count("sheet_sync_rows")).toBe(3);
   });
 
+  it("keeps exact repeats as source evidence while inserting one canonical transaction", async () => {
+    const csv = buildSheet([R1, { ...R1 }, R2, R3]);
+    const first = await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(csv),
+      config: CONFIG,
+    });
+
+    expect(first.status).toBe("success");
+    expect(first.sourceRows).toBe(4);
+    expect(first.added).toBe(3);
+    expect(first.skipped).toBe(1);
+    expect(first.failed).toBe(0);
+    expect(first.note).toContain(
+      "1 repeated source occurrence preserved without duplicate transactions",
+    );
+    expect(first.reconciliation?.importedAgencyGross).toBe("545.0000");
+    expect(first.reconciliation?.note).toContain(
+      "1 exact repeated source occurrence was preserved in the import evidence",
+    );
+    expect(await count("payroll_transactions")).toBe(3);
+    expect(await sumAmount()).toBeCloseTo(545, 2);
+    expect(await count("sheet_sync_rows")).toBe(3);
+
+    const { rows: transactionIdentity } = await pool.query<{
+      transactions: string;
+      fingerprints: string;
+    }>(
+      `SELECT count(*)::text AS transactions,
+              count(DISTINCT transaction_fingerprint)::text AS fingerprints
+         FROM payroll_transactions`,
+    );
+    expect(transactionIdentity).toEqual([{ transactions: "3", fingerprints: "3" }]);
+
+    const { rows: batch } = await pool.query<{
+      total_rows: number;
+      imported_rows: number;
+      duplicate_rows: number;
+      skipped_rows: number;
+    }>(
+      `SELECT total_rows, imported_rows, duplicate_rows, skipped_rows
+         FROM import_batches WHERE id = $1`,
+      [first.importBatchId],
+    );
+    expect(batch).toEqual([{
+      total_rows: 4,
+      imported_rows: 3,
+      duplicate_rows: 1,
+      skipped_rows: 1,
+    }]);
+
+    const { rows: evidence } = await pool.query<{ status: string; rows: string }>(
+      `SELECT status, count(*)::text AS rows
+         FROM import_rows
+        WHERE import_batch_id = $1
+        GROUP BY status
+        ORDER BY status`,
+      [first.importBatchId],
+    );
+    expect(evidence).toEqual([
+      { status: "duplicate", rows: "1" },
+      { status: "imported", rows: "3" },
+    ]);
+    const { rows: repeatedWarnings } = await pool.query<{ rows: string }>(
+      `SELECT count(*)::text AS rows
+         FROM import_warnings
+        WHERE import_batch_id = $1
+          AND category = 'possible_duplicate'
+          AND details->>'sourceDuplicate' = 'true'`,
+      [first.importBatchId],
+    );
+    expect(repeatedWarnings).toEqual([{ rows: "1" }]);
+
+    const { rows: before } = await pool.query<{ digest: string }>(
+      `SELECT md5(string_agg(id::text, ',' ORDER BY id)) AS digest
+         FROM payroll_transactions`,
+    );
+    const second = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(csv),
+      config: CONFIG,
+    });
+    const { rows: after } = await pool.query<{ digest: string }>(
+      `SELECT md5(string_agg(id::text, ',' ORDER BY id)) AS digest
+         FROM payroll_transactions`,
+    );
+
+    expect(second).toMatchObject({
+      status: "no_changes",
+      sourceRows: 4,
+      added: 0,
+      updated: 0,
+      skipped: 4,
+      flagged: 0,
+      failed: 0,
+    });
+    expect(await count("payroll_transactions")).toBe(3);
+    expect(after[0]!.digest).toBe(before[0]!.digest);
+  });
+
+  it("reports only held repeats as duplicate rows while importing possible corrections", async () => {
+    const possibleCorrection = { ...R1, amount: "275" };
+    const result = await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, { ...R1 }, possibleCorrection])),
+      config: CONFIG,
+    });
+
+    expect(result).toMatchObject({ status: "success", sourceRows: 3, added: 2, skipped: 1 });
+    expect(await count("payroll_transactions")).toBe(2);
+    expect(await sumAmount()).toBeCloseTo(525, 2);
+    const { rows: batch } = await pool.query<{
+      total_rows: number;
+      valid_rows: number;
+      duplicate_rows: number;
+      imported_rows: number;
+      skipped_rows: number;
+    }>(
+      `SELECT total_rows, valid_rows, duplicate_rows, imported_rows, skipped_rows
+         FROM import_batches WHERE id = $1`,
+      [result.importBatchId],
+    );
+    expect(batch).toEqual([{
+      total_rows: 3,
+      valid_rows: 2,
+      duplicate_rows: 1,
+      imported_rows: 2,
+      skipped_rows: 1,
+    }]);
+  });
+
+  it("serializes overlapping different snapshots before staging", async () => {
+    let releaseFirstStage!: () => void;
+    const firstStageGate = new Promise<void>((resolve) => {
+      releaseFirstStage = resolve;
+    });
+    let signalFirstStageStarted!: () => void;
+    const firstStageStarted = new Promise<void>((resolve) => {
+      signalFirstStageStarted = resolve;
+    });
+    let firstStageWasHeld = false;
+    const firstPool: PgLikePool = {
+      connect: () => pool.connect(),
+      async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+        if (
+          !firstStageWasHeld
+          && sql.includes("FROM programs p")
+          && sql.includes("JOIN program_rate_schedules")
+        ) {
+          firstStageWasHeld = true;
+          signalFirstStageStarted();
+          await firstStageGate;
+        }
+        return pool.query<T>(sql, params);
+      },
+    };
+    let secondReachedStaging = false;
+    const secondPool: PgLikePool = {
+      connect: () => pool.connect(),
+      query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+        if (sql.includes("FROM programs p") && sql.includes("JOIN program_rate_schedules")) {
+          secondReachedStaging = true;
+        }
+        return pool.query<T>(sql, params);
+      },
+    };
+
+    const firstPromise = runSheetSync(firstPool, {
+      trigger: "manual",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2])),
+      config: CONFIG,
+    });
+    await firstStageStarted;
+
+    const secondPromise = runSheetSync(secondPool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2, R3])),
+      config: CONFIG,
+    });
+
+    // Both snapshots have been fetched, but the second must remain behind the
+    // database transaction lock until the first has staged and committed.
+    for (let attempt = 0; attempt < 50 && await count("sheet_sync_runs") < 2; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(await count("sheet_sync_runs")).toBe(2);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(secondReachedStaging).toBe(false);
+
+    releaseFirstStage();
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+    expect(first).toMatchObject({ status: "success", added: 2, skipped: 0 });
+    expect(second).toMatchObject({ status: "success", added: 1, skipped: 2 });
+    expect(secondReachedStaging).toBe(true);
+    expect(await count("payroll_transactions")).toBe(3);
+    expect(await count("sheet_sync_rows")).toBe(3);
+    expect(await count("sheet_sync_conflicts")).toBe(0);
+    const { rows: identity } = await pool.query<{ transactions: string; fingerprints: string }>(
+      `SELECT count(*)::text AS transactions,
+              count(DISTINCT transaction_fingerprint)::text AS fingerprints
+         FROM payroll_transactions`,
+    );
+    expect(identity).toEqual([{ transactions: "3", fingerprints: "3" }]);
+  }, 60_000);
+
   it("re-syncing an unchanged sheet is a no-op and never duplicates", async () => {
     const csv = buildSheet([R1, R2, R3]);
     await runSheetSync(pool, { trigger: "manual", userId: null, fetcher: okFetcher(csv), config: CONFIG });

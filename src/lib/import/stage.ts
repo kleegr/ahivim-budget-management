@@ -168,7 +168,20 @@ export interface StagingResult {
   unmatchedEmployeeNames: string[];
 }
 
-export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): StagingResult {
+export interface StageRowsOptions {
+  /**
+   * A recurring Sheet is one durable source, so an exact fingerprint repeated
+   * later in the same snapshot is evidence, not a second canonical transaction.
+   * Ordinary workbook imports keep their preserve-and-warn behavior by default.
+   */
+  canonicalizeSourceDuplicates?: boolean;
+}
+
+export function stageRows(
+  rows: ParsedAhivimRow[],
+  ctx: StagingContext,
+  options: StageRowsOptions = {},
+): StagingResult {
   const warnings: StagedWarning[] = [];
   const staged: StagedRow[] = [];
   const groupCandidates: GroupCandidateRow[] = [];
@@ -183,6 +196,7 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
   // an earlier line in the SAME file is a distinct source line the workbook counts
   // — it is imported and counted, only flagged.
   const fileFingerprints = new Set<string>();
+  const firstSourceRowByFingerprint = new Map<string, number>();
   const fileNaturalKeys = new Set<string>();
 
   let agencyGross = dec(0);
@@ -195,6 +209,7 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
   let duplicateInternalTotal = dec(0);
   let rateExceptionCount = 0;
   let ambiguousCount = 0;
+  let sourceDuplicateCount = 0;
 
   for (const row of rows) {
     const rowWarnings: StagedWarning[] = [];
@@ -389,13 +404,22 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
     };
     const fingerprint = transactionFingerprint(identity);
     const naturalKey = transactionNaturalKey(identity);
+    const repeatedInSource = fileFingerprints.has(fingerprint);
+    const sourceDuplicateHeld =
+      options.canonicalizeSourceDuplicates === true && repeatedInSource;
     let dupStatus: "new" | "possible" | "confirmed";
     let dupReason: string;
-    if (ctx.knownFingerprints.has(fingerprint)) {
+    if (sourceDuplicateHeld) {
+      sourceDuplicateCount++;
+      dupStatus = "confirmed";
+      dupReason =
+        `Exact repeat of source row ${firstSourceRowByFingerprint.get(fingerprint) ?? "earlier"}. ` +
+        "The source row is preserved as evidence but is not inserted as another canonical transaction.";
+    } else if (ctx.knownFingerprints.has(fingerprint)) {
       // Already in the ledger from a prior import — a genuine re-import; skip it.
       dupStatus = "confirmed";
       dupReason = "An identical transaction is already in the ledger from a prior import.";
-    } else if (fileFingerprints.has(fingerprint)) {
+    } else if (repeatedInSource) {
       // Exact repeat of an earlier line in THIS file. The workbook lists it as its
       // own line and its own control totals count it, so it is a distinct, real
       // transaction: imported and counted, flagged only so an accidental double
@@ -415,21 +439,30 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
       dupStatus = "new";
       dupReason = "Not previously imported.";
     }
-    if (dupStatus === "possible") {
+    if (dupStatus === "possible" || sourceDuplicateHeld) {
       rowWarnings.push({
         category: "possible_duplicate",
-        // Informational: the row IS imported and counted; this only invites a look.
-        severity: "info",
+        severity: sourceDuplicateHeld ? "warning" : "info",
         sourceRowNumber: row.sourceRowNumber,
         message: dupReason,
+        details: sourceDuplicateHeld
+          ? {
+              sourceDuplicate: true,
+              fingerprint,
+              firstSourceRowNumber: firstSourceRowByFingerprint.get(fingerprint) ?? null,
+            }
+          : undefined,
       });
     }
     fileFingerprints.add(fingerprint);
+    if (!firstSourceRowByFingerprint.has(fingerprint)) {
+      firstSourceRowByFingerprint.set(fingerprint, row.sourceRowNumber);
+    }
     fileNaturalKeys.add(naturalKey);
     const duplicate = { status: dupStatus, fingerprint, naturalKey, reason: dupReason };
 
     // --- group candidate ---------------------------------------------------
-    if (individual.matchedId || individual.normalizedName) {
+    if (!sourceDuplicateHeld && (individual.matchedId || individual.normalizedName)) {
       groupCandidates.push({
         importRowId: `row-${row.sourceRowNumber}`,
         sourceRowNumber: row.sourceRowNumber,
@@ -586,16 +619,30 @@ export function stageRows(rows: ParsedAhivimRow[], ctx: StagingContext): Staging
     agencyAccountedFor &&
     internalAccountedFor;
 
-  const note = bothUnchecked
+  const priorLedgerDuplicateRows = confirmedDuplicateRows - sourceDuplicateCount;
+  const accountedForParts = [
+    priorLedgerDuplicateRows > 0
+      ? `${priorLedgerDuplicateRows} row${priorLedgerDuplicateRows === 1 ? "" : "s"} already represented in the ledger`
+      : null,
+    sourceDuplicateCount > 0
+      ? `${sourceDuplicateCount} exact repeated source occurrence${sourceDuplicateCount === 1 ? "" : "s"} preserved as evidence`
+      : null,
+  ].filter((part): part is string => part !== null);
+
+  const baseNote = bothUnchecked
     ? "No workbook control totals were supplied, so no reconciliation was performed. " +
       "Totals below are the application's own sums only."
     : reconciled
       ? "Application totals agree with the workbook control totals."
       : explainedByDuplicates
-        ? `The workbook's control totals are fully accounted for: rows imported now plus ${confirmedDuplicateRows} ` +
-          "rows that already exist in the ledger from a prior import together match the workbook. " +
-          "The duplicate rows were not re-imported, so no transactions were double-counted."
+        ? `The workbook's control totals are fully accounted for: rows imported now plus ${accountedForParts.join(" and ")} ` +
+          "together match the workbook. No duplicate transactions were inserted."
         : "Application totals DO NOT agree with the workbook control totals. Investigate before relying on this import.";
+  const sourceDuplicateNote = sourceDuplicateCount > 0
+    ? ` ${sourceDuplicateCount} exact repeated source occurrence${sourceDuplicateCount === 1 ? " was" : "s were"} ` +
+      "preserved in the import evidence and excluded from the canonical transaction ledger."
+    : "";
+  const note = baseNote + sourceDuplicateNote;
 
   const counts = {
     valid: staged.filter((r) => r.status === "valid").length,

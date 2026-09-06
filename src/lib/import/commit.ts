@@ -63,7 +63,7 @@ export interface PgLikeResult<T> {
 
 export interface PgLikeClient {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<PgLikeResult<T>>;
-  release(): void;
+  release(error?: Error | boolean): void;
 }
 
 export interface PgLikePool {
@@ -341,7 +341,11 @@ async function writeImport(client: PgLikeClient, input: CommitInput): Promise<Co
       input.committedByUserId,
       staging.totalSourceRows,
       staging.counts.valid,
-      staging.counts.duplicates,
+      // `duplicate_rows` is a skipped-row count, not the broader monitoring
+      // count of possible corrections that are still imported. Keeping it at
+      // confirmed duplicates makes the persisted batch summary reconcile with
+      // import_rows and the commit result.
+      staging.counts.confirmedDuplicates,
       staging.counts.warningRows,
       staging.counts.invalid,
       staging.reconciliation.workbookAgencyGross,
@@ -930,7 +934,7 @@ function describeOutcome(counts: CommitCounts, staging: StagingResult): string {
   }
   if (counts.duplicateRows > 0) {
     parts.push(
-      `${counts.duplicateRows} rows matched an already-committed transaction and were not re-imported.`,
+      `${counts.duplicateRows} rows were already represented by canonical transactions or exact repeated source occurrences and were not imported again.`,
     );
   }
   if (counts.invalidRows > 0) {
