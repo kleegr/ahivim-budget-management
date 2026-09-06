@@ -69,9 +69,26 @@ Production also calls the runner from the Node instrumentation hook. The normal
 current-schema path is one lock-free checksum query. When a deployment is
 behind, one instance takes a nonblocking advisory lock and applies the pending
 migrations. Other cold starts wait for a bounded period and recheck the ledger;
-they continue only after the exact shipped schema is current. A migration error,
-checksum mismatch, or lock-holder timeout stops that cold start rather than
-serving the new application against an incompatible schema.
+they continue only after the exact shipped schema is current.
+
+Temporary connection failures and lock-holder timeouts remain fail-closed, but
+they do not permanently poison a warm Next.js process. One bounded migration
+gate cycle retries schema reads and migration connections. If the database is
+still temporarily unavailable, the instrumentation registration promise stays
+pending, waits one second, and starts another bounded cycle. Requests are not
+served until an exact checksum check succeeds. This is important because Next.js
+memoizes the instrumentation registration promise for the process lifetime;
+rejecting that outer promise for a transient outage would make every later
+request fail even after the database recovered.
+
+Deterministic failures still reject immediately: a changed migration checksum,
+an older externally managed schema, an authentication or configuration error,
+a permission error, or a non-retryable migration failure never enters the warm
+retry loop. Relevant structured events are
+`auto_migrate_schema_check_retry`, `auto_migrate_schema_check_recovered`,
+`auto_migrate_apply_retry`, and `instrumentation_migration_retry`. Diagnostics
+include error type and SQLSTATE when available, but redact connection strings
+and secret-like values.
 
 Set `DISABLE_AUTO_MIGRATE=1` only when migrations are deliberately managed
 outside the application. Disabled mode performs no migration writes, but it does
