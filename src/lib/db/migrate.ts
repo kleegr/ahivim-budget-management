@@ -151,6 +151,7 @@ export async function runMigrations(
           `Migration ${migration.name} failed and was rolled back: ${
             error instanceof Error ? error.message : "unknown error"
           }`,
+          { cause: error },
         );
       }
     }

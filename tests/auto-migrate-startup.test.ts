@@ -40,7 +40,7 @@ describe("startup migration gate", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-04T12:00:00.000Z"));
     mocks.getPool.mockReset();
-    mocks.migrationChecksumMatches.mockClear();
+    mocks.migrationChecksumMatches.mockReset().mockReturnValue(true);
     mocks.runMigrations.mockReset();
     delete process.env.DISABLE_AUTO_MIGRATE;
   });
@@ -92,7 +92,181 @@ describe("startup migration gate", () => {
     await vi.advanceTimersByTimeAsync(30_000);
 
     await rejection;
-    await expect(runMigrationsOnce()).rejects.toThrow(/did not become current/i);
+    query.mockResolvedValue({ rows: [currentRow] });
+    await expect(runMigrationsOnce()).resolves.toBeUndefined();
+    expect(mocks.runMigrations).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries an auto-managed schema read failure without starting the migration runner", async () => {
+    const query = vi.fn()
+      .mockRejectedValueOnce({ type: "error" })
+      .mockResolvedValueOnce({ rows: [currentRow] });
+    mocks.getPool.mockReturnValue({ query });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
+
+    const startup = runMigrationsOnce();
+    await vi.advanceTimersByTimeAsync(250);
+
+    await expect(startup).resolves.toBeUndefined();
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(mocks.runMigrations).not.toHaveBeenCalled();
+  });
+
+  it("shares one in-flight promise while an auto-managed schema retry is pending", async () => {
+    const query = vi.fn()
+      .mockRejectedValueOnce({ type: "error" })
+      .mockResolvedValueOnce({ rows: [currentRow] });
+    mocks.getPool.mockReturnValue({ query });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
+
+    const first = runMigrationsOnce();
+    const second = runMigrationsOnce();
+    expect(second).toBe(first);
+
+    await vi.advanceTimersByTimeAsync(250);
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(mocks.runMigrations).not.toHaveBeenCalled();
+  });
+
+  it("retries a transient migration connection failure after a confirmed-behind check", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    mocks.getPool.mockReturnValue({ query });
+    mocks.runMigrations
+      .mockRejectedValueOnce({ type: "error" })
+      .mockResolvedValueOnce({ applied: 1, skipped: 0 });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
+
+    const startup = runMigrationsOnce();
+    await vi.advanceTimersByTimeAsync(250);
+
+    await expect(startup).resolves.toBeUndefined();
+    expect(mocks.runMigrations).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed after bounded auto-managed retries, then lets a healthy later call recover", async () => {
+    const query = vi.fn().mockRejectedValue({ type: "error" });
+    mocks.getPool.mockReturnValue({ query });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
+
+    const first = runMigrationsOnce();
+    const rejection = expect(first).rejects.toThrow(
+      /temporary database failure.*could not be verified after 8 attempts.*event=error/i,
+    );
+    await vi.runAllTimersAsync();
+    await rejection;
+    expect(query).toHaveBeenCalledTimes(8);
+    expect(mocks.runMigrations).not.toHaveBeenCalled();
+
+    query.mockResolvedValue({ rows: [currentRow] });
+    const recovered = runMigrationsOnce();
+    expect(recovered).not.toBe(first);
+    await expect(recovered).resolves.toBeUndefined();
+    expect(query).toHaveBeenCalledTimes(9);
+  });
+
+  it("fails closed after all transient migration attempts, then recovers on an exact-current read", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    mocks.getPool.mockReturnValue({ query });
+    mocks.runMigrations.mockRejectedValue({ type: "error" });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
+
+    const first = runMigrationsOnce();
+    const rejection = expect(first).rejects.toThrow(/temporary database failure.*event=error/i);
+    await vi.runAllTimersAsync();
+    await rejection;
+    expect(mocks.runMigrations).toHaveBeenCalledTimes(4);
+
+    query.mockResolvedValue({ rows: [currentRow] });
+    const recovered = runMigrationsOnce();
+    expect(recovered).not.toBe(first);
+    await expect(recovered).resolves.toBeUndefined();
+    expect(mocks.runMigrations).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps a checksum mismatch sticky and never calls the migration runner", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [currentRow] });
+    mocks.getPool.mockReturnValue({ query });
+    mocks.migrationChecksumMatches.mockReturnValue(false);
+    const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
+
+    const first = runMigrationsOnce();
+    await expect(first).rejects.toThrow(/checksum mismatch/i);
+    const second = runMigrationsOnce();
+    expect(second).toBe(first);
+    await expect(second).rejects.toThrow(/checksum mismatch/i);
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(mocks.runMigrations).not.toHaveBeenCalled();
+  });
+
+  it("keeps a permanent database configuration failure sticky and does not retry or migrate", async () => {
+    const authenticationFailure = Object.assign(new Error("password authentication failed"), { code: "28P01" });
+    mocks.getPool.mockImplementation(() => {
+      throw authenticationFailure;
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
+
+    const first = runMigrationsOnce();
+    await expect(first).rejects.toThrow(/schema validation failed.*code=28P01/i);
+    const second = runMigrationsOnce();
+    expect(second).toBe(first);
+    await expect(second).rejects.toThrow(/code=28P01/i);
+    expect(mocks.getPool).toHaveBeenCalledTimes(1);
+    expect(mocks.runMigrations).not.toHaveBeenCalled();
+  });
+
+  it("keeps a missing connection string sticky instead of treating its wording as a network failure", async () => {
+    mocks.getPool.mockImplementation(() => {
+      throw new Error("No database connection string found. Set DATABASE_URL.");
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
+
+    const first = runMigrationsOnce();
+    await expect(first).rejects.toThrow(/schema validation failed.*No database connection string found/i);
+    expect(runMigrationsOnce()).toBe(first);
+    expect(mocks.getPool).toHaveBeenCalledTimes(1);
+    expect(mocks.runMigrations).not.toHaveBeenCalled();
+  });
+
+  it("waits through an intermittent lock-loser read failure until the exact ledger is current", async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockRejectedValueOnce({ type: "error" })
+      .mockResolvedValueOnce({ rows: [currentRow] });
+    mocks.getPool.mockReturnValue({ query });
+    mocks.runMigrations.mockRejectedValueOnce(new mocks.MigrationLockUnavailableError());
+    const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
+
+    const startup = runMigrationsOnce();
+    await vi.advanceTimersByTimeAsync(500);
+
+    await expect(startup).resolves.toBeUndefined();
+    expect(query).toHaveBeenCalledTimes(3);
+    expect(mocks.runMigrations).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a missing migration ledger as confirmed behind and initializes it", async () => {
+    const missingLedger = Object.assign(new Error("relation does not exist"), { code: "42P01" });
+    const query = vi.fn().mockRejectedValueOnce(missingLedger);
+    mocks.getPool.mockReturnValue({ query });
+    mocks.runMigrations.mockResolvedValueOnce({ applied: 1, skipped: 0 });
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
+
+    await expect(runMigrationsOnce()).resolves.toBeUndefined();
+    expect(query).toHaveBeenCalledTimes(1);
     expect(mocks.runMigrations).toHaveBeenCalledTimes(1);
   });
 
@@ -104,7 +278,7 @@ describe("startup migration gate", () => {
     const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
 
     await expect(runMigrationsOnce()).rejects.toThrow(
-      /database migrations failed; startup was stopped: permission denied/i,
+      /database migrations failed; startup was stopped: type=Error message=permission denied/i,
     );
     await expect(runMigrationsOnce()).rejects.toThrow(/permission denied/i);
     expect(mocks.runMigrations).toHaveBeenCalledTimes(1);
@@ -138,19 +312,23 @@ describe("startup migration gate", () => {
   });
 
   it("fails closed after bounded retries when the schema cannot be checked", async () => {
-    const query = vi.fn().mockRejectedValue(new Error("database unavailable"));
+    const transient = Object.assign(new Error("database connection unavailable"), { code: "57P03" });
+    const query = vi.fn().mockRejectedValue(transient);
     mocks.getPool.mockReturnValue({ query });
     process.env.DISABLE_AUTO_MIGRATE = "1";
     const { runMigrationsOnce } = await import("@/lib/db/auto-migrate");
 
     const startup = runMigrationsOnce();
-    const rejection = expect(startup).rejects.toThrow(/could not verify the database schema after 4 attempts/i);
-    await vi.advanceTimersByTimeAsync(750);
+    const rejection = expect(startup).rejects.toThrow(/could not verify the database schema after 8 attempts/i);
+    await vi.runAllTimersAsync();
 
     await rejection;
-    await expect(runMigrationsOnce()).rejects.toThrow(/after 4 attempts/i);
-    expect(query).toHaveBeenCalledTimes(4);
+    expect(query).toHaveBeenCalledTimes(8);
     expect(mocks.runMigrations).not.toHaveBeenCalled();
+
+    query.mockResolvedValue({ rows: [currentRow] });
+    await expect(runMigrationsOnce()).resolves.toBeUndefined();
+    expect(query).toHaveBeenCalledTimes(9);
   });
 
   it("rejects a behind schema without mutating when auto-migration is disabled", async () => {
