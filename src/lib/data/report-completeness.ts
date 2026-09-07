@@ -562,9 +562,9 @@ export async function importConflictsReport(
        LEFT JOIN sheet_sync_rows sync_row ON sync_row.id = conflict.sync_row_id
        LEFT JOIN import_rows import_row ON import_row.import_batch_id = import_batch.id
                                         AND import_row.source_row_number = COALESCE(
-                                          sync_row.source_row_number,
-                                          CASE WHEN (conflict.incoming->>'sourceRowNumber') ~ '^\d+$'
-                                            THEN (conflict.incoming->>'sourceRowNumber')::int END
+                                          CASE WHEN (conflict.incoming->>'sourceRowNumber') ~ '^\\d+$'
+                                            THEN (conflict.incoming->>'sourceRowNumber')::int END,
+                                          sync_row.source_row_number
                                         )
       WHERE ($1::date IS NULL OR conflict.created_at::date >= $1)
         AND ($2::date IS NULL OR conflict.created_at::date <= $2)

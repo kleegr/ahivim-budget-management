@@ -319,7 +319,7 @@ async function reconcileAppliedRateException(
     await db.query(
       `UPDATE rate_exceptions
           SET resolution = 'corrected',
-              note = concat_ws(E'\n', NULLIF(note, ''), $2),
+              note = concat_ws(E'\n', NULLIF(note, ''), $2::text),
               updated_at = now()
         WHERE id = ANY($1::uuid[])`,
       [correctedIds, "Superseded when the reviewed Sheet change was applied to the canonical transaction."],

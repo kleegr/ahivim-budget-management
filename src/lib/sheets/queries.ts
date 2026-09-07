@@ -182,7 +182,7 @@ export async function listOpenConflicts(
        LEFT JOIN sheet_sync_rows sync_row ON sync_row.payroll_transaction_id = c.payroll_transaction_id
        LEFT JOIN import_rows held_row ON held_row.import_batch_id = held_batch.id
                                       AND held_row.source_row_number = COALESCE(
-                                        CASE WHEN (c.incoming->>'sourceRowNumber') ~ '^\d+$'
+                                        CASE WHEN (c.incoming->>'sourceRowNumber') ~ '^\\d+$'
                                           THEN (c.incoming->>'sourceRowNumber')::int END,
                                         sync_row.source_row_number
                                       )

@@ -221,10 +221,11 @@ suite("settlement migrations from a populated 0016 database (real PostgreSQL)", 
          FROM settlement_ledger_state
         WHERE singleton = true`,
     );
-    // 0019 creates the dirty legacy ledger at version 1. Migration 0030 then
-    // deliberately advances it once because legacy transaction-level NET is no
-    // longer settlement-authoritative after payroll-check facts are introduced.
-    expect(state.rows[0]).toMatchObject({ source_version: "2", refreshed_version: "0" });
+    // 0019 creates the dirty legacy ledger at version 1. Migration 0030 advances
+    // it once when payroll-check facts become authoritative. Migration 0043's
+    // two normalization statements each invalidate settlement derivations so
+    // every upgraded database requires a refresh under the verified-check rule.
+    expect(state.rows[0]).toMatchObject({ source_version: "4", refreshed_version: "0" });
   }, 60_000);
 
   it("invalidates freshness for every mutable settlement source family", async () => {

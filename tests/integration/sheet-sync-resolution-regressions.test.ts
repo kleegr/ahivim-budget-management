@@ -1590,6 +1590,7 @@ suite("Sheet conflict-resolution regressions (real PostgreSQL)", () => {
         [originalId, cloneId],
       );
     }
+    await pool.query(`DELETE FROM service_allocations WHERE payroll_transaction_id = $1`, [originalId]);
     await pool.query(`DELETE FROM payroll_transactions WHERE id = $1`, [originalId]);
 
     const result = await sync([BASE, { ...OTHER, paid: "Paid" }]);

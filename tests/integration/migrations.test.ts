@@ -16,8 +16,8 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`CREATE SCHEMA public`);
 
     const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
-    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 43]);
-    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 43]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 44]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 44]);
   }, 60_000);
 
   it("creates the ledger and every expected table", async () => {
@@ -122,7 +122,9 @@ suite("migration runner (real PostgreSQL)", () => {
     try {
       await client.query("BEGIN");
       const { rows: employees } = await client.query<{ id: string }>(
-        `INSERT INTO employees (display_name) VALUES ('Migration invariant check') RETURNING id`,
+        `INSERT INTO employees (display_name, normalized_name)
+         VALUES ('Migration invariant check', 'migration invariant check')
+         RETURNING id`,
       );
       const employeeId = employees[0]!.id;
       const { rows: defaults } = await client.query<{ verification_status: string }>(
@@ -170,8 +172,8 @@ suite("migration runner (real PostgreSQL)", () => {
           WHERE constraint_row.conname = 'employee_payroll_checks_verified_amounts_check'`,
       );
       expect(invariant).toEqual([{ validated: true, trigger_enabled: "O" }]);
-      await client.query("ROLLBACK");
     } finally {
+      await client.query("ROLLBACK");
       client.release();
     }
   });

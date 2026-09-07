@@ -1111,7 +1111,8 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     const obligation = dashboard.rows.find((row) => row.checkNumber === "FRESH-1")!;
 
     await pool.query(
-      `UPDATE employee_payroll_checks SET actual_net = '200', updated_at = now()
+      `UPDATE employee_payroll_checks
+          SET actual_gross = '200', actual_net = '200', updated_at = now()
         WHERE id = $1`,
       [verifiedCheck.id],
     );
