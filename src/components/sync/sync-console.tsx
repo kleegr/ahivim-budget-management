@@ -11,7 +11,8 @@ import {
   transactionReviewHref,
 } from "@/lib/nav/review-actions";
 import {
-  syncRoundTripOutcomePresentation,
+  syncOutcomePresentation,
+  type SyncSummaryLike,
   syncRunActions,
 } from "@/lib/nav/sync-actions";
 
@@ -23,7 +24,7 @@ interface Props {
   runs: SyncRunRow[];
   conflicts: SyncConflictRow[];
   sheetUrl: string;
-  writebackConfigured: boolean;
+  sourceReadMode: "viewer_api" | "public_authoritative" | "unavailable";
 }
 
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
@@ -42,6 +43,14 @@ function fmt(dt: string | null): string {
   return Number.isNaN(d.getTime()) ? "—" : DATE_TIME_FORMATTER.format(d);
 }
 
+function isSourceEvidenceConflict(conflict: SyncConflictRow): boolean {
+  return conflict.previous?.sourceEvidenceConflict === "routing_or_net";
+}
+
+function isNewSourceEvidenceConflict(conflict: SyncConflictRow): boolean {
+  return !conflict.transactionId && isSourceEvidenceConflict(conflict);
+}
+
 const STATUS_TONE: Record<string, string> = {
   success: "var(--color-success)",
   no_changes: "var(--color-info)",
@@ -49,7 +58,7 @@ const STATUS_TONE: Record<string, string> = {
   failed: "var(--color-danger)",
 };
 
-export default function SyncConsole({ canManage, isAdmin, status, config, runs, conflicts, sheetUrl, writebackConfigured }: Props) {
+export default function SyncConsole({ canManage, isAdmin, status, config, runs, conflicts, sheetUrl, sourceReadMode }: Props) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<{
@@ -93,7 +102,7 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
       { acceptDomainFailure: true },
     );
     if (body) {
-      const outcome = syncRoundTripOutcomePresentation(body);
+      const outcome = syncOutcomePresentation(body.summary as SyncSummaryLike | null | undefined);
       setBanner({ tone: outcome.tone, text: outcome.message, action: outcome.action });
       router.refresh();
     }
@@ -169,11 +178,15 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
               <a className="underline underline-offset-2" href={sheetUrl} target="_blank" rel="noreferrer">
                 the Google Sheet
               </a>
-              . This refresh sends app payment markers when write-back is configured, then loads the latest sheet information.
+              . This one-way refresh reads the full source into Neon. It never changes the Google Sheet.
             </p>
             {isAdmin ? (
               <p className="mt-1 text-xs text-[var(--color-ink-faint)]">
-                Connection: {writebackConfigured ? "read and write payment markers" : "read only"}
+                Connection: {sourceReadMode === "viewer_api"
+                  ? "Viewer-only API"
+                  : sourceReadMode === "public_authoritative"
+                    ? "Pinned read-only authoritative export"
+                    : "Viewer credentials required for this custom source"}
               </p>
             ) : null}
           </div>
@@ -181,10 +194,13 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
             <button
               type="button"
               onClick={syncNow}
-              disabled={busy !== null}
+              disabled={busy !== null || sourceReadMode === "unavailable"}
+              title={sourceReadMode === "unavailable"
+                ? "Configure Viewer-only Google Sheets credentials first"
+                : "Read the full source into Neon"}
               className="btn btn-primary"
             >
-              {busy === "sync" ? "Updating..." : "Sync Google Sheet"}
+              {busy === "sync" ? "Refreshing..." : "Refresh from Google Sheet"}
             </button>
           ) : null}
         </div>
@@ -235,16 +251,40 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
                         <p className="text-sm font-medium">
                           {c.transactionId ? (
                             <>{c.individualName ?? "—"}{" "}<span className="text-[var(--color-ink-faint)]">· {c.programName ?? "—"} · {c.employeeName ?? "—"}</span></>
-                          ) : "Multiple existing transactions match this source row"}
+                          ) : isNewSourceEvidenceConflict(c)
+                            ? "New source rows disagree on routing or net evidence"
+                            : "Multiple existing transactions match this source row"}
                           {c.audited ? (
                             <span className="ml-2 rounded-full bg-[var(--color-danger-soft)] px-2 py-0.5 text-xs font-medium text-[var(--color-danger)]">
                               audited — protected
+                            </span>
+                          ) : null}
+                          {isSourceEvidenceConflict(c) ? (
+                            <span className="ml-2 rounded-full bg-[var(--color-warn-soft)] px-2 py-0.5 text-xs font-medium text-[var(--color-warn)]">
+                              routing/net evidence — review only
                             </span>
                           ) : null}
                         </p>
                         <p className="mt-1 text-xs text-[var(--color-ink-soft)]">
                           {c.transactionId ? `${money(c.previous, "amount")} → ${money(c.incoming, "amount")} · ${hours(c.previous)} → ${hours(c.incoming)}` : `Incoming ${money(c.incoming, "amount")} · ${hours(c.incoming)}`}
                         </p>
+                        {isSourceEvidenceConflict(c) ? (
+                          <div className="mt-2 rounded-md bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-ink-soft)]">
+                            <p><span className="font-semibold">Pay To:</span> {sourceText(c.previous, "payTo")} → {sourceText(c.incoming, "payTo")}</p>
+                            <p><span className="font-semibold">Total Net Pay:</span> {money(c.previous, "totalNetPay")} → {money(c.incoming, "totalNetPay")}</p>
+                            <p><span className="font-semibold">Source rows:</span> {sourceRows(c.previous)} → {sourceRows(c.incoming)}</p>
+                            {sourceEvidenceVariants(c.incoming).map((variant, index) => (
+                              <p key={`${c.id}:variant:${index}`}>
+                                Variant rows {sourceRows(variant)}: Pay To {sourceText(variant, "payTo")}; Total Net Pay {money(variant, "totalNetPay")}
+                              </p>
+                            ))}
+                            <p className="mt-1 font-medium">
+                              {isNewSourceEvidenceConflict(c)
+                                ? "Action: correct or remove the inconsistent source variants. A later refresh will close this item automatically; no transaction was created."
+                                : "Action: restore or correct the source evidence, or keep the existing transaction and dismiss this item."}
+                            </p>
+                          </div>
+                        ) : null}
                         {c.detail ? <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{c.detail}</p> : null}
                         <div className="mt-2 flex flex-wrap gap-3 text-xs font-semibold">
                           {c.transactionId ? <Link className="text-[var(--color-primary)] underline-offset-2 hover:underline" href={transactionReviewHref(c.transactionId)}>Open transaction</Link> : null}
@@ -256,8 +296,10 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
                           <button
                             type="button"
                             onClick={() => resolve(c.id, "apply")}
-                            disabled={busy !== null || c.audited || !c.transactionId}
-                            title={c.audited
+                            disabled={busy !== null || c.audited || !c.transactionId || isSourceEvidenceConflict(c)}
+                            title={isSourceEvidenceConflict(c)
+                              ? "Pay To and Total Net Pay evidence must be corrected, restored, or dismissed"
+                              : c.audited
                               ? "Resolve the audited correction first"
                               : !c.transactionId
                                 ? "Clarify which existing transaction this source row belongs to before applying"
@@ -266,14 +308,16 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
                           >
                             {busy === `apply:${c.id}` ? "Applying…" : "Apply"}
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => resolve(c.id, "dismiss")}
-                            disabled={busy !== null}
-                            className="btn btn-sm btn-secondary"
-                          >
-                            Keep existing
-                          </button>
+                          {!isNewSourceEvidenceConflict(c) ? (
+                            <button
+                              type="button"
+                              onClick={() => resolve(c.id, "dismiss")}
+                              disabled={busy !== null}
+                              className="btn btn-sm btn-secondary"
+                            >
+                              {c.transactionId ? "Keep existing" : "Dismiss review"}
+                            </button>
+                          ) : null}
                         </div>
                       ) : null}
                     </div>
@@ -330,7 +374,7 @@ export default function SyncConsole({ canManage, isAdmin, status, config, runs, 
         <header className="border-b border-[var(--color-rule)] px-5 py-3.5">
           <h2 className="display text-[0.95rem] font-semibold">Schedule &amp; source</h2>
           <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
-            The sheet is checked automatically every day. {isAdmin ? "Change the settings below." : "An administrator manages these settings."}
+            The read-only source is checked automatically every day. {isAdmin ? "Change the settings below." : "An administrator manages these settings."}
           </p>
         </header>
         <form
@@ -470,4 +514,24 @@ function hours(obj: Record<string, unknown> | null): string {
   const v = obj?.hours;
   if (v === undefined || v === null || v === "") return "—";
   return `${v}h`;
+}
+
+function sourceText(obj: Record<string, unknown> | null, key: string): string {
+  const value = obj?.[key];
+  return value === undefined || value === null || value === "" ? "—" : String(value);
+}
+
+function sourceRows(obj: Record<string, unknown> | null): string {
+  const rows = obj?.sourceRowNumbers;
+  if (!Array.isArray(rows) || rows.length === 0) return "—";
+  return rows.map(String).join(", ");
+}
+
+function sourceEvidenceVariants(obj: Record<string, unknown> | null): Record<string, unknown>[] {
+  const variants = obj?.sourceEvidenceVariants;
+  return Array.isArray(variants) && variants.length > 1
+    ? variants.filter((variant): variant is Record<string, unknown> =>
+        variant !== null && typeof variant === "object" && !Array.isArray(variant),
+      )
+    : [];
 }

@@ -38,10 +38,10 @@ describe("permission granularity UI", () => {
     expect(transactionsGrid).toContain("visibility.canSeeCheckGross ? line(\"Verified check gross\"");
   });
 
-  it("offers payroll-check actions only with gross, net, and tax access", () => {
-    expect(masserPage).toContain("canOpenChecks: result.data.data.visibility.canSeeCheckGross\n          || result.data.data.visibility.canSeeCheckNet\n          || result.data.data.visibility.canSeeTaxes");
-    expect(masserPage).toContain("&& scope.canSeeCheckGross\n        && scope.canSeeCheckNet\n        && scope.canSeeTaxes");
-    expect(masserPage).toContain("&& result.data.data.visibility.canSeeCheckGross\n          && result.data.data.visibility.canSeeCheckNet\n          && result.data.data.visibility.canSeeTaxes");
-    expect(settlementsPage).toContain("&& scope.canSeeCheckGross\n        && scope.canSeeCheckNet\n        && scope.canSeeTaxes");
+  it("separates payroll-check visibility from privileged payroll-check actions", () => {
+    expect(masserPage).toMatch(/canOpenChecks:\s*result\.data\.data\.visibility\.canSeeCheckGross\s*\|\|\s*result\.data\.data\.visibility\.canSeeCheckNet\s*\|\|\s*result\.data\.data\.visibility\.canSeeTaxes/);
+    expect(masserPage).toMatch(/canRepairImports:\s*scope\.canManageSettlements[\s\S]*?&&\s*scope\.canSeeCheckGross\s*&&\s*scope\.canSeeCheckNet\s*&&\s*scope\.canSeeTaxes/);
+    expect(masserPage).toMatch(/canCreateCheck:\s*result\.data\.canManage\s*&&\s*result\.data\.data\.visibility\.canSeeCheckGross\s*&&\s*result\.data\.data\.visibility\.canSeeCheckNet\s*&&\s*result\.data\.data\.visibility\.canSeeTaxes/);
+    expect(settlementsPage).toMatch(/canManagePayrollChecks:\s*scope\.canManageSettlements\s*&&\s*scope\.canSeeCheckGross\s*&&\s*scope\.canSeeCheckNet\s*&&\s*scope\.canSeeTaxes/);
   });
 });

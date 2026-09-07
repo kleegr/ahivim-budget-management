@@ -87,6 +87,28 @@ export function eqMoney(a: MoneyInput, b: MoneyInput): boolean {
 }
 
 /**
+ * Canonical payroll withholding for a verified check.
+ *
+ * Gross and net are the source facts. The legacy `tax_withheld` database
+ * column is retained for audit/history compatibility, but it must never be an
+ * independent input to current money calculations.
+ */
+export function withholdingFromGrossAndNet(
+  gross: MoneyInput,
+  net: MoneyInput,
+): string | null {
+  if (gross === null || gross === undefined || gross === ""
+      || net === null || net === undefined || net === "") {
+    return null;
+  }
+  const withheld = dec(gross).minus(dec(net));
+  // Legacy rows can predate the current save-time gross >= net validation.
+  // Keep those visible for repair, but never let an impossible negative tax
+  // reduce financial expenses or appear as verified withholding.
+  return withheld.isNegative() ? null : toMoney(withheld);
+}
+
+/**
  * Compare two money values allowing a tolerance, expressed in currency units.
  * Used for reconciliation, where a workbook total and a recomputed total can
  * legitimately differ by sub-cent rounding.

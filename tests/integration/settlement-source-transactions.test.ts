@@ -85,6 +85,7 @@ suite("Money operations compact transaction sources (real PostgreSQL)", () => {
       checkDate: "2026-08-31",
       periodBegin: "2026-08-16",
       periodEnd: "2026-08-31",
+      actualGross: "800",
       actualNet: "800",
       verificationStatus: "verified",
       sourceTransactionIds: verifiedIds,

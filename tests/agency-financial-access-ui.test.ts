@@ -123,10 +123,8 @@ describe("owner agency financials access and interface", () => {
     expect(workspace).toContain("Funder billed = Employee base + Agency spread");
     expect(workspace).toContain("Funder billed = Agency spread + Employee share of base + Agency share of base");
     expect(workspace).toContain("Direct-pay deal amounts stay check-level and use verified net");
-    expect(workspace).toContain("missing verified withholding");
-    expect(workspace).toContain("Withholding comes from its separately verified check field");
-    expect(workspace).toContain("missing values are disclosed and excluded, never inferred from gross minus net");
-    expect(workspace).not.toContain("gross - net");
+    expect(workspace).toContain("Withholding is exactly verified gross minus verified net");
+    expect(workspace).toContain("A missing gross is disclosed and excluded from withholding");
     expect(workspace).toContain("Incomplete values stay out of the money split");
     expect(workspace).toContain("missing base, spread, or deal amounts are not guessed");
     expect(workspace).toContain("Individual split included");

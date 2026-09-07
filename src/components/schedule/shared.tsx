@@ -147,6 +147,7 @@ export function classifyWarningCode(code: string): WarningCategory {
     case "employee_double_booked":
     case "individual_double_booked":
     case "individual_two_employees_one_to_one":
+    case "over_assignment_allowed_hours":
     case "program_not_group":
     case "group_over_max":
       return "conflict";

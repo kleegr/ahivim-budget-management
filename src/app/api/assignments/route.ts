@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
       individualIds: [row.individualId],
       employeeId: row.employeeId,
     }, "read", { from: row.startDate, to: row.endDate })).map((row) =>
-      planning.access.canSeeBudgets ? row : { ...row, allowedHours: null });
+      planning.access.canSeeHours ? row : { ...row, allowedHours: null });
     return NextResponse.json({ ok: true, data });
   } catch (error) {
     return jsonError(redactError(error), 500);
@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
   if (!planning.canManageAssignments) return jsonError("Assignment management access required", 403);
   const input = {
     ...(body as unknown as AssignmentInput),
-    ...(!planning.access.canSeeBudgets ? { allowedHours: null } : {}),
+    ...(!planning.access.canSeeHours ? { allowedHours: null } : {}),
   };
   if (!planningSubjectsAllowed(planning, {
     individualIds: [input.individualId],
@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
     if (!await planningProgramAllowed(pool, planning, input.programId)) {
       return jsonError("Choose an active hours-based planning program.", 403);
     }
-    const result = await createAssignment(pool, input, user.id, reason);
+    const result = await createAssignment(pool, input, user.actorId, reason);
     return resultResponse(result, 201);
   } catch (error) {
     return jsonError(redactError(error), 500);

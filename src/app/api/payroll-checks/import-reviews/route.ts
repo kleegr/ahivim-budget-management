@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const data = await syncImportedPayrollCheckReviews(operator.pool, null, operator.user.id);
+    const data = await syncImportedPayrollCheckReviews(operator.pool, null, operator.user.actorId);
     if (data.checks === 0 && data.linkedTransactions === 0) {
       return Response.json({
         ok: true,
@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
         settlementRefreshSkipped: true,
       });
     }
-    const settlementRefresh = await refreshSettlementObligations(operator.pool, {}, operator.user.id);
+    const settlementRefresh = await refreshSettlementObligations(operator.pool, {}, operator.user.actorId);
     const settlementWarning = settlementRefresh.ok
       ? settlementRefreshBlockingIssueMessage(settlementRefresh.data)
       : settlementRefresh.message;

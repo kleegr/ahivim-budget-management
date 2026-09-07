@@ -1,23 +1,23 @@
-import { gvizCsvUrl, type SheetSyncConfig } from "./config";
+import { authoritativeSheetExportUrl, type SheetSyncConfig } from "./config";
 import {
-  googleSheetsAccessToken,
-  googleSheetsCredentials,
-  type GoogleServiceAccountCredentials,
+  googleSheetsReadAccessToken,
+  googleSheetsReadCredentials,
+  type GoogleSheetsReadCredentials,
 } from "./google-auth";
+import { parseSheetCsv } from "./parse-csv";
 
 /**
  * SERVER-SIDE SHEET FETCH
  * =======================
  *
- * Fetches the Google Sheet from the deployed server. When a service account is
- * configured, the private Sheets API returns the same displayed values users
- * see in the workbook. The public gviz CSV endpoint remains a legacy, read-only
- * fallback only while credentials are absent. This runs only on the server.
+ * Fetches the full configured A:S range through the authenticated Google Sheets
+ * Values API when Viewer-only credentials are configured. The fixed public
+ * source can also use its pinned-gid CSV export, which is read-only and ignores
+ * the Sheet's saved display filter. This runs only on the server.
  *
- * The fetch is defensive: a non-2xx response, an HTML body (which Google returns
- * for a sign-in wall or a bad id), or an empty body are turned into a clear
- * error the sync run records, so a temporary sheet outage is visible and
- * retryable rather than silently importing nothing.
+ * The fetch is defensive: a non-2xx response, HTML/access page, invalid row
+ * layout, or empty body becomes a clear recorded sync error instead of silently
+ * importing a partial view.
  */
 
 export type CsvFetcher = (cfg: SheetSyncConfig) => Promise<string>;
@@ -31,12 +31,12 @@ export class SheetFetchError extends Error {
 
 const looksLikeHtml = (body: string): boolean => {
   const head = body.slice(0, 400).trimStart().toLowerCase();
-  return head.startsWith("<!doctype html") || head.startsWith("<html") || head.includes("<head>");
+  return head.startsWith("<!doctype html") || head.startsWith("<html") || head.includes("<head");
 };
 
 export interface SheetFetchOptions {
-  /** Undefined reads production env; null explicitly exercises legacy fallback. */
-  credentials?: GoogleServiceAccountCredentials | null;
+  /** Undefined reads production env; null explicitly exercises credentialless source rules. */
+  credentials?: GoogleSheetsReadCredentials | null;
   request?: typeof fetch;
 }
 
@@ -56,12 +56,12 @@ export function sheetValuesToCsv(values: readonly (readonly unknown[])[]): strin
 
 async function fetchAuthenticatedSheetCsv(
   cfg: SheetSyncConfig,
-  credentials: GoogleServiceAccountCredentials,
+  credentials: GoogleSheetsReadCredentials,
   request: typeof fetch,
 ): Promise<string> {
   let token: string;
   try {
-    token = await googleSheetsAccessToken(credentials, request);
+    token = await googleSheetsReadAccessToken(credentials, request);
   } catch {
     throw new SheetFetchError(
       "Google Sheets authorization failed. Confirm the service-account credentials and Sheets API access.",
@@ -71,7 +71,8 @@ async function fetchAuthenticatedSheetCsv(
   const range = `'${cfg.sheetName.replace(/'/g, "''")}'!A:S`;
   const query = new URLSearchParams({
     majorDimension: "ROWS",
-    valueRenderOption: "FORMATTED_VALUE",
+    valueRenderOption: "UNFORMATTED_VALUE",
+    dateTimeRenderOption: "FORMATTED_STRING",
   });
   const url =
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(cfg.sheetId)}` +
@@ -116,40 +117,49 @@ async function fetchAuthenticatedSheetCsv(
   return csv;
 }
 
-async function fetchLegacySheetCsv(
+async function fetchPublicAuthoritativeSheetCsv(
   cfg: SheetSyncConfig,
   request: typeof fetch,
 ): Promise<string> {
-  const url = gvizCsvUrl(cfg);
+  const url = authoritativeSheetExportUrl(cfg);
+  if (!url) {
+    throw new SheetFetchError(
+      "Viewer-only Google Sheets credentials are required for a custom or private source.",
+    );
+  }
 
   let response: Response;
   try {
     response = await request(url, {
+      method: "GET",
       redirect: "follow",
+      signal: AbortSignal.timeout(45_000),
       cache: "no-store",
-      headers: { Accept: "text/csv,text/plain,*/*" },
+      credentials: "omit",
+      headers: { Accept: "text/csv,text/plain" },
     });
-  } catch (error) {
-    throw new SheetFetchError(
-      `Could not reach the Google Sheet: ${error instanceof Error ? error.message : "network error"}.`,
-    );
+  } catch {
+    throw new SheetFetchError("Could not reach the authoritative Google Sheet.");
   }
-
   if (!response.ok) {
     throw new SheetFetchError(
-      `The Google Sheet responded with HTTP ${response.status}. Confirm the sheet id is correct and that ` +
-        `link sharing is set to "anyone with the link can view".`,
+      `The authoritative Google Sheet export responded with HTTP ${response.status}.`,
     );
   }
-
   const body = await response.text();
   if (!body || body.trim() === "") {
-    throw new SheetFetchError("The Google Sheet returned an empty response.");
+    throw new SheetFetchError("The authoritative Google Sheet returned an empty export.");
   }
   if (looksLikeHtml(body)) {
     throw new SheetFetchError(
-      "The Google Sheet returned an HTML page instead of CSV. This usually means the sheet is not " +
-        'shared as "anyone with the link can view", or the sheet id/tab name is wrong.',
+      "The authoritative Google Sheet returned an access page instead of its read-only CSV export.",
+    );
+  }
+  const parsed = parseSheetCsv(body);
+  const header = parsed.headerRowIndex === null ? null : parsed.grid[parsed.headerRowIndex];
+  if (!header || header.length < 19 || parsed.ahivimRows.length === 0) {
+    throw new SheetFetchError(
+      "The authoritative Google Sheet export did not contain the expected A:S transaction structure.",
     );
   }
   return body;
@@ -161,9 +171,9 @@ export async function fetchSheetCsv(
 ): Promise<string> {
   const request = options.request ?? fetch;
   const credentials = options.credentials === undefined
-    ? googleSheetsCredentials()
+    ? googleSheetsReadCredentials()
     : options.credentials;
   return credentials
     ? fetchAuthenticatedSheetCsv(cfg, credentials, request)
-    : fetchLegacySheetCsv(cfg, request);
+    : fetchPublicAuthoritativeSheetCsv(cfg, request);
 }

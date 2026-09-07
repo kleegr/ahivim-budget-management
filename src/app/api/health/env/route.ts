@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { CONNECTION_ENV_CANDIDATES, resolveConnectionEnvName } from "@/lib/db";
 import { hasDocumentStorage } from "@/lib/documents/document-storage";
-import { googleSheetsCredentials } from "@/lib/sheets/writeback";
+import { googleSheetsReadCredentials } from "@/lib/sheets/google-auth";
 import { currentUser } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
@@ -40,7 +40,7 @@ export async function GET() {
     authSecretConfigured: Boolean(process.env.AUTH_SECRET?.trim()),
     migrationTokenConfigured: Boolean(process.env.MIGRATION_TOKEN?.trim()),
     cronSecretConfigured: Boolean(process.env.CRON_SECRET?.trim()),
-    googleSheetWritebackConfigured: googleSheetsCredentials() !== null,
+    googleSheetPrivateReadConfigured: googleSheetsReadCredentials() !== null,
     bootstrapAdminConfigured: Boolean(process.env.BOOTSTRAP_ADMIN_EMAIL?.trim()),
     documentStorageConfigured: hasDocumentStorage(),
     nodeEnv: process.env.NODE_ENV ?? null,

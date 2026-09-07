@@ -28,7 +28,7 @@ Classes use per-individual annual dollar allowances, editable monthly invoices, 
 
 The private document library and current PDF editor support forms, signatures, drawing, page operations, OCR-assisted placement, overlays, versions, restore, and export. They do not yet provide truthful Adobe-equivalent arbitrary source-text reflow with proprietary embedded fonts. That promise requires selection, licensing, integration, and production verification of a commercial PDF SDK.
 
-The current repository implements most of this operating model, but no full product area is yet classified as production verified. Role-by-role direct login, mobile acceptance, real-data reconciliation, database integration tests, Sheet write-back credentials, full document round trips, class branding approval, and the commercial PDF decision remain open. The honest status and delivery gates are recorded in Appendix A.
+The current repository implements most of this operating model, but no full product area is yet classified as production verified. Role-by-role direct login, mobile acceptance, real-data reconciliation, database integration tests, read-only Sheet transport verification, full document round trips, class branding approval, and the commercial PDF decision remain open. The honest status and delivery gates are recorded in Appendix A.
 
 ## Table of Contents
 
@@ -497,7 +497,7 @@ The owner Home includes:
 - Multi-person selection and named saved views
 - Direct links from every total to its source
 - An all-individuals working table with selectable and reorderable columns, renewal date prominent by default, multi-person selection, and totals that follow the current filters
-- A clearly visible Sync now control with last-sync time and separate push and pull results
+- A clearly visible read-only refresh control with last-sync time and one inbound result
 
 A failure in one financial section must not blank the operational overview.
 
@@ -559,7 +559,7 @@ An owner-only selected-month report using actual recorded income and the approve
 
 ### 7.13 Google Sheet
 
-The source-refresh workspace shows configuration, a clear Sync now action, separate push and pull status, run history, conflicts, and the direct next action when attention is needed.
+The source-refresh workspace shows configuration, a clear one-way refresh action, inbound run history, conflicts, and the direct next action when attention is needed.
 
 ### 7.14 Financial Setup
 
@@ -740,18 +740,18 @@ The Google Sheet remains the source feed for actual payroll/billing transactions
 
 ### 10.2 The update button
 
-The workspace provides one clear **Sync now** action, reachable immediately from the owner Home or persistent navigation. It shows the last successful sync time. A full configured round trip:
+The workspace provides one clear **Refresh from Google Sheet** action, reachable immediately from the owner Home or persistent navigation. It shows the last successful sync time. A configured inbound run:
 
-1. Pushes eligible pending Paid-marker changes to the Sheet.
-2. Pulls the latest Sheet rows.
+1. Reads the full configured source through a read-only transport.
+2. Preserves raw source evidence.
 3. Stages and commits genuinely new valid transactions.
 4. Leaves unchanged rows unchanged.
 5. Flags changed or missing source rows for review without silently overwriting or deleting history.
 6. Refreshes the visible results and records the run.
 
-General source cells remain read-only from Ahivim. Only the deliberately supported Paid marker is written back.
+The application never changes the Google Sheet. Paid, review, correction, and other application decisions are stored and audited in Neon only. A source Paid cell may be retained as raw evidence but does not control the application's Paid state.
 
-Push and pull are reported separately. A failed push must not pretend the pull failed, and a failed optional schedule match must not pretend the transaction import failed.
+The inbound result is reported clearly. A failed optional schedule match must not pretend the transaction import failed.
 
 ### 10.3 Idempotence and review
 
@@ -1320,7 +1320,7 @@ The product is successful when all of the following are true:
 6. The class billing user can manage an allowance, build a non-Saturday invoice, issue/void it, and retain the output.
 7. Every external account sees only directly linked or agency-scoped records and approved categories.
 8. Sign In As reproduces the target user's experience and returns safely to the owner.
-9. Google Sheet refresh is idempotent, clearly reports push/pull, and never duplicates or silently overwrites actuals.
+9. Google Sheet refresh is read-only and idempotent, reports its inbound result clearly, and never duplicates or silently overwrites actuals.
 10. Budget use comes from actual transactions or the program's single declared consumption source.
 11. Financial Setup, Masser, and owner Agency Financials never count the same cut or receipt twice.
 12. Direct-pay give-back is calculated once from verified check net.
@@ -1389,9 +1389,9 @@ This is deployment and owner smoke-test evidence. It is not role-by-role product
 
 ### A.5 External blockers and known limits
 
-#### Google Sheet write-back
+#### Google Sheet read-only transport
 
-The push/pull workflow is implemented, but production service-account credentials are absent. A real Paid-marker push, pull, idempotent retry, and failure recovery remain unverified. Read-only pull can still operate with current configuration.
+The application is intentionally one-way: it imports transaction evidence into Neon and has no Sheet mutation path. Production acceptance must verify Viewer-only credentials, a full unfiltered source read, authoritative source identity (and digest verification for any transport copy), idempotent retry, failure recovery, and zero outbound mutation requests.
 
 #### Adobe-equivalent source-text PDF editing
 
@@ -1425,7 +1425,7 @@ Private storage is configured, but upload, edit, save, reopen, second save, rest
 4. Provision every preset through the real user flow and test a direct login on desktop and mobile.
 5. Inspect server responses and exports for forbidden role data, especially planner money fields, parent schedule employee identity, internal IDs, and external-person leakage.
 6. Browser-test compact Money-operation source navigation with 1, 70, and 201 rows, including stale and copied links under restricted access.
-7. Complete real Sheet write-back and private document round trips.
+7. Complete production acceptance of the read-only Sheet import and private document round trips.
 8. Obtain class PDF visual approval.
 9. Make and document the commercial PDF SDK versus overlay-only product decision.
 

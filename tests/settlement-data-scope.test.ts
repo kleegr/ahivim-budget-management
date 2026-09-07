@@ -181,6 +181,7 @@ describe("settlement history SQL scope", () => {
   });
 
   it("redacts check gross independently from withholding and deductions", async () => {
+    let payrollVerificationStatus: "unverified" | "verified" | undefined = "verified";
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("SELECT o.id, o.kind")) {
         return { rows: [{
@@ -200,6 +201,8 @@ describe("settlement history SQL scope", () => {
           calculation_metadata: {
             flow: "direct_employee",
             checkGross: "1000.0000",
+            checkNet: "800.0000",
+            payrollVerificationStatus,
             taxWithheldDisplayOnly: "125.0000",
             totalDeductionsDisplayOnly: "200.0000",
           },
@@ -237,9 +240,19 @@ describe("settlement history SQL scope", () => {
     const taxOnly = await getSettlementDashboard(pool, taxOnlyScope);
     expect(taxOnly.rows[0]?.calculation).not.toHaveProperty("checkGross");
     expect(taxOnly.rows[0]?.calculation).toMatchObject({
-      taxWithheldDisplayOnly: "125.0000",
+      taxWithheldDisplayOnly: "200.0000",
       totalDeductionsDisplayOnly: "200.0000",
     });
+
+    payrollVerificationStatus = "unverified";
+    const unverified = await getSettlementDashboard(pool, taxOnlyScope);
+    expect(unverified.rows[0]?.calculation).not.toHaveProperty("taxWithheldDisplayOnly");
+    expect(unverified.rows[0]?.calculation).not.toHaveProperty("totalDeductionsDisplayOnly");
+
+    payrollVerificationStatus = undefined;
+    const unknownStatus = await getSettlementDashboard(pool, taxOnlyScope);
+    expect(unknownStatus.rows[0]?.calculation).not.toHaveProperty("taxWithheldDisplayOnly");
+    expect(unknownStatus.rows[0]?.calculation).not.toHaveProperty("totalDeductionsDisplayOnly");
   });
 });
 

@@ -45,7 +45,7 @@ describe("agency assignment mutation scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.apiPlanningUser.mockResolvedValue({
-      user: { id: "user" },
+      user: { id: "user", actorId: "owner" },
       canManageAssignments: true,
       access: { canSeeBudgets: true },
     });
@@ -115,14 +115,14 @@ describe("agency assignment mutation scope", () => {
       { allowInactive: true },
     );
     expect(mocks.setAssignmentStatus).toHaveBeenCalledWith(
-      expect.anything(), ASSIGNMENT, "ended", "user", null,
+      expect.anything(), ASSIGNMENT, "ended", "owner", null,
     );
     expect(mocks.updateAssignment).not.toHaveBeenCalled();
   });
 
   it("ignores allowed-hour edits from a staffing-only account", async () => {
     mocks.apiPlanningUser.mockResolvedValue({
-      user: { id: "user" },
+      user: { id: "user", actorId: "owner" },
       canManageAssignments: true,
       access: { canSeeBudgets: false },
     });
@@ -139,7 +139,7 @@ describe("agency assignment mutation scope", () => {
       expect.anything(),
       ASSIGNMENT,
       { notes: "Staffing update" },
-      "user",
+      "owner",
       null,
     );
   });

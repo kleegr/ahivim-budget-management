@@ -33,7 +33,10 @@ describe("mobile table usability", () => {
   });
 
   it("uses the shared touch-sized primary control for sync and settings actions", () => {
-    expect(syncConsole).toMatch(/onClick=\{syncNow\}[\s\S]{0,160}className="btn btn-primary"/);
+    const syncButton = syncConsole
+      .match(/<button[\s\S]*?<\/button>/g)
+      ?.find((button) => button.includes("onClick={syncNow}"));
+    expect(syncButton).toContain('className="btn btn-primary"');
     expect(syncConsole).toMatch(/type="submit" disabled=\{busy !== null\} className="btn btn-primary"/);
     expect(syncConsole.match(/className="btn btn-primary"/g)).toHaveLength(2);
   });

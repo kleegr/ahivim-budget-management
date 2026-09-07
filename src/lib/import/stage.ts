@@ -98,6 +98,8 @@ export interface StagedRow {
   status: StagedRowStatus;
   programCode: string | null;
   individualId: string | null;
+  /** Canonical person id when known, otherwise the normalized source person. Used only for group safety. */
+  groupIndividualKey?: string | null;
   employeeId: string | null;
   fingerprint: string | null;
   /** Fingerprint minus money/hours; stable per source identity. Exposed for the sheet-sync tracking layer. */
@@ -166,6 +168,240 @@ export interface StagingResult {
   unknownProgramLabels: string[];
   unmatchedIndividualNames: string[];
   unmatchedEmployeeNames: string[];
+  /** Durable evidence that otherwise-valid group members were held as one atomic unit. */
+  atomicGroupHolds?: AtomicGroupHold[];
+}
+
+export interface AtomicGroupHold {
+  signature: string;
+  sourceRowRefs: number[];
+  heldSourceRowRefs: number[];
+}
+
+export function stagingGroupHasMultipleIndividuals(
+  group: GroupDetectionResult,
+  rows: readonly StagedRow[],
+): boolean {
+  const stagedByRow = new Map(rows.map((row) => [row.sourceRowNumber, row]));
+  const individualKeys = group.sourceRowRefs.flatMap((sourceRowNumber) => {
+    const row = stagedByRow.get(sourceRowNumber);
+    if (!row) return [];
+    // Prefer the canonical id so two approved aliases for one person remain a
+    // singleton. The normalized source identity is retained for new people and
+    // malformed rows that have not acquired a canonical id yet.
+    if (row.groupIndividualKey) return [`person:${row.groupIndividualKey}`];
+    if (row.individualId) return [`id:${row.individualId}`];
+    return row.naturalKey ? [`natural:${row.naturalKey}`] : [];
+  });
+  return new Set(individualKeys).size > 1;
+}
+
+function recomputeReconciliationAfterAtomicHolds(
+  staging: StagingResult,
+  holds: readonly AtomicGroupHold[],
+): void {
+  if (holds.length === 0) return;
+
+  const importedAgencyGross = staging.rows
+    .filter((row) => row.status === "valid")
+    .reduce((sum, row) => sum.plus(dec(row.importedAmount)), dec(0));
+  const importedInternalAmount = staging.rows
+    .filter((row) => row.status === "valid" && row.calculatedInternalAmount !== null)
+    .reduce((sum, row) => sum.plus(dec(row.calculatedInternalAmount!)), dec(0));
+  const workbookAgencyGross = staging.reconciliation.workbookAgencyGross;
+  const workbookInternalAmount = staging.reconciliation.workbookInternalAmount;
+  const agencyGrossMatches = workbookAgencyGross === null
+    ? null
+    : closeEnough(importedAgencyGross, workbookAgencyGross, "0.05");
+  const internalAmountMatches = workbookInternalAmount === null
+    ? null
+    : closeEnough(importedInternalAmount, workbookInternalAmount, "0.05");
+  const checked = [agencyGrossMatches, internalAmountMatches].filter(
+    (matches): matches is boolean => matches !== null,
+  );
+  const heldSourceRows = [...new Set(holds.flatMap((hold) => hold.heldSourceRowRefs))]
+    .sort((a, b) => a - b);
+
+  staging.reconciliation.importedAgencyGross = toMoney(importedAgencyGross);
+  staging.reconciliation.importedInternalAmount = toMoney(importedInternalAmount);
+  staging.reconciliation.agencyGrossMatches = agencyGrossMatches;
+  staging.reconciliation.internalAmountMatches = internalAmountMatches;
+  staging.reconciliation.reconciled = checked.length > 0 && checked.every(Boolean);
+  staging.reconciliation.note =
+    `${heldSourceRows.length} otherwise-valid source row${heldSourceRows.length === 1 ? " was" : "s were"} ` +
+    `held with an incomplete multi-person group (source row${heldSourceRows.length === 1 ? "" : "s"} ` +
+    `${heldSourceRows.join(", ")}). The imported totals now include only rows that remain eligible ` +
+    "to become transactions in this commit; held, invalid, and duplicate rows are excluded.";
+}
+
+/**
+ * A multi-person service is one atomic unit. If only some members are eligible
+ * to become transactions, hold the eligible members too; committing a subset
+ * would create a session whose stated group size and allocations disagree with
+ * the canonical ledger. Exact repeated rows for one individual are deliberately
+ * excluded because they are source-occurrence evidence, not a multi-person group.
+ */
+export function holdPartialMultiPersonGroups(staging: StagingResult): AtomicGroupHold[] {
+  const stagedByRow = new Map(staging.rows.map((row) => [row.sourceRowNumber, row]));
+  const holds: AtomicGroupHold[] = [...(staging.atomicGroupHolds ?? [])];
+
+  for (const group of staging.groups) {
+    if (group.groupSize <= 1 || !stagingGroupHasMultipleIndividuals(group, staging.rows)) continue;
+    const members = group.sourceRowRefs
+      .map((sourceRowNumber) => stagedByRow.get(sourceRowNumber))
+      .filter((row): row is StagedRow => row !== undefined);
+    const eligible = members.filter((row) => row.status === "valid");
+    if (eligible.length === 0 || eligible.length === members.length) continue;
+
+    for (const row of eligible) row.status = "needs_review";
+    const hold: AtomicGroupHold = {
+      signature: group.signature,
+      sourceRowRefs: [...group.sourceRowRefs].sort((a, b) => a - b),
+      heldSourceRowRefs: eligible.map((row) => row.sourceRowNumber).sort((a, b) => a - b),
+    };
+    const existingHold = holds.find((candidate) => candidate.signature === hold.signature);
+    if (existingHold) {
+      existingHold.sourceRowRefs = [...new Set([
+        ...existingHold.sourceRowRefs,
+        ...hold.sourceRowRefs,
+      ])].sort((a, b) => a - b);
+      existingHold.heldSourceRowRefs = [...new Set([
+        ...existingHold.heldSourceRowRefs,
+        ...hold.heldSourceRowRefs,
+      ])].sort((a, b) => a - b);
+    } else {
+      holds.push(hold);
+    }
+    const persistedHold = existingHold ?? hold;
+    const existingWarning = staging.warnings.find((warning) =>
+      warning.category === "group_needs_review"
+      && warning.details?.reason === "partial_group_atomicity"
+      && warning.details?.groupSignature === hold.signature
+    );
+    if (existingWarning) {
+      existingWarning.sourceRowNumber = persistedHold.heldSourceRowRefs[0]
+        ?? persistedHold.sourceRowRefs[0]
+        ?? null;
+      existingWarning.details = {
+        ...existingWarning.details,
+        sourceRows: persistedHold.sourceRowRefs,
+        heldSourceRows: persistedHold.heldSourceRowRefs,
+      };
+    } else {
+      staging.warnings.push({
+        category: "group_needs_review",
+        severity: "warning",
+        sourceRowNumber: persistedHold.heldSourceRowRefs[0] ?? persistedHold.sourceRowRefs[0] ?? null,
+        message:
+          "This multi-person service includes both already-held or existing members and new importable members. " +
+          "Every new member was held so the group cannot be partially committed.",
+        details: {
+          reason: "partial_group_atomicity",
+          groupSignature: persistedHold.signature,
+          sourceRows: persistedHold.sourceRowRefs,
+          heldSourceRows: persistedHold.heldSourceRowRefs,
+        },
+      });
+    }
+  }
+
+  staging.atomicGroupHolds = holds;
+  if (holds.length > 0) {
+    staging.counts.valid = staging.rows.filter((row) => row.status === "valid").length;
+    staging.counts.needsReview = staging.rows.filter((row) => row.status === "needs_review").length;
+    staging.counts.warningRows = new Set(
+      staging.warnings
+        .filter((warning) => warning.sourceRowNumber !== null)
+        .map((warning) => warning.sourceRowNumber),
+    ).size;
+    const heldGroupSignatures = new Set(holds.map((hold) => hold.signature));
+    staging.counts.groupsDetected = staging.groups.filter((group) =>
+      group.status === "detected" && !heldGroupSignatures.has(group.signature),
+    ).length;
+    staging.counts.groupsNeedingReview = staging.groups.filter((group) =>
+      group.status === "needs_review" || heldGroupSignatures.has(group.signature),
+    ).length;
+    recomputeReconciliationAfterAtomicHolds(staging, holds);
+  }
+  return holds;
+}
+
+function normalizedGroupNumber(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const accounting = /^\((.*)\)$/.exec(trimmed);
+  const normalized = (accounting ? `-${accounting[1]}` : trimmed)
+    .replace(/[$,\s]/g, "");
+  if (!/^-?\d*\.?\d+$/.test(normalized)) return null;
+  try {
+    return dec(normalized).toFixed(4);
+  } catch {
+    return null;
+  }
+}
+
+function normalizedGroupDate(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const match = /^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/.exec(trimmed);
+  if (match) {
+    const [, month, day, rawYear] = match;
+    const year = rawYear.length === 2 ? `20${rawYear}` : rawYear;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+}
+
+function provisionalInvalidGroupCandidate(
+  row: ParsedAhivimRow,
+  ctx: StagingContext,
+): {
+  candidate: GroupCandidateRow;
+  individualId: string | null;
+  employeeId: string | null;
+  groupIndividualKey: string;
+} | null {
+  const hours = normalizedGroupNumber(row.raw.hours);
+  const rate = normalizedGroupNumber(row.raw.rate);
+  // Hours and rate are part of the structural group signature. If either is
+  // unreadable, there is no defensible automatic relationship to another row.
+  if (hours === null || rate === null) return null;
+
+  const individual = matchPerson(row.raw.individual, ctx.individuals, ctx.individualAliases);
+  const employee = row.raw.employee
+    ? matchPerson(row.raw.employee, ctx.employees, ctx.employeeAliases)
+    : null;
+  const program = resolveProgram(row.raw.programDescription, ctx.programAliases);
+  const groupIndividualKey = individual.matchedId
+    ?? individual.normalizedName
+    ?? `unresolved-row-${row.sourceRowNumber}`;
+
+  return {
+    candidate: {
+      importRowId: `row-${row.sourceRowNumber}`,
+      sourceRowNumber: row.sourceRowNumber,
+      // A blank/otherwise unusable individual is still a distinct unresolved
+      // member for safety; it must not disappear and let a sibling commit alone.
+      individualKey: groupIndividualKey || `unresolved-row-${row.sourceRowNumber}`,
+      employeeKey: employee?.matchedId ?? employee?.normalizedName ?? "",
+      programKey: program.code ?? program.normalizedLabel,
+      checkNumber: row.raw.checkNumber.trim() || null,
+      checkDate: normalizedGroupDate(row.raw.checkDate),
+      periodBegin: normalizedGroupDate(row.raw.periodBegin),
+      periodEnd: normalizedGroupDate(row.raw.periodEnd),
+      hours,
+      rate,
+      // Source amount is deliberately absent from the group signature and its
+      // arithmetic. A placeholder lets an amount-only parse failure contribute
+      // structural membership without treating the value as financial truth.
+      amount: "0",
+    },
+    individualId: individual.matchedId,
+    employeeId: employee?.matchedId ?? null,
+    groupIndividualKey: groupIndividualKey || `unresolved-row-${row.sourceRowNumber}`,
+  };
 }
 
 export interface StageRowsOptions {
@@ -215,12 +451,15 @@ export function stageRows(
     const rowWarnings: StagedWarning[] = [];
 
     if (!row.parsed) {
+      const provisionalGroup = provisionalInvalidGroupCandidate(row, ctx);
+      if (provisionalGroup) groupCandidates.push(provisionalGroup.candidate);
       staged.push({
         sourceRowNumber: row.sourceRowNumber,
         status: "invalid",
         programCode: null,
-        individualId: null,
-        employeeId: null,
+        individualId: provisionalGroup?.individualId ?? null,
+        employeeId: provisionalGroup?.employeeId ?? null,
+        groupIndividualKey: provisionalGroup?.groupIndividualKey ?? null,
         fingerprint: null,
         naturalKey: null,
         duplicateStatus: "new",
@@ -524,6 +763,7 @@ export function stageRows(
       programCode: program.code,
       individualId: individual.matchedId,
       employeeId: employee?.matchedId ?? null,
+      groupIndividualKey: individual.matchedId ?? individual.normalizedName,
       fingerprint: duplicate.fingerprint,
       naturalKey: duplicate.naturalKey,
       duplicateStatus: duplicate.status,
@@ -671,7 +911,7 @@ export function stageRows(
     groupsNeedingReview: groups.filter((g) => g.status === "needs_review").length,
   };
 
-  return {
+  const result: StagingResult = {
     totalSourceRows: rows.length,
     rows: staged,
     warnings,
@@ -692,4 +932,6 @@ export function stageRows(
     unmatchedIndividualNames: [...unmatchedIndividualNames],
     unmatchedEmployeeNames: [...unmatchedEmployeeNames],
   };
+  holdPartialMultiPersonGroups(result);
+  return result;
 }

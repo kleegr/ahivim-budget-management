@@ -1,6 +1,6 @@
 import { agencyMonth } from "@/lib/business/agency-time";
 import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
-import { dec, toMoney } from "@/lib/money";
+import { dec, toMoney, withholdingFromGrossAndNet } from "@/lib/money";
 import {
   listManualIncomeEntries,
   type AutomaticIncomeSourceType,
@@ -210,7 +210,6 @@ interface CheckRow {
   check_number: string | null;
   actual_gross: string | null;
   actual_net: string;
-  tax_withheld: string | null;
   direct_rule: "keep_all" | "giveback_percent" | "giveback_all" | null;
   direct_percent: string | null;
 }
@@ -297,8 +296,8 @@ export function agencyRoutedEmployeeShare(input: {
 }
 
 export function directPayCheckAmounts(input: {
+  grossAmount: string | null;
   netAmount: string;
-  taxWithheld: string | null;
   directRule: CheckRow["direct_rule"];
   directPercent: string | null;
 }): {
@@ -307,10 +306,7 @@ export function directPayCheckAmounts(input: {
   employeeOwesAgency: string | null;
 } {
   const net = dec(input.netAmount);
-  // Withholding is an independently verified payroll fact. Gross minus net can
-  // also contain benefits, garnishments, reimbursements, or other deductions,
-  // so deriving tax from those two fields would silently guess an expense.
-  const taxes = input.taxWithheld === null ? null : toMoney(input.taxWithheld);
+  const taxes = withholdingFromGrossAndNet(input.grossAmount, input.netAmount);
   if (input.directRule === null) {
     return { taxes, employeeKeeps: null, employeeOwesAgency: null };
   }
@@ -477,7 +473,6 @@ export async function getAgencyFinancialReport(
               check_fact.check_number,
               check_fact.actual_gross::text,
               check_fact.actual_net::text,
-              check_fact.tax_withheld::text,
               deal.direct_rule,
               deal.direct_percent::text
          FROM employee_payroll_checks check_fact
@@ -653,8 +648,8 @@ export async function getAgencyFinancialReport(
 
   const directChecks = checkResult.rows.map<DirectPayCheckActual>((row) => {
     const amounts = directPayCheckAmounts({
+      grossAmount: row.actual_gross,
       netAmount: row.actual_net,
-      taxWithheld: row.tax_withheld,
       directRule: row.direct_rule,
       directPercent: row.direct_percent,
     });
@@ -920,7 +915,9 @@ export async function getAgencyFinancialReport(
         row.paymentRecipient === "excellent_staffing" && row.payRuleSource === "missing"
       )).length,
       directChecksMissingGross: directChecks.filter((row) => row.grossAmount === null).length,
-      directChecksMissingWithholding: directChecks.filter((row) => row.taxes === null).length,
+      directChecksMissingWithholding: directChecks.filter((row) => (
+        row.grossAmount !== null && row.taxes === null
+      )).length,
       directChecksGrossBelowNet: directChecks.filter((row) => (
         row.grossAmount !== null && dec(row.grossAmount).lessThan(row.netAmount)
       )).length,

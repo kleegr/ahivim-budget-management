@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { getPool } from "@/lib/db";
-import { apiUser } from "@/lib/auth/session";
 import { jsonError } from "@/lib/http";
 import { ensureMigrationsApplied } from "@/lib/db/auto-migrate";
 import { getSyncConfig } from "@/lib/sheets/config";
@@ -15,7 +14,8 @@ export const maxDuration = 300;
  * The scheduled sync endpoint hit by Vercel Cron.
  *
  * Auth: Vercel Cron sends `Authorization: Bearer $CRON_SECRET`. The configured
- * secret must match, or a signed-in administrator must authorize the request.
+ * secret must match. Signed-in administrators use the separate same-origin
+ * POST /api/sync/run route; browser cookies never authorize this GET endpoint.
  * A missing secret never makes this database-writing route public.
  *
  * Self-gating makes the schedule configurable without a redeploy:
@@ -28,7 +28,7 @@ export const maxDuration = 300;
  * often enough, and still guarantees a daily sync on a once-a-day cron.
  */
 async function authorize(request: NextRequest): Promise<{
-  authorisedBy: "cron_secret" | "admin_session";
+  authorisedBy: "cron_secret";
   actorId: string | null;
 } | null> {
   const secret = process.env.CRON_SECRET?.trim();
@@ -37,14 +37,12 @@ async function authorize(request: NextRequest): Promise<{
   if (secret && bearer && safeEqual(secret, bearer)) {
     return { authorisedBy: "cron_secret", actorId: null };
   }
-  const user = await apiUser("admin").catch(() => null);
-  if (user) return { authorisedBy: "admin_session", actorId: user.actorId };
   return null;
 }
 
 async function lastSuccessAt(): Promise<Date | null> {
   const { rows } = await getPool().query<{ finished_at: string | null }>(
-    `SELECT finished_at FROM sheet_sync_runs WHERE status = 'success'
+    `SELECT finished_at FROM sheet_sync_runs WHERE status IN ('success','no_changes')
       ORDER BY finished_at DESC NULLS LAST LIMIT 1`,
   );
   const v = rows[0]?.finished_at;

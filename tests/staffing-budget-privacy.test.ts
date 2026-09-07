@@ -143,17 +143,22 @@ describe("staffing-only planning privacy", () => {
     expect(source).toMatch(/'outside_authorization_dates',[\s\S]*?'ambiguous_authorization'/);
   });
 
-  it("does not block a staffing save on budget warnings hidden from that role", () => {
+  it("still blocks a staffing save on operational assignment warnings while hiding budget warnings", () => {
     const warnings = [
       { code: "over_authorized_hours", severity: "warning" as const, message: "Over hours" },
+      { code: "over_assignment_allowed_hours", severity: "warning" as const, message: "Assignment limit" },
       { code: "employee_double_booked", severity: "warning" as const, message: "Employee is busy" },
       { code: "missing_rate", severity: "warning" as const, message: "No rate" },
     ];
 
     expect(warningsRequiringScheduleOverride(warnings, { enforceBudgetWarnings: false }))
-      .toEqual([warnings[1]]);
+      .toEqual([warnings[1], warnings[2]]);
     expect(warningsRequiringScheduleOverride(warnings, { enforceBudgetWarnings: true }))
-      .toEqual([warnings[0], warnings[1]]);
+      .toEqual([warnings[0], warnings[1], warnings[2]]);
+    expect(warningsRequiringScheduleOverride(warnings, {
+      enforceBudgetWarnings: false,
+      enforceAssignmentAllowedHoursWarnings: false,
+    })).toEqual([warnings[2]]);
   });
 
   it("removes authorization details while preserving operational scheduling data", () => {
@@ -161,7 +166,7 @@ describe("staffing-only planning privacy", () => {
 
     expect(result.coverage).toEqual([]);
     expect(result.authorizationGaps).toEqual([]);
-    expect(result.assignments[0]?.allowedHours).toBeNull();
+    expect(result.assignments[0]?.allowedHours).toBe("100");
     expect(result.workQueue).toEqual([
       expect.objectContaining({ id: "operational", reasonCodes: ["unassigned"], warningMessages: [] }),
     ]);
@@ -174,5 +179,13 @@ describe("staffing-only planning privacy", () => {
       conflictedSessions: 1,
     }));
     expect(result.nextSevenDaySessions).toEqual(workspace.nextSevenDaySessions);
+  });
+
+  it("removes assignment-hour values when the planner cannot see hours", () => {
+    const result = withoutPlanningBudgetDetails(workspace, { canSeeAssignmentHours: false });
+
+    expect(result.assignments).toEqual([
+      expect.objectContaining({ id: "assignment-1", allowedHours: null }),
+    ]);
   });
 });

@@ -5,8 +5,9 @@ import { getSetting, setSetting } from "@/lib/manage/app-settings";
  * SHEET SYNC CONFIGURATION
  * ========================
  *
- * The Google Sheet is the permanent source of truth for Transactions. Its
- * identity, the tab name, whether the daily sync is enabled, and the hour it
+ * The Google Sheet is the permanent read-only source for transaction evidence.
+ * Application-owned fields remain in Neon. The source identity, tab name,
+ * whether the daily sync is enabled, and the hour it
  * runs are all stored in `app_settings` so they can be changed from the UI
  * without a redeploy. The Vercel Cron pings the sync endpoint on a fixed
  * cadence; the endpoint self-gates on the configured hour and a minimum
@@ -15,12 +16,17 @@ import { getSetting, setSetting } from "@/lib/manage/app-settings";
 
 export const SHEET_SYNC_CONFIG_KEY = "sheet_sync_config";
 
-/** The sheet supplied as the source of truth. */
-export const DEFAULT_SHEET_ID = "11WQ26RDH7G_9O_f7JZVgW3hKQDNiL9sRkMQH1DHv5x0";
+/** The owner-designated, read-only transaction source. */
+export const DEFAULT_SHEET_ID = "1UtpmJE98pfMVWbbSNsn4ahPYvQUm9k5Kpfxj8nFGguk";
 export const DEFAULT_SHEET_NAME = "Ahivim";
+/** Stable tab id for the owner-designated source; unaffected by tab renames. */
+export const DEFAULT_SHEET_GID = "1743235610";
+
+/** Previously stored transport copy. New builds read the authoritative source directly. */
+export const LEGACY_TRANSPORT_SHEET_ID = "11WQ26RDH7G_9O_f7JZVgW3hKQDNiL9sRkMQH1DHv5x0";
 
 export interface SheetSyncConfig {
-  /** When false, the scheduled sync is skipped (manual "Sync now" still works). */
+  /** When false, the scheduled sync is skipped (manual refresh still works). */
   enabled: boolean;
   sheetId: string;
   sheetName: string;
@@ -42,9 +48,14 @@ function coerce(value: Partial<SheetSyncConfig> | null): SheetSyncConfig {
   const v = value ?? {};
   const hour = Number(v.scheduleHourUtc);
   const interval = Number(v.minIntervalMinutes);
+  const requestedSheetId = (v.sheetId ?? "").trim();
   return {
     enabled: typeof v.enabled === "boolean" ? v.enabled : DEFAULT_SYNC_CONFIG.enabled,
-    sheetId: (v.sheetId ?? "").trim() || DEFAULT_SYNC_CONFIG.sheetId,
+    // Keep the stored legacy id intact for application rollback while making
+    // this release use the owner-designated authoritative source.
+    sheetId: !requestedSheetId || requestedSheetId === LEGACY_TRANSPORT_SHEET_ID
+      ? DEFAULT_SYNC_CONFIG.sheetId
+      : requestedSheetId,
     sheetName: (v.sheetName ?? "").trim() || DEFAULT_SYNC_CONFIG.sheetName,
     scheduleHourUtc: Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : DEFAULT_SYNC_CONFIG.scheduleHourUtc,
     minIntervalMinutes:
@@ -68,14 +79,19 @@ export async function setSyncConfig(
   return next;
 }
 
-/** The gviz CSV export URL for the configured sheet + tab (link-share, no auth). */
-export function gvizCsvUrl(cfg: Pick<SheetSyncConfig, "sheetId" | "sheetName">): string {
-  const id = encodeURIComponent(cfg.sheetId);
-  const tab = encodeURIComponent(cfg.sheetName);
-  return `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&sheet=${tab}`;
+/** A human-facing source link; access remains governed by Google permissions. */
+export function sheetSourceUrl(cfg: Pick<SheetSyncConfig, "sheetId">): string {
+  return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(cfg.sheetId)}`;
 }
 
-/** A human-facing link to the sheet, for the UI. */
-export function sheetEditUrl(cfg: Pick<SheetSyncConfig, "sheetId">): string {
-  return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(cfg.sheetId)}/edit`;
+/**
+ * Pinned public export for the exact authoritative source. Custom or private
+ * sources deliberately return null and require Viewer-only API credentials.
+ */
+export function authoritativeSheetExportUrl(
+  cfg: Pick<SheetSyncConfig, "sheetId" | "sheetName">,
+): string | null {
+  if (cfg.sheetId !== DEFAULT_SHEET_ID || cfg.sheetName !== DEFAULT_SHEET_NAME) return null;
+  return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(DEFAULT_SHEET_ID)}` +
+    `/export?format=csv&gid=${encodeURIComponent(DEFAULT_SHEET_GID)}`;
 }

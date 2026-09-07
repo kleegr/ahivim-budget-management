@@ -43,7 +43,9 @@ describe("optional Sheet schedule matching", () => {
     const source = readFileSync("src/lib/sheets/sync.ts", "utf8");
     expect(source).toContain("The transaction data is saved");
     expect(source).not.toContain("Transactions were imported successfully. Automatic schedule matching needs attention");
-    expect(source).toContain("reconciliation: scheduleMatching");
-    expect(source).toContain("{ note: reconciliationNote, scheduleMatching }");
+    expect(source).toContain("const syncReconciliation = {");
+    expect(source).toContain("scheduleMatching,");
+    expect(source).toContain("reconciliation: syncReconciliation");
+    expect(source).toContain("...(scheduleMatching ? { scheduleMatching } : {})");
   });
 });

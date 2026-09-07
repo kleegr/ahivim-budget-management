@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import {
   apiPlanningUser,
+  canViewPlannerDirectPayTargets,
   isBudgetPlanningWarningCode,
   planningEmployeeIdsAllowedForSubjects,
   planningProgramAllowed,
@@ -9,13 +10,22 @@ import {
   planningSubjectsAllowed,
 } from "@/lib/auth/planning-access";
 import { readJson, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
-import { previewSession, type SessionDraft } from "@/lib/manage/schedule";
+import {
+  assignmentAllowedHoursWarning,
+  directPayScheduleLimitWarning,
+  previewSession,
+  type SessionDraft,
+} from "@/lib/manage/schedule";
 import { listEmployeeAvailability } from "@/lib/data/employee-availability";
 import { projectSeriesAuthorization } from "@/lib/data/series-authorization";
 import { listIndividualScheduleConflicts } from "@/lib/data/individual-schedule-conflicts";
 import { projectSeries } from "@/lib/business/planning-projection";
 import { MAX_SERIES_OCCURRENCES } from "@/lib/business/scheduling";
 import { getSession } from "@/lib/data/schedule-queries";
+import { projectSeriesAssignmentAllowedHours } from "@/lib/data/assignment-allowed-hours";
+import { projectDirectPayScheduleLimits } from "@/lib/data/direct-pay-schedule-limit";
+import { resolveSchedulePaymentRecipients } from "@/lib/data/schedule-payment-routing";
+import { agencyDate } from "@/lib/business/agency-time";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,6 +43,8 @@ const ALL_DATE_WARNING_CODES = new Set([
   "individual_double_booked",
   "individual_two_employees_one_to_one",
   "over_authorized_hours",
+  "over_assignment_allowed_hours",
+  "over_direct_pay_target_hours",
   "not_assigned",
   "missing_authorization",
   "outside_authorization_dates",
@@ -103,6 +115,9 @@ export async function POST(request: NextRequest) {
   }
   try {
     const pool = getPool();
+    const canSeeBudgets = planning.access.canSeeBudgets;
+    const canSeeAssignmentHours = planning.access.canSeeHours;
+    const canSeeDirectPayTargets = canViewPlannerDirectPayTargets(planning);
     if (!await planningProgramAllowed(pool, planning, draft.programId)) {
       return jsonError("Choose an active hours-based planning program.", 403);
     }
@@ -206,17 +221,41 @@ export async function POST(request: NextRequest) {
     }
 
     const previewDate = occurrenceDates[0] ?? requestedRange.from;
-    const preview = await previewSession(pool, { ...draft, sessionDate: previewDate }, excludeSessionId);
+    const preview = await previewSession(
+      pool,
+      { ...draft, sessionDate: previewDate },
+      excludeSessionId,
+      {
+        enforceBudgetWarnings: canSeeBudgets,
+        enforceAssignmentAllowedHoursWarnings: canSeeAssignmentHours,
+        enforceDirectPayTargetWarnings: canSeeDirectPayTargets,
+      },
+    );
     if (recurrence) {
       preview.warnings = preview.warnings.filter((warning) => !ALL_DATE_WARNING_CODES.has(warning.code));
     }
-    const canSeeBudgets = planning.access.canSeeBudgets;
     if (!canSeeBudgets) {
       preview.warnings = preview.warnings.filter((warning) =>
         !isBudgetPlanningWarningCode(warning.code));
       preview.forecast = [];
     }
-    const [employeeAvailability, individualConflicts, seriesAuthorization] = await Promise.all([
+    if (!canSeeDirectPayTargets) {
+      preview.warnings = preview.warnings.filter(
+        (warning) => warning.code !== "over_direct_pay_target_hours",
+      );
+    }
+    if (!canSeeAssignmentHours) {
+      preview.warnings = preview.warnings.filter(
+        (warning) => warning.code !== "over_assignment_allowed_hours",
+      );
+    }
+    const [
+      employeeAvailability,
+      individualConflicts,
+      seriesAuthorization,
+      seriesAssignmentAllowedHours,
+      seriesDirectPayLimits,
+    ] = await Promise.all([
       listEmployeeAvailability(pool, {
         programId: draft.programId,
         individualIds: draft.individualIds,
@@ -249,7 +288,55 @@ export async function POST(request: NextRequest) {
           excludeSeriesFromDate: validApplyFromDate,
         })
         : Promise.resolve(null),
+      recurrence && canSeeAssignmentHours && draft.employeeId
+        ? projectSeriesAssignmentAllowedHours(pool, {
+          employeeId: draft.employeeId,
+          programId: draft.programId,
+          individualIds: draft.individualIds,
+          occurrenceDates,
+          durationHours: preview.durationHours,
+          excludeSessionId,
+          excludeSeriesId: editSeriesId,
+          excludeSeriesFromDate: validApplyFromDate,
+        })
+        : Promise.resolve(null),
+      recurrence && canSeeDirectPayTargets && draft.employeeId
+        ? resolveSchedulePaymentRecipients(pool, {
+          employeeId: draft.employeeId,
+          programId: draft.programId,
+          onDates: occurrenceDates,
+        }).then((paymentRecipients) => projectDirectPayScheduleLimits(pool, {
+          employeeId: draft.employeeId!,
+          occurrenceDates: occurrenceDates.filter(
+            (date) => paymentRecipients.get(date) === "employee",
+          ),
+          occurrenceNumbers: Object.fromEntries(
+            occurrenceDates.map((date, index) => [date, index + 1]),
+          ),
+          durationHours: preview.durationHours,
+          asOfDate: agencyDate(),
+          excludeSessionId,
+          excludeSeriesId: editSeriesId,
+          excludeSeriesFromDate: validApplyFromDate,
+        }))
+        : Promise.resolve([]),
     ]);
+    for (const projection of seriesDirectPayLimits) {
+      const warning = directPayScheduleLimitWarning(projection);
+      if (warning) preview.warnings.push(warning);
+    }
+    for (const projection of seriesAssignmentAllowedHours?.assignments ?? []) {
+      const crossing = projection.crossingOccurrence;
+      if (!crossing) continue;
+      const warning = assignmentAllowedHoursWarning({
+        ...projection.assignment,
+        scheduledHours: crossing.scheduledBeforeHours,
+      }, preview.durationHours, {
+        date: crossing.occurrenceDate,
+        number: crossing.occurrenceNumber,
+      });
+      if (warning) preview.warnings.push(warning);
+    }
     return NextResponse.json({
       ok: true,
       data: {

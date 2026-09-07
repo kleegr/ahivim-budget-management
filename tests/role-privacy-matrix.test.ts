@@ -210,6 +210,13 @@ describe("protected API route inventory", () => {
       "health/schema/route.ts",
       "health/xlsx/route.ts",
     ]);
+    const machineAuthenticated = new Map<string, RegExp[]>([
+      ["sync/cron/route.ts", [
+        /process\.env\.CRON_SECRET/,
+        /headers\.get\("authorization"\)/,
+        /timingSafeEqual/,
+      ]],
+    ]);
     const serverGuard = /(?:apiUser|currentUser|currentSession|apiPortalUser|apiPlanningUser|apiClassFinancialUser|apiDocumentEditorUser|getSettlementOperator|getHourAuthorizationOperator|accessibleClassInvoice|accessibleDocument)\s*\(/;
     const files = routeFiles(apiRoot);
 
@@ -217,7 +224,13 @@ describe("protected API route inventory", () => {
     for (const file of files) {
       const relative = path.relative(apiRoot, file).replaceAll("\\", "/");
       if (intentionallyPublic.has(relative)) continue;
-      expect(readFileSync(file, "utf8"), relative).toMatch(serverGuard);
+      const source = readFileSync(file, "utf8");
+      const machineGuards = machineAuthenticated.get(relative);
+      if (machineGuards) {
+        for (const guard of machineGuards) expect(source, relative).toMatch(guard);
+        continue;
+      }
+      expect(source, relative).toMatch(serverGuard);
     }
   });
 

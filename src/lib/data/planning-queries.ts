@@ -215,8 +215,15 @@ const CONFLICT_WARNING_CODES = new Set([
   "employee_double_booked",
   "individual_double_booked",
   "individual_two_employees_one_to_one",
+  "over_assignment_allowed_hours",
+]);
+const LIVE_CONFLICT_WARNING_CODES = new Set([
+  "employee_double_booked",
+  "individual_double_booked",
+  "individual_two_employees_one_to_one",
 ]);
 const BUDGET_WARNING_CODES = new Set(["over_authorized_hours"]);
+const LIVE_BUDGET_WARNING_CODES = new Set(["over_authorized_hours"]);
 const ASSIGNMENT_WARNING_CODES = new Set(["not_assigned"]);
 const AUTHORIZATION_WARNING_CODES = new Set([
   "missing_authorization",
@@ -224,19 +231,26 @@ const AUTHORIZATION_WARNING_CODES = new Set([
   "ambiguous_authorization",
 ]);
 const LIVE_WARNING_CODES = new Set([
-  ...CONFLICT_WARNING_CODES,
-  ...BUDGET_WARNING_CODES,
+  ...LIVE_CONFLICT_WARNING_CODES,
+  ...LIVE_BUDGET_WARNING_CODES,
   ...ASSIGNMENT_WARNING_CODES,
   ...AUTHORIZATION_WARNING_CODES,
 ]);
 
-function storedWarnings(value: unknown): Array<{ code: string; message: string | null }> {
+function storedWarnings(
+  value: unknown,
+  includeDirectPayTargets = true,
+): Array<{ code: string; message: string | null }> {
   if (!Array.isArray(value)) return [];
   return value.flatMap((candidate) => {
     if (!candidate || typeof candidate !== "object") return [];
     const warning = candidate as StoredWarning;
     if (typeof warning.code !== "string") return [];
-    if (warning.code === "missing_rate" || LIVE_WARNING_CODES.has(warning.code)) return [];
+    if (
+      warning.code === "missing_rate"
+      || LIVE_WARNING_CODES.has(warning.code)
+      || (!includeDirectPayTargets && warning.code === "over_direct_pay_target_hours")
+    ) return [];
     return [{
       code: warning.code,
       message: typeof warning.message === "string" ? warning.message : null,
@@ -429,6 +443,8 @@ export async function getPlanningWorkspace(
                     'not_assigned', 'missing_authorization', 'outside_authorization_dates',
                     'ambiguous_authorization'
                   )
+                    AND ($4::boolean IS NOT TRUE
+                      OR stored_warning->>'code' <> 'over_direct_pay_target_hours')
                )
        )
        SELECT attention.*,
@@ -775,6 +791,8 @@ export async function getPlanningWorkspace(
                       'not_assigned', 'missing_authorization', 'outside_authorization_dates',
                       'ambiguous_authorization'
                     )
+                      AND ($4::boolean IS NOT TRUE
+                        OR stored_warning->>'code' <> 'over_direct_pay_target_hours')
                   )
               ) AS warning_count
        FROM schedule_series series
@@ -1020,7 +1038,7 @@ export async function getPlanningWorkspace(
   ]);
 
   const workQueue: PlanningWorkItem[] = workRes.rows.map((row) => {
-    const warnings = storedWarnings(row.warnings);
+    const warnings = storedWarnings(row.warnings, !agencyScoped);
     const codes = new Set(warnings.map((warning) => warning.code));
     const reasonCodes: PlanningReasonCode[] = [];
     if (!row.employee_id) reasonCodes.push("unassigned");

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CalendarOff, Check, CircleHelp, Clock3, UserMinus } from "lucide-react";
 import type {
@@ -666,11 +667,15 @@ export function SchedulePreflightSummary({
   selectedEmployeeId: string;
   showBudgetTracking?: boolean;
 }) {
-  const cats: Record<WarningCategory, string[]> = { budget: [], conflict: [], other: [] };
+  const cats: Record<WarningCategory, PlanningSchedulePreview["warnings"]> = {
+    budget: [],
+    conflict: [],
+    other: [],
+  };
   for (const warning of preview.warnings) {
     const category = classifyWarningCode(warning.code);
     if (recurring && category === "budget") continue;
-    cats[category].push(warning.message);
+    cats[category].push(warning);
   }
 
   const seriesAuthorizationWarnings: string[] = [];
@@ -730,12 +735,18 @@ export function SchedulePreflightSummary({
     .filter((individual) => individual.conflictingOccurrenceCount > 0)
     .map((individual) =>
       `${individual.individualName} is already scheduled on ${individual.conflictingOccurrenceCount} visit${individual.conflictingOccurrenceCount === 1 ? "" : "s"}.`);
-  const over = showBudgetTracking && recurring
+  const overAssignmentAllowedHours = preview.warnings.some(
+    (warning) => warning.code === "over_assignment_allowed_hours",
+  );
+  const overDirectPayTarget = preview.warnings.some(
+    (warning) => warning.code === "over_direct_pay_target_hours",
+  );
+  const over = overDirectPayTarget || overAssignmentAllowedHours || (showBudgetTracking && recurring
     ? (preview.seriesAuthorization?.individuals ?? []).some((individual) =>
       individual.periods.some((period) =>
         period.remainingAfterHours !== null && dec(period.remainingAfterHours).isNegative()))
     : showBudgetTracking && preview.forecast.some((forecast) =>
-      forecast.remainingAfterHours !== null && dec(forecast.remainingAfterHours).isNegative());
+      forecast.remainingAfterHours !== null && dec(forecast.remainingAfterHours).isNegative()));
   const flagged = cats.conflict.length > 0
     || cats.other.length > 0
     || (showBudgetTracking && cats.budget.length > 0)
@@ -745,8 +756,16 @@ export function SchedulePreflightSummary({
   const tone: "over" | "warn" | "ok" = over ? "over" : flagged ? "warn" : "ok";
   const color =
     tone === "over" ? "var(--color-pace-over)" : tone === "warn" ? "var(--color-pace-near)" : "var(--color-pace-on)";
-  const heading = tone === "over" ? "Over authorization" : tone === "warn" ? "Review before saving" : "Clear to schedule";
-  const sub = !showBudgetTracking
+  const heading = overDirectPayTarget
+    ? "Over Direct-Pay target"
+    : overAssignmentAllowedHours
+    ? "Over assignment limit"
+    : tone === "over" ? "Over authorization" : tone === "warn" ? "Review before saving" : "Clear to schedule";
+  const sub = overDirectPayTarget
+    ? `${recurring ? "This series" : "This session"} exceeds the employee's Direct-Pay target.`
+    : overAssignmentAllowedHours
+    ? `${recurring ? "This series" : "This session"} exceeds an employee assignment's allowed hours.`
+    : !showBudgetTracking
     ? tone === "warn"
       ? "You can still save with a reason, but check the schedule flags below first."
       : recurring
@@ -800,12 +819,40 @@ export function SchedulePreflightSummary({
         </div>
       ) : null}
 
-      {showBudgetTracking && cats.budget.length > 0 ? <WarnList color="var(--color-pace-over)" title="Authorization / budget" items={cats.budget} /> : null}
+      {showBudgetTracking && cats.budget.length > 0 ? <PreviewWarnList color="var(--color-pace-over)" title="Authorization / budget" items={cats.budget} /> : null}
       {showBudgetTracking && seriesAuthorizationWarnings.length > 0 ? <WarnList color="var(--color-pace-over)" title="Series authorization" items={seriesAuthorizationWarnings} /> : null}
-      {cats.conflict.length > 0 ? <WarnList color="var(--color-pace-near)" title="Conflicts" items={cats.conflict} /> : null}
+      {cats.conflict.length > 0 ? <PreviewWarnList color="var(--color-pace-near)" title="Conflicts" items={cats.conflict} /> : null}
       {individualSeriesWarnings.length > 0 ? <WarnList color="var(--color-pace-near)" title="Individual conflicts" items={individualSeriesWarnings} /> : null}
       {employeeSeriesWarnings.length > 0 ? <WarnList color="var(--color-pace-near)" title="Employee readiness" items={employeeSeriesWarnings} /> : null}
-      {cats.other.length > 0 ? <WarnList color="var(--color-pace-near)" title="Other flags" items={cats.other} /> : null}
+      {cats.other.length > 0 ? <PreviewWarnList color="var(--color-pace-near)" title="Other flags" items={cats.other} /> : null}
+    </div>
+  );
+}
+
+function PreviewWarnList({
+  color,
+  title,
+  items,
+}: {
+  color: string;
+  title: string;
+  items: PlanningSchedulePreview["warnings"];
+}) {
+  return (
+    <div className="mt-2 border-t border-[var(--color-rule)] pt-2">
+      <p className="eyebrow" style={{ color }}>{title}</p>
+      <ul className="mt-0.5 space-y-1 text-xs text-[var(--color-ink-soft)]">
+        {items.map((warning, index) => (
+          <li key={`${warning.code}-${warning.record?.id ?? index}`}>
+            <span>• {warning.message}</span>
+            {warning.action ? (
+              <Link className="ml-1 font-semibold text-[var(--color-primary)] hover:underline" href={warning.action.href}>
+                {warning.action.label} →
+              </Link>
+            ) : null}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

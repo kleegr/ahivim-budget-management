@@ -24,7 +24,7 @@ describe("deployment integration readiness", () => {
 
     const body = await (await GET()).json() as Record<string, unknown>;
 
-    expect(body.googleSheetWritebackConfigured).toBe(false);
+    expect(body.googleSheetPrivateReadConfigured).toBe(false);
     expect(body.documentStorageConfigured).toBe(false);
   });
 
@@ -39,7 +39,7 @@ describe("deployment integration readiness", () => {
 
     const body = await (await GET()).json() as Record<string, unknown>;
 
-    expect(body.googleSheetWritebackConfigured).toBe(true);
+    expect(body.googleSheetPrivateReadConfigured).toBe(true);
     expect(body.documentStorageConfigured).toBe(true);
   });
 

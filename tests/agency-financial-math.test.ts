@@ -33,17 +33,24 @@ describe("agency financial report math", () => {
     expect(agencyShareOfEmployeeBase("21.0000", null)).toBeNull();
   });
 
-  it("calculates direct-pay expense from verified net and independent withholding", () => {
+  it("calculates direct-pay withholding exactly from verified gross minus net", () => {
     expect(directPayCheckAmounts({
+      grossAmount: "1000.0000",
       netAmount: "800.0000",
-      taxWithheld: "125.0000",
       directRule: "giveback_percent",
       directPercent: "0.200000",
-    })).toEqual({ taxes: "125.0000", employeeKeeps: "640.0000", employeeOwesAgency: "160.0000" });
+    })).toEqual({ taxes: "200.0000", employeeKeeps: "640.0000", employeeOwesAgency: "160.0000" });
 
     expect(directPayCheckAmounts({
+      grossAmount: null,
       netAmount: "800.0000",
-      taxWithheld: null,
+      directRule: "keep_all",
+      directPercent: "0",
+    })).toEqual({ taxes: null, employeeKeeps: "800.0000", employeeOwesAgency: "0.0000" });
+
+    expect(directPayCheckAmounts({
+      grossAmount: "700.0000",
+      netAmount: "800.0000",
       directRule: "keep_all",
       directPercent: "0",
     })).toEqual({ taxes: null, employeeKeeps: "800.0000", employeeOwesAgency: "0.0000" });

@@ -2,9 +2,9 @@ import { requireUser } from "@/lib/auth/session";
 import { withDb } from "@/lib/data/pool";
 import { PageHeader, ErrorPanel } from "@/components/ui";
 import SyncConsole from "@/components/sync/sync-console";
-import { getSyncConfig, sheetEditUrl } from "@/lib/sheets/config";
+import { authoritativeSheetExportUrl, getSyncConfig, sheetSourceUrl } from "@/lib/sheets/config";
 import { getSyncStatus, listSyncRuns, listOpenConflicts } from "@/lib/sheets/queries";
-import { googleSheetsCredentials } from "@/lib/sheets/writeback";
+import { googleSheetsReadCredentials } from "@/lib/sheets/google-auth";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Sync — Ahivim Budget Management" };
@@ -39,8 +39,12 @@ export default async function SyncPage() {
           config={result.data.config}
           runs={result.data.runs}
           conflicts={result.data.conflicts}
-          sheetUrl={sheetEditUrl(result.data.config)}
-          writebackConfigured={googleSheetsCredentials() !== null}
+          sheetUrl={sheetSourceUrl(result.data.config)}
+          sourceReadMode={googleSheetsReadCredentials() !== null
+            ? "viewer_api"
+            : authoritativeSheetExportUrl(result.data.config)
+              ? "public_authoritative"
+              : "unavailable"}
         />
       )}
     </>

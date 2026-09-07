@@ -242,7 +242,11 @@ export function calculateDirectEmployeeCheck(
 
   // The residual is authoritative so check-net conservation remains exact.
   const employeeKeeps = checkNet.minus(employeeOwesAgency);
-  const withholding = checkGross?.minus(checkNet) ?? null;
+  // A gross below net is not valid evidence for withholding. Preserve the
+  // supplied gross for review, but do not manufacture a negative tax value.
+  const withholding = checkGross !== null && checkGross.greaterThanOrEqualTo(checkNet)
+    ? checkGross.minus(checkNet)
+    : null;
 
   return {
     flow: "direct_employee",

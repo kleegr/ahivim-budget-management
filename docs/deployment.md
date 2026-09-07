@@ -11,22 +11,23 @@
 | `MIGRATION_TOKEN` | optional | Allows `POST /api/admin/migrate` and the one-time `POST /api/sync/bootstrap` without a signed-in administrator. Needed only for a database that has no administrator yet, or for automated deploys. |
 | `DISABLE_AUTO_MIGRATE` | externally managed migrations only | Set to `1` to prevent the application from applying migrations. Startup still performs a read-only checksum verification and fails until every migration shipped in the build has been applied externally. |
 | `CRON_SECRET` | scheduled sync | Authenticates Vercel Cron calls to `/api/sync/cron`. Use a separate random secret; the route fails closed when it is absent, though a signed-in administrator may still trigger it manually. |
-| `GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL` | private Sheet sync | Service-account email allowed to view the configured sheet and edit its Paid column. |
-| `GOOGLE_SHEETS_PRIVATE_KEY` | private Sheet sync | Private key for that service account. Escaped `\n` line breaks are accepted. |
-| `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` | private Sheet sync alternative | Raw or base64-encoded service-account JSON. Use this instead of the two fields above. |
+| `GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL` | custom/private Sheet sync | Service-account email with Viewer-only access to the configured sheet. The fixed public source does not require it. |
+| `GOOGLE_SHEETS_PRIVATE_KEY` | required with the email form | Private key for that Viewer-only service account. Escaped `\n` line breaks are accepted. |
+| `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` | custom/private alternative | Raw or base64-encoded service-account JSON for the Viewer-only account. Use this instead of the two fields above. |
 | `MAX_UPLOAD_BYTES` | optional | Upload ceiling in bytes. Defaults to 20 MiB. |
 | `BLOB_READ_WRITE_TOKEN` | PDF library | Private Vercel Blob store token. Connect a Blob store to the Vercel project so original and edited PDFs remain private. |
 | `MAX_PDF_UPLOAD_BYTES` | optional | Direct PDF upload ceiling in bytes. Defaults to 100 MiB and is capped at 500 MiB. |
 | `NEON_WS_PROXY` | local dev only | `host:port` of a WebSocket-to-TCP bridge, so the Neon driver can reach a local PostgreSQL. Never set in production. |
 
-The `Sync Google Sheet` button always pulls the latest source information. With
-service-account credentials, both the read and Paid-marker write-back use the
-authenticated Sheets API, so the Sheet can remain private. The app sends only
-payment-marker changes from tracked transactions to the Paid column. It does
-not edit amounts, rates, formulas, names, dates, or any other source cells.
-Share the Sheet with the service-account email as an editor. Without service account
-credentials, the app can only use the legacy public-link CSV pull and
-cannot write.
+`Refresh from Google Sheet` is a strictly one-way import into Neon. The app
+requests only the Google Sheets read-only OAuth scope and sends no cell, row,
+tab, formula, value, or metadata mutation. The owner-designated public source
+uses its fixed sheet id plus stable tab gid and the read-only CSV export, which
+returns the complete tab independently of its saved display filter. A custom or
+private source requires the service-account email with **Viewer-only** permission
+and uses the authenticated A:S Values API. Paid, review, and correction decisions
+belong to Neon and are not sent to the source. Authentication failures never
+fall back to a different transport.
 
 Generate a secret with:
 
@@ -42,15 +43,16 @@ the detailed diagnostics where applicable. No endpoint returns a secret value.
 
 - `GET /api/health/env` — anonymous callers receive one configuration-readiness
   boolean. Administrators can see which variables are **present**, never their
-  values, including whether private document storage is configured.
+  values, including `googleSheetPrivateReadConfigured` and whether private
+  document storage is configured.
 - `GET /api/health/db` — anonymous callers receive connectivity and migration
   health. Latency, server time, connection-variable name, table names and row
   counts are returned only to a signed-in administrator.
 - `GET /api/health/schema` — compares the migration ledger to the migrations in
   the deployed build without applying anything. Anonymous callers receive only
   `healthy`; administrators can inspect the table and migration inventory.
-- `GET /api/health/xlsx` — loads ExcelJS and round-trips a workbook (write then
-  read) in the deployed runtime. Confirms the upload engine works without an
+- `GET /api/health/xlsx` — loads ExcelJS, serializes an in-memory workbook, and
+  reloads it in the deployed runtime. Confirms the upload engine works without an
   authenticated upload; returns `{ok:true}` or, on a require-of-ESM regression,
   `{ok:false, code:"ERR_REQUIRE_ESM"}`. See the dependency note below.
 

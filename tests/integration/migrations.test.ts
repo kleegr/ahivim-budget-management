@@ -16,8 +16,8 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`CREATE SCHEMA public`);
 
     const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
-    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 43]);
-    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 43]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 44]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 44]);
   }, 60_000);
 
   it("creates the ledger and every expected table", async () => {
@@ -61,7 +61,7 @@ suite("migration runner (real PostgreSQL)", () => {
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(43);
+    expect(again.skipped).toBe(44);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -69,7 +69,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(43);
+    expect(rows).toHaveLength(44);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -113,7 +113,69 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[40].name).toBe("0040_user_account_preset.sql");
     expect(rows[41].name).toBe("0041_calculation_workbook_provenance.sql");
     expect(rows[42].name).toBe("0042_permission_granularity.sql");
+    expect(rows[43].name).toBe("0043_verified_payroll_check_invariant.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("defaults payroll checks to unverified and normalizes rollback-compatible verified writes", async () => {
+    const client = await testPool().connect();
+    try {
+      await client.query("BEGIN");
+      const { rows: employees } = await client.query<{ id: string }>(
+        `INSERT INTO employees (display_name, normalized_name)
+         VALUES ('Migration invariant check', 'migration invariant check')
+         RETURNING id`,
+      );
+      const employeeId = employees[0]!.id;
+      const { rows: defaults } = await client.query<{ verification_status: string }>(
+        `INSERT INTO employee_payroll_checks (employee_id, check_date, actual_net)
+         VALUES ($1, '2026-09-06', 100)
+         RETURNING verification_status`,
+        [employeeId],
+      );
+      expect(defaults).toEqual([{ verification_status: "unverified" }]);
+
+      const { rows: canonicalized } = await client.query<{
+        verification_status: string;
+        tax_withheld: string;
+      }>(
+        `INSERT INTO employee_payroll_checks
+           (employee_id, check_date, actual_gross, actual_net, tax_withheld, verification_status)
+         VALUES ($1, '2026-09-07', 125, 100, 20, 'verified')
+         RETURNING verification_status, tax_withheld::text`,
+        [employeeId],
+      );
+      expect(canonicalized).toEqual([{
+        verification_status: "verified",
+        tax_withheld: "25.0000",
+      }]);
+
+      const { rows: downgraded } = await client.query<{ verification_status: string }>(
+        `INSERT INTO employee_payroll_checks
+           (employee_id, check_date, actual_net, tax_withheld, verification_status)
+         VALUES ($1, '2026-09-08', 100, 20, 'verified')
+         RETURNING verification_status`,
+        [employeeId],
+      );
+      expect(downgraded).toEqual([{ verification_status: "unverified" }]);
+
+      const { rows: invariant } = await client.query<{
+        validated: boolean;
+        trigger_enabled: string;
+      }>(
+        `SELECT constraint_row.convalidated AS validated,
+                trigger_row.tgenabled AS trigger_enabled
+           FROM pg_constraint constraint_row
+           JOIN pg_trigger trigger_row
+             ON trigger_row.tgrelid = constraint_row.conrelid
+            AND trigger_row.tgname = 'employee_payroll_checks_normalize_verified_amounts'
+          WHERE constraint_row.conname = 'employee_payroll_checks_verified_amounts_check'`,
+      );
+      expect(invariant).toEqual([{ validated: true, trigger_enabled: "O" }]);
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
   });
 
   it("inherits legacy gross, Planning, and document behavior and enforces write-through-read", async () => {
@@ -138,7 +200,7 @@ suite("migration runner (real PostgreSQL)", () => {
 
     const result = await runMigrations(pool);
     expect(result.applied).toBe(1);
-    expect(result.skipped).toBe(42);
+    expect(result.skipped).toBe(43);
 
     const { rows } = await pool.query<{
       email: string;

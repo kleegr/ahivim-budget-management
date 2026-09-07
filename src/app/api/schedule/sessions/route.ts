@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import {
   apiPlanningUser,
+  canViewPlannerDirectPayTargets,
   isBudgetPlanningWarningCode,
   planningProgramAllowed,
   planningSubjectsAllowed,
@@ -94,6 +95,7 @@ export async function POST(request: NextRequest) {
   };
   const reason = asString(body.reason) ?? null;
   if (!planning.canManageSchedules) return jsonError("Schedule management access required", 403);
+  const canSeeDirectPayTargets = canViewPlannerDirectPayTargets(planning);
   if (!planningSubjectsAllowed(planning, {
     individualIds: input.individualIds,
     employeeId: input.employeeId,
@@ -104,13 +106,17 @@ export async function POST(request: NextRequest) {
     if (!await planningProgramAllowed(pool, planning, input.programId)) {
       return jsonError("Choose an active hours-based planning program.", 403);
     }
-    const result = await createSession(pool, input, user.id, reason, {
+    const result = await createSession(pool, input, user.actorId, reason, {
       enforceBudgetWarnings: planning.access.canSeeBudgets,
+      enforceAssignmentAllowedHoursWarnings: planning.access.canSeeHours,
+      enforceDirectPayTargetWarnings: canSeeDirectPayTargets,
     });
     if (result.ok) {
       result.data.warnings = result.data.warnings.filter((warning) =>
         warning.code !== "missing_rate"
-        && (planning.access.canSeeBudgets || !isBudgetPlanningWarningCode(warning.code)));
+        && (planning.access.canSeeBudgets || !isBudgetPlanningWarningCode(warning.code))
+        && (planning.access.canSeeHours || warning.code !== "over_assignment_allowed_hours")
+        && (canSeeDirectPayTargets || warning.code !== "over_direct_pay_target_hours"));
     }
     return resultResponse(result, 201);
   } catch (error) {

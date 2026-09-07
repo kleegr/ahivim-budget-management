@@ -125,7 +125,7 @@ export async function getOpenSyncConflictCounts(pool: PgLikePool): Promise<OpenS
 export async function getSyncStatus(pool: PgLikePool): Promise<SyncStatus> {
   const { rows: successRows } = await pool.query<{ finished_at: string | null }>(
     `SELECT finished_at::text AS finished_at FROM sheet_sync_runs
-      WHERE status = 'success' ORDER BY finished_at DESC NULLS LAST LIMIT 1`,
+      WHERE status IN ('success','no_changes') ORDER BY finished_at DESC NULLS LAST LIMIT 1`,
   );
   const { rows: lastRows } = await pool.query(
     `SELECT r.id, r.trigger, r.status, r.source_rows, r.rows_added, r.rows_updated,
@@ -181,11 +181,11 @@ export async function listOpenConflicts(
        LEFT JOIN imported_files held_file ON held_file.id = held_batch.imported_file_id
        LEFT JOIN sheet_sync_rows sync_row ON sync_row.payroll_transaction_id = c.payroll_transaction_id
        LEFT JOIN import_rows held_row ON held_row.import_batch_id = held_batch.id
-                                     AND held_row.source_row_number = COALESCE(
-                                       sync_row.source_row_number,
-                                       CASE WHEN (c.incoming->>'sourceRowNumber') ~ '^\d+$'
-                                         THEN (c.incoming->>'sourceRowNumber')::int END
-                                     )
+                                      AND held_row.source_row_number = COALESCE(
+                                        CASE WHEN (c.incoming->>'sourceRowNumber') ~ '^\\d+$'
+                                          THEN (c.incoming->>'sourceRowNumber')::int END,
+                                        sync_row.source_row_number
+                                      )
                                      AND held_row.status IN ('needs_review', 'invalid', 'duplicate')
        LEFT JOIN individuals i ON i.id = t.individual_id
        LEFT JOIN employees e ON e.id = t.employee_id

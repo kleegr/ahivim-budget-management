@@ -38,11 +38,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
     if (action === "end" || action === "archive") {
       const status: "ended" | "archived" = action === "end" ? "ended" : "archived";
-      const result = await setAssignmentStatus(pool, id, status, user.id, reason);
+      const result = await setAssignmentStatus(pool, id, status, user.actorId, reason);
       return resultResponse(result, 200);
     }
     const proposed = { ...(body as unknown as Partial<AssignmentInput>) };
-    if (!planning.access.canSeeBudgets) delete proposed.allowedHours;
+    if (!planning.access.canSeeHours) delete proposed.allowedHours;
     if (!planningSubjectsAllowed(planning, {
       individualIds: [proposed.individualId ?? existing.individualId],
       employeeId: proposed.employeeId ?? existing.employeeId,
@@ -54,10 +54,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return jsonError("Choose an active hours-based planning program.", 403);
     }
     if (action === "reactivate") {
-      const result = await setAssignmentStatus(pool, id, "active", user.id, reason);
+      const result = await setAssignmentStatus(pool, id, "active", user.actorId, reason);
       return resultResponse(result, 200);
     }
-    const result = await updateAssignment(pool, id, proposed, user.id, reason);
+    const result = await updateAssignment(pool, id, proposed, user.actorId, reason);
     return resultResponse(result, 200);
   } catch (error) {
     return jsonError(redactError(error), 500);

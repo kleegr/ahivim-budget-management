@@ -29,12 +29,27 @@ const LIVE_WARNING_CODES = new Set([
   "outside_authorization_dates",
   "ambiguous_authorization",
 ]);
+const STORED_OPERATIONAL_CONFLICT_WARNING_CODES = new Set([
+  "over_assignment_allowed_hours",
+]);
+const DIRECT_PAY_TARGET_WARNING_CODES = new Set([
+  "over_direct_pay_target_hours",
+]);
 
-function plannerWarnings(value: unknown): Array<{ code?: unknown }> {
+function canSeeStoredDirectPayTargets(scope?: AccessScope): boolean {
+  return !scope || scope.full || (scope.allIndividuals && scope.allEmployees);
+}
+
+function plannerWarnings(
+  value: unknown,
+  includeDirectPayTargets = true,
+): Array<{ code?: unknown }> {
   if (!Array.isArray(value)) return [];
   return (value as Array<{ code?: unknown }>).filter((warning) => {
     const code = typeof warning?.code === "string" ? warning.code : "";
-    return code !== "missing_rate" && !LIVE_WARNING_CODES.has(code);
+    return code !== "missing_rate"
+      && !LIVE_WARNING_CODES.has(code)
+      && (includeDirectPayTargets || !DIRECT_PAY_TARGET_WARNING_CODES.has(code));
   });
 }
 
@@ -103,6 +118,7 @@ export async function listSessions(pool: PgLikePool, filter: CalendarFilter, sco
   const status = ["pending", "completed", "cancelled", "no_show"].includes(filter.status ?? "") ? filter.status! : null;
   const [individualIds, employeeIds] = scheduleScopeArrays(scope);
   const agencyScoped = Boolean(scope && !scope.full && !scope.allIndividuals && !scope.allEmployees);
+  const includeDirectPayTargets = canSeeStoredDirectPayTargets(scope);
 
   const { rows } = await pool.query<{
     id: string; series_id: string | null; session_date: string; start_time: string | null;
@@ -182,7 +198,7 @@ export async function listSessions(pool: PgLikePool, filter: CalendarFilter, sco
     individualNames: (r.individual_names ?? []).filter(Boolean),
     individualIds: (r.individual_ids ?? []).filter(Boolean),
     status: r.status,
-    warningCount: plannerWarnings(r.warnings).length,
+    warningCount: plannerWarnings(r.warnings, includeDirectPayTargets).length,
     canChangeSchedule: r.can_change_schedule,
   }));
 }
@@ -698,6 +714,7 @@ export async function listSessionWarningFlags(
   const status = ["pending", "completed", "cancelled", "no_show"].includes(filter.status ?? "") ? filter.status! : null;
   const [individualIds, employeeIds] = scheduleScopeArrays(scope);
   const agencyScoped = Boolean(scope && !scope.full && !scope.allIndividuals && !scope.allEmployees);
+  const includeDirectPayTargets = canSeeStoredDirectPayTargets(scope);
 
   const { rows } = await pool.query<{
     id: string;
@@ -872,19 +889,24 @@ export async function listSessionWarningFlags(
   );
 
   return rows.map((r) => {
-    const storedWarnings = plannerWarnings(r.warnings);
+    const storedWarnings = plannerWarnings(r.warnings, includeDirectPayTargets);
     const storedAvailabilityWarningCount = storedWarnings
       .filter((warning) => AVAILABILITY_WARNING_CODES.has(warningCode(warning))).length;
-    const storedOtherWarningCount = storedWarnings.length - storedAvailabilityWarningCount;
+    const storedOperationalConflictWarningCount = storedWarnings
+      .filter((warning) => STORED_OPERATIONAL_CONFLICT_WARNING_CODES.has(warningCode(warning))).length;
+    const storedOtherWarningCount = storedWarnings.length
+      - storedAvailabilityWarningCount
+      - storedOperationalConflictWarningCount;
     const hasAvailabilityConflict = r.has_availability_conflict || storedAvailabilityWarningCount > 0;
+    const hasScheduleConflict = r.has_conflict || storedOperationalConflictWarningCount > 0;
     const canSeeBudgetRisk = scope?.canSeeBudgets !== false;
     const liveWarningCount = Number(r.has_conflict)
       + Number(r.has_availability_conflict && storedAvailabilityWarningCount === 0)
       + Number(canSeeBudgetRisk && r.has_budget_risk) + Number(r.has_assignment_gap);
     return {
       id: r.id,
-      hasConflict: r.has_conflict || hasAvailabilityConflict,
-      hasScheduleConflict: r.has_conflict,
+      hasConflict: hasScheduleConflict || hasAvailabilityConflict,
+      hasScheduleConflict,
       hasAvailabilityConflict,
       hasBudgetRisk: canSeeBudgetRisk && r.has_budget_risk,
       hasAssignmentGap: r.has_assignment_gap,

@@ -22,11 +22,30 @@ const failFetcher: CsvFetcher = async () => {
   throw new Error("temporary sheet outage");
 };
 
+function failOnceOnSql(inner: PgLikePool, needle: string, message: string): PgLikePool {
+  let failed = false;
+  return {
+    connect: () => inner.connect(),
+    query: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+      if (!failed && sql.includes(needle)) {
+        failed = true;
+        throw new Error(message);
+      }
+      return inner.query<T>(sql, params);
+    },
+  };
+}
+
+function failOnceBeforeTrackingAdvance(inner: PgLikePool): PgLikePool {
+  return failOnceOnSql(inner, "INSERT INTO sheet_sync_rows", "injected failure before tracking advance");
+}
+
 /* -------------------------------------------------------------------------- */
 /* Synthetic sheet builders (mirror the live tab: totals row, sparse header)  */
 /* -------------------------------------------------------------------------- */
 
 interface Row {
+  payTo?: string;
   checkNumber: string;
   hours: string;
   rate: string;
@@ -38,6 +57,8 @@ interface Row {
   periodBegin?: string;
   periodEnd?: string;
   internal?: string;
+  totalNetPay?: string;
+  paid?: string;
 }
 
 const R1: Row = { checkNumber: "1001", hours: "10", rate: "25", amount: "250", program: "Com Hab", individual: "Aaron Tester", employee: "Zed Worker" };
@@ -67,17 +88,19 @@ function buildSheet(
 
   const dataRows = rows.map((r) => {
     const a = new Array(20).fill("");
-    a[0] = "Excellent Staffing";
+    a[0] = r.payTo ?? "Excellent Staffing";
     a[1] = r.checkDate ?? "05/25/2023";
     a[2] = r.checkNumber;
     a[4] = r.hours;
     a[5] = r.rate;
     a[6] = r.amount;
+    a[7] = r.totalNetPay ?? "";
     a[8] = r.periodBegin ?? "05/01/2023";
     a[9] = r.periodEnd ?? "05/15/2023";
     a[10] = r.program;
     a[11] = r.individual;
     a[12] = r.employee;
+    a[13] = r.paid ?? "";
     a[15] = r.internal ?? "";
     return a;
   });
@@ -139,6 +162,50 @@ suite("Google Sheet sync (real PostgreSQL)", () => {
     expect(res.reconciliation?.note).not.toContain("DO NOT agree");
     // Every synced row is tracked back to a transaction.
     expect(await count("sheet_sync_rows")).toBe(3);
+  });
+
+  it("orders overlapping snapshots by serialized completion so a newer source is never skipped", async () => {
+    let signalOlderFetchStarted!: () => void;
+    let releaseOlderFetch!: () => void;
+    const olderFetchStarted = new Promise<void>((resolve) => { signalOlderFetchStarted = resolve; });
+    const olderFetchRelease = new Promise<void>((resolve) => { releaseOlderFetch = resolve; });
+    const olderFetcher: CsvFetcher = async () => {
+      signalOlderFetchStarted();
+      await olderFetchRelease;
+      return buildSheet([R1]);
+    };
+
+    const olderRun = runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: olderFetcher,
+      config: CONFIG,
+    });
+    await olderFetchStarted;
+
+    let newerFetchCalled = false;
+    const newerRun = runSheetSync(pool, {
+      trigger: "manual",
+      userId: null,
+      fetcher: async () => {
+        newerFetchCalled = true;
+        return buildSheet([R1, R2]);
+      },
+      config: CONFIG,
+    });
+    // The newer run must not fetch a snapshot until the older lock holder has
+    // completed, otherwise a slow pre-lock read could later publish stale state.
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(newerFetchCalled).toBe(false);
+    releaseOlderFetch();
+    const [older, newer] = await Promise.all([olderRun, newerRun]);
+    expect(older.status).toBe("success");
+    expect(newer.status).toBe("success");
+    expect(newerFetchCalled).toBe(true);
+    const { rows } = await pool.query<{ reason: string | null }>(
+      `SELECT sync_review_reason AS reason FROM payroll_transactions WHERE check_number = '1002'`,
+    );
+    expect(rows).toEqual([{ reason: null }]);
   });
 
   it("keeps a filtered control in the audit but does not compare it with the whole Sheet", async () => {
@@ -431,6 +498,19 @@ suite("Google Sheet sync (real PostgreSQL)", () => {
     );
     expect(repeatedWarnings).toEqual([{ rows: "1" }]);
 
+    const { rows: occurrenceEvidence } = await pool.query<{
+      occurrence_count: string;
+      source_rows: number[];
+    }>(
+      `SELECT identity->>'sourceOccurrenceCount' AS occurrence_count,
+              identity->'sourceRowNumbers' AS source_rows
+         FROM sheet_sync_rows
+        WHERE payroll_transaction_id = (
+          SELECT id FROM payroll_transactions WHERE check_number = '1001'
+        )`,
+    );
+    expect(occurrenceEvidence).toEqual([{ occurrence_count: "2", source_rows: [3, 4] }]);
+
     const { rows: before } = await pool.query<{ digest: string }>(
       `SELECT md5(string_agg(id::text, ',' ORDER BY id)) AS digest
          FROM payroll_transactions`,
@@ -457,6 +537,521 @@ suite("Google Sheet sync (real PostgreSQL)", () => {
     });
     expect(await count("payroll_transactions")).toBe(3);
     expect(after[0]!.digest).toBe(before[0]!.digest);
+  });
+
+  it("tracks repeat counts, flags a 2-to-1 shrink, and clears only after restoration", async () => {
+    await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, { ...R1 }, R2, R3])),
+      config: CONFIG,
+    });
+
+    const reordered = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R2, R1, { ...R1 }, R3])),
+      config: CONFIG,
+    });
+    expect(reordered.missing).toBe(0);
+    expect(await count("payroll_transactions")).toBe(3);
+    const { rows: reorderedEvidence } = await pool.query<{
+      count: string;
+      rows: number[];
+    }>(
+      `SELECT identity->>'sourceOccurrenceCount' AS count,
+              identity->'sourceRowNumbers' AS rows
+         FROM sheet_sync_rows
+        WHERE payroll_transaction_id = (
+          SELECT id FROM payroll_transactions WHERE check_number = '1001'
+        )`,
+    );
+    // Snapshot hashing is order-independent, so a pure reorder is a no-op and
+    // retains the last processed row-position evidence without raising a conflict.
+    expect(reorderedEvidence).toEqual([{ count: "2", rows: [3, 4] }]);
+
+    const shrunk = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R2, R1, R3])),
+      config: CONFIG,
+    });
+    expect(shrunk).toMatchObject({ missing: 1, flagged: 1 });
+    expect(await count("payroll_transactions")).toBe(3);
+    const { rows: missingConflict } = await pool.query<{
+      previous_count: string;
+      current_count: string;
+      status: string;
+      detail: string;
+    }>(
+      `SELECT previous->>'sourceOccurrenceCount' AS previous_count,
+              incoming->>'sourceOccurrenceCount' AS current_count,
+              status,
+              detail
+         FROM sheet_sync_conflicts
+        WHERE type = 'missing' AND status = 'open'`,
+    );
+    expect(missingConflict).toHaveLength(1);
+    expect(missingConflict[0]).toMatchObject({
+      previous_count: "2",
+      current_count: "1",
+      status: "open",
+    });
+    expect(missingConflict[0]!.detail).toContain("one canonical transaction was NOT deleted or duplicated");
+
+    // An unrelated reorder must not dismiss the still-open count deficit or open
+    // a duplicate conflict.
+    const stillShort = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R3, R2])),
+      config: CONFIG,
+    });
+    expect(stillShort.missing).toBe(0);
+    const { rows: stillOpen } = await pool.query<{ c: string }>(
+      `SELECT count(*)::text AS c FROM sheet_sync_conflicts
+        WHERE type = 'missing' AND status = 'open'`,
+    );
+    expect(stillOpen).toEqual([{ c: "1" }]);
+    const { rows: stillFlagged } = await pool.query<{ reason: string | null }>(
+      `SELECT sync_review_reason AS reason FROM payroll_transactions WHERE check_number = '1001'`,
+    );
+    expect(stillFlagged).toEqual([{ reason: "source_missing" }]);
+
+    const restored = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, { ...R1 }, R2, R3])),
+      config: CONFIG,
+    });
+    expect(restored.missing).toBe(0);
+    expect(await count("payroll_transactions")).toBe(3);
+    const { rows: resolved } = await pool.query<{
+      status: string;
+      resolution: string | null;
+    }>(
+      `SELECT status, resolution FROM sheet_sync_conflicts WHERE type = 'missing'`,
+    );
+    expect(resolved).toEqual([{
+      status: "dismissed",
+      resolution: "source_occurrence_count_restored",
+    }]);
+    const { rows: restoredTransaction } = await pool.query<{ reason: string | null }>(
+      `SELECT sync_review_reason AS reason FROM payroll_transactions WHERE check_number = '1001'`,
+    );
+    expect(restoredTransaction).toEqual([{ reason: null }]);
+    const { rows: restoredEvidence } = await pool.query<{ count: string; rows: number[] }>(
+      `SELECT identity->>'sourceOccurrenceCount' AS count,
+              identity->'sourceRowNumbers' AS rows
+         FROM sheet_sync_rows
+        WHERE payroll_transaction_id = (
+          SELECT id FROM payroll_transactions WHERE check_number = '1001'
+        )`,
+    );
+    expect(restoredEvidence).toEqual([{ count: "2", rows: [3, 4] }]);
+  });
+
+  it("keeps missing precedence when occurrence loss and routing drift coexist", async () => {
+    await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, { ...R1 }, R2])),
+      config: CONFIG,
+    });
+
+    await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([{ ...R1, payTo: "Direct Employee" }, R2])),
+      config: CONFIG,
+    });
+    const { rows: conflicts } = await pool.query<{ type: string }>(
+      `SELECT type FROM sheet_sync_conflicts
+        WHERE payroll_transaction_id = (
+          SELECT id FROM payroll_transactions WHERE check_number = '1001'
+        ) AND status = 'open' ORDER BY type`,
+    );
+    expect(conflicts).toEqual([{ type: "changed" }, { type: "missing" }]);
+    const { rows: transaction } = await pool.query<{ reason: string; state: string }>(
+      `SELECT txn.sync_review_reason AS reason, tracking.state
+         FROM payroll_transactions txn
+         JOIN sheet_sync_rows tracking ON tracking.payroll_transaction_id = txn.id
+        WHERE txn.check_number = '1001'`,
+    );
+    expect(transaction).toEqual([{ reason: "source_missing", state: "missing" }]);
+  });
+
+  it("flags a vanished exact occurrence when the remaining row also changes canonically", async () => {
+    await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, { ...R1 }, R2])),
+      config: CONFIG,
+    });
+
+    const result = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([{ ...R1, amount: "275" }, R2])),
+      config: CONFIG,
+    });
+    expect(result).toMatchObject({ changed: 1, missing: 1, flagged: 2 });
+    const { rows } = await pool.query<{ type: string; expected_count: string | null }>(
+      `SELECT type, previous->>'sourceOccurrenceCount' AS expected_count
+         FROM sheet_sync_conflicts
+        WHERE payroll_transaction_id = (
+          SELECT id FROM payroll_transactions WHERE check_number = '1001'
+        ) AND status = 'open' ORDER BY type`,
+    );
+    expect(rows).toEqual([
+      { type: "changed", expected_count: null },
+      { type: "missing", expected_count: "2" },
+    ]);
+  });
+
+  it("does not absorb an occurrence deficit when failure strikes before tracking advances", async () => {
+    await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, { ...R1 }, R2])),
+      config: CONFIG,
+    });
+
+    const failed = await runSheetSync(failOnceBeforeTrackingAdvance(pool), {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2])),
+      config: CONFIG,
+    });
+    expect(failed).toMatchObject({ status: "failed" });
+    expect(failed.error).toContain("injected failure before tracking advance");
+
+    await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2])),
+      config: CONFIG,
+    });
+    const { rows } = await pool.query<{ count: string; open: string }>(
+      `SELECT previous->>'sourceOccurrenceCount' AS count, status AS open
+         FROM sheet_sync_conflicts WHERE type = 'missing'`,
+    );
+    expect(rows).toEqual([{ count: "2", open: "open" }]);
+  });
+
+  it("does not absorb routing evidence drift when failure strikes before tracking advances", async () => {
+    await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2])),
+      config: CONFIG,
+    });
+    const drifted = { ...R1, payTo: "Direct Employee" };
+    const failed = await runSheetSync(failOnceBeforeTrackingAdvance(pool), {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([drifted, R2])),
+      config: CONFIG,
+    });
+    expect(failed).toMatchObject({ status: "failed" });
+
+    await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([drifted, R2])),
+      config: CONFIG,
+    });
+    const { rows } = await pool.query<{ marker: string; status: string }>(
+      `SELECT previous->>'sourceEvidenceConflict' AS marker, status
+         FROM sheet_sync_conflicts WHERE type = 'changed'`,
+    );
+    expect(rows).toEqual([{ marker: "routing_or_net", status: "open" }]);
+  });
+
+  it("advances restored evidence before closing its conflict so retry cannot reverse the drift", async () => {
+    await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2])),
+      config: CONFIG,
+    });
+    const drifted = { ...R1, payTo: "Direct Employee" };
+    await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([drifted, R2])),
+      config: CONFIG,
+    });
+
+    const failed = await runSheetSync(failOnceOnSql(
+      pool,
+      "resolution = 'source_evidence_restored'",
+      "injected failure while closing restored evidence",
+    ), {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2])),
+      config: CONFIG,
+    });
+    expect(failed).toMatchObject({ status: "failed" });
+
+    await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2])),
+      config: CONFIG,
+    });
+    const { rows } = await pool.query<{ status: string; resolution: string | null }>(
+      `SELECT status, resolution FROM sheet_sync_conflicts WHERE type = 'changed'`,
+    );
+    expect(rows).toEqual([{ status: "dismissed", resolution: "source_evidence_restored" }]);
+  });
+
+  it("bootstraps legacy source evidence silently, then reviews Pay-To-only drift", async () => {
+    await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2])),
+      config: CONFIG,
+    });
+    await pool.query(
+      `UPDATE sheet_sync_rows
+          SET identity = identity - 'sourceEvidenceKeyVersion' - 'sourceEvidenceKeys'
+        WHERE payroll_transaction_id = (
+          SELECT id FROM payroll_transactions WHERE check_number = '1001'
+        )`,
+    );
+
+    const bootstrapPayTo = "Legacy Bootstrap Payee";
+    const bootstrapped = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R2, { ...R1, payTo: bootstrapPayTo }])),
+      config: CONFIG,
+    });
+    expect(bootstrapped.changed).toBe(0);
+    expect(await count("sheet_sync_conflicts")).toBe(0);
+    const { rows: bootstrappedIdentity } = await pool.query<{
+      version: string;
+      evidence_count: number;
+    }>(
+      `SELECT identity->>'sourceEvidenceKeyVersion' AS version,
+              jsonb_array_length(identity->'sourceEvidenceKeys') AS evidence_count
+         FROM sheet_sync_rows
+        WHERE payroll_transaction_id = (
+          SELECT id FROM payroll_transactions WHERE check_number = '1001'
+        )`,
+    );
+    expect(bootstrappedIdentity).toEqual([{ version: "v2", evidence_count: 1 }]);
+
+    const driftedRow = { ...R1, payTo: "Direct Employee" };
+    const drifted = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R2, driftedRow])),
+      config: CONFIG,
+    });
+    expect(drifted).toMatchObject({ changed: 1, flagged: 1 });
+    expect(await count("payroll_transactions")).toBe(2);
+    const { rows: conflict } = await pool.query<{
+      marker: string;
+      reason: string;
+      previous_keys: string[];
+      incoming_keys: string[];
+      status: string;
+    }>(
+      `SELECT previous->>'sourceEvidenceConflict' AS marker,
+              previous->>'sourceEvidenceConflictReason' AS reason,
+              previous->'sourceEvidenceKeys' AS previous_keys,
+              incoming->'sourceEvidenceKeys' AS incoming_keys,
+              status
+         FROM sheet_sync_conflicts
+        WHERE type = 'changed'`,
+    );
+    expect(conflict).toHaveLength(1);
+    expect(conflict[0]).toMatchObject({ marker: "routing_or_net", reason: "changed", status: "open" });
+    expect(conflict[0]!.previous_keys).toHaveLength(1);
+    expect(conflict[0]!.incoming_keys).toHaveLength(1);
+    expect(conflict[0]!.incoming_keys).not.toEqual(conflict[0]!.previous_keys);
+
+    const reorderedWhileOpen = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([driftedRow, R2])),
+      config: CONFIG,
+    });
+    expect(reorderedWhileOpen.changed).toBe(0);
+    const { rows: stillOne } = await pool.query<{ c: string }>(
+      `SELECT count(*)::text AS c FROM sheet_sync_conflicts
+        WHERE type = 'changed' AND status = 'open'
+          AND previous->>'sourceEvidenceConflict' = 'routing_or_net'`,
+    );
+    expect(stillOne).toEqual([{ c: "1" }]);
+
+    const restored = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([{ ...R1, payTo: bootstrapPayTo }, R2])),
+      config: CONFIG,
+    });
+    expect(restored.changed).toBe(0);
+    const { rows: resolved } = await pool.query<{ status: string; resolution: string | null }>(
+      `SELECT status, resolution FROM sheet_sync_conflicts
+        WHERE previous->>'sourceEvidenceConflict' = 'routing_or_net'
+          AND payroll_transaction_id = (
+            SELECT id FROM payroll_transactions WHERE check_number = '1001'
+          )`,
+    );
+    expect(resolved).toEqual([{ status: "dismissed", resolution: "source_evidence_restored" }]);
+    expect(await count("payroll_transactions")).toBe(2);
+  });
+
+  it("ignores Paid-only changes and holds Total-Net-only drift as non-applicable", async () => {
+    await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2])),
+      config: CONFIG,
+    });
+
+    const paidOnly = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([{ ...R1, paid: "Paid" }, R2])),
+      config: CONFIG,
+    });
+    expect(paidOnly.changed).toBe(0);
+    expect(await count("sheet_sync_conflicts")).toBe(0);
+    const { rows: paidEvidence } = await pool.query<{ source_paid: string }>(
+      `SELECT identity->>'sourcePaid' AS source_paid FROM sheet_sync_rows
+        WHERE payroll_transaction_id = (
+          SELECT id FROM payroll_transactions WHERE check_number = '1001'
+        )`,
+    );
+    expect(paidEvidence).toEqual([{ source_paid: "true" }]);
+
+    const netDrift = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([{ ...R1, paid: "Paid", totalNetPay: "123.45" }, R2])),
+      config: CONFIG,
+    });
+    expect(netDrift.changed).toBe(1);
+    const { rows: conflictRows } = await pool.query<{ id: string; marker: string }>(
+      `SELECT id, previous->>'sourceEvidenceConflict' AS marker
+         FROM sheet_sync_conflicts WHERE type = 'changed' AND status = 'open'`,
+    );
+    expect(conflictRows).toHaveLength(1);
+    expect(conflictRows[0]!.marker).toBe("routing_or_net");
+    const refused = await applyChangedConflict(pool, conflictRows[0]!.id, null);
+    expect(refused).toMatchObject({ ok: false, code: "immutable" });
+    expect(await count("payroll_transactions")).toBe(2);
+
+    await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([{ ...R1, paid: "Paid" }, R2])),
+      config: CONFIG,
+    });
+    const { rows: restored } = await pool.query<{ status: string; resolution: string | null }>(
+      `SELECT status, resolution FROM sheet_sync_conflicts WHERE id = $1`,
+      [conflictRows[0]!.id],
+    );
+    expect(restored).toEqual([{ status: "dismissed", resolution: "source_evidence_restored" }]);
+    expect(await count("payroll_transactions")).toBe(2);
+  });
+
+  it("holds a combined canonical and source-net change as exactly one non-applicable evidence conflict", async () => {
+    await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, R2])),
+      config: CONFIG,
+    });
+
+    const combined = { ...R1, amount: "275", totalNetPay: "123.45" };
+    const result = await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([combined, R2])),
+      config: CONFIG,
+    });
+    expect(result).toMatchObject({ changed: 1, flagged: 1 });
+    const { rows: conflicts } = await pool.query<{ id: string; marker: string; incoming_net: string }>(
+      `SELECT id,
+              previous->>'sourceEvidenceConflict' AS marker,
+              incoming->>'totalNetPay' AS incoming_net
+         FROM sheet_sync_conflicts
+        WHERE type = 'changed' AND status = 'open'`,
+    );
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({ marker: "routing_or_net", incoming_net: "123.4500" });
+
+    const refused = await applyChangedConflict(pool, conflicts[0]!.id, null, {
+      fetcher: okFetcher(buildSheet([combined, R2])),
+      config: CONFIG,
+    });
+    expect(refused).toMatchObject({ ok: false, code: "immutable" });
+    const { rows: unchanged } = await pool.query<{ amount: string; net: string | null }>(
+      `SELECT imported_amount::text AS amount, total_net_pay::text AS net
+         FROM payroll_transactions WHERE check_number = '1001'`,
+    );
+    expect(unchanged).toEqual([{ amount: "250.0000", net: null }]);
+  });
+
+  it("holds intra-snapshot routing/net variants once and clears after variants agree", async () => {
+    const variant = { ...R1, payTo: "Direct Employee" };
+    const first = await runSheetSync(pool, {
+      trigger: "initial",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, variant, R2])),
+      config: CONFIG,
+    });
+    expect(first).toMatchObject({ added: 1, changed: 1, flagged: 1 });
+    expect(await count("payroll_transactions")).toBe(1);
+    const { rows: variants } = await pool.query<{
+      reason: string;
+      evidence_count: number;
+    }>(
+      `SELECT previous->>'sourceEvidenceConflictReason' AS reason,
+              jsonb_array_length(incoming->'sourceEvidenceKeys') AS evidence_count
+         FROM sheet_sync_conflicts
+        WHERE type = 'changed' AND status = 'open'`,
+    );
+    expect(variants).toEqual([{ reason: "variants", evidence_count: 2 }]);
+
+    await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R2, variant, R1])),
+      config: CONFIG,
+    });
+    const { rows: oneOpen } = await pool.query<{ c: string }>(
+      `SELECT count(*)::text AS c FROM sheet_sync_conflicts
+        WHERE type = 'changed' AND status = 'open'`,
+    );
+    expect(oneOpen).toEqual([{ c: "1" }]);
+
+    // Keep both physical occurrences but make their routing/net evidence agree.
+    await runSheetSync(pool, {
+      trigger: "scheduled",
+      userId: null,
+      fetcher: okFetcher(buildSheet([R1, { ...R1 }, R2])),
+      config: CONFIG,
+    });
+    const { rows: resolved } = await pool.query<{ status: string; resolution: string | null }>(
+      `SELECT status, resolution FROM sheet_sync_conflicts WHERE type = 'changed'`,
+    );
+    expect(resolved).toEqual([{ status: "dismissed", resolution: "source_evidence_restored" }]);
+    expect(await count("payroll_transactions")).toBe(2);
+    const { rows: evidence } = await pool.query<{ count: number }>(
+      `SELECT jsonb_array_length(identity->'sourceEvidenceKeys') AS count
+         FROM sheet_sync_rows
+        WHERE payroll_transaction_id = (
+          SELECT id FROM payroll_transactions WHERE check_number = '1001'
+        )`,
+    );
+    expect(evidence).toEqual([{ count: 1 }]);
   });
 
   it("reports only held repeats as duplicate rows while importing possible corrections", async () => {
@@ -542,8 +1137,8 @@ suite("Google Sheet sync (real PostgreSQL)", () => {
       config: CONFIG,
     });
 
-    // Both snapshots have been fetched, but the second must remain behind the
-    // database transaction lock until the first has staged and committed.
+    // The second run record exists, but its source read and staging must remain
+    // behind the database transaction lock until the first has committed.
     for (let attempt = 0; attempt < 50 && await count("sheet_sync_runs") < 2; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }

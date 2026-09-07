@@ -139,7 +139,7 @@ describe("Employee profile source facts", () => {
         period_end: "2026-08-31",
         actual_gross: "1000.00",
         actual_net: "800.00",
-        tax_withheld: "200.00",
+        tax_withheld: "125.00",
         verification_status: "verified" as const,
         linked_transactions: "3",
         transaction_ids: ["transaction"],
@@ -156,6 +156,43 @@ describe("Employee profile source facts", () => {
       taxWithheld: null,
       linkedTransactions: 3,
       transactionIds: [],
+    });
+
+    const [taxVisible] = await listEmployeeProfileChecks(
+      { query } as unknown as PgLikePool,
+      employeeId,
+      { gross: false, net: false, tax: true, transactions: false },
+    );
+    expect(taxVisible.taxWithheld).toBe("200.0000");
+  });
+
+  it("does not expose withholding for an unverified canonical check", async () => {
+    const query = vi.fn(async (_sql: string) => ({
+      rows: [{
+        id: "00000000-0000-4000-8000-000000000010",
+        check_number: "CHK-10",
+        check_date: "2026-08-31",
+        period_begin: "2026-08-01",
+        period_end: "2026-08-31",
+        actual_gross: "1000.00",
+        actual_net: "800.00",
+        verification_status: "unverified" as const,
+        linked_transactions: "3",
+        transaction_ids: ["transaction"],
+      }],
+    }));
+
+    const [check] = await listEmployeeProfileChecks(
+      { query } as unknown as PgLikePool,
+      employeeId,
+      { gross: true, net: true, tax: true, transactions: true },
+    );
+
+    expect(check).toMatchObject({
+      actualGross: "1000.0000",
+      actualNet: "800.0000",
+      taxWithheld: null,
+      verificationStatus: "unverified",
     });
   });
 });

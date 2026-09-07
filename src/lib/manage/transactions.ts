@@ -35,16 +35,6 @@ export async function setTransactionsPaid(
       params,
     );
 
-    // A tracked Google-Sheet row keeps the operator's change protected until
-    // write-back succeeds. The next pull must not silently replace this value.
-    await client.query(
-      `UPDATE sheet_sync_rows
-          SET identity = COALESCE(identity, '{}'::jsonb) || '{"appPaidDirty":true}'::jsonb,
-              updated_at = now()
-        WHERE payroll_transaction_id = ANY($1::uuid[])`,
-      [ids],
-    );
-
     await recordChange(client, {
       actorId,
       action: input.paid ? "transactions_marked_paid" : "transactions_marked_unpaid",

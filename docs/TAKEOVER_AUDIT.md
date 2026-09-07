@@ -43,10 +43,10 @@ The repository's `tsx` CLI cannot create its IPC socket in this runner. This is 
 | Workbook engine health | Ready (`exceljs`) |
 | Environment health | Authentication secret and private document storage configured |
 
-The latest production deployment is therefore aligned with the reviewed `main` commit. Google Sheet writeback, migration-token access, cron authorization, and bootstrap-admin configuration report disabled or absent; they are deployment configuration follow-ups, not failures in this branch.
+The latest production deployment is therefore aligned with the reviewed `main` commit. Google Sheet access is required to be inbound and read-only; the application must use Viewer-only credentials and must not contain or configure an outbound Sheet mutation path. Migration-token access, cron authorization, and bootstrap-admin configuration report disabled or absent and remain deployment configuration follow-ups rather than failures in this historical checkpoint.
 
 ## Open verification work
 
 - Configure a safe `TEST_DATABASE_URL`, then run the PostgreSQL-backed suites. Production health already confirms the applied migration and table counts.
-- Configure a non-production environment for build and Playwright acceptance; verify Google Sheet sync, private document storage, and each representative role by direct sign-in.
+- Configure a non-production environment for build and Playwright acceptance; verify the full read-only Google Sheet import, confirm zero mutation requests, verify private document storage, and test each representative role by direct sign-in.
 - Reconcile financial screens against production-shaped records before treating money workflows as accepted. No production outage is identified here; the current blockers are missing test environment access and incomplete real-data/role acceptance evidence.

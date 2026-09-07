@@ -2,14 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
-  apiUser: vi.fn(),
   ensureMigrationsApplied: vi.fn(),
   getPool: vi.fn(),
   getSyncConfig: vi.fn(),
   runSheetSync: vi.fn(),
 }));
 
-vi.mock("@/lib/auth/session", () => ({ apiUser: mocks.apiUser }));
 vi.mock("@/lib/db/auto-migrate", () => ({ ensureMigrationsApplied: mocks.ensureMigrationsApplied }));
 vi.mock("@/lib/db", () => ({ getPool: mocks.getPool }));
 vi.mock("@/lib/sheets/config", () => ({ getSyncConfig: mocks.getSyncConfig }));
@@ -23,7 +21,6 @@ describe("scheduled sync authorization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.CRON_SECRET;
-    mocks.apiUser.mockResolvedValue(null);
     mocks.ensureMigrationsApplied.mockResolvedValue(null);
     mocks.getPool.mockReturnValue({ query: vi.fn(async () => ({ rows: [] })) });
     mocks.getSyncConfig.mockResolvedValue({
@@ -91,20 +88,38 @@ describe("scheduled sync authorization", () => {
     expect(response.status).toBe(200);
     expect(body.authorisedBy).toBe("cron_secret");
     expect(body.summary.reconciliation.importedAgencyGross).toBe("25000.0000");
-    expect(mocks.apiUser).not.toHaveBeenCalled();
   });
 
-  it("allows an explicitly authenticated administrator when no secret is configured", async () => {
-    mocks.apiUser.mockResolvedValue({ id: "admin-1", actorId: "owner-1" });
+  it("does not authorize a state-changing GET with an administrator cookie", async () => {
+    const response = await GET(new NextRequest("http://localhost/api/sync/cron", {
+      headers: { cookie: "ahivim_session=administrator-browser-session" },
+    }));
 
-    const response = await GET(new NextRequest("http://localhost/api/sync/cron"));
-    const body = await response.json();
+    expect(response.status).toBe(401);
+    expect(mocks.ensureMigrationsApplied).not.toHaveBeenCalled();
+    expect(mocks.runSheetSync).not.toHaveBeenCalled();
+  });
 
-    expect(response.status).toBe(200);
-    expect(body.authorisedBy).toBe("admin_session");
-    expect(mocks.runSheetSync).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ userId: "owner-1" }),
-    );
+  it("treats a recent unchanged authenticated refresh as fresh for cadence gating", async () => {
+    process.env.CRON_SECRET = "cron-secret";
+    const query = vi.fn(async (_sql: string) => ({ rows: [{ finished_at: new Date().toISOString() }] }));
+    mocks.getPool.mockReturnValue({ query });
+    mocks.getSyncConfig.mockResolvedValue({
+      enabled: true,
+      minIntervalMinutes: 60,
+      scheduleHourUtc: new Date().getUTCHours(),
+    });
+
+    const response = await GET(new NextRequest("http://localhost/api/sync/cron", {
+      headers: { authorization: "Bearer cron-secret" },
+    }));
+
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      ran: false,
+      reason: "recently_synced",
+    });
+    expect(query.mock.calls[0]?.[0]).toContain("status IN ('success','no_changes')");
+    expect(mocks.runSheetSync).not.toHaveBeenCalled();
   });
 });

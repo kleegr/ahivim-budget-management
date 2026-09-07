@@ -13,7 +13,8 @@ describe("Transactions verified payroll-check facts", () => {
     expect(source.match(/pc\.verification_status = 'verified'/g)).toHaveLength(3);
     expect(source).toContain("THEN pc.actual_gross END");
     expect(source).toContain("THEN pc.actual_net END");
-    expect(source).toContain("THEN pc.tax_withheld END");
+    expect(source).toContain("THEN pc.actual_gross - pc.actual_net END");
+    expect(source).toContain("pc.actual_gross >= pc.actual_net");
     expect(source).toContain("t.total_net_pay::text");
     expect(source).toContain("t.internal_rate_applied::text");
   });

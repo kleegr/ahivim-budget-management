@@ -90,6 +90,14 @@ function planning(): PlanningAccess {
 }
 
 describe("agency planning privacy", () => {
+  it("shows Direct-Pay target hours only to internal planners who may see hours", () => {
+    const access = planning();
+    access.agencyIds = [];
+    expect(canViewPlannerDirectPayTargets(access)).toBe(true);
+    access.access.canSeeHours = false;
+    expect(canViewPlannerDirectPayTargets(access)).toBe(false);
+  });
+
   it("requires an employee and every participant to share one permitted agency", () => {
     const access = planning();
     expect(canViewPlannerDirectPayTargets(access)).toBe(false);

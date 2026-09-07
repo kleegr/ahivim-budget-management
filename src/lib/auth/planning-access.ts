@@ -79,9 +79,12 @@ export function isBudgetPlanningWarningCode(value: unknown): boolean {
  * planners, but their preset deliberately excludes authorization data. Remove
  * those fields before a server component serializes the workspace to the
  * browser; hiding a tab alone would still leak the values in the RSC payload.
+ * Assignment allowed hours remain only when the caller separately has the
+ * staffing-hours permission; they are never revealed merely by hiding the tab.
  */
 export function withoutPlanningBudgetDetails(
   data: PlanningWorkspaceData,
+  options: { canSeeAssignmentHours?: boolean } = {},
 ): PlanningWorkspaceData {
   const workQueue = data.workQueue
     .map((row) => ({
@@ -104,7 +107,9 @@ export function withoutPlanningBudgetDetails(
     coverage: [],
     series,
     authorizationGaps: [],
-    assignments: data.assignments.map((row) => ({ ...row, allowedHours: null })),
+    assignments: options.canSeeAssignmentHours === false
+      ? data.assignments.map((assignment) => ({ ...assignment, allowedHours: null }))
+      : data.assignments,
     summary: {
       ...data.summary,
       overBudgetSessions: 0,
@@ -354,9 +359,9 @@ function planningSubjectsOverlap(
   });
 }
 
-/** Employee pay targets belong only to the internal planner workflow. */
+/** Employee pay targets belong only to hour-visible internal planner workflows. */
 export function canViewPlannerDirectPayTargets(planning: PlanningAccess): boolean {
-  return planning.agencyIds.length === 0;
+  return planning.agencyIds.length === 0 && planning.access.canSeeHours;
 }
 
 export async function planningSeriesAllowed(

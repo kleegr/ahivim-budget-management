@@ -92,6 +92,62 @@ describe("direct-pay financial redaction", () => {
     expect(JSON.stringify(check)).not.toContain("300.00");
   });
 
+  it("does not expose derived withholding for an unverified check", async () => {
+    const pool = poolWith([{
+      id: "check-1",
+      employee_id: "employee-1",
+      employee_name: "Employee One",
+      check_number: "1001",
+      check_date: "2026-08-15",
+      period_begin: "2026-08-01",
+      period_end: "2026-08-14",
+      actual_gross: "1500",
+      actual_net: "1200",
+      source: "manual",
+      source_ref: null,
+      verification_status: "unverified",
+      notes: null,
+      linked_transactions: "2",
+      transaction_ids: [],
+      updated_at: "2026-08-15T00:00:00.000Z",
+    }]);
+
+    const [check] = await listPayrollChecks(pool, fullAccess("viewer-1", "viewer"));
+
+    expect(check).toMatchObject({
+      actualGross: "1500.0000",
+      actualNet: "1200.0000",
+      taxWithheld: null,
+      verificationStatus: "unverified",
+    });
+  });
+
+  it("derives verified withholding from gross and net instead of stored tax", async () => {
+    const pool = poolWith([{
+      id: "check-1",
+      employee_id: "employee-1",
+      employee_name: "Employee One",
+      check_number: "1001",
+      check_date: "2026-08-15",
+      period_begin: "2026-08-01",
+      period_end: "2026-08-14",
+      actual_gross: "1500",
+      actual_net: "1200",
+      tax_withheld: "125",
+      source: "manual",
+      source_ref: null,
+      verification_status: "verified",
+      notes: null,
+      linked_transactions: "2",
+      transaction_ids: [],
+      updated_at: "2026-08-15T00:00:00.000Z",
+    }]);
+
+    const [check] = await listPayrollChecks(pool, fullAccess("viewer-1", "viewer"));
+
+    expect(check.taxWithheld).toBe("300.0000");
+  });
+
   it("keeps an exact-check drilldown inside the caller's employee scope", async () => {
     const pool = poolWith([]);
     const checkId = "123e4567-e89b-12d3-a456-426614174020";
@@ -157,5 +213,6 @@ describe("direct-pay financial redaction", () => {
     await getEmployeeWithholding(pool, "00000000-0000-4000-8000-000000000001");
 
     expect(query.mock.calls[0]?.[0]).toContain("verification_status = 'verified'");
+    expect(query.mock.calls[0]?.[0]).toContain("actual_gross >= actual_net");
   });
 });

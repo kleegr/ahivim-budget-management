@@ -6,9 +6,21 @@ import {
   expectedBilling, durationBetween, timesOverlap, generateOccurrences, isScheduleDate,
   MAX_SERIES_OCCURRENCES,
 } from "@/lib/business/scheduling";
+import { agencyDate } from "@/lib/business/agency-time";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
 import { individualProgramForecast } from "@/lib/data/schedule-queries";
 import { listEmployeeAvailability } from "@/lib/data/employee-availability";
+import {
+  evaluateAssignmentAllowedHours,
+  projectAssignmentAllowedHours,
+  type AssignmentAllowedHoursEvaluation,
+} from "@/lib/data/assignment-allowed-hours";
+import { resolveSchedulePaymentRecipient } from "@/lib/data/schedule-payment-routing";
+import {
+  lockDirectPayTargetEmployees,
+  projectDirectPayScheduleLimits,
+  type DirectPayScheduleLimitProjection,
+} from "@/lib/data/direct-pay-schedule-limit";
 
 const isUuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
 type ScheduleQueryable = Pick<PgLikePool, "query">;
@@ -56,6 +68,10 @@ const BUDGET_WARNING_CODES = new Set([
 
 export interface ScheduleWarningPolicy {
   enforceBudgetWarnings?: boolean;
+  /** Assignment limits contain service-hour totals and require hour visibility. */
+  enforceAssignmentAllowedHoursWarnings?: boolean;
+  /** Employee-wide Direct-Pay target evidence is restricted to internal planners. */
+  enforceDirectPayTargetWarnings?: boolean;
 }
 
 export function warningsRequiringScheduleOverride(
@@ -63,7 +79,11 @@ export function warningsRequiringScheduleOverride(
   policy?: ScheduleWarningPolicy,
 ): ScheduleWarning[] {
   return warnings.filter((warning) => warning.code !== "missing_rate"
-    && (policy?.enforceBudgetWarnings !== false || !BUDGET_WARNING_CODES.has(warning.code)));
+    && (policy?.enforceBudgetWarnings !== false || !BUDGET_WARNING_CODES.has(warning.code))
+    && (policy?.enforceAssignmentAllowedHoursWarnings !== false
+      || warning.code !== "over_assignment_allowed_hours")
+    && (policy?.enforceDirectPayTargetWarnings !== false
+      || warning.code !== "over_direct_pay_target_hours"));
 }
 
 function postgresErrorField(error: unknown, field: "code" | "constraint"): string {
@@ -92,6 +112,81 @@ export interface ScheduleWarning {
   code: string;
   severity: "warning" | "error";
   message: string;
+  record?: {
+    type: "assignment" | "employee_direct_pay_target";
+    id: string;
+    label: string;
+  };
+  action?: {
+    label: string;
+    href: string;
+  };
+}
+
+export function directPayScheduleLimitWarning(
+  projection: DirectPayScheduleLimitProjection,
+): ScheduleWarning | null {
+  if (!projection.overLimit) return null;
+  const crossing = projection.crossingOccurrence
+    ? `Occurrence ${projection.crossingOccurrence.occurrenceNumber} on ${projection.crossingOccurrence.occurrenceDate} is the first visit in this preview that exceeds the target. `
+    : "";
+  const candidateLabel = projection.candidateOccurrenceCount === 1
+    ? "this visit adds"
+    : `these ${projection.candidateOccurrenceCount} visits add`;
+  const actionQuery = new URLSearchParams({
+    view: "targets",
+    employeeId: projection.employeeId,
+  });
+  return {
+    code: "over_direct_pay_target_hours",
+    severity: "warning",
+    message: `${crossing}Direct-Pay target ${projection.targetId} for ${projection.employeeName} (${projection.windowStart} to ${projection.windowEnd}) allows ${toHours(projection.targetHours)} h. Actual is ${toHours(projection.recordedHours)} h, pending unmatched scheduled is ${toHours(projection.scheduledHours)} h, and ${candidateLabel} ${toHours(projection.candidateHours)} h, bringing projected coverage to ${toHours(projection.projectedHours)} h (${toHours(projection.overageHours)} h over). Review the Direct-Pay target or enter a written override reason.`,
+    record: {
+      type: "employee_direct_pay_target",
+      id: projection.targetId,
+      label: `${projection.employeeName} / ${projection.windowStart} to ${projection.windowEnd}`,
+    },
+    action: {
+      label: "Review Direct-Pay target",
+      href: `/schedule?${actionQuery.toString()}`,
+    },
+  };
+}
+
+export function assignmentAllowedHoursWarning(
+  evaluation: AssignmentAllowedHoursEvaluation,
+  proposedHours: string,
+  occurrence?: { date: string; number: number },
+): ScheduleWarning | null {
+  if (evaluation.allowedHours === null) return null;
+  const projected = projectAssignmentAllowedHours(evaluation, proposedHours);
+  if (!projected.overLimit || projected.remainingHours === null) return null;
+  const projectedTotal = dec(projected.actualHours).plus(projected.scheduledHours);
+  const programScope = evaluation.programName ?? "any agency-routed program";
+  const dateWindow = `${evaluation.startDate ?? "any start"} to ${evaluation.endDate ?? "open"}`;
+  const actionQuery = new URLSearchParams({
+    view: "future",
+    employeeId: evaluation.employeeId,
+    individualId: evaluation.individualId,
+  });
+  if (evaluation.programId) actionQuery.set("programId", evaluation.programId);
+  const crossing = occurrence
+    ? `Occurrence ${occurrence.number} on ${occurrence.date} is the first visit in this preview that exceeds the limit. `
+    : "";
+  return {
+    code: "over_assignment_allowed_hours",
+    severity: "warning",
+    message: `${crossing}Assignment ${evaluation.assignmentId} for ${evaluation.employeeName} and ${evaluation.individualName} (${programScope}; ${dateWindow}) allows ${toHours(evaluation.allowedHours)} h. Actual is ${toHours(evaluation.actualHours)} h, pending unmatched scheduled is ${toHours(evaluation.scheduledHours)} h, and this visit adds ${toHours(proposedHours)} h, bringing the assignment to ${toHours(projectedTotal)} h (${toHours(dec(projected.remainingHours).abs())} h over). Review this assignment's allowed hours or enter a written override reason.`,
+    record: {
+      type: "assignment",
+      id: evaluation.assignmentId,
+      label: `${evaluation.employeeName} / ${evaluation.individualName}`,
+    },
+    action: {
+      label: "Review assignment",
+      href: `/schedule?${actionQuery.toString()}`,
+    },
+  };
 }
 
 /** The rate in force for a program on a date, via the one effective-dated resolver. */
@@ -158,6 +253,7 @@ export async function detectConflicts(
   draft: SessionDraft,
   excludeSessionId?: string,
   knownRate?: EffectiveScheduleRate,
+  warningPolicy?: ScheduleWarningPolicy,
 ): Promise<ScheduleWarning[]> {
   const w: ScheduleWarning[] = [];
   const hours = dec(draft.durationHours);
@@ -286,6 +382,49 @@ export async function detectConflicts(
     factsByIndividual.set(fact.individual_id, facts);
   }
 
+  // Assignment limits apply only to agency-routed work. Loading every eligible
+  // assignment in one query keeps preview and transaction-locked saves on the
+  // same evaluator, including null-program assignment scopes.
+  const paymentRecipient = draft.employeeId
+    ? await resolveSchedulePaymentRecipient(pool, {
+        employeeId: draft.employeeId,
+        programId: draft.programId,
+        onDate: draft.sessionDate,
+      })
+    : "unknown";
+  const directPayProjections = draft.employeeId
+    && paymentRecipient === "employee"
+    && warningPolicy?.enforceDirectPayTargetWarnings !== false
+    ? await projectDirectPayScheduleLimits(pool, {
+        employeeId: draft.employeeId,
+        occurrenceDates: [draft.sessionDate],
+        durationHours: draft.durationHours,
+        asOfDate: agencyDate(),
+        excludeSessionId: excludeSessionId ?? null,
+      })
+    : [];
+  for (const projection of directPayProjections) {
+    const warning = directPayScheduleLimitWarning(projection);
+    if (warning) w.push(warning);
+  }
+  const allowedHoursEvaluations = draft.employeeId
+    && paymentRecipient === "excellent_staffing"
+    && warningPolicy?.enforceAssignmentAllowedHoursWarnings !== false
+    ? await evaluateAssignmentAllowedHours(pool, {
+        employeeId: draft.employeeId,
+        individualIds: draft.individualIds,
+        programId: draft.programId,
+        onDate: draft.sessionDate,
+        excludeSessionId: excludeSessionId ?? null,
+      })
+    : [];
+  const allowedHoursByIndividual = new Map<string, typeof allowedHoursEvaluations>();
+  for (const evaluation of allowedHoursEvaluations) {
+    const matches = allowedHoursByIndividual.get(evaluation.individualId) ?? [];
+    matches.push(evaluation);
+    allowedHoursByIndividual.set(evaluation.individualId, matches);
+  }
+
   for (const individualId of draft.individualIds) {
     const facts = factsByIndividual.get(individualId) ?? [];
     const individual = facts[0];
@@ -301,6 +440,10 @@ export async function detectConflicts(
     // Assignment: is this employee allowed to serve this individual for this program?
     if (draft.employeeId && !individual?.assigned) {
       w.push({ code: "not_assigned", severity: "warning", message: `The employee is not assigned to ${name} for this program.` });
+    }
+    for (const evaluation of allowedHoursByIndividual.get(individualId) ?? []) {
+      const warning = assignmentAllowedHoursWarning(evaluation, draft.durationHours);
+      if (warning) w.push(warning);
     }
     // Authorization: the forecast already resolves the effective rows, so use
     // that result for both coverage and remaining-hours checks instead of
@@ -418,6 +561,7 @@ export async function previewSession(
   pool: PgLikePool,
   draft: SessionDraft,
   excludeSessionId?: string | null,
+  warningPolicy?: ScheduleWarningPolicy,
 ): Promise<SessionPreview> {
   const duration = normalizedSessionDuration(
     draft.durationHours,
@@ -427,7 +571,7 @@ export async function previewSession(
   const effective: SessionDraft = { ...draft, durationHours: duration ?? "0" };
 
   const warnings = duration
-    ? (await detectConflicts(pool, effective, excludeSessionId ?? undefined))
+    ? (await detectConflicts(pool, effective, excludeSessionId ?? undefined, undefined, warningPolicy))
         .filter((warning) => warning.code !== "missing_rate")
     : [];
 
@@ -480,7 +624,11 @@ async function insertSessionRows(
   db: ScheduleQueryable,
   input: CreateSessionInput,
   actorId: string | null,
-  options?: { employeeLockHeld?: boolean },
+  options?: {
+    employeeLockHeld?: boolean;
+    directPayTargetLockHeld?: boolean;
+    warningPolicy?: ScheduleWarningPolicy;
+  },
 ): Promise<{ id: string; warnings: ScheduleWarning[] }> {
   const duration = normalizedSessionDuration(
     input.durationHours,
@@ -495,8 +643,15 @@ async function insertSessionRows(
   if (draft.employeeId && !options?.employeeLockHeld) {
     await db.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`employee-availability:${draft.employeeId}`]);
   }
+  if (
+    draft.employeeId
+    && !options?.directPayTargetLockHeld
+    && options?.warningPolicy?.enforceDirectPayTargetWarnings !== false
+  ) {
+    await lockDirectPayTargetEmployees(db, [draft.employeeId]);
+  }
   const rate = await currentRate(db, input.programId, input.sessionDate);
-  const warnings = await detectConflicts(db, draft, undefined, rate);
+  const warnings = await detectConflicts(db, draft, undefined, rate, options?.warningPolicy);
   const groupSize = individualIds.length;
   const billing = rate
     ? expectedBilling({ hours: duration, groupSize, agencyRate: rate.agencyRate, internalRate: rate.internalRate })
@@ -558,7 +713,7 @@ async function insertSessionWithAllocations(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const result = await insertSessionRows(client, input, actorId);
+    const result = await insertSessionRows(client, input, actorId, { warningPolicy });
     if (warningsRequiringScheduleOverride(result.warnings, warningPolicy).length > 0
       && !writtenOverrideReason(input.overrideReason)) {
       throw new ScheduleOverrideRequiredError(SCHEDULE_OVERRIDE_REQUIRED_MESSAGE);
@@ -695,6 +850,9 @@ export async function createSeries(
     if (input.employeeId) {
       await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`employee-availability:${input.employeeId}`]);
     }
+    if (warningPolicy?.enforceDirectPayTargetWarnings !== false) {
+      await lockDirectPayTargetEmployees(client, [input.employeeId]);
+    }
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO schedule_series
          (employee_id, program_id, service_type, frequency, interval, weekdays,
@@ -729,7 +887,11 @@ export async function createSeries(
           overrideReason,
         },
         actorId,
-        { employeeLockHeld: Boolean(input.employeeId) },
+        {
+          employeeLockHeld: Boolean(input.employeeId),
+          directPayTargetLockHeld: Boolean(input.employeeId),
+          warningPolicy,
+        },
       );
       warnings += warningsRequiringScheduleOverride(result.warnings, warningPolicy).length;
     }
@@ -915,6 +1077,9 @@ export async function updateSeries(
     if (input.employeeId) {
       await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`employee-availability:${input.employeeId}`]);
     }
+    if (warningPolicy?.enforceDirectPayTargetWarnings !== false) {
+      await lockDirectPayTargetEmployees(client, [current.employee_id, input.employeeId]);
+    }
 
     let targetSeriesId = seriesId;
     let replaced = 0;
@@ -1019,7 +1184,11 @@ export async function updateSeries(
           overrideReason,
         },
         actorId,
-        { employeeLockHeld: Boolean(input.employeeId) },
+        {
+          employeeLockHeld: Boolean(input.employeeId),
+          directPayTargetLockHeld: Boolean(input.employeeId),
+          warningPolicy,
+        },
       );
       warnings += warningsRequiringScheduleOverride(result.warnings, warningPolicy).length;
     }
@@ -1144,6 +1313,13 @@ export async function setSessionStatus(
       await client.query("ROLLBACK");
       return fail("not_found", "That session no longer exists.");
     }
+    if (status === "pending" && before.rows[0].status !== "pending") {
+      await client.query("ROLLBACK");
+      return fail(
+        "immutable",
+        "A completed, cancelled, or no-show session cannot be reactivated. Duplicate the visit to create a new pending session with current scheduling checks.",
+      );
+    }
     if (before.rows[0].matched_transaction_id && (status === "cancelled" || status === "no_show")) {
       await client.query("ROLLBACK");
       return fail("immutable", "A matched session must remain pending or completed for reconciliation.");
@@ -1218,12 +1394,16 @@ export async function rescheduleSession(
     if (s.employee_id) {
       await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`employee-availability:${s.employee_id}`]);
     }
+    if (warningPolicy?.enforceDirectPayTargetWarnings !== false) {
+      await lockDirectPayTargetEmployees(client, [s.employee_id]);
+    }
     const rate = await currentRate(client, s.program_id, sessionDate);
     const warnings = await detectConflicts(
       client,
       { employeeId: s.employee_id, programId: s.program_id, individualIds: inds.rows.map((r) => r.individual_id), sessionDate, startTime, endTime, durationHours: duration },
       id,
       rate,
+      warningPolicy,
     );
     if (warningsRequiringScheduleOverride(warnings, warningPolicy).length > 0
       && !writtenOverrideReason(reason)) {
@@ -1330,6 +1510,9 @@ export async function reassignSession(
     if (employeeId) {
       await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`employee-availability:${employeeId}`]);
     }
+    if (warningPolicy?.enforceDirectPayTargetWarnings !== false) {
+      await lockDirectPayTargetEmployees(client, [session.employee_id, employeeId]);
+    }
     const warnings = await detectConflicts(client, {
       employeeId,
       programId: session.program_id,
@@ -1338,7 +1521,7 @@ export async function reassignSession(
       startTime: session.start_time,
       endTime: session.end_time,
       durationHours: session.duration_hours,
-    }, id);
+    }, id, undefined, warningPolicy);
     if (warningsRequiringScheduleOverride(warnings, warningPolicy).length > 0
       && !writtenOverrideReason(reason)) {
       await client.query("ROLLBACK");

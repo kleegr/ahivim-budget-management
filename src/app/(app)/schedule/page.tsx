@@ -31,6 +31,7 @@ export default async function SchedulePage({
   const planningAccess = await requirePlanningUser();
   const canManage = planningAccess.canManageSchedules;
   const showBudgetTracking = planningAccess.access.canSeeBudgets;
+  const showAssignmentHours = planningAccess.access.canSeeHours;
   const today = agencyDate();
   const sp = await searchParams;
   const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
@@ -74,6 +75,7 @@ export default async function SchedulePage({
         ? filterPlanningWorkspaceForAgency(planning, planningAccess.agencyRosters)
         : withoutPlanningBudgetDetails(
             filterPlanningWorkspaceForAgency(planning, planningAccess.agencyRosters),
+            { canSeeAssignmentHours: showAssignmentHours },
           ),
       directPayTargets,
     };
@@ -116,6 +118,7 @@ export default async function SchedulePage({
             directPayTargets={result.data.directPayTargets}
             showDirectPayTargets={canViewPlannerDirectPayTargets(planningAccess)}
             showBudgetTracking={showBudgetTracking}
+            showAssignmentHours={showAssignmentHours}
           />
         </>
       )}

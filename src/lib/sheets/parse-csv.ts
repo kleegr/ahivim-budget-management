@@ -15,22 +15,22 @@ import type { ParsedAhivimRow, WorkbookControlTotals } from "@/lib/excel/parse-w
  * GOOGLE SHEET CSV PARSING
  * ========================
  *
- * The live Google Sheet is exported as CSV (the gviz endpoint) and mapped into
- * exactly the same `ParsedAhivimRow` shape the .xlsx importer produces, so the
+ * The authenticated Values API grid or pinned authoritative CSV export is mapped
+ * into exactly the same `ParsedAhivimRow` shape the .xlsx importer produces, so the
  * entire downstream pipeline — staging, matching, rate logic, group detection,
  * fingerprint de-duplication, reconciliation, commit and audit — is reused
  * verbatim. Nothing about the sync path re-implements business logic.
  *
- * The parser is deliberately DEFENSIVE about structure. The gviz export may or
- * may not treat the sheet's first line as a header, so the header row and the
+ * The parser is deliberately DEFENSIVE about structure. The source may or may
+ * not treat the sheet's first line as a header, so the header row and the
  * control-total row are located by CONTENT (known column labels; the four total
  * cells) rather than by a fixed line number. Whatever the export decides, the
  * transaction columns are mapped by the verified positional map, falling back
  * from header matching exactly as the workbook parser does.
  *
- * Formulas do not survive a CSV export — every cell is its displayed value — so
- * `formulas` is always empty. That is expected and documented in the reuse
- * contract; the calculated internal amount arrives as a plain number in column P.
+ * Both read transports return calculated values rather than formulas, so
+ * `formulas` is always empty. That is expected in the reuse contract; the calculated
+ * internal amount arrives as a plain number in column P.
  */
 
 export interface SheetCsvParseResult {
@@ -223,8 +223,8 @@ const NUMERIC_FIELDS = new Set<AhivimField>([
 
 /**
  * Google Sheets can display a negative value in accounting format as
- * `$ (625.00)` (or `(625.00)`). The CSV export contains that display text,
- * while the shared row schema deliberately accepts only a canonical numeric
+ * `$ (625.00)` (or `(625.00)`). Historical CSV/workbook inputs can contain that
+ * display text, while the shared row schema accepts only a canonical numeric
  * string. Normalize only the value passed to validation; `raw` keeps the exact
  * source text for the import audit trail.
  */
@@ -493,9 +493,9 @@ export function parseSheetCsv(csvText: string): SheetCsvParseResult {
   }
 
   // The workbook's Paid column is positional N and its header is intentionally
-  // blank. Presence cannot depend on a non-empty cell: clearing the final Paid
-  // marker must flow back as unpaid. A physically shorter export (no column N)
-  // still remains pull-only for Paid values.
+  // blank. Presence cannot depend on a non-empty cell: a cleared marker is still
+  // preserved as false in inbound source evidence. It never changes the Neon
+  // Paid decision. A physically shorter response can omit column N entirely.
   const paidColumnPositionPresent = gridRows.some((row) => row.cells.length >= columnMap.paid);
   const paidColumnFound = paidHeaderFound || paidColumnPositionPresent;
 
