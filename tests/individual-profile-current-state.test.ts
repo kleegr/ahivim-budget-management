@@ -13,7 +13,7 @@ describe("Individual Profile current-state facts", () => {
     expect(assignmentIsCurrent({ startDate: "2026-09-04", endDate: "2026-09-04" }, "2026-09-04")).toBe(true);
     expect(assignmentIsCurrent({ startDate: "2026-09-05", endDate: null }, "2026-09-04")).toBe(false);
     expect(assignmentIsCurrent({ startDate: null, endDate: "2026-09-03" }, "2026-09-04")).toBe(false);
-    expect(page).toContain("assignmentIsCurrent(a, today)");
+    expect(page).toContain("assignmentIsCurrent(assignment, today)");
   });
 
   it("uses the authoritative current aggregate for multiple active financial setups", () => {

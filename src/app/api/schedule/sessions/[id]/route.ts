@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import {
   apiPlanningUser,
+  canViewPlannerDirectPayTargets,
   isBudgetPlanningWarningCode,
   planningProgramAllowed,
   planningSubjectsAllowed,
@@ -60,6 +61,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!planning) return jsonError("Planning access required", 403);
   const { user } = planning;
   if (!planning.canManageSchedules) return jsonError("Schedule management access required", 403);
+  const canSeeDirectPayTargets = canViewPlannerDirectPayTargets(planning);
 
   const { id } = await params;
   const body = await readJson(request);
@@ -75,7 +77,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }, "schedule", { from: existing.sessionDate, to: existing.sessionDate })) return jsonError("Not found", 404);
 
     if (action === "cancel") {
-      return resultResponse(await setSessionStatus(pool, id, "cancelled", user.id, reason), 200);
+      return resultResponse(await setSessionStatus(pool, id, "cancelled", user.actorId, reason), 200);
     }
 
     if (action === "status") {
@@ -86,7 +88,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (status !== "cancelled" && !await planningProgramAllowed(pool, planning, existing.programId)) {
         return jsonError("That inactive program can only be cancelled.", 403);
       }
-      return resultResponse(await setSessionStatus(pool, id, status as SessionStatus, user.id, reason), 200);
+      return resultResponse(await setSessionStatus(pool, id, status as SessionStatus, user.actorId, reason), 200);
     }
 
     if (action === "reschedule") {
@@ -108,14 +110,20 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             startTime: body.startTime === undefined ? undefined : (asString(body.startTime) ?? null),
             endTime: body.endTime === undefined ? undefined : (asString(body.endTime) ?? null),
           },
-          user.id,
+          user.actorId,
           reason,
-          { enforceBudgetWarnings: planning.access.canSeeBudgets },
+          {
+            enforceBudgetWarnings: planning.access.canSeeBudgets,
+            enforceAssignmentAllowedHoursWarnings: planning.access.canSeeHours,
+            enforceDirectPayTargetWarnings: canSeeDirectPayTargets,
+          },
         );
       if (result.ok) {
         result.data.warnings = result.data.warnings.filter((warning) =>
           warning.code !== "missing_rate"
-          && (planning.access.canSeeBudgets || !isBudgetPlanningWarningCode(warning.code)));
+          && (planning.access.canSeeBudgets || !isBudgetPlanningWarningCode(warning.code))
+          && (planning.access.canSeeHours || warning.code !== "over_assignment_allowed_hours")
+          && (canSeeDirectPayTargets || warning.code !== "over_direct_pay_target_hours"));
       }
       return resultResponse(result, 200);
     }
@@ -138,14 +146,20 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         pool,
         id,
         employeeId,
-        user.id,
+        user.actorId,
         reason,
-        { enforceBudgetWarnings: planning.access.canSeeBudgets },
+        {
+          enforceBudgetWarnings: planning.access.canSeeBudgets,
+          enforceAssignmentAllowedHoursWarnings: planning.access.canSeeHours,
+          enforceDirectPayTargetWarnings: canSeeDirectPayTargets,
+        },
       );
       if (result.ok) {
         result.data.warnings = result.data.warnings.filter((warning) =>
           warning.code !== "missing_rate"
-          && (planning.access.canSeeBudgets || !isBudgetPlanningWarningCode(warning.code)));
+          && (planning.access.canSeeBudgets || !isBudgetPlanningWarningCode(warning.code))
+          && (planning.access.canSeeHours || warning.code !== "over_assignment_allowed_hours")
+          && (canSeeDirectPayTargets || warning.code !== "over_direct_pay_target_hours"));
       }
       return resultResponse(result, 200);
     }
@@ -162,13 +176,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }, "schedule", { from: toDate, to: toDate })) {
         return jsonError("That service date is outside your agency roster.", 403);
       }
-      const result = await duplicateSession(pool, id, toDate, user.id, reason, {
+      const result = await duplicateSession(pool, id, toDate, user.actorId, reason, {
         enforceBudgetWarnings: planning.access.canSeeBudgets,
+        enforceAssignmentAllowedHoursWarnings: planning.access.canSeeHours,
+        enforceDirectPayTargetWarnings: canSeeDirectPayTargets,
       });
       if (result.ok) {
         result.data.warnings = result.data.warnings.filter((warning) =>
           warning.code !== "missing_rate"
-          && (planning.access.canSeeBudgets || !isBudgetPlanningWarningCode(warning.code)));
+          && (planning.access.canSeeBudgets || !isBudgetPlanningWarningCode(warning.code))
+          && (planning.access.canSeeHours || warning.code !== "over_assignment_allowed_hours")
+          && (canSeeDirectPayTargets || warning.code !== "over_direct_pay_target_hours"));
       }
       return resultResponse(result, 201);
     }

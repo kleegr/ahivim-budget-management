@@ -160,7 +160,9 @@ export async function listTransactionsForGrid(
       (CASE WHEN pc.verification_status = 'verified'
              THEN pc.actual_net END)::text                    AS verified_check_net,
       (CASE WHEN pc.verification_status = 'verified'
-             THEN pc.tax_withheld END)::text                  AS withholding,
+             AND pc.actual_gross IS NOT NULL
+             AND pc.actual_gross >= pc.actual_net
+             THEN pc.actual_gross - pc.actual_net END)::text AS withholding,
       pc.verification_status                                  AS verification_status,
       to_char(t.period_begin, 'YYYY-MM-DD')                   AS period_begin,
       to_char(t.period_end,   'YYYY-MM-DD')                   AS period_end,

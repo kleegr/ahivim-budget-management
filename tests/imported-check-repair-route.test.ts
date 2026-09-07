@@ -28,6 +28,7 @@ vi.mock("@/lib/manage/settlements", () => ({
 import { POST } from "@/app/api/payroll-checks/import-reviews/route";
 
 const ACTOR = "00000000-0000-4000-8000-000000000001";
+const PREVIEW_TARGET = "00000000-0000-4000-8000-000000000002";
 const pool = { query: vi.fn(), connect: vi.fn() };
 
 function request() {
@@ -40,7 +41,7 @@ describe("historical imported-check repair", () => {
     mocks.sameOriginOrFail.mockReturnValue(null);
     mocks.getSettlementOperator.mockResolvedValue({
       pool,
-      user: { id: ACTOR },
+      user: { id: PREVIEW_TARGET, actorId: ACTOR },
       scope: {
         allEmployees: true,
         allIndividuals: true,

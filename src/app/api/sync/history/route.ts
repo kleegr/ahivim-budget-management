@@ -16,7 +16,7 @@ export async function DELETE(request: NextRequest) {
   if (!user) return jsonError("You need the administrator role to clear sync history.", 403);
 
   try {
-    const deleted = await clearSyncHistory(getPool(), user.id);
+    const deleted = await clearSyncHistory(getPool(), user.actorId);
     return NextResponse.json({ ok: true, deleted });
   } catch (error) {
     return jsonError(redactError(error, "Could not clear the sync history."), 500);

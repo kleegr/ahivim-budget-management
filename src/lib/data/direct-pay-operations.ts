@@ -7,7 +7,7 @@ import {
   type DirectPayTargetStatus,
 } from "@/lib/business/direct-pay-targets";
 import type { PgLikePool } from "@/lib/import/commit";
-import { dec, toHours, toMoney } from "@/lib/money";
+import { dec, toHours, toMoney, withholdingFromGrossAndNet } from "@/lib/money";
 
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -382,7 +382,7 @@ export async function listPayrollChecks(
   const { rows } = await pool.query<{
     id: string; employee_id: string; employee_name: string; check_number: string | null;
     check_date: string | null; period_begin: string | null; period_end: string | null;
-    actual_gross: string | null; actual_net: string; tax_withheld: string | null;
+    actual_gross: string | null; actual_net: string;
     source: string; source_ref: string | null; verification_status: PayrollCheckRow["verificationStatus"];
     notes: string | null; linked_transactions: string; transaction_ids: string[]; updated_at: string;
   }>(
@@ -390,7 +390,7 @@ export async function listPayrollChecks(
             to_char(c.check_date, 'YYYY-MM-DD') AS check_date,
             to_char(c.period_begin, 'YYYY-MM-DD') AS period_begin,
             to_char(c.period_end, 'YYYY-MM-DD') AS period_end,
-            c.actual_gross::text, c.actual_net::text, c.tax_withheld::text,
+            c.actual_gross::text, c.actual_net::text,
             c.source, c.source_ref, c.verification_status, c.notes,
             count(t.id)::text AS linked_transactions,
             COALESCE(array_agg(t.id::text ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), ARRAY[]::text[]) AS transaction_ids,
@@ -416,7 +416,9 @@ export async function listPayrollChecks(
     periodEnd: row.period_end,
     actualGross: scope.canSeeCheckGross && row.actual_gross !== null ? toMoney(row.actual_gross) : null,
     actualNet: scope.canSeeCheckNet ? toMoney(row.actual_net) : null,
-    taxWithheld: scope.canSeeTaxes && row.tax_withheld !== null ? toMoney(row.tax_withheld) : null,
+    taxWithheld: scope.canSeeTaxes && row.verification_status === "verified"
+      ? withholdingFromGrossAndNet(row.actual_gross, row.actual_net)
+      : null,
     source: row.source,
     sourceRef: row.source_ref,
     verificationStatus: row.verification_status,

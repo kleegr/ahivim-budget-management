@@ -1,9 +1,9 @@
 import { createSign } from "node:crypto";
 
-const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
+const SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 
-export interface GoogleServiceAccountCredentials {
+export interface GoogleSheetsReadCredentials {
   clientEmail: string;
   privateKey: string;
 }
@@ -27,9 +27,9 @@ function decodeJsonCredential(raw: string): Record<string, unknown> | null {
 }
 
 /** Supports either one service-account JSON secret or the familiar two fields. */
-export function googleSheetsCredentials(
+export function googleSheetsReadCredentials(
   env: Readonly<Record<string, string | undefined>> = process.env,
-): GoogleServiceAccountCredentials | null {
+): GoogleSheetsReadCredentials | null {
   const jsonSecret = env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON?.trim();
   if (jsonSecret) {
     const parsed = decodeJsonCredential(jsonSecret);
@@ -50,15 +50,15 @@ function base64url(value: string | Buffer): string {
 }
 
 /** Exchange the configured service-account assertion for a short-lived Sheets token. */
-export async function googleSheetsAccessToken(
-  credentials: GoogleServiceAccountCredentials,
+export async function googleSheetsReadAccessToken(
+  credentials: GoogleSheetsReadCredentials,
   request: typeof fetch = fetch,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
   const claims = base64url(JSON.stringify({
     iss: credentials.clientEmail,
-    scope: SHEETS_SCOPE,
+    scope: SHEETS_READONLY_SCOPE,
     aud: TOKEN_URL,
     iat: now,
     exp: now + 3600,

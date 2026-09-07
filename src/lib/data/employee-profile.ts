@@ -1,6 +1,6 @@
 import type { PgLikePool } from "@/lib/import/commit";
 import { settlementState, type SettlementDirection, type SettlementState } from "@/lib/business/settlement-ledger";
-import { dec, toMoney } from "@/lib/money";
+import { dec, toMoney, withholdingFromGrossAndNet } from "@/lib/money";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -100,7 +100,6 @@ export async function listEmployeeProfileChecks(
     period_end: string | null;
     actual_gross: string | null;
     actual_net: string | null;
-    tax_withheld: string | null;
     verification_status: EmployeeProfileCheck["verificationStatus"];
     linked_transactions: string;
     transaction_ids: string[] | null;
@@ -110,7 +109,7 @@ export async function listEmployeeProfileChecks(
             to_char(checks.period_begin, 'YYYY-MM-DD') AS period_begin,
             to_char(checks.period_end, 'YYYY-MM-DD') AS period_end,
             checks.actual_gross::text, checks.actual_net::text,
-            checks.tax_withheld::text, checks.verification_status,
+            checks.verification_status,
             count(t.id)::text AS linked_transactions,
             COALESCE(
               array_agg(t.id::text ORDER BY t.id)
@@ -137,7 +136,9 @@ export async function listEmployeeProfileChecks(
     periodEnd: row.period_end,
     actualGross: visibility.gross && row.actual_gross !== null ? toMoney(row.actual_gross) : null,
     actualNet: visibility.net && row.actual_net !== null ? toMoney(row.actual_net) : null,
-    taxWithheld: visibility.tax && row.tax_withheld !== null ? toMoney(row.tax_withheld) : null,
+    taxWithheld: visibility.tax && row.verification_status === "verified"
+      ? withholdingFromGrossAndNet(row.actual_gross, row.actual_net)
+      : null,
     verificationStatus: row.verification_status,
     linkedTransactions: Number(row.linked_transactions),
     transactionIds: visibility.transactions ? row.transaction_ids ?? [] : [],

@@ -1,6 +1,12 @@
 import { NextRequest } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiPlanningUser, planningProgramAllowed, planningSeriesAllowed, planningSubjectsAllowed } from "@/lib/auth/planning-access";
+import {
+  apiPlanningUser,
+  canViewPlannerDirectPayTargets,
+  planningProgramAllowed,
+  planningSeriesAllowed,
+  planningSubjectsAllowed,
+} from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { cancelSeries, updateSeries, type UpdateSeriesInput } from "@/lib/manage/schedule";
 import { agencyDate } from "@/lib/business/agency-time";
@@ -32,6 +38,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!planning) return jsonError("Planning access required", 403);
   const { user } = planning;
   if (!planning.canManageSchedules) return jsonError("Schedule management access required", 403);
+  const canSeeDirectPayTargets = canViewPlannerDirectPayTargets(planning);
 
   const { id } = await params;
   const body = await readJson(request);
@@ -42,7 +49,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const pool = getPool();
     if (action === "cancel") {
       if (!await planningSeriesAllowed(pool, planning, id, "schedule")) return jsonError("Not found", 404);
-      return resultResponse(await cancelSeries(pool, id, user.id, reason), 200);
+      return resultResponse(await cancelSeries(pool, id, user.actorId, reason), 200);
     }
     if (action === "update") {
       if (!await planningSeriesAllowed(pool, planning, id, "read")) return jsonError("Not found", 404);
@@ -92,8 +99,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (!await planningProgramAllowed(pool, planning, input.programId)) {
         return jsonError("Choose an active hours-based planning program.", 403);
       }
-      return resultResponse(await updateSeries(pool, id, input, user.id, reason, {
+      return resultResponse(await updateSeries(pool, id, input, user.actorId, reason, {
         enforceBudgetWarnings: planning.access.canSeeBudgets,
+        enforceAssignmentAllowedHoursWarnings: planning.access.canSeeHours,
+        enforceDirectPayTargetWarnings: canSeeDirectPayTargets,
       }), 200);
     }
     return jsonError("Unknown action.", 400);

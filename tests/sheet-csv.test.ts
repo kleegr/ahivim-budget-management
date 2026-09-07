@@ -5,7 +5,7 @@ import {
   parseSheetCsv,
 } from "@/lib/sheets/parse-csv";
 
-/** Encode a grid as CSV, quoting every field (mirrors Google's gviz export). */
+/** Encode a grid as CSV, quoting every field like the internal Values API adapter. */
 function toCsv(grid: string[][]): string {
   return grid.map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
 }

@@ -27,10 +27,13 @@ describe("payroll-check transaction linking", () => {
       checkDate: "2026-08-15",
       periodBegin: "2026-08-01",
       periodEnd: "2026-08-14",
+      actualGross: "500",
       actualNet: "420",
     }, null);
 
     expect(result).toMatchObject({ ok: true, data: { id: checkId, linkedTransactions: 1 } });
+    const insert = calls.find(({ sql }) => sql.includes("INSERT INTO employee_payroll_checks"));
+    expect(insert?.params?.slice(5, 8)).toEqual(["500.0000", "420.0000", "80.0000"]);
     const link = calls.find(({ sql }) => sql.includes("SET payroll_check_id = $1"));
     expect(link?.params).toEqual([
       checkId,
@@ -47,6 +50,71 @@ describe("payroll-check transaction linking", () => {
     expect(link?.sql).toContain("($6::date IS NULL OR t.period_end = $6::date)");
     expect(link?.sql).toContain("$3::text IS NULL AND $5::date IS NOT NULL");
     expect(link?.sql).toContain("$5::date IS NULL AND $6::date IS NULL AND $3::text IS NULL");
+  });
+
+  it("rejects a separately supplied withholding that conflicts with gross minus net", async () => {
+    const pool = { connect: vi.fn() } as unknown as PgLikePool;
+
+    const result = await savePayrollCheck(pool, {
+      employeeId: "123e4567-e89b-12d3-a456-426614174000",
+      checkDate: "2026-08-15",
+      actualGross: "500",
+      actualNet: "420",
+      taxWithheld: "79",
+    }, null);
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: "validation",
+      message: "Withholding is calculated as actual gross minus actual net and cannot be entered separately.",
+    });
+    expect(pool.connect).not.toHaveBeenCalled();
+  });
+
+  it("keeps a net-only check unverified and requires gross before verification", async () => {
+    const employeeId = "123e4567-e89b-12d3-a456-426614174000";
+    const pool = { connect: vi.fn() } as unknown as PgLikePool;
+
+    const verified = await savePayrollCheck(pool, {
+      employeeId,
+      checkDate: "2026-08-15",
+      actualNet: "420",
+      verificationStatus: "verified",
+    }, null);
+
+    expect(verified).toMatchObject({
+      ok: false,
+      code: "validation",
+      message: "Add the verified check gross before marking this payroll check verified.",
+    });
+    expect(pool.connect).not.toHaveBeenCalled();
+  });
+
+  it("rejects blank or omitted net amounts before a verified check can be saved", async () => {
+    const employeeId = "123e4567-e89b-12d3-a456-426614174000";
+    const pool = { connect: vi.fn() } as unknown as PgLikePool;
+    const check = {
+      employeeId,
+      checkDate: "2026-08-15",
+      actualGross: "500",
+      verificationStatus: "verified" as const,
+    };
+
+    const blank = await savePayrollCheck(pool, { ...check, actualNet: "" }, null);
+    const omitted = await savePayrollCheck(
+      pool,
+      check as unknown as Parameters<typeof savePayrollCheck>[1],
+      null,
+    );
+
+    for (const result of [blank, omitted]) {
+      expect(result).toMatchObject({
+        ok: false,
+        code: "validation",
+        message: "Enter the payroll check net amount.",
+      });
+    }
+    expect(pool.connect).not.toHaveBeenCalled();
   });
 
   it("links a missing-identity source by its exact locked transaction id", async () => {

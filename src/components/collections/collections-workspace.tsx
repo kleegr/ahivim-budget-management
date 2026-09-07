@@ -10,7 +10,7 @@ import type {
   DirectPayTargetFinancialRow,
   PayrollCheckRow,
 } from "@/lib/data/direct-pay-operations";
-import { formatHours, formatMoney } from "@/lib/money";
+import { formatHours, formatMoney, withholdingFromGrossAndNet } from "@/lib/money";
 import { Card, EmptyState, Notice } from "@/components/ui";
 import type { CollectionsView, PayrollCheckDraft } from "@/lib/nav/collections-links";
 
@@ -167,6 +167,14 @@ function PayrollCheckForm({
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [grossValue, setGrossValue] = useState(initial?.actualGross ?? "");
+  const [netValue, setNetValue] = useState(initial?.actualNet ?? "");
+  let derivedWithholding: string | null = null;
+  try {
+    derivedWithholding = withholdingFromGrossAndNet(grossValue, netValue);
+  } catch {
+    // The server reports invalid money input when the form is submitted.
+  }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -184,7 +192,6 @@ function PayrollCheckForm({
           periodEnd: form.get("periodEnd"),
           actualGross: form.get("actualGross"),
           actualNet: form.get("actualNet"),
-          taxWithheld: form.get("taxWithheld"),
           sourceRef: form.get("sourceRef"),
           verificationStatus: form.get("verificationStatus"),
           notes: form.get("notes"),
@@ -216,7 +223,7 @@ function PayrollCheckForm({
           <input name="checkDate" type="date" defaultValue={initial?.checkDate ?? draft?.checkDate ?? ""} className={inputClass} />
         </label>
         <label className={labelClass}>Status
-          <select name="verificationStatus" defaultValue={initial?.verificationStatus ?? "verified"} className={inputClass}>
+          <select name="verificationStatus" defaultValue={initial?.verificationStatus ?? "unverified"} className={inputClass}>
             <option value="verified">Verified</option><option value="unverified">Unverified</option><option value="void">Void</option>
           </select>
         </label>
@@ -227,13 +234,13 @@ function PayrollCheckForm({
           <input name="periodEnd" type="date" defaultValue={initial?.periodEnd ?? draft?.periodEnd ?? ""} className={inputClass} />
         </label>
         <label className={labelClass}>Actual gross
-          <input name="actualGross" inputMode="decimal" defaultValue={initial?.actualGross ?? ""} className={inputClass} />
+          <input name="actualGross" inputMode="decimal" value={grossValue} onChange={(event) => setGrossValue(event.target.value)} className={inputClass} />
         </label>
         <label className={labelClass}>Actual net
-          <input name="actualNet" required inputMode="decimal" defaultValue={initial?.actualNet ?? ""} className={inputClass} />
+          <input name="actualNet" required inputMode="decimal" value={netValue} onChange={(event) => setNetValue(event.target.value)} className={inputClass} />
         </label>
-        <label className={labelClass}>Tax / withholding
-          <input name="taxWithheld" inputMode="decimal" defaultValue={initial?.taxWithheld ?? ""} className={inputClass} />
+        <label className={labelClass}>Withholding (gross minus net)
+          <input readOnly value={derivedWithholding ?? ""} placeholder="Requires gross and net" className={`${inputClass} bg-[var(--color-surface-muted)]`} />
         </label>
         <label className={labelClass}>Source reference
           <input name="sourceRef" defaultValue={initial?.sourceRef ?? ""} className={inputClass} />
@@ -327,7 +334,7 @@ export default function CollectionsWorkspace({
     }
   }
   async function verifyCheck(check: PayrollCheckRow) {
-    if (!check.actualNet || verifyingCheckId) return;
+    if (!check.actualGross || !check.actualNet || verifyingCheckId) return;
     setVerifyingCheckId(check.id);
     setNotice(null);
     try {
@@ -342,7 +349,6 @@ export default function CollectionsWorkspace({
           periodEnd: check.periodEnd,
           actualGross: check.actualGross,
           actualNet: check.actualNet,
-          taxWithheld: check.taxWithheld,
           sourceRef: check.sourceRef,
           verificationStatus: "verified",
           notes: check.notes,
@@ -551,7 +557,7 @@ export default function CollectionsWorkspace({
                     <th className="px-3 py-2.5">Date</th>
                     {data.visibility.canSeeCheckGross ? <th className="px-3 py-2.5 text-right">Gross</th> : null}
                     {data.visibility.canSeeCheckNet ? <th className="px-3 py-2.5 text-right">Net</th> : null}
-                    {data.visibility.canSeeTaxes ? <th className="px-3 py-2.5 text-right">Tax</th> : null}
+                    {data.visibility.canSeeTaxes ? <th className="px-3 py-2.5 text-right">Withholding</th> : null}
                     <th className="px-3 py-2.5 text-right">Source</th>
                     <th className="px-3 py-2.5">Status</th>
                     {canManageChecks ? <th className="px-3 py-2.5 text-right">Action</th> : null}
@@ -592,7 +598,7 @@ export default function CollectionsWorkspace({
                         <td className="px-3 py-3 text-right">
                           <div className="flex justify-end gap-1">
                             {row.verificationStatus === "unverified" ? (
-                              <button type="button" disabled={verifyingCheckId !== null} onClick={() => void verifyCheck(row)} className="btn btn-sm btn-primary whitespace-nowrap">
+                              <button type="button" disabled={verifyingCheckId !== null || !row.actualGross || !row.actualNet} title={!row.actualGross ? "Add actual gross so withholding can be calculated." : undefined} onClick={() => void verifyCheck(row)} className="btn btn-sm btn-primary whitespace-nowrap">
                                 {verifyingCheckId === row.id ? "Verifying..." : "Verify & calculate"}
                               </button>
                             ) : null}

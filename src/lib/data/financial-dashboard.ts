@@ -19,9 +19,9 @@ import { listStrategies } from "@/lib/manage/calculation-strategies";
  *     can be read on the same footing.
  *   • the editable side info — phone, a category / account tag, and notes.
  *
- * Taxes are shown as the plan's first-cut rate applied to what employees actually
- * made, i.e. the reserve that scales with real billing rather than a flat plan
- * figure. Money is summed in SQL as numeric and carried as decimal strings.
+ * Taxes are shown only from verified paycheck facts: verified gross minus
+ * verified net, attributed across the check's employee-routed transactions.
+ * Money is summed in SQL as numeric and carried as decimal strings.
  */
 
 export interface FinancialDashboardRow {
@@ -198,11 +198,11 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
      ) BETWEEN w.start_date AND w.end_date)`;
   const internalExpr =
     `COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount, t.internal_rate_applied * t.imported_hours, 0)`;
-  // Taxes = the ACTUAL withholding on a paycheck: the check's gross minus the
-  // net the employee really received (total_net_pay is per-check). It has nothing
-  // to do with the plan's cuts. Only checks canonically routed to the employee are
-  // self-hire payroll checks; their gap is spread across rows by gross share so it
-  // attributes cleanly to each individual.
+  // Taxes = the ACTUAL withholding on a verified paycheck: the check's gross
+  // minus its verified net. Source Total Net Pay is row evidence, not a check
+  // fact or reporting fallback. Only checks canonically routed to the employee
+  // are self-hire payroll checks; their gap is spread across rows by gross share
+  // so it attributes cleanly to each individual.
   const whExpr =
     `CASE WHEN effective_payment_recipient(t.payment_recipient, p.payment_recipient) = 'employee'
             AND ct.allocation_gross > 0 AND ct.check_net IS NOT NULL
@@ -230,23 +230,10 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
        ),
        check_facts AS (
          SELECT check_row.id,
-                CASE
-                  WHEN verified_check.id IS NOT NULL
-                    THEN concat('verified:', verified_check.id::text)
-                  ELSE concat(
-                    'source:', check_row.employee_id::text, ':',
-                    COALESCE(NULLIF(btrim(check_row.check_number), ''), 'no-number'), ':',
-                    COALESCE(check_row.check_date::text, 'no-date'), ':',
-                    COALESCE(check_row.period_begin::text, 'no-period-begin'), ':',
-                    COALESCE(check_row.period_end::text, 'no-period-end')
-                  )
-                END AS check_key,
+                concat('verified:', verified_check.id::text) AS check_key,
                 COALESCE(check_row.imported_amount, 0) AS row_gross,
                 verified_check.actual_gross AS verified_gross,
-                CASE WHEN verified_check.id IS NOT NULL
-                  THEN verified_check.actual_net
-                  ELSE check_row.total_net_pay
-                END AS check_net
+                verified_check.actual_net AS check_net
            FROM payroll_transactions check_row
            LEFT JOIN programs check_program ON check_program.id = check_row.program_id
            LEFT JOIN employee_payroll_checks verified_check
@@ -256,19 +243,13 @@ export async function getFinancialDashboard(pool: PgLikePool): Promise<Financial
           WHERE effective_payment_recipient(
                   check_row.payment_recipient, check_program.payment_recipient
                 ) = 'employee'
-            AND (
-              verified_check.id IS NOT NULL
-              OR NULLIF(btrim(check_row.check_number), '') IS NOT NULL
-              OR check_row.check_date IS NOT NULL
-              OR check_row.period_begin IS NOT NULL
-              OR check_row.period_end IS NOT NULL
-            )
+            AND verified_check.id IS NOT NULL
        ),
        check_tot AS (
          SELECT check_key,
                 sum(row_gross) AS allocation_gross,
-                COALESCE(max(verified_gross), sum(row_gross)) AS check_gross,
-                CASE WHEN count(DISTINCT check_net) = 1 THEN max(check_net) END AS check_net
+                max(verified_gross) AS check_gross,
+                max(check_net) AS check_net
            FROM check_facts
           GROUP BY check_key
        )

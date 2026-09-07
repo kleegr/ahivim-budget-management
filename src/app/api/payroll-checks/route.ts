@@ -32,16 +32,16 @@ export async function POST(request: NextRequest) {
       actualNet: String(body.actualNet ?? ""),
       taxWithheld: body.taxWithheld == null ? null : String(body.taxWithheld),
       sourceRef: body.sourceRef ? String(body.sourceRef) : null,
-      verificationStatus: String(body.verificationStatus ?? "verified") as "unverified" | "verified" | "void",
+      verificationStatus: String(body.verificationStatus ?? "unverified") as "unverified" | "verified" | "void",
       notes: body.notes ? String(body.notes) : null,
       sourceTransactionIds: Array.isArray(body.sourceTransactionIds)
         ? body.sourceTransactionIds.map(String)
         : body.sourceTransactionIds == null
           ? []
           : [String(body.sourceTransactionIds)],
-    }, operator.user.id);
+    }, operator.user.actorId);
     if (!result.ok) return resultResponse(result);
-    const settlementRefresh = await refreshSettlementObligations(operator.pool, { employeeId }, operator.user.id);
+    const settlementRefresh = await refreshSettlementObligations(operator.pool, { employeeId }, operator.user.actorId);
     return Response.json({
       ok: true,
       data: result.data,

@@ -120,14 +120,14 @@ describe("agency financial report read model", () => {
     });
     expect(report.totals.expenses).toEqual({
       approvedSetAsides: "1500.0000",
-      taxes: "125.0000",
+      taxes: "200.0000",
       directEmployeeKeeps: "640.0000",
       agencyRoutedEmployeeShare: "600.0000",
       classIndividualShare: "0.0000",
       manualIndividualShare: "10.0000",
-      total: "2875.0000",
+      total: "2950.0000",
     });
-    expect(report.totals.agencyResult).toBe("-825.0000");
+    expect(report.totals.agencyResult).toBe("-900.0000");
     expect(Object.values(report.coverage).reduce((sum, value) => sum + value, 0)).toBe(0);
 
     const sql = statements.join("\n");
@@ -135,7 +135,7 @@ describe("agency financial report read model", () => {
     expect(sql).toContain("t.imported_amount::text AS gross_amount");
     expect(sql).toContain("employee_individual_compensation_terms");
     expect(sql).toContain("FROM employee_payroll_checks check_fact");
-    expect(sql).toContain("check_fact.tax_withheld::text");
+    expect(sql).not.toContain("check_fact.tax_withheld::text");
     expect(sql).toContain("invoice.status = 'issued'");
   });
 

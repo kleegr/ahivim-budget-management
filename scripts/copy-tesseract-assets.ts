@@ -1,14 +1,20 @@
 import { copyFileSync, mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 const projectRoot = process.cwd();
+const projectRequire = createRequire(path.join(projectRoot, "package.json"));
+const tesseractRoot = path.dirname(projectRequire.resolve("tesseract.js/package.json"));
+const tesseractRequire = createRequire(path.join(tesseractRoot, "package.json"));
+const tesseractCoreRoot = path.dirname(tesseractRequire.resolve("tesseract.js-core/package.json"));
+const languagePackageRoot = path.dirname(projectRequire.resolve("@tesseract.js-data/eng/package.json"));
 const publicRoot = path.join(projectRoot, "public", "tesseract", "7.0.0");
 const coreRoot = path.join(publicRoot, "core");
 const languageRoot = path.join(publicRoot, "lang");
 
 const assets = [
   {
-    source: path.join(projectRoot, "node_modules", "tesseract.js", "dist", "worker.min.js"),
+    source: path.join(tesseractRoot, "dist", "worker.min.js"),
     destination: path.join(publicRoot, "worker.min.js"),
   },
   ...[
@@ -16,15 +22,12 @@ const assets = [
     "tesseract-core-simd-lstm.wasm.js",
     "tesseract-core-relaxedsimd-lstm.wasm.js",
   ].map((filename) => ({
-    source: path.join(projectRoot, "node_modules", "tesseract.js-core", filename),
+    source: path.join(tesseractCoreRoot, filename),
     destination: path.join(coreRoot, filename),
   })),
   {
     source: path.join(
-      projectRoot,
-      "node_modules",
-      "@tesseract.js-data",
-      "eng",
+      languagePackageRoot,
       "4.0.0_best_int",
       "eng.traineddata.gz",
     ),

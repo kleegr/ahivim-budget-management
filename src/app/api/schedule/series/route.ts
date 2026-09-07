@@ -1,6 +1,11 @@
 import { NextRequest } from "next/server";
 import { getPool } from "@/lib/db";
-import { apiPlanningUser, planningProgramAllowed, planningSubjectsAllowed } from "@/lib/auth/planning-access";
+import {
+  apiPlanningUser,
+  canViewPlannerDirectPayTargets,
+  planningProgramAllowed,
+  planningSubjectsAllowed,
+} from "@/lib/auth/planning-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { createSeries, type CreateSeriesInput } from "@/lib/manage/schedule";
 
@@ -53,6 +58,7 @@ export async function POST(request: NextRequest) {
   };
   const reason = asString(body.reason) ?? null;
   if (!planning.canManageSchedules) return jsonError("Schedule management access required", 403);
+  const canSeeDirectPayTargets = canViewPlannerDirectPayTargets(planning);
   if (!planningSubjectsAllowed(planning, {
     individualIds: input.individualIds,
     employeeId: input.employeeId,
@@ -63,8 +69,10 @@ export async function POST(request: NextRequest) {
     if (!await planningProgramAllowed(pool, planning, input.programId)) {
       return jsonError("Choose an active hours-based planning program.", 403);
     }
-    const result = await createSeries(pool, input, user.id, reason, {
+    const result = await createSeries(pool, input, user.actorId, reason, {
       enforceBudgetWarnings: planning.access.canSeeBudgets,
+      enforceAssignmentAllowedHoursWarnings: planning.access.canSeeHours,
+      enforceDirectPayTargetWarnings: canSeeDirectPayTargets,
     });
     return resultResponse(result, 201);
   } catch (error) {

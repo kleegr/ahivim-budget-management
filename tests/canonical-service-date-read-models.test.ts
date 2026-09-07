@@ -344,11 +344,9 @@ describe("canonical service-date read models", () => {
     expect(actuals).toContain("effective_payment_recipient(");
     expect(actuals).toContain("LEFT JOIN employee_payroll_checks verified_check");
     expect(actuals).toContain("verified_check.employee_id = check_row.employee_id");
-    expect(actuals).toContain("'source:', check_row.employee_id::text");
-    expect(actuals).toContain("COALESCE(NULLIF(btrim(check_row.check_number), ''), 'no-number')");
-    expect(actuals).toContain("COALESCE(check_row.check_date::text, 'no-date')");
-    expect(actuals).toContain("COALESCE(check_row.period_begin::text, 'no-period-begin')");
-    expect(actuals).toContain("COALESCE(check_row.period_end::text, 'no-period-end')");
+    expect(actuals).toContain("AND verified_check.id IS NOT NULL");
+    expect(actuals).not.toContain("'source:', check_row.employee_id::text");
+    expect(actuals).not.toContain("ELSE check_row.total_net_pay");
     expect(actuals).toContain("LEFT JOIN check_tot ct ON ct.check_key = cf.check_key");
     expect(actuals).not.toContain("GROUP BY check_row.check_number");
     expect(actuals).not.toContain("t.period_begin >= w.start_date");

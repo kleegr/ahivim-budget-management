@@ -1,11 +1,18 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SheetSyncConfig } from "@/lib/sheets/config";
+import {
+  DEFAULT_SHEET_GID,
+  DEFAULT_SYNC_CONFIG,
+  LEGACY_TRANSPORT_SHEET_ID,
+  getSyncConfig,
+  type SheetSyncConfig,
+} from "@/lib/sheets/config";
+import type { PgLikePool } from "@/lib/import/commit";
 import {
   fetchSheetCsv,
   sheetValuesToCsv,
 } from "@/lib/sheets/fetch";
-import type { GoogleServiceAccountCredentials } from "@/lib/sheets/google-auth";
+import type { GoogleSheetsReadCredentials } from "@/lib/sheets/google-auth";
 import { parseCsv, parseSheetCsv } from "@/lib/sheets/parse-csv";
 
 const CONFIG: SheetSyncConfig = {
@@ -17,7 +24,7 @@ const CONFIG: SheetSyncConfig = {
 };
 
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-const CREDENTIALS: GoogleServiceAccountCredentials = {
+const CREDENTIALS: GoogleSheetsReadCredentials = {
   clientEmail: "sheet-reader@example.test",
   privateKey: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
 };
@@ -79,13 +86,20 @@ describe("authenticated Google Sheet reads", () => {
 
     expect(request).toHaveBeenCalledTimes(2);
     expect(request.mock.calls[0]?.[0]).toBe("https://oauth2.googleapis.com/token");
+    const tokenBody = request.mock.calls[0]?.[1]?.body;
+    expect(tokenBody).toBeInstanceOf(URLSearchParams);
+    const assertion = (tokenBody as URLSearchParams).get("assertion");
+    const claims = JSON.parse(
+      Buffer.from(assertion!.split(".")[1]!, "base64url").toString("utf8"),
+    ) as { scope?: string };
+    expect(claims.scope).toBe("https://www.googleapis.com/auth/spreadsheets.readonly");
     const readUrl = new URL(String(request.mock.calls[1]?.[0]));
     expect(decodeURIComponent(readUrl.pathname)).toContain(
       "/spreadsheets/private-sheet-1/values/'O''Brien Payroll'!A:S",
     );
     expect(readUrl.searchParams.get("majorDimension")).toBe("ROWS");
-    expect(readUrl.searchParams.get("valueRenderOption")).toBe("FORMATTED_VALUE");
-    expect(readUrl.searchParams.has("dateTimeRenderOption")).toBe(false);
+    expect(readUrl.searchParams.get("valueRenderOption")).toBe("UNFORMATTED_VALUE");
+    expect(readUrl.searchParams.get("dateTimeRenderOption")).toBe("FORMATTED_STRING");
     expect(request.mock.calls[1]?.[1]).toMatchObject({
       method: "GET",
       cache: "no-store",
@@ -151,33 +165,73 @@ describe("authenticated Google Sheet reads", () => {
   });
 });
 
-describe("legacy public Sheet fallback", () => {
-  it("uses gviz only when credentials are explicitly absent", async () => {
+describe("strict read-only public source", () => {
+  it("uses the pinned authoritative gid without credentials or cookies", async () => {
+    const csv = sheetValuesToCsv(sheetRows());
     const request = vi.fn<typeof fetch>().mockResolvedValueOnce(
-      new Response('"legacy","csv"', {
-        status: 200,
-        headers: { "Content-Type": "text/csv" },
-      }),
+      new Response(csv, { status: 200, headers: { "Content-Type": "text/csv" } }),
     );
 
-    await expect(fetchSheetCsv(CONFIG, { credentials: null, request })).resolves.toBe('"legacy","csv"');
+    const result = await fetchSheetCsv(DEFAULT_SYNC_CONFIG, { credentials: null, request });
+
+    expect(result).toBe(csv);
     expect(request).toHaveBeenCalledOnce();
-    expect(String(request.mock.calls[0]?.[0])).toContain("docs.google.com/spreadsheets/d/private-sheet-1/gviz/tq");
-    expect(request.mock.calls[0]?.[1]).not.toHaveProperty("headers.Authorization");
+    const url = new URL(String(request.mock.calls[0]?.[0]));
+    expect(url.hostname).toBe("docs.google.com");
+    expect(url.pathname).toContain(`/spreadsheets/d/${DEFAULT_SYNC_CONFIG.sheetId}/export`);
+    expect(url.searchParams.get("format")).toBe("csv");
+    expect(url.searchParams.get("gid")).toBe(DEFAULT_SHEET_GID);
+    expect(url.searchParams.has("sheet")).toBe(false);
+    expect(request.mock.calls[0]?.[1]).toMatchObject({
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+    });
+    expect(request.mock.calls[0]?.[1]?.headers).not.toHaveProperty("Authorization");
   });
 
-  it("turns a public sign-in page into an actionable error without echoing it", async () => {
-    const request = vi.fn<typeof fetch>().mockResolvedValueOnce(
-      new Response("<html><head><title>Private diagnostic</title></head></html>", { status: 200 }),
-    );
+  it("fails closed before any request for a custom source without Viewer credentials", async () => {
+    const request = vi.fn<typeof fetch>();
 
-    let message = "";
-    try {
-      await fetchSheetCsv(CONFIG, { credentials: null, request });
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
-    expect(message).toContain('shared as "anyone with the link can view"');
-    expect(message).not.toContain("Private diagnostic");
+    await expect(fetchSheetCsv(CONFIG, { credentials: null, request })).rejects.toThrow(
+      "Viewer-only Google Sheets credentials are required",
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("rejects an access page or unexpected CSV structure before staging", async () => {
+    const accessPage = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response("<!doctype html><html><head></head><body>Sign in</body></html>", { status: 200 }),
+    );
+    await expect(fetchSheetCsv(DEFAULT_SYNC_CONFIG, {
+      credentials: null,
+      request: accessPage,
+    })).rejects.toThrow("access page");
+
+    const wrongCsv = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response("not,the,transaction,source", { status: 200 }),
+    );
+    await expect(fetchSheetCsv(DEFAULT_SYNC_CONFIG, {
+      credentials: null,
+      request: wrongCsv,
+    })).rejects.toThrow("expected A:S transaction structure");
+  });
+
+  it("maps the verified legacy transport configuration to the authoritative source", async () => {
+    const pool = {
+      query: vi.fn(async () => ({
+        rows: [{
+          value: {
+            ...DEFAULT_SYNC_CONFIG,
+            sheetId: LEGACY_TRANSPORT_SHEET_ID,
+          },
+        }],
+      })),
+    } as unknown as PgLikePool;
+
+    await expect(getSyncConfig(pool)).resolves.toMatchObject({
+      sheetId: DEFAULT_SYNC_CONFIG.sheetId,
+      sheetName: DEFAULT_SYNC_CONFIG.sheetName,
+    });
   });
 });

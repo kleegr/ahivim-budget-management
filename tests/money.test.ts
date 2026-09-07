@@ -9,6 +9,7 @@ import {
   closeEnough,
   variancePercent,
   formatMoney,
+  withholdingFromGrossAndNet,
 } from "@/lib/money";
 
 describe("decimal-safe money", () => {
@@ -31,9 +32,9 @@ describe("decimal-safe money", () => {
     expect(toMoney("$1,575,583.05")).toBe("1575583.0500");
   });
 
-  it("parses numbers that use a space as the thousands separator (Google Sheet CSV export)", () => {
-    // gviz CSV returns numbers as display text; some locales separate thousands
-    // with a space rather than a comma. The non-breaking space (U+00A0) is
+  it("parses numbers that use a space as the thousands separator", () => {
+    // Historical spreadsheet text can use a space rather than a comma. The
+    // non-breaking space (U+00A0) is
     // constructed explicitly so the source stays ASCII while the value tests it.
     const nbsp = String.fromCharCode(0xa0);
     expect(toMoney("1 888.60")).toBe("1888.6000");
@@ -94,6 +95,11 @@ describe("divideEqually", () => {
 });
 
 describe("reconciliation helpers", () => {
+  it("never turns legacy gross-below-net evidence into negative withholding", () => {
+    expect(withholdingFromGrossAndNet("1000", "800")).toBe("200.0000");
+    expect(withholdingFromGrossAndNet("700", "800")).toBeNull();
+  });
+
   it("tolerates sub-cent drift but not real differences", () => {
     expect(closeEnough("663.00", "663.004")).toBe(true);
     expect(closeEnough("663.00", "664.00")).toBe(false);

@@ -63,6 +63,7 @@ async function verifyPayrollCheck(input: {
   employeeId: string;
   checkNumber: string;
   checkDate: string;
+  actualGross: string;
   actualNet: string;
   periodBegin?: string;
   periodEnd?: string;
@@ -533,6 +534,40 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       [firstEmployee.id, firstIndividual.id, secondEmployee.id, secondIndividual.id],
     );
 
+    const pendingFinancial = await getFinancialDashboard(pool);
+    expect(pendingFinancial.rows.find((row) => row.individualId === firstIndividual.id)?.taxesAll).toBe("0.0000");
+    expect(pendingFinancial.rows.find((row) => row.individualId === secondIndividual.id)?.taxesAll).toBe("0.0000");
+
+    const { rows: sourceTransactions } = await pool.query<{ id: string; employee_id: string }>(
+      `SELECT id, employee_id FROM payroll_transactions
+        WHERE transaction_fingerprint IN ('reused-tax-1', 'reused-tax-2')
+        ORDER BY transaction_fingerprint`,
+    );
+    unwrap(await savePayrollCheck(pool, {
+      employeeId: firstEmployee.id,
+      checkNumber: "REUSED-TAX",
+      checkDate: "2026-08-15",
+      periodBegin: "2026-08-01",
+      periodEnd: "2026-08-14",
+      actualGross: "100",
+      actualNet: "80",
+      taxWithheld: "20",
+      verificationStatus: "verified",
+      sourceTransactionIds: [sourceTransactions.find((row) => row.employee_id === firstEmployee.id)!.id],
+    }, ACTOR));
+    unwrap(await savePayrollCheck(pool, {
+      employeeId: secondEmployee.id,
+      checkNumber: "REUSED-TAX",
+      checkDate: "2026-09-15",
+      periodBegin: "2026-09-01",
+      periodEnd: "2026-09-14",
+      actualGross: "200",
+      actualNet: "150",
+      taxWithheld: "50",
+      verificationStatus: "verified",
+      sourceTransactionIds: [sourceTransactions.find((row) => row.employee_id === secondEmployee.id)!.id],
+    }, ACTOR));
+
     const financial = await getFinancialDashboard(pool);
     expect(financial.rows.find((row) => row.individualId === firstIndividual.id)?.taxesAll).toBe("20.0000");
     expect(financial.rows.find((row) => row.individualId === secondIndividual.id)?.taxesAll).toBe("50.0000");
@@ -631,6 +666,7 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       checkDate: "2026-02-15",
       periodBegin: "2026-02-01",
       periodEnd: "2026-02-14",
+      actualGross: "100",
       actualNet: "100",
     });
 
@@ -717,6 +753,7 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       checkDate: "2026-04-03",
       periodBegin: "2026-04-01",
       periodEnd: "2026-04-15",
+      actualGross: "900",
       actualNet: "850",
       verificationStatus: "verified",
     }, ACTOR));
@@ -775,6 +812,7 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       employeeId: employee.id,
       checkNumber: "D-2",
       checkDate: "2026-02-01",
+      actualGross: "1000",
       actualNet: "1000",
     });
     unwrap(await refreshSettlementObligations(pool, { employeeId: employee.id }, ACTOR));
@@ -880,6 +918,7 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       employeeId: source.id,
       checkNumber: "MERGE-1",
       checkDate: "2026-03-15",
+      actualGross: "1000",
       actualNet: "1000",
     });
 
@@ -983,12 +1022,14 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       employeeId: employee.id,
       checkNumber: "CREDIT-1",
       checkDate: "2026-04-01",
+      actualGross: "100",
       actualNet: "100",
     });
     await verifyPayrollCheck({
       employeeId: employee.id,
       checkNumber: "CREDIT-2",
       checkDate: "2026-04-15",
+      actualGross: "200",
       actualNet: "200",
     });
     unwrap(await refreshSettlementObligations(pool, { employeeId: employee.id }, ACTOR));
@@ -1060,6 +1101,7 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       employeeId: employee.id,
       checkNumber: "FRESH-1",
       checkDate: "2026-05-01",
+      actualGross: "100",
       actualNet: "100",
     });
 

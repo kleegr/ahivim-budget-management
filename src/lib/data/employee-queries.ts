@@ -135,7 +135,7 @@ export async function getEmployeePaymentSummary(
 /* -------------------------------------------------------------------------- */
 
 export interface EmployeeWithholding {
-  /** Explicit tax/withholding recorded on canonical employee payroll checks. */
+  /** Exact verified check gross minus verified check net. */
   withheld: string;
   /** Actual payroll gross and NET; funder billed is never substituted for gross. */
   gross: string;
@@ -145,8 +145,8 @@ export interface EmployeeWithholding {
 }
 
 /**
- * Read actual check facts once per canonical payroll record. Tax/withholding is
- * explicit source data; it is never inferred from Funder billed or gross − net.
+ * Read actual check facts once per canonical payroll record. Withholding is
+ * exactly verified gross minus verified net; Funder billed is never substituted.
  */
 export async function getEmployeeWithholding(
   pool: PgLikePool,
@@ -157,7 +157,8 @@ export async function getEmployeeWithholding(
   if (!isUuid(employeeId)) return empty;
   if (scope && !(scope.full || scope.allEmployees || scope.grantedEmployeeIds.includes(employeeId))) return empty;
   const { rows } = await pool.query<{ withheld: string; gross: string; net: string; gross_known_checks: string; checks: string }>(
-    `SELECT COALESCE(sum(tax_withheld), 0)::text AS withheld,
+    `SELECT COALESCE(sum(actual_gross - actual_net)
+                      FILTER (WHERE actual_gross IS NOT NULL AND actual_gross >= actual_net), 0)::text AS withheld,
             COALESCE(sum(actual_gross), 0)::text AS gross,
             COALESCE(sum(actual_net), 0)::text AS net,
             count(actual_gross)::text AS gross_known_checks,

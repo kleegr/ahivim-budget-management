@@ -35,6 +35,10 @@ describe("external portal role experience", () => {
     expect(readModel).toContain("employee_deal.effective_from <= canonical_service_date(");
   });
 
+  it("never exposes negative withholding from legacy gross-below-net checks", () => {
+    expect(readModel).toContain("c.actual_gross >= c.actual_net");
+  });
+
   it("gives agency schedulers and staffing managers a direct scheduling action", () => {
     expect(source).toContain('agencyRoles.has("scheduler") || agencyRoles.has("staffing_manager")');
     expect(source).toContain('href="/schedule"');

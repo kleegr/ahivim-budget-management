@@ -35,7 +35,7 @@ export async function PUT(request: NextRequest) {
   if (body.minIntervalMinutes !== undefined) patch.minIntervalMinutes = Number(body.minIntervalMinutes);
 
   try {
-    const config = await setSyncConfig(getPool(), patch, user.id);
+    const config = await setSyncConfig(getPool(), patch, user.actorId);
     return NextResponse.json({ ok: true, config });
   } catch (error) {
     return jsonError(redactError(error, "Could not update the sync configuration."), 500);

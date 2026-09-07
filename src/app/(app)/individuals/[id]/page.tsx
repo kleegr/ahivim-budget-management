@@ -14,7 +14,7 @@ import { isUuid, listPrograms } from "@/lib/data/app-queries";
 import { getIndividual } from "@/lib/manage/individuals";
 import { listAuthorizationsForIndividual } from "@/lib/manage/authorizations";
 import { listStrategies } from "@/lib/manage/calculation-strategies";
-import { listAssignments } from "@/lib/manage/assignments";
+import { listAssignments, type AssignmentRecord } from "@/lib/manage/assignments";
 import { listAliases } from "@/lib/manage/aliases";
 import { type CalendarSession } from "@/lib/data/schedule-queries";
 import { getPersonSettlementBalance } from "@/lib/data/settlements";
@@ -50,6 +50,10 @@ import ProgramBudgetWorkspace from "@/components/individuals/program-budget-work
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import { txLink } from "@/lib/nav/tx-link";
 import { agencyDate } from "@/lib/business/agency-time";
+import {
+  evaluateAssignmentAllowedHours,
+  type AssignmentAllowedHoursEvaluation,
+} from "@/lib/data/assignment-allowed-hours";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Individual — Ahivim Budget Management" };
@@ -371,6 +375,20 @@ export default async function IndividualDetailPage({
           : [],
       })),
     };
+    const currentAssignments = assignments.filter((assignment) => (
+      assignment.status === "active"
+      && assignmentIsCurrent(assignment, today)
+      && canViewEmployee(scope, assignment.employeeId)
+    ));
+    const canSeeAssignmentHours = scope.canSeeHours;
+    const allowedHours = canSeeAssignmentHours && currentAssignments.length > 0
+      ? await evaluateAssignmentAllowedHours(pool, {
+          assignmentIds: currentAssignments.map((assignment) => assignment.id),
+        })
+      : [];
+    const allowedHoursByAssignment = new Map(
+      allowedHours.map((evaluation) => [evaluation.assignmentId, evaluation]),
+    );
     return {
       individual, budget, operationalBudget, activity: visibleActivity, settlement, masserStatement,
       profileContext,
@@ -378,6 +396,7 @@ export default async function IndividualDetailPage({
       otherPlans,
       financialSetupOverview,
       canSeeHours: scope.canSeeHours,
+      canSeeAssignmentHours,
       canSeeBilledAmounts: scope.canSeeBilledAmounts,
       canSeeEmployeeAmounts: scope.canSeeEmployeeAmounts,
       canSeeAgencySpread: scope.canSeeAgencySpread,
@@ -408,11 +427,10 @@ export default async function IndividualDetailPage({
       canSeeTransactions: scope.canSeeTransactions,
       canPlan,
       programs: strategies.programs, // program list with default per-hour rates, for the editor
-      assignments: assignments.filter((a) => (
-        a.status === "active"
-        && assignmentIsCurrent(a, today)
-        && canViewEmployee(scope, a.employeeId)
-      )),
+      assignments: currentAssignments.map((assignment) => ({
+        ...assignment,
+        allowedHoursProgress: allowedHoursByAssignment.get(assignment.id) ?? null,
+      })),
       aliases: aliasesAll.filter((a) => a.canonicalId === id),
     };
   });
@@ -430,7 +448,7 @@ export default async function IndividualDetailPage({
   const {
     individual, budget, operationalBudget, activity, settlement, masserStatement, profileContext,
     strategy, otherPlans, financialSetupOverview,
-    canSeeHours, canSeeBilledAmounts, canSeeEmployeeAmounts, canSeeAgencySpread,
+    canSeeHours, canSeeAssignmentHours, canSeeBilledAmounts, canSeeEmployeeAmounts, canSeeAgencySpread,
     canSeeBudgets, canSeeProgramBudgets,
     canSeeSettlements, canSeeTransactions, canPlan, canSeeClasses, canManageClasses,
     canManageHourAuthorizations: canManageHours,
@@ -686,6 +704,7 @@ export default async function IndividualDetailPage({
                   assignments={assignments}
                   upcomingSessions={profileContext.upcomingSessions}
                   canSeeHours={canSeeHours}
+                  canSeeAssignmentHours={canSeeAssignmentHours}
                   canOpenSchedule={canPlan}
                 />
                 {activity.periods.some((period) => period.byProgramMonth.length > 0) ? (
@@ -1069,12 +1088,16 @@ function StaffingAndSchedule({
   assignments,
   upcomingSessions,
   canSeeHours,
+  canSeeAssignmentHours,
   canOpenSchedule,
 }: {
   individualId: string;
-  assignments: Awaited<ReturnType<typeof listAssignments>>;
+  assignments: Array<AssignmentRecord & {
+    allowedHoursProgress: AssignmentAllowedHoursEvaluation | null;
+  }>;
   upcomingSessions: CalendarSession[];
   canSeeHours: boolean;
+  canSeeAssignmentHours: boolean;
   canOpenSchedule: boolean;
 }) {
   return (
@@ -1092,12 +1115,26 @@ function StaffingAndSchedule({
           <h3 className="text-sm font-semibold">Active assignments</h3>
           {assignments.length ? (
             <ul className="mt-2 space-y-2 text-sm">
-              {assignments.map((assignment) => (
-                <li key={assignment.id} className="flex items-start justify-between gap-3">
-                  <span><Link href={`/employees/${assignment.employeeId}`} className="font-medium text-[var(--color-primary)] hover:underline">{assignment.employeeName}</Link><span className="block text-xs text-[var(--color-ink-faint)]">{assignment.programName ?? "Any program"}</span></span>
-                  {canSeeHours && assignment.allowedHours ? <span className="tnum text-[var(--color-ink-soft)]">{formatHours(assignment.allowedHours)} h</span> : null}
-                </li>
-              ))}
+              {assignments.map((assignment) => {
+                const progress = assignment.allowedHoursProgress;
+                const remaining = progress?.remainingHours ?? null;
+                return <li key={assignment.id} className="flex items-start justify-between gap-3">
+                  <span>
+                    <Link href={`/employees/${assignment.employeeId}`} className="font-medium text-[var(--color-primary)] hover:underline">{assignment.employeeName}</Link>
+                    <span className="block text-xs text-[var(--color-ink-faint)]">{assignment.programName ?? "Any agency-routed program"}</span>
+                    {canSeeAssignmentHours && progress ? <span className="mt-1 block text-xs text-[var(--color-ink-soft)]">
+                      {progress.allowedHours === null ? "No hour limit" : `${formatHours(progress.allowedHours)} h allowed`}
+                      {` · ${formatHours(progress.actualHours)} h actual · ${formatHours(progress.scheduledHours)} h scheduled`}
+                      {remaining === null ? "" : progress.overLimit ? ` · ${formatHours(dec(remaining).abs())} h over` : ` · ${formatHours(remaining)} h remaining`}
+                    </span> : null}
+                  </span>
+                  {canSeeAssignmentHours && progress && progress.allowedHours !== null ? (
+                    <span className="shrink-0 text-xs font-semibold" style={{ color: progress?.overLimit ? "var(--color-pace-over)" : "var(--color-pace-on)" }}>
+                      {progress?.overLimit ? "Over limit" : "Within limit"}
+                    </span>
+                  ) : null}
+                </li>;
+              })}
             </ul>
           ) : <p className="mt-2 text-sm text-[var(--color-warn)]">No active employee assignment.</p>}
         </div>

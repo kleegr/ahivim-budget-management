@@ -114,7 +114,6 @@ interface EmployeeTransactionRow {
   total_net_pay: string | null;
   payroll_check_id: string | null;
   payroll_gross: string | null;
-  payroll_tax_withheld: string | null;
   payroll_verification_status: "unverified" | "verified" | null;
   deal_id: string | null;
   deal_revision: number | null;
@@ -320,7 +319,6 @@ async function loadEmployeeTransactions(
                      t.internal_rate_applied * t.imported_hours)::text AS base_amount,
             pc.actual_net::text AS total_net_pay,
             pc.id AS payroll_check_id, pc.actual_gross::text AS payroll_gross,
-            pc.tax_withheld::text AS payroll_tax_withheld,
             pc.verification_status AS payroll_verification_status,
             d.id AS deal_id, d.revision AS deal_revision, d.direct_rule,
             d.direct_percent::text,
@@ -592,13 +590,10 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
       const payrollGrossValues = [...new Set(
         group.map((row) => row.payroll_gross).filter((value): value is string => value !== null).map(toMoney),
       )];
-      const payrollTaxValues = [...new Set(
-        group.map((row) => row.payroll_tax_withheld).filter((value): value is string => value !== null).map(toMoney),
-      )];
       const payrollCheckIds = [...new Set(
         group.map((row) => row.payroll_check_id).filter((value): value is string => value !== null),
       )];
-      if (payrollGrossValues.length > 1 || payrollTaxValues.length > 1 || payrollCheckIds.length > 1) {
+      if (payrollGrossValues.length > 1 || payrollCheckIds.length > 1) {
         skippedInconsistentCheck++;
         protectedSourceKeys.add(sourceKey);
         for (const transactionId of transactionIds) protectedTransactionIds.add(transactionId);
@@ -625,7 +620,7 @@ function employeeCandidates(rows: EmployeeTransactionRow[]): {
           directPercent: first.direct_percent,
            checkNet: calculation.checkNet,
            checkGross: calculation.checkGross,
-           taxWithheldDisplayOnly: payrollTaxValues[0] ?? null,
+           taxWithheldDisplayOnly: calculation.withholding,
            totalDeductionsDisplayOnly: calculation.withholding,
            payrollCheckId: payrollCheckIds[0] ?? null,
            payrollVerificationStatus: first.payroll_verification_status,

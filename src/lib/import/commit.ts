@@ -1,6 +1,7 @@
 import { dec, toMoney, toHours } from "@/lib/money";
 import type { ParsedAhivimRow } from "@/lib/excel/parse-workbook";
 import {
+  holdPartialMultiPersonGroups,
   rateConfigForStagedRow,
   type StagingResult,
   type StagedRow,
@@ -306,6 +307,10 @@ interface RateExceptionInsert {
 
 async function writeImport(client: PgLikeClient, input: CommitInput): Promise<CommitResult> {
   const { staging, parsedRows } = input;
+
+  // Defense in depth for every importer, not only the recurring Sheet path.
+  // This is deterministic and happens before any batch counters or rows write.
+  holdPartialMultiPersonGroups(staging);
 
   /* ---- 1. imported_files ------------------------------------------------- */
   const fileRows = await client.query<{ id: string }>(

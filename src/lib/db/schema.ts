@@ -316,7 +316,7 @@ export const employeePayrollChecks = pgTable(
     taxWithheld: numeric("tax_withheld", { precision: 14, scale: 4 }),
     source: text("source").default("manual").notNull(),
     sourceRef: text("source_ref"),
-    verificationStatus: text("verification_status").default("verified").notNull(),
+    verificationStatus: text("verification_status").default("unverified").notNull(),
     notes: text("notes"),
     createdByUserId: uuid("created_by_user_id").references(() => users.id),
     updatedByUserId: uuid("updated_by_user_id").references(() => users.id),
@@ -357,6 +357,15 @@ export const employeePayrollChecks = pgTable(
     check(
       "employee_payroll_checks_verification_check",
       sql`${table.verificationStatus} in ('unverified', 'verified', 'void')`,
+    ),
+    check(
+      "employee_payroll_checks_verified_amounts_check",
+      sql`${table.verificationStatus} <> 'verified'
+        or (
+          ${table.actualGross} is not null
+          and ${table.actualGross} >= ${table.actualNet}
+          and ${table.taxWithheld} is not distinct from (${table.actualGross} - ${table.actualNet})
+        )`,
     ),
   ],
 );

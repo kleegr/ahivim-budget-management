@@ -47,6 +47,7 @@ import {
 } from "@/lib/data/employee-profile";
 import { collectionsPayrollCheckFocusHref } from "@/lib/nav/collections-links";
 import EmployeeAvailabilityManager from "@/components/schedule/employee-availability-manager";
+import { evaluateAssignmentAllowedHours } from "@/lib/data/assignment-allowed-hours";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Employee — Ahivim Budget Management" };
@@ -238,14 +239,29 @@ export default async function EmployeeDetailPage({
       .filter((a) => a.status === "active")
       .filter((a) => (!a.startDate || a.startDate <= today) && (!a.endDate || a.endDate >= today))
       .filter((a) => canViewIndividual(scope, a.individualId));
+    const canSeeAssignmentHours = scope.canSeeHours;
+    const allowedHours = canSeeAssignmentHours && activeAssignments.length > 0
+      ? await evaluateAssignmentAllowedHours(pool, {
+          assignmentIds: activeAssignments.map((assignment) => assignment.id),
+        })
+      : [];
+    const allowedHoursByAssignment = new Map(
+      allowedHours.map((evaluation) => [evaluation.assignmentId, evaluation]),
+    );
     return {
       employee: planningOnly ? planningEmployeeProfile(employee) : employee,
-      report, assignments: activeAssignments, recent, payment,
+      report,
+      assignments: activeAssignments.map((assignment) => ({
+        ...assignment,
+        allowedHoursProgress: allowedHoursByAssignment.get(assignment.id) ?? null,
+      })),
+      recent, payment,
       individualsServed, usageByProgram, monthly, schedule, withholding,
       gridRows, deals, money, planningSummary, checks, previewAccounts, planningOnly,
       canPlanProfile, canManagePlanningProfile,
       canSeeTransactions: scope.canSeeTransactions,
       canSeeHours: scope.canSeeHours,
+      canSeeAssignmentHours,
       canSeeBilledAmounts: scope.canSeeBilledAmounts,
       canSeeEmployeeAmounts: scope.canSeeEmployeeAmounts,
       canSeeAgencySpread: scope.canSeeAgencySpread,
@@ -273,7 +289,7 @@ export default async function EmployeeDetailPage({
     employee, report, assignments, recent, payment, individualsServed,
     usageByProgram, monthly, schedule, withholding, gridRows, deals, money,
     planningSummary, checks, previewAccounts, planningOnly, canPlanProfile, canManagePlanningProfile,
-    canSeeTransactions, canSeeHours, canSeeBilledAmounts,
+    canSeeTransactions, canSeeHours, canSeeAssignmentHours, canSeeBilledAmounts,
     canSeeEmployeeAmounts, canSeeAgencySpread, canSeeCheckGross, canSeeCheckNet, canSeeTaxes,
     canSeeBudgets, canSeeEmployeeDeals, canSeeSettlements, transactionVisibility,
   } = result.data;
@@ -536,17 +552,25 @@ export default async function EmployeeDetailPage({
             label: "Staffing",
             content: (
               <div className="space-y-6">
-                <Card title="Current assignments" description="Active assignments whose dates include today.">
+                <Card title="Current assignments" description="Agency-routed actual and pending unmatched schedule are measured across each assignment's effective dates.">
                   {assignments.length > 0 ? (
-                    <Table head={<><Th>Person</Th><Th>Program</Th><Th>Effective dates</Th>{canSeeHours ? <Th numeric>Allowed hours</Th> : null}</>}>
-                      {assignments.map((assignment) => (
-                        <Tr key={assignment.id}>
+                    <Table head={<><Th>Person</Th><Th>Program</Th><Th>Effective dates</Th>{canSeeAssignmentHours ? <><Th numeric>Allowed</Th><Th numeric>Actual</Th><Th numeric>Scheduled</Th><Th numeric>Remaining</Th><Th>Status</Th></> : null}</>}>
+                      {assignments.map((assignment) => {
+                        const progress = assignment.allowedHoursProgress;
+                        const remaining = progress?.remainingHours ?? null;
+                        return <Tr key={assignment.id}>
                           <Td><Link className="font-medium text-[var(--color-primary)] hover:underline" href={`/individuals/${assignment.individualId}`}>{assignment.individualName}</Link></Td>
                           <Td><Plain value={assignment.programName} /></Td>
                           <Td><span className="tnum">{assignment.startDate ?? "Any start"}</span> to <span className="tnum">{assignment.endDate ?? "open"}</span></Td>
-                          {canSeeHours ? <Td numeric>{assignment.allowedHours ? <Hours value={assignment.allowedHours} /> : "—"}</Td> : null}
-                        </Tr>
-                      ))}
+                          {canSeeAssignmentHours ? <>
+                            <Td numeric>{progress?.allowedHours ? <Hours value={progress.allowedHours} /> : "—"}</Td>
+                            <Td numeric>{progress ? <Hours value={progress.actualHours} /> : "—"}</Td>
+                            <Td numeric>{progress ? <Hours value={progress.scheduledHours} /> : "—"}</Td>
+                            <Td numeric>{remaining === null ? "—" : progress?.overLimit ? <span className="text-[var(--color-danger)]">{formatHours(dec(remaining).abs())} h over</span> : <Hours value={remaining} />}</Td>
+                            <Td>{progress?.allowedHours === null || !progress ? <span className="text-[var(--color-ink-faint)]">No limit</span> : progress.overLimit ? <span className="font-semibold text-[var(--color-pace-over)]">Over limit</span> : <span className="font-semibold text-[var(--color-pace-on)]">Within limit</span>}</Td>
+                          </> : null}
+                        </Tr>;
+                      })}
                     </Table>
                   ) : <div className="px-5 py-7 text-sm text-[var(--color-ink-soft)]">No current assignments.</div>}
                 </Card>

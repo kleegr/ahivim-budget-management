@@ -1,6 +1,6 @@
 import { settlementBalance, settlementState, type SettlementDirection, type SettlementState } from "@/lib/business/settlement-ledger";
 import type { PgLikePool } from "@/lib/import/commit";
-import { dec, toMoney } from "@/lib/money";
+import { dec, toMoney, withholdingFromGrossAndNet } from "@/lib/money";
 import type { AccessScope } from "@/lib/auth/access";
 import { calculatePeriodElapsed, classifyUtilization } from "@/lib/business/utilization";
 import {
@@ -225,6 +225,33 @@ function calculationForClient(
   ];
   const result: Record<string, unknown> = {};
   for (const key of keys) if (source[key] !== undefined) result[key] = source[key];
+
+  // Obligations are immutable audit snapshots, so older rows can contain a
+  // now-retired independently entered tax value. Recompute the display fields
+  // from the canonical gross/net pair at read time. A snapshot must also prove
+  // that its source check was verified; missing or non-verified status is not
+  // enough evidence to expose withholding.
+  let canonicalWithholding: string | null = null;
+  try {
+    const gross = typeof source.checkGross === "string" || typeof source.checkGross === "number"
+      ? source.checkGross
+      : null;
+    const net = typeof source.checkNet === "string" || typeof source.checkNet === "number"
+      ? source.checkNet
+      : null;
+    canonicalWithholding = source.payrollVerificationStatus === "verified"
+      ? withholdingFromGrossAndNet(gross, net)
+      : null;
+  } catch {
+    canonicalWithholding = null;
+  }
+  if (canonicalWithholding === null) {
+    delete result.taxWithheldDisplayOnly;
+    delete result.totalDeductionsDisplayOnly;
+  } else {
+    result.taxWithheldDisplayOnly = canonicalWithholding;
+    result.totalDeductionsDisplayOnly = canonicalWithholding;
+  }
   if (scope) {
     if (!scope.canSeeCheckNet) {
       delete result.checkNet;

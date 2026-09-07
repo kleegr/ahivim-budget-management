@@ -113,6 +113,19 @@ describe("employee deal engine", () => {
       expect(result.employeeKeeps).toBe("0.0000");
     });
 
+    it("does not report negative withholding when verified gross is below net", () => {
+      const result = calculateDirectEmployeeCheck({
+        flow: "direct_employee",
+        checkId: "check-invalid-gross",
+        checkGross: "1100",
+        checkNet: "1200",
+        deal: { mode: "keep_all" },
+      });
+
+      expect(result.checkGross).toBe("1100.0000");
+      expect(result.withholding).toBeNull();
+    });
+
     it("preserves net conservation after percentage rounding", () => {
       const result = calculateDirectEmployeeCheck({
         flow: "direct_employee",
@@ -208,6 +221,26 @@ describe("employee deal engine", () => {
           ],
         }),
       ).toThrow("Duplicate checkId: same-check");
+    });
+
+    it("excludes an impossible gross-below-net check from known gross and withholding totals", () => {
+      const result = aggregateEmployeeDeals({
+        agencyRoutedTransactions: [],
+        directEmployeeChecks: [{
+          flow: "direct_employee",
+          checkId: "invalid-gross-check",
+          checkGross: "900",
+          checkNet: "1000",
+          deal: { mode: "keep_all" },
+        }],
+      });
+
+      expect(result.directEmployee).toMatchObject({
+        checkNet: "1000.0000",
+        knownCheckGross: "0.0000",
+        knownWithholding: "0.0000",
+        checksWithGross: 0,
+      });
     });
 
     it("returns exact zero totals for an empty ledger", () => {

@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Check, RefreshCw } from "lucide-react";
 import Link from "next/link";
-import { syncRoundTripOutcomePresentation } from "@/lib/nav/sync-actions";
+import { syncOutcomePresentation } from "@/lib/nav/sync-actions";
 
 type State = "idle" | "busy" | "done" | "failed";
 
@@ -31,7 +31,6 @@ export default function GoogleSheetSyncButton() {
             scheduleMatching?: { status?: unknown; reviewHref?: unknown } | null;
           } | null;
         };
-        writeback?: { status?: unknown; eligible?: unknown; updated?: unknown; skipped?: unknown; error?: unknown };
         error?: unknown;
       };
       if (!response.ok) {
@@ -42,12 +41,11 @@ export default function GoogleSheetSyncButton() {
         return;
       }
 
-      const outcome = syncRoundTripOutcomePresentation(body);
+      const outcome = syncOutcomePresentation(body.summary);
       setState(outcome.tone === "ok" ? "done" : "failed");
       setResultText(outcome.message);
       setResultAction(outcome.action);
-      // The pull can succeed even when a payment-marker write-back fails. In
-      // that case the latest imported data must still appear immediately.
+      // Refresh server-rendered data after the recorded inbound run finishes.
       router.refresh();
     } catch {
       setState("failed");
@@ -68,7 +66,7 @@ export default function GoogleSheetSyncButton() {
         ) : (
           <RefreshCw aria-hidden className={`h-4 w-4 ${state === "busy" ? "animate-spin" : ""}`} />
         )}
-        {state === "busy" ? "Updating..." : "Sync Google Sheet"}
+        {state === "busy" ? "Refreshing..." : "Refresh from Google Sheet"}
       </button>
       <span className={`min-h-4 max-w-sm text-right text-xs ${state === "failed" ? "text-[var(--color-danger)]" : "text-[var(--color-ink-faint)]"}`} aria-live="polite">
         {state === "done" || state === "failed" ? resultText : ""}

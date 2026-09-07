@@ -4,6 +4,6 @@
   "installCommand": "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-audit --no-fund",
   "buildCommand": "npm run build",
   "crons": [
-    { "path": "/api/sync/cron", "schedule": "0 8 * * *" }
+    { "path": "/api/sync/cron", "schedule": "0 * * * *" }
   ]
 }

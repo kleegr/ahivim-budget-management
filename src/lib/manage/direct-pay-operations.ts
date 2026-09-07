@@ -4,7 +4,7 @@ import { recordChange } from "@/lib/manage/audit";
 import { MAX_PAYROLL_CHECK_SOURCE_TRANSACTIONS } from "@/lib/business/payroll-check-source";
 import { fail, ok, type Result } from "@/lib/manage/errors";
 import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
-import { dec, toMoney } from "@/lib/money";
+import { dec, eqMoney, toMoney, withholdingFromGrossAndNet } from "@/lib/money";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -430,21 +430,34 @@ export async function savePayrollCheck(
     return fail("validation", "Add a check date or pay-period date so the record can be matched safely.");
   }
   if (periodBegin && periodEnd && periodEnd < periodBegin) return fail("validation", "The pay period end cannot be before its start.");
+  if (typeof input.actualNet !== "string" || input.actualNet.trim() === "") {
+    return fail("validation", "Enter the payroll check net amount.");
+  }
   let gross: string | null;
   let net: string;
-  let tax: string | null;
+  let submittedTax: string | null;
   try {
     gross = input.actualGross == null || input.actualGross.trim() === "" ? null : toMoney(input.actualGross);
     net = toMoney(input.actualNet);
-    tax = input.taxWithheld == null || input.taxWithheld.trim() === "" ? null : toMoney(input.taxWithheld);
-    if (dec(net).isNegative() || (gross && dec(gross).isNegative()) || (tax && dec(tax).isNegative())) throw new Error("negative");
+    submittedTax = input.taxWithheld == null || input.taxWithheld.trim() === "" ? null : toMoney(input.taxWithheld);
+    if (dec(net).isNegative() || (gross && dec(gross).isNegative()) || (submittedTax && dec(submittedTax).isNegative())) throw new Error("negative");
     if (gross && dec(gross).lessThan(net)) throw new Error("gross below net");
   } catch {
     return fail("validation", "Gross, net, and tax/withholding must be valid non-negative amounts, and gross cannot be below net.");
   }
-  const verificationStatus = input.verificationStatus ?? "verified";
+  const tax = withholdingFromGrossAndNet(gross, net);
+  if (submittedTax !== null && (tax === null || !eqMoney(submittedTax, tax))) {
+    return fail("validation", "Withholding is calculated as actual gross minus actual net and cannot be entered separately.");
+  }
+  const verificationStatus = input.verificationStatus ?? "unverified";
   if (!(["unverified", "verified", "void"] as const).includes(verificationStatus)) {
     return fail("validation", "Choose a valid verification status.");
+  }
+  if (verificationStatus === "verified" && gross === null) {
+    return fail(
+      "validation",
+      "Add the verified check gross before marking this payroll check verified.",
+    );
   }
   const requestedSourceIds = input.sourceTransactionIds ?? [];
   if (requestedSourceIds.length > MAX_PAYROLL_CHECK_SOURCE_TRANSACTIONS
@@ -586,7 +599,20 @@ export async function savePayrollCheck(
       entityType: "employee_payroll_check",
       entityId: id,
       previous: previous?.rows[0] ?? undefined,
-      next: { employeeId: input.employeeId, checkNumber, checkDate, periodBegin, periodEnd, actualGross: gross, actualNet: net, taxWithheld: tax, verificationStatus, linkedTransactions, sourceTransactionIds },
+      next: {
+        employeeId: input.employeeId,
+        checkNumber,
+        checkDate,
+        periodBegin,
+        periodEnd,
+        actualGross: gross,
+        actualNet: net,
+        taxWithheld: tax,
+        withholdingRule: "actual_gross_minus_actual_net",
+        verificationStatus,
+        linkedTransactions,
+        sourceTransactionIds,
+      },
     });
     return ok({ id, linkedTransactions });
   });

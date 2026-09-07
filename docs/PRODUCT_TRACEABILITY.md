@@ -76,7 +76,7 @@ production evidence. Database-backed integration suites that skip without
   acceptance. Private document storage is configured.
 - This is partial production evidence, not role completion. Direct-login
   acceptance for every preset, mobile acceptance, mutating Masser/classes/
-  document cases, Google write-back credentials, and the licensed source-text
+  document cases, read-only Google source transport, and the licensed source-text
   PDF decision remain open.
 
 ## Canonical Business Truths
@@ -143,14 +143,14 @@ role-specific read models and API tests.
 | Portal statements, trends, and schedules | IMPLEMENTED | Individual/parent portal supports selected-month detail, a twelve-month default trend (bounded to 24), capability-gated categories, printable statement, and CSV download without employee/check/tax/gross/net leakage. The working-tree individual/parent schedule projection returns only date, time, duration, program, and group facts; it omits employee identity, internal IDs, and group peers. Employee views receive only their assigned participants. Evidence: `src/lib/data/portal-schedule.ts`, `tests/portal-schedule.test.ts`, `tests/portal-schedule-ui.test.ts`. | Deploy the privacy hardening, then inspect a direct-login parent response and DOM. Verify empty months, renewal boundaries, downloads, print layout, upcoming/full schedule, mobile layout, and category denials. |
 | Imports, reconciliation, and matching | IMPLEMENTED | Upload/stage/review/commit, duplicate recognition, correction routes, alias decisions, person merges, and payroll-check review exist; actual transaction visibility does not depend on creating a deal for each import. Workbook parsing is field-aware, including recovery of numeric payroll amounts that Excel tagged as date cells. A successful Sheet commit optionally links only unambiguous one-person, non-group, same-employee, same-program, exact-date, exact-hours daily records; optional matching failure cannot turn the committed import into a failed sync and remains retryable from the next refresh. The supplied payroll workbook parses 5,307 valid rows with zero invalid rows and restores 26 previously blank net-pay values. | Commit the original workbooks in production, verify exact auto-match and ambiguous/group review cases, confirm unmatched/invalid rows lead to the exact repair screen, and reconcile post-commit totals and repeated check-number identities. |
 | Actionable errors and first-click UX | IMPLEMENTED | Global route-progress feedback covers internal links and native forms; shared mutation controls disable and acknowledge submits while retaining entered work and visible failures; every client component that writes through `fetch` is audited for busy and error paths; server-load failures provide a plain-language retry; and high-use import, transaction, group, collection, financial, schedule-conflict, and role-denial states link to the exact next record or repair screen. A denied redirect now explains that access was blocked after the role-specific home reload, and budget-status failures remain visible without discarding the edit. Evidence: `src/components/app-nav.tsx`, `src/components/auth/access-notice.tsx`, `src/components/manage/client.tsx`, `src/components/ui.tsx`, `tests/workflow-clarity.test.ts`, `tests/transaction-cross-drills.test.ts`, `tests/collections-deep-links.test.ts`. | Complete signed-in first-click and mobile acceptance for every preset in production. |
-| Google Sheet update button | EXTERNAL BLOCKER | The button reports push and pull separately, preserves failed/unmatched Paid-marker changes, pulls rows, commits valid data, refreshes visible results, and links directly to Schedule matching when optional matching needs review. General source cells intentionally remain read-only. | Production write-back credentials are absent. Configure the service account and verify a real Paid marker push, pull, idempotent retry, and failure recovery. |
+| Google Sheet read-only refresh | IMPLEMENTED | The button runs only the inbound sync, commits valid transaction evidence to Neon, preserves source values for audit, refreshes visible results, and links directly to Schedule matching when optional matching needs review. Paid, review, and correction decisions remain in Neon; the code contains no Sheet mutation module or write OAuth scope. | Configure Viewer-only production access and verify a full unfiltered authoritative-source read, idempotent retry, failure recovery, and zero outbound mutation requests. Any transport copy also requires a verified full digest and fail-closed mismatch alert. |
 | Adobe-class source-text PDF editing | EXTERNAL BLOCKER | The current editor is an overlay/form/document editor, not arbitrary reflow of existing source text in proprietary embedded fonts. | Choose and license a commercial source-text PDF SDK, integrate it, and verify embedded-font fidelity on the supplied PDFs; otherwise narrow the product promise to the implemented overlay editor. |
 
 ## External Dependencies And Known Limits
 
 | Dependency or limitation | Gate |
 | --- | --- |
-| Google Sheet write-back | Service-account credentials and a real production Paid-marker round trip. |
+| Google Sheet read-only transport | Viewer-only service-account access plus production proof of a full unfiltered authoritative-source read. Any transport copy requires complete digest verification and a fail-closed mismatch alert. |
 | Adobe-equivalent source-text editing | Licensed SDK/product decision; the current overlay editor cannot truthfully be called Adobe-equivalent. |
 | Legacy unlinked group history | Repair or backfill session links before historical physical employee hours can be exactly deduplicated. |
 | Production document storage | Private Blob is configured. Complete upload/edit/save/reopen/second-save/restore/archive access-control acceptance. |
@@ -173,7 +173,8 @@ role-specific read models and API tests.
    group transaction, a renewal boundary, billing without budget, direct and
    agency-routed pay, Masser credit/correction, class invoice, manual income,
    custom split, employee-person rule, and owner agency result.
-5. Configure Google write-back, then run the real Sheet round trip. Private
+5. Configure Viewer-only Google Sheet access, then verify the full, unfiltered,
+   idempotent inbound import and confirm that no mutation request is made. Private
    Blob is configured but still needs its complete production document
    round trip. Repair legacy group links needed for exact history.
 6. Create every listed preset/profile account and execute the role acceptance matrix below on

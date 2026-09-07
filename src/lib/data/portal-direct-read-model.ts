@@ -377,7 +377,10 @@ export async function directEmployeeSummaries(
                   to_char(period_end, 'YYYY-MM-DD') AS period_end,
                   CASE WHEN c.employee_id = ANY($2::uuid[]) THEN c.actual_gross::text END AS actual_gross,
                   CASE WHEN c.employee_id = ANY($3::uuid[]) THEN c.actual_net::text END AS actual_net,
-                  CASE WHEN c.employee_id = ANY($4::uuid[]) THEN c.tax_withheld::text END AS tax_withheld,
+                  CASE WHEN c.employee_id = ANY($4::uuid[])
+                       AND c.actual_gross IS NOT NULL
+                       AND c.actual_gross >= c.actual_net
+                       THEN (c.actual_gross - c.actual_net)::text END AS tax_withheld,
                   ${dealProjection}
              FROM employee_payroll_checks c
              ${dealJoin}

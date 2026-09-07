@@ -18,7 +18,7 @@ const COVERAGE_LABEL: Record<keyof AgencyFinancialCoverage, string> = {
   agencyTransactionsMissingBase: "Agency transactions missing employee base",
   agencyTransactionsMissingPayRule: "Agency transactions missing pay rule",
   directChecksMissingGross: "Direct checks missing gross",
-  directChecksMissingWithholding: "Direct checks missing verified withholding (excluded, not inferred)",
+  directChecksMissingWithholding: "Direct checks where gross-minus-net withholding is unavailable",
   directChecksGrossBelowNet: "Direct checks with gross below net",
   directChecksMissingDeal: "Direct checks missing employee deal",
   classInvoicesMissingProgram: "Class invoices missing program",

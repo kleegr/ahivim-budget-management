@@ -29,9 +29,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   try {
     if (action === "apply") {
       const pool = getPool();
-      const result = await applyChangedConflict(pool, id, user.id);
+      const result = await applyChangedConflict(pool, id, user.actorId);
       if (!result.ok) return resultResponse(result);
-      const settlementRefresh = await refreshSettlementObligations(pool, {}, user.id);
+      const settlementRefresh = await refreshSettlementObligations(pool, {}, user.actorId);
       return NextResponse.json({
         ok: true,
         data: result.data,
@@ -41,7 +41,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
     if (action === "dismiss") {
       const note = typeof body.note === "string" ? body.note : null;
-      return resultResponse(await dismissConflict(getPool(), id, user.id, note));
+      return resultResponse(await dismissConflict(getPool(), id, user.actorId, note));
     }
     return jsonError('Unknown action. Use "apply" or "dismiss".', 400);
   } catch (error) {

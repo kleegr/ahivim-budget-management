@@ -32,6 +32,7 @@ interface PlanningWorkspaceProps {
   directPayTargets?: PlannerDirectPayTargetRow[];
   showDirectPayTargets?: boolean;
   showBudgetTracking?: boolean;
+  showAssignmentHours?: boolean;
 }
 function SectionHeading({
   title,
@@ -76,6 +77,7 @@ export default function PlanningWorkspace({
   directPayTargets = [],
   showDirectPayTargets = false,
   showBudgetTracking = true,
+  showAssignmentHours = true,
 }: PlanningWorkspaceProps) {
   const calendar = (
     <ScheduleCalendar
@@ -147,7 +149,7 @@ export default function PlanningWorkspace({
                 individuals={individuals}
                 programs={programs}
                 canManageAssignments={canManageAssignments}
-                showAllowedHours={showBudgetTracking}
+                showAllowedHours={showAssignmentHours}
               />
             ),
           },
