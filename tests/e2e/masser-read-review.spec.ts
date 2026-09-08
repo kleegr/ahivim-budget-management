@@ -162,7 +162,20 @@ test.describe.serial("Masser retained source-review balances across actual route
     await page.goto(STATEMENT);
     await expect(main.getByText("Source review required", { exact: true })).toBeVisible();
     await expect(main.getByRole("link", { name: "Review Financial Setup", exact: true })).toHaveCount(0);
-    expect((await page.request.get(`/masser/individuals/${UNLINKED_INDIVIDUAL_ID}?month=${MONTH}`)).status()).toBe(404);
+    // A streamed page can send its shell with 200 before notFound() resolves.
+    // Check the actual denial and payload as well as the non-streaming API.
+    const denied = await page.goto(`/masser/individuals/${UNLINKED_INDIVIDUAL_ID}?month=${MONTH}`);
+    expect([200, 404]).toContain(denied?.status());
+    await expect(page.getByRole("heading", { name: "404", exact: true })).toBeVisible();
+    await expect(page.getByText("This page could not be found.", { exact: true })).toBeVisible();
+    const deniedHtml = await denied!.text();
+    expect(deniedHtml).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
+    for (const privateValue of ["Unlinked Individual", "E2E-PRIVATE", "Remaining in plan period", "Approved monthly plan"]) {
+      expect(deniedHtml).not.toContain(privateValue);
+    }
+    const deniedApi = await page.request.get(`/api/individuals/${UNLINKED_INDIVIDUAL_ID}`);
+    expect(deniedApi.status()).toBe(404);
+    expect(await deniedApi.text()).not.toContain("Unlinked Individual");
     expect(await immutableFacts()).toEqual(before);
     expect(runtimeErrors).toEqual([]);
   });
