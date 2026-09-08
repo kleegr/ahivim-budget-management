@@ -23,7 +23,7 @@ export interface CanonicalRecord {
 export interface AliasRecord {
   normalizedAlias: string;
   targetId: string;
-  status: "pending" | "approved";
+  status: "pending" | "approved" | "archived";
 }
 
 /**

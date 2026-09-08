@@ -62,6 +62,18 @@ export default async function IndividualMasserStatementPage({
       {!result.ok ? <ErrorPanel title="Could not load the statement">{result.error}</ErrorPanel>
         : !statement ? null
         : <div className="space-y-4">
+            {statement.ledgerDirty ? (
+              <Notice tone="warning" title="Money calculations need refresh">
+                The ledger has source changes awaiting refresh. Approved monthly amounts and recorded cash history remain visible; remaining amounts are not ready for new activity.
+              </Notice>
+            ) : null}
+            {statement.reviewRequiredPlans > 0 ? (
+              <Notice tone="warning" title="Source review required" action={canManageFinancialPlans ? (
+                <ButtonLink href={`/individuals/${statement.individualId}?view=financial`} variant="secondary">Review Financial Setup</ButtonLink>
+              ) : undefined}>
+                {statement.reviewRequiredPlans.toLocaleString()} {statement.reviewRequiredPlans === 1 ? "plan has" : "plans have"} balances on hold. Those balances are excluded from remaining reserve and available credit. Approved monthly amounts and recorded cash history remain visible. Ask an owner or manager to review the source and monthly or full-period amount basis.
+              </Notice>
+            ) : null}
             {!statement.setupHistoryAvailable ? (
               <Notice tone="warning" title="Approved setup history unavailable">
                 Historical Financial Setup revisions are reliable from August 2026. Ledger activity remains visible, but this statement does not estimate an older approved plan from today&apos;s setup.

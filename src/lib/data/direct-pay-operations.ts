@@ -1,6 +1,7 @@
 import type { AccessScope } from "@/lib/auth/access";
-import { settlementCurrentAmountSql } from "@/lib/data/settlement-eligibility";
+import { settlementCurrentAmountSql, settlementSourceReviewSql } from "@/lib/data/settlement-eligibility";
 import { agencyMonth } from "@/lib/business/agency-time";
+import { getSettlementLedgerFreshness } from "@/lib/manage/settlement-freshness";
 import {
   directPayTargetProgress,
   directPayTargetWindow,
@@ -150,6 +151,8 @@ export interface IndividualSetAsideMonthRow {
   remainingSetAside: string;
   activePlans: number;
   trackedPlans: number;
+  actionablePlans: number;
+  reviewRequiredPlans: number;
   missingRenewalPlans: number;
 }
 
@@ -161,6 +164,8 @@ export interface CollectionsWorkspaceData {
   individualSetAsides: IndividualSetAsideMonthRow[];
   targets: DirectPayTargetFinancialRow[];
   payrollChecks: PayrollCheckRow[];
+  payrollCheckCounts: { total: number; unverified: number };
+  ledgerDirty: boolean;
   visibility: {
     canSeeTargetMoney: boolean;
     canSeeTargetHours: boolean;
@@ -181,9 +186,12 @@ export interface IndividualMasserStatementData {
   individualId: string;
   individualName: string;
   setupHistoryAvailable: boolean;
+  ledgerDirty: boolean;
   approvedMonthlyPlan: string;
   activePlans: number;
   trackedPlans: number;
+  actionablePlans: number;
+  reviewRequiredPlans: number;
   missingRenewalPlans: number;
   recordedReserve: string;
   remainingReserve: string;
@@ -430,6 +438,25 @@ export async function listPayrollChecks(
   }));
 }
 
+/** Counts cover the same direct grants as the check list, before its display limit. */
+export async function getPayrollCheckCounts(
+  pool: PgLikePool,
+  scope: AccessScope,
+): Promise<{ total: number; unverified: number }> {
+  if (!scope.canSeeCheckGross && !scope.canSeeCheckNet && !scope.canSeeTaxes) return { total: 0, unverified: 0 };
+  const params: unknown[] = [];
+  const clause = employeeFinancialClause(scope, "c.employee_id", params);
+  const result = await pool.query<{ total: string; unverified: string }>(
+    `SELECT count(*)::text AS total,
+            count(*) FILTER (WHERE c.verification_status = 'unverified')::text AS unverified
+       FROM employee_payroll_checks c
+       JOIN employees e ON e.id = c.employee_id
+      WHERE TRUE${clause}`,
+    params,
+  );
+  return { total: Number(result.rows[0]?.total ?? 0), unverified: Number(result.rows[0]?.unverified ?? 0) };
+}
+
 export async function getCollectionsWorkspace(
   pool: PgLikePool,
   scope: AccessScope,
@@ -442,7 +469,7 @@ export async function getCollectionsWorkspace(
   const individualParams: unknown[] = [month];
   const individualScope = individualFinancialClause(scope, "i.id", individualParams);
 
-  const [employeeResult, individualResult, targets, payrollChecks, employeeOptions] = await Promise.all([
+  const [employeeResult, individualResult, targets, payrollChecks, employeeOptions, payrollCheckCounts, freshness] = await Promise.all([
     pool.query<{
       employee_id: string; employee_name: string; obligations_created: string;
       due_from_checks: string; collected_this_month: string; refunded_this_month: string;
@@ -490,7 +517,7 @@ export async function getCollectionsWorkspace(
     pool.query<{
       individual_id: string; individual_name: string; approved_monthly_plan: string;
       set_aside_this_month: string; remaining_set_aside: string; active_plans: string;
-      tracked_plans: string; missing_renewal_plans: string;
+      tracked_plans: string; actionable_plans: string; review_required_plans: string; missing_renewal_plans: string;
     }>(
        `WITH ${effectiveStrategyPlansCtes("$1")}, plan_candidates AS (
           SELECT o.individual_id, o.calculation_strategy_id, o.period_begin, o.period_end,
@@ -551,6 +578,7 @@ export async function getCollectionsWorkspace(
        ), obligation_balances AS (
          SELECT COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) AS root_key,
                 o.direction,
+                ${settlementSourceReviewSql("o")} AS review_required,
                 o.original_amount - COALESCE(sum(se.amount), 0) AS balance
            FROM settlement_obligations o
            JOIN roots root
@@ -561,6 +589,7 @@ export async function getCollectionsWorkspace(
        ), current_balances AS (
          SELECT r.individual_id, r.id,
                 r.current_direction,
+                bool_or(entry.review_required) AS review_required,
                 sum(CASE WHEN entry.direction = 'receivable' THEN -entry.balance ELSE entry.balance END) AS signed_balance
            FROM roots r
            JOIN obligation_balances entry ON entry.root_key = r.id::text
@@ -568,14 +597,18 @@ export async function getCollectionsWorkspace(
        ), balances AS (
          SELECT individual_id,
                 COALESCE(sum(GREATEST(signed_balance, 0))
-                  FILTER (WHERE current_direction = 'reserve'), 0) AS remaining
+                  FILTER (WHERE current_direction = 'reserve' AND NOT review_required), 0) AS remaining
            FROM current_balances
           GROUP BY individual_id
        ), ledger_plans AS (
-         SELECT individual_id,
-                count(DISTINCT COALESCE(calculation_strategy_id::text, id::text)) AS tracked_plans
-           FROM roots
-          GROUP BY individual_id
+         SELECT root.individual_id,
+                count(DISTINCT COALESCE(root.calculation_strategy_id::text, root.id::text)) AS tracked_plans,
+                count(DISTINCT COALESCE(root.calculation_strategy_id::text, root.id::text))
+                  FILTER (WHERE NOT balance.review_required AND balance.current_direction = 'reserve') AS actionable_plans,
+                count(DISTINCT COALESCE(root.calculation_strategy_id::text, root.id::text))
+                  FILTER (WHERE balance.review_required) AS review_required_plans
+           FROM roots root JOIN current_balances balance ON balance.id = root.id
+          GROUP BY root.individual_id
        )
        SELECT i.id AS individual_id, i.display_name AS individual_name,
               COALESCE(plan.approved_monthly_plan, 0)::text AS approved_monthly_plan,
@@ -583,6 +616,8 @@ export async function getCollectionsWorkspace(
               COALESCE(b.remaining, 0)::text AS remaining_set_aside,
               COALESCE(plan.active_plans, 0)::text AS active_plans,
               COALESCE(ledger.tracked_plans, 0)::text AS tracked_plans,
+              COALESCE(ledger.actionable_plans, 0)::text AS actionable_plans,
+              COALESCE(ledger.review_required_plans, 0)::text AS review_required_plans,
               COALESCE(plan.missing_renewal_plans, 0)::text AS missing_renewal_plans
          FROM individuals i
          LEFT JOIN strategy_plans plan ON plan.individual_id = i.id
@@ -608,6 +643,8 @@ export async function getCollectionsWorkspace(
         params,
       );
     })(),
+    getPayrollCheckCounts(pool, scope),
+    getSettlementLedgerFreshness(pool),
   ]);
 
   const employeeCollections = employeeResult.rows.map((row) => ({
@@ -628,6 +665,8 @@ export async function getCollectionsWorkspace(
     remainingSetAside: toMoney(row.remaining_set_aside),
     activePlans: Number(row.active_plans),
     trackedPlans: Number(row.tracked_plans),
+    actionablePlans: Number(row.actionable_plans ?? 0),
+    reviewRequiredPlans: Number(row.review_required_plans ?? 0),
     missingRenewalPlans: Number(row.missing_renewal_plans),
   }));
   const sum = <T,>(rows: T[], pick: (row: T) => string) => toMoney(rows.reduce((total, row) => total.plus(pick(row)), dec(0)));
@@ -639,6 +678,8 @@ export async function getCollectionsWorkspace(
     individualSetAsides,
     targets,
     payrollChecks,
+    payrollCheckCounts,
+    ledgerDirty: freshness.dirty,
     visibility: {
       canSeeTargetMoney: scope.canSeeEmployeeAmounts,
       canSeeTargetHours: scope.canSeeHours,
@@ -675,9 +716,10 @@ export async function getIndividualMasserStatement(
   );
   if (!person.rows[0]) return null;
 
-  const [planResult, historyResult] = await Promise.all([
+  const [planResult, historyResult, freshness] = await Promise.all([
     pool.query<{
       approved_monthly_plan: string; active_plans: string; tracked_plans: string;
+      actionable_plans: string; review_required_plans: string;
       missing_renewal_plans: string; recorded_reserve: string;
       remaining_reserve: string; available_credit: string;
     }>(
@@ -731,6 +773,7 @@ export async function getIndividualMasserStatement(
        ), obligation_balances AS (
          SELECT COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) AS root_key,
                 o.direction,
+                ${settlementSourceReviewSql("o")} AS review_required,
                 o.original_amount - COALESCE(sum(event.amount), 0) AS balance
            FROM settlement_obligations o
            JOIN roots root
@@ -740,18 +783,25 @@ export async function getIndividualMasserStatement(
           GROUP BY o.id
        ), current_balances AS (
          SELECT root.id, root.current_direction,
+                bool_or(entry.review_required) AS review_required,
                 sum(CASE WHEN entry.direction = 'receivable' THEN -entry.balance ELSE entry.balance END) AS signed_balance
            FROM roots root
            JOIN obligation_balances entry ON entry.root_key = root.id::text
           GROUP BY root.id, root.current_direction
        ), ledger_plans AS (
-         SELECT count(DISTINCT COALESCE(calculation_strategy_id::text, id::text)) AS tracked_plans
-           FROM roots
+         SELECT count(DISTINCT COALESCE(root.calculation_strategy_id::text, root.id::text)) AS tracked_plans,
+                count(DISTINCT COALESCE(root.calculation_strategy_id::text, root.id::text))
+                  FILTER (WHERE NOT balance.review_required AND balance.current_direction = 'reserve') AS actionable_plans,
+                count(DISTINCT COALESCE(root.calculation_strategy_id::text, root.id::text))
+                  FILTER (WHERE balance.review_required) AS review_required_plans
+           FROM roots root JOIN current_balances balance ON balance.id = root.id
        )
        SELECT strategy_plan.approved_monthly_plan::text AS approved_monthly_plan,
               strategy_plan.active_plans::text AS active_plans,
               strategy_plan.missing_renewal_plans::text AS missing_renewal_plans,
               COALESCE(ledger_plans.tracked_plans, 0)::text AS tracked_plans,
+              COALESCE(ledger_plans.actionable_plans, 0)::text AS actionable_plans,
+              COALESCE(ledger_plans.review_required_plans, 0)::text AS review_required_plans,
               COALESCE((
                  SELECT sum(CASE
                    WHEN obligation.direction = 'reserve' THEN event.amount
@@ -765,12 +815,12 @@ export async function getIndividualMasserStatement(
               COALESCE((
                 SELECT sum(GREATEST(balance.signed_balance, 0))
                   FROM current_balances balance
-                 WHERE balance.current_direction = 'reserve'
+                 WHERE balance.current_direction = 'reserve' AND NOT balance.review_required
               ), 0)::text AS remaining_reserve,
               COALESCE((
                 SELECT sum(GREATEST(-balance.signed_balance, 0))
                   FROM current_balances balance
-                 WHERE balance.current_direction = 'reserve'
+                 WHERE balance.current_direction = 'reserve' AND NOT balance.review_required
                ), 0)::text AS available_credit
          FROM strategy_plan
          CROSS JOIN ledger_plans`,
@@ -832,15 +882,19 @@ export async function getIndividualMasserStatement(
         ORDER BY date_trunc('month', event.occurred_on) DESC`,
       [individualId, month],
     ),
+    getSettlementLedgerFreshness(pool),
   ]);
   const plan = planResult.rows[0];
   return {
     individualId,
     individualName: person.rows[0].display_name,
     setupHistoryAvailable: month >= FIRST_RELIABLE_MASSER_SETUP_MONTH,
+    ledgerDirty: freshness.dirty,
     approvedMonthlyPlan: toMoney(plan?.approved_monthly_plan ?? 0),
     activePlans: Number(plan?.active_plans ?? 0),
     trackedPlans: Number(plan?.tracked_plans ?? 0),
+    actionablePlans: Number(plan?.actionable_plans ?? 0),
+    reviewRequiredPlans: Number(plan?.review_required_plans ?? 0),
     missingRenewalPlans: Number(plan?.missing_renewal_plans ?? 0),
     recordedReserve: toMoney(plan?.recorded_reserve ?? 0),
     remainingReserve: toMoney(plan?.remaining_reserve ?? 0),

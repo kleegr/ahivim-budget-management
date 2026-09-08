@@ -16,6 +16,8 @@ describe("individual Masser statement", () => {
           approved_monthly_plan: "1200",
           active_plans: "2",
           tracked_plans: "1",
+          actionable_plans: "1",
+          review_required_plans: "0",
           missing_renewal_plans: "1",
           recorded_reserve: "350",
           remaining_reserve: "850",
@@ -41,9 +43,12 @@ describe("individual Masser statement", () => {
       individualId: INDIVIDUAL_ID,
       individualName: "Example Individual",
       setupHistoryAvailable: true,
+      ledgerDirty: true,
       approvedMonthlyPlan: "1200.0000",
       activePlans: 2,
       trackedPlans: 1,
+      actionablePlans: 1,
+      reviewRequiredPlans: 0,
       missingRenewalPlans: 1,
       recordedReserve: "350.0000",
       remainingReserve: "850.0000",
@@ -69,7 +74,7 @@ describe("individual Masser statement", () => {
     expect(statementSql).toContain("DISTINCT ON (calculation_strategy_id)");
     expect(statementSql).not.toContain("selected_plan AS");
     expect(statementSql).not.toContain("requested.month_start >= date_trunc('month', o.period_begin)");
-    expect(query.mock.calls.filter(([sql]) => sql.includes("settlement_")).every(([, params]) => (
+    expect(query.mock.calls.filter(([sql]) => sql.includes("WITH") && sql.includes("settlement_")).every(([, params]) => (
       Array.isArray(params) && params[1] === "2026-08"
     ))).toBe(true);
     expect(statementSql).not.toContain("JOIN employees");
@@ -88,6 +93,8 @@ describe("individual Masser statement", () => {
           remaining_set_aside: "850",
           active_plans: "3",
           tracked_plans: "2",
+          actionable_plans: "2",
+          review_required_plans: "0",
           missing_renewal_plans: "1",
         }] };
       }
@@ -111,6 +118,8 @@ describe("individual Masser statement", () => {
       remainingSetAside: "850.0000",
       activePlans: 3,
       trackedPlans: 2,
+      actionablePlans: 2,
+      reviewRequiredPlans: 0,
       missingRenewalPlans: 1,
     }]);
 

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { PgLikePool } from "@/lib/import/commit";
+import { normalizePersonName } from "@/lib/business/name-matching";
+import { mergeEmployees } from "@/lib/manage/employee-merge";
 import { DEFAULT_SYNC_CONFIG } from "@/lib/sheets/config";
 import { sheetValuesToCsv } from "@/lib/sheets/fetch";
 import { recoverSourceNet, type SourceNetRecoveryInput } from "@/lib/sheets/net-recovery";
@@ -209,6 +211,57 @@ suite("Audited recovery of numeric source NET without settlement changes", () =>
     expect((await pool.query("SELECT total_net_pay FROM payroll_transactions WHERE id = $1", [review.transaction_id])).rows[0]?.total_net_pay).toBeNull();
   }, 40_000);
 
+  for (const siblingNet of ["1.0000", "3172.0300"]) {
+    it(`${siblingNet === "3172.0300" ? "accepts matching" : "holds conflicting"} fresh NET on an approved employee alias with both canonical NET values unknown`, async () => {
+      const { pool, action, review, values } = await setup();
+      const alias = "Alternate Synthetic Employee";
+      await pool.query(`INSERT INTO employee_aliases (employee_id, source_text, normalized_alias, status)
+        VALUES ($1, $2, $3, 'approved')`, [review.employee_id, alias, normalizePersonName(alias)]);
+      await pool.query(`UPDATE payroll_transactions SET check_number = 'NUMERIC-SOURCE-1',
+        period_begin = NULL, period_end = NULL, employee_raw = $2 WHERE id <> $1`, [review.transaction_id, alias]);
+      values[4]![2] = "NUMERIC-SOURCE-1"; values[4]![8] = ""; values[4]![9] = "";
+      values[4]![12] = alias; values[4]![7] = siblingNet;
+      const csv = sheetValuesToCsv(values);
+      await pool.query(`UPDATE sheet_sync_runs SET snapshot_sha256 = $2
+        WHERE id = (SELECT run_id FROM sheet_sync_conflicts WHERE id = $1)`, [review.id, parseSheetCsv(csv).snapshotSha256]);
+      expect((await pool.query("SELECT count(*)::int AS count FROM payroll_transactions WHERE total_net_pay IS NULL")).rows[0]?.count).toBe(2);
+      const before = await controls();
+      const result = await action({}, csv);
+      if (siblingNet === "3172.0300") {
+        expect(result).toMatchObject({ ok: true, data: { net: "3172.0300" } });
+        if (!result.ok) throw new Error(result.message);
+        expect(await action({ action: "undo", acceptanceAuditId: result.data.acceptanceAuditId }, csv))
+          .toMatchObject({ ok: true, data: { net: null } });
+      } else {
+        expect(result).toMatchObject({ ok: false, code: "conflict", message: expect.stringContaining("source check group") });
+        expect((await pool.query("SELECT count(*)::int AS count FROM audit_logs WHERE action LIKE 'source_net_recovery_%'")).rows[0]?.count).toBe(0);
+        expect((await pool.query("SELECT status FROM sheet_sync_conflicts WHERE id = $1", [review.id])).rows[0]?.status).toBe("open");
+      }
+      expect(await controls()).toEqual(before);
+      expect((await pool.query("SELECT count(*)::int AS count FROM payroll_transactions WHERE total_net_pay IS NULL")).rows[0]?.count).toBe(2);
+    }, 40_000);
+  }
+
+  for (const status of ["pending", "unmatched", "canonical_collision"] as const) {
+    it(`holds a compatible source sibling with ${status} employee identity without any projection or audit write`, async () => {
+      const { pool, action, review, values } = await setup();
+      const alias = "Unresolved Synthetic Employee";
+      if (status !== "unmatched") await pool.query(`INSERT INTO employee_aliases (employee_id, source_text, normalized_alias, status)
+        VALUES ($1, $2, $3, $4)`, [review.employee_id, alias, normalizePersonName(alias), status === "pending" ? "pending" : "approved"]);
+      if (status === "canonical_collision") await pool.query(`INSERT INTO employees (display_name, normalized_name)
+        VALUES ($1, $2)`, [alias, normalizePersonName(alias)]);
+      values[4]![2] = "NUMERIC-SOURCE-1"; values[4]![12] = alias; values[4]![7] = "1";
+      const csv = sheetValuesToCsv(values);
+      await pool.query(`UPDATE sheet_sync_runs SET snapshot_sha256 = $2
+        WHERE id = (SELECT run_id FROM sheet_sync_conflicts WHERE id = $1)`, [review.id, parseSheetCsv(csv).snapshotSha256]);
+      const before = await controls();
+      expect(await action({}, csv)).toMatchObject({ ok: false, code: "conflict", message: expect.stringContaining("source check group") });
+      expect(await controls()).toEqual(before);
+      expect((await pool.query("SELECT count(*)::int AS count FROM payroll_transactions WHERE total_net_pay IS NULL")).rows[0]?.count).toBe(2);
+      expect((await pool.query("SELECT count(*)::int AS count FROM audit_logs WHERE action LIKE 'source_net_recovery_%'")).rows[0]?.count).toBe(0);
+    }, 40_000);
+  }
+
   for (const provenance of ["nonexistent_transaction", "nonexistent_check", "foreign_transaction"] as const) {
     it(`holds posted legacy history with unusable ${provenance} provenance`, async () => {
       const { pool, action, review } = await setup();
@@ -259,5 +312,42 @@ suite("Audited recovery of numeric source NET without settlement changes", () =>
       .toMatchObject({ ok: false, code: "conflict" });
     expect(await controls()).toEqual(before);
     expect(await listSourceNetRecoveryHistory(pool)).toMatchObject([{ reversalAuditId: null }]);
+  }, 40_000);
+
+  it("holds Undo after an approved employee alias contradicts the accepted identity, preserving its NET and audit", async () => {
+    const { action, pool, review, values } = await setup();
+    const accepted = await action();
+    if (!accepted.ok) throw new Error(accepted.message);
+    const other = (await pool.query<{ id: string }>(`INSERT INTO employees (display_name, normalized_name)
+      VALUES ('Other Synthetic Employee', $1) RETURNING id`, [normalizePersonName("Other Synthetic Employee")])).rows[0]!.id;
+    const sourceName = values[3]![12]!;
+    await pool.query(`INSERT INTO employee_aliases (employee_id, source_text, normalized_alias, status)
+      VALUES ($1, $2, $3, 'approved')`, [other, sourceName, normalizePersonName(sourceName)]);
+    const before = await controls();
+    expect(await action({ action: "undo", acceptanceAuditId: accepted.data.acceptanceAuditId }))
+      .toMatchObject({ ok: false, code: "conflict", message: expect.stringContaining("Review employee identity") });
+    expect(await controls()).toEqual(before);
+    expect((await pool.query("SELECT total_net_pay FROM payroll_transactions WHERE id = $1", [review.transaction_id])).rows[0]?.total_net_pay).toBe("3172.0300");
+    expect((await pool.query("SELECT count(*)::int AS count FROM audit_logs WHERE action LIKE 'source_net_recovery_%'")).rows[0]?.count).toBe(1);
+    expect(await listSourceNetRecoveryHistory(pool)).toMatchObject([{ reversalAuditId: null }]);
+  }, 40_000);
+
+  it("accepts and undoes source NET after a real audited employee merge while retaining the archived original name", async () => {
+    const { pool, action, review } = await setup();
+    const survivor = (await pool.query<{ id: string }>(`INSERT INTO employees (display_name, normalized_name)
+      VALUES ('Synthetic Surviving Employee', $1) RETURNING id`, [normalizePersonName("Synthetic Surviving Employee")])).rows[0]!.id;
+    expect(await mergeEmployees(pool, { keepId: survivor, mergeId: review.employee_id }, null, "Verified duplicate employee fixture"))
+      .toMatchObject({ ok: true, data: { repointed: { payroll_transactions: 2 } } });
+    expect((await pool.query("SELECT status FROM employees WHERE id = $1", [review.employee_id])).rows[0]?.status).toBe("archived");
+    expect((await pool.query("SELECT employee_id FROM payroll_transactions WHERE id = $1", [review.transaction_id])).rows[0]?.employee_id).toBe(survivor);
+    const before = await controls();
+    const accepted = await action();
+    expect(accepted).toMatchObject({ ok: true, data: { net: "3172.0300" } });
+    if (!accepted.ok) throw new Error(accepted.message);
+    expect(await controls()).toEqual(before);
+    expect(await action({ action: "undo", acceptanceAuditId: accepted.data.acceptanceAuditId }))
+      .toMatchObject({ ok: true, data: { net: null } });
+    expect(await controls()).toEqual(before);
+    expect((await pool.query("SELECT count(*)::int AS count FROM audit_logs WHERE action = 'employees_merged'")).rows[0]?.count).toBe(1);
   }, 40_000);
 });

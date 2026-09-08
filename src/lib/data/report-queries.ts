@@ -146,6 +146,7 @@ export async function individualPutAwayReport(
   return {
     month: workspace.month,
     setupHistoryAvailable: workspace.setupHistoryAvailable,
+    ledgerDirty: workspace.ledgerDirty,
     rows: workspace.individualSetAsides
       .filter((row) => {
         if (individual && !row.individualName.toLocaleLowerCase().includes(individual)) return false;
@@ -155,7 +156,8 @@ export async function individualPutAwayReport(
           && workspace.setupHistoryAvailable
           && row.missingRenewalPlans === 0
         ) return false;
-        if (opts.status === "complete" && !dec(row.remainingSetAside).eq(0)) return false;
+        if (opts.status === "review-required" && row.reviewRequiredPlans === 0) return false;
+        if (opts.status === "complete" && (workspace.ledgerDirty || row.reviewRequiredPlans > 0 || !dec(row.remainingSetAside).eq(0))) return false;
         return true;
       })
       .map((row) => ({
@@ -1759,6 +1761,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
           { value: "", label: "All" },
           { value: "outstanding", label: "Outstanding reserve" },
           { value: "missing-renewal", label: "Missing renewal date" },
+          { value: "review-required", label: "Source review required" },
           { value: "complete", label: "No remaining reserve" },
         ],
       },
@@ -1767,9 +1770,10 @@ export const REPORTS: Record<string, ReportDefinition> = {
       const data = await individualPutAwayReport(pool, filters);
       return [{
         key: "individual-put-away",
-        title: data.setupHistoryAvailable
-          ? undefined
-          : "Financial Setup history is unavailable before August 2026; recorded ledger activity remains shown.",
+        title: [
+          data.ledgerDirty ? "Money calculations need refresh; recorded history remains shown." : null,
+          !data.setupHistoryAvailable ? "Financial Setup history is unavailable before August 2026; recorded ledger activity remains shown." : null,
+        ].filter(Boolean).join(" ") || undefined,
         emptyMessage: "No individual put-away records match this month and filter.",
         source: {
           href: `/masser?month=${encodeURIComponent(data.month)}`,
@@ -1783,6 +1787,8 @@ export const REPORTS: Record<string, ReportDefinition> = {
           { key: "remainingSetAside", header: "Remaining reserve", type: "money" },
           { key: "activePlans", header: "Active plans", type: "int" },
           { key: "trackedPlans", header: "Tracked plans", type: "int" },
+          { key: "reviewRequiredPlans", header: "Plans on source review", type: "int" },
+          { key: "balanceStatus", header: "Balance review", type: "text" },
           { key: "missingRenewalPlans", header: "Missing renewals", type: "int" },
           { key: "statementSource", header: "Source statement", type: "text" },
         ],
@@ -1795,6 +1801,9 @@ export const REPORTS: Record<string, ReportDefinition> = {
           remainingSetAside: row.remainingSetAside,
           activePlans: row.activePlans,
           trackedPlans: row.trackedPlans,
+          reviewRequiredPlans: row.reviewRequiredPlans,
+          balanceStatus: data.ledgerDirty ? "Refresh needed"
+            : row.reviewRequiredPlans > 0 ? "Source review required; held balances excluded" : "No source holds",
           missingRenewalPlans: row.missingRenewalPlans,
           statementSource: row.individualId,
           reportMonth: data.month,

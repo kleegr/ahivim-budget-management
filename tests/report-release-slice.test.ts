@@ -99,6 +99,7 @@ describe("report release catalog", () => {
     expect(result).toEqual({
       month: "2026-08",
       setupHistoryAvailable: true,
+      ledgerDirty: true,
       rows: [expect.objectContaining({
         individualName: "Sample Individual",
         approvedMonthlyPlan: "500.0000",

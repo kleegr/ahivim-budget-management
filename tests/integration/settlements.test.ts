@@ -352,7 +352,11 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     expect(collections.individualSetAsides.find((row) => row.individualId === individual.id)).toMatchObject({
       approvedMonthlyPlan: "30.0000",
       setAsideThisMonth: "50.0000",
-      remainingSetAside: "190.0000",
+      // These old synthetic rows store annual multiples without a recorded
+      // single-month basis. Preserve cash, but hold the unapproved balance.
+      remainingSetAside: "0.0000",
+      actionablePlans: 0,
+      reviewRequiredPlans: 1,
       activePlans: 2,
       trackedPlans: 1,
       missingRenewalPlans: 0,
@@ -371,7 +375,9 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       trackedPlans: 1,
       missingRenewalPlans: 0,
       recordedReserve: "50.0000",
-      remainingReserve: "190.0000",
+      remainingReserve: "0.0000",
+      actionablePlans: 0,
+      reviewRequiredPlans: 1,
       history: [{ month: "2026-09", setAside: "50.0000", reversals: "0.0000" }],
     });
   });
