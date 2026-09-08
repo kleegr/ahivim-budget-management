@@ -61,17 +61,25 @@ other database writes.
 
 ## Migrations
 
-The runner is idempotent. Each file in `drizzle/` runs once, inside its own
-transaction, and is recorded in `_ahivim_migrations` with a SHA-256 checksum.
+The runner is idempotent. Each file in `drizzle/` runs once and is recorded in
+`_ahivim_migrations` with a SHA-256 checksum. The entire pending run commits in
+one transaction, including the ledger checks, SQL changes, and new ledger rows.
+A failure rolls back all changes from that run; previously committed migrations
+remain unchanged. Retry after resolving the failure. Migration SQL must support
+transactional execution (for example, do not use `CREATE INDEX CONCURRENTLY`).
 Re-running skips everything already applied. Editing a migration that has
 already been applied fails migration and health checks immediately rather than
 silently accepting a changed checksum. Add a new migration instead.
 
 Production also calls the runner from the Node instrumentation hook. The normal
 current-schema path is one lock-free checksum query. When a deployment is
-behind, one instance takes a nonblocking advisory lock and applies the pending
+behind, one instance starts a transaction, takes a nonblocking transaction-level
+advisory lock, and applies the pending
 migrations. Other cold starts wait for a bounded period and recheck the ledger;
 they continue only after the exact shipped schema is current.
+The lock stays on the same backend through commit or rollback, including on
+transaction-pooled database endpoints. Session-level advisory locks cannot
+provide that guarantee across pooled autocommit statements.
 
 Temporary connection failures and lock-holder timeouts remain fail-closed, but
 they do not permanently poison a warm Next.js process. One bounded migration
