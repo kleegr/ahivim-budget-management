@@ -115,7 +115,7 @@ function normalizedHeader(value: string): string {
 function headerColumn(row: ExcelJS.Row, label: string): number | null {
   const wanted = normalizedHeader(label);
   for (let column = 1; column <= Math.max(row.cellCount, 30); column += 1) {
-    if (normalizedHeader(row.getCell(column).text) === wanted) return column;
+    if (normalizedHeader(sourceText(row.getCell(column))) === wanted) return column;
   }
   return null;
 }
@@ -208,7 +208,7 @@ function formulaResult(cell: ExcelJS.Cell): unknown {
 
 function jsonScalar(value: unknown): string | number | boolean | null {
   if (value === null || value === undefined) return null;
-  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.toISOString() : "Invalid Date";
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return value;
   }
@@ -231,7 +231,7 @@ function sourceCell(cell: ExcelJS.Cell): CalculationWorkbookSourceCell {
 function sourceText(cell: ExcelJS.Cell): string {
   const value = formulaResult(cell);
   if (value === null || value === undefined) return "";
-  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.toISOString().slice(0, 10) : "Invalid Date";
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return String(value).trim();
   }
@@ -249,7 +249,7 @@ function excelSerialFromDate(value: Date, date1904: boolean): string {
 
 function numericCellValue(cell: ExcelJS.Cell, date1904: boolean): string | null {
   const value = formulaResult(cell);
-  if (value instanceof Date) return excelSerialFromDate(value, date1904);
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? excelSerialFromDate(value, date1904) : null;
   if (typeof value === "number" || typeof value === "string") {
     const parsed = tryDec(value);
     return parsed ? parsed.toString() : null;
@@ -271,6 +271,7 @@ function columnLetter(column: number): string {
 function parseIsoDate(cell: ExcelJS.Cell): string | null {
   const value = formulaResult(cell);
   if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) return null;
     const year = value.getUTCFullYear();
     if (year < 2000 || year > 2200) return null;
     return value.toISOString().slice(0, 10);

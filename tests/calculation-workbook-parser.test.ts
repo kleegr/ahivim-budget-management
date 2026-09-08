@@ -87,6 +87,57 @@ async function fixture(): Promise<Buffer> {
 }
 
 describe("Calculations workbook parser", () => {
+  it("preserves source formulas when a recognized row contains blank merged financial cells", async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Ahivim");
+    addReviewedHeaders(sheet);
+    addNormalRow(sheet);
+    sheet.mergeCells("I5:J5");
+    const parsed = await parseCalculationsWorkbook(Buffer.from(await workbook.xlsx.writeBuffer()), "merged-financial-cells.xlsx");
+    expect(parsed.rows).toHaveLength(1);
+    const row = parsed.rows[0]!;
+    expect(row.sourceResults.afterAll).toBe("2240.0000");
+    expect(row.programHours.filter((line) => ["COM_HAB", "RESPITE"].includes(line.programCode)))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ programCode: "COM_HAB", authorizedHours: null }),
+        expect.objectContaining({ programCode: "RESPITE", authorizedHours: null }),
+      ]));
+    expect(row.sourceSnapshot).toMatchObject({ cells: {
+      Q5: { address: "Q5", formula: "P5/12", result: 1522.916667 },
+      R5: { formula: "Q5-(Q5*E5/100)-((Q5-(Q5*E5/100))*F5/100)", result: 1142.1875 },
+    } });
+  });
+
+  it("ignores empty merged cells on unrelated sheets while finding the calculation layout", async () => {
+    const workbook = new ExcelJS.Workbook();
+    const cover = workbook.addWorksheet("Unrelated source sheet");
+    cover.mergeCells("C1:F1");
+    const sheet = workbook.addWorksheet("Ahivim");
+    addReviewedHeaders(sheet);
+    addNormalRow(sheet);
+    const parsed = await parseCalculationsWorkbook(Buffer.from(await workbook.xlsx.writeBuffer()), "merged-headers.xlsx");
+    expect(parsed.layoutValid).toBe(true);
+    expect(parsed.sourceSheetName).toBe("Ahivim");
+    expect(parsed.rows).toHaveLength(1);
+    expect(parsed.rows[0]?.sourceResults.afterAll).toBe("2240.0000");
+  });
+
+  it("keeps invalid source dates reviewable instead of throwing during discovery or row parsing", async () => {
+    const workbook = new ExcelJS.Workbook();
+    const cover = workbook.addWorksheet("Unrelated dated sheet");
+    cover.getCell("D2").value = new Date(Number.NaN);
+    const sheet = workbook.addWorksheet("Ahivim");
+    addReviewedHeaders(sheet);
+    addNormalRow(sheet);
+    sheet.getCell("D5").value = new Date(Number.NaN);
+    const parsed = await parseCalculationsWorkbook(Buffer.from(await workbook.xlsx.writeBuffer()), "invalid-date.xlsx");
+    expect(parsed.layoutValid).toBe(true);
+    expect(parsed.rows[0]?.renewalDate).toBeNull();
+    expect(parsed.rows[0]?.sourceResults.afterAll).toBe("2240.0000");
+    expect(parsed.rows[0]?.issues.map((issue) => issue.code)).toContain("invalid_renewal_date");
+    expect(JSON.stringify(parsed.rows[0]?.sourceSnapshot)).toContain("Invalid Date");
+  });
+
   it("detects the real column-C layout and keeps strategy suffixes off the person", async () => {
     const parsed = await parseCalculationsWorkbook(await fixture(), "calculations.xlsx");
     const row = parsed.rows.find((candidate) => candidate.sourceRowNumber === 5)!;
