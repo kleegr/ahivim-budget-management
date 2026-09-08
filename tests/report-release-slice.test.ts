@@ -6,6 +6,7 @@ import {
   payrollChecksReport,
 } from "@/lib/data/report-queries";
 import { REPORT_LIBRARY } from "@/components/reports/report-library";
+import { settlementApplicationDate } from "@/lib/manage/settlement-freshness";
 
 const ledgerRow = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -73,7 +74,12 @@ describe("report release catalog", () => {
   });
 
   it("composes individual put-away from the Money-operations read model", async () => {
+    let dirty = false;
     const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM settlement_ledger_state")) {
+        return { rows: [{ source_version: dirty ? "2" : "1", refreshed_version: "1",
+          refreshed_for_date: settlementApplicationDate(), last_refresh_error: null }] };
+      }
       if (sql.includes("FROM individuals i") && sql.includes("approved_monthly_plan")) {
         return { rows: [{
           individual_id: "00000000-0000-4000-8000-000000000003",
@@ -83,6 +89,7 @@ describe("report release catalog", () => {
           remaining_set_aside: "200",
           active_plans: "1",
           tracked_plans: "1",
+          actionable_plans: "1",
           missing_renewal_plans: "0",
         }] };
       }
@@ -99,7 +106,7 @@ describe("report release catalog", () => {
     expect(result).toEqual({
       month: "2026-08",
       setupHistoryAvailable: true,
-      ledgerDirty: true,
+      ledgerDirty: false,
       rows: [expect.objectContaining({
         individualName: "Sample Individual",
         approvedMonthlyPlan: "500.0000",
@@ -108,6 +115,12 @@ describe("report release catalog", () => {
       })],
     });
     expect(query.mock.calls.some(([sql]) => sql.includes("calculation_metadata->>'flow' = 'individual_plan'"))).toBe(true);
+    dirty = true;
+    const stale = await individualPutAwayReport(pool, { month: "2026-08" });
+    expect(stale.rows[0]).toMatchObject({ remainingSetAside: null, balanceStatus: "Refresh needed",
+      approvedMonthlyPlan: "500.0000", setAsideThisMonth: "300.0000" });
+    expect((await individualPutAwayReport(pool, { month: "2026-08", status: "outstanding" })).rows).toEqual([]);
+    expect((await individualPutAwayReport(pool, { month: "2026-08", status: "complete" })).rows).toEqual([]);
   });
 
   it("marks pre-August setup values unavailable while retaining recorded ledger activity", async () => {
@@ -135,7 +148,8 @@ describe("report release catalog", () => {
       activePlans: null,
       missingRenewalPlans: null,
       setAsideThisMonth: "300.0000",
-      remainingSetAside: "200.0000",
+      remainingSetAside: null,
+      balanceStatus: "History unavailable",
     });
 
     const [table] = await REPORTS["individual-put-away"].run(pool, { month: "2026-07" });

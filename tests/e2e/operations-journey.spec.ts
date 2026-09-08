@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 import { Pool } from "pg";
 import { REPRESENTATIVE_ACCOUNTS, TEST_DB_URL, passwordFor, type RepresentativeAccount } from "./fixtures";
 
@@ -196,9 +196,50 @@ async function timeOffAndRevision(page: Page, journey: Journey) {
   await dialog.getByRole("button", { name: "Save time off" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Schedule review needed" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Review session", exact: true })).toHaveCount(1);
-  await page.getByRole("link", { name: "Review session", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "Session", exact: true })).toBeVisible();
+  const reviewLink = page.getByRole("link", { name: "Review session", exact: true });
+  await expect(reviewLink).toHaveCount(1);
+  const reviewHref = await reviewLink.getAttribute("href");
+  expect(reviewHref).toBeTruthy();
+  const reviewUrl = new URL(reviewHref!, page.url());
+  expect(reviewUrl.searchParams.get("date")).toBe(journey.second);
+  expect(reviewUrl.searchParams.get("employeeId")).toBe(journey.employeeId);
+  expect(reviewUrl.searchParams.get("sessionId")).toMatch(/^[0-9a-f-]{36}$/i);
+
+  // A pending RSC/prefetch must not block this exact-session review. Keep the
+  // real document and sessions API untouched while the old stream is stalled.
+  let heldStreams = 0;
+  let releaseStreams!: () => void;
+  const stalled = new Promise<void>((resolve) => { releaseStreams = resolve; });
+  const holdReviewStream = async (route: Route) => {
+    const request = route.request(), url = new URL(request.url());
+    if (url.pathname === "/schedule" && url.searchParams.get("sessionId") === reviewUrl.searchParams.get("sessionId")
+      && (url.searchParams.has("_rsc") || request.headers().rsc === "1")) {
+      heldStreams += 1;
+      await stalled;
+      await route.abort().catch(() => undefined);
+    } else await route.continue();
+  };
+  await page.route("**/schedule?**", holdReviewStream);
+  try {
+    await page.evaluate((href) => {
+      void fetch(`${href}&_rsc=session-review-regression`, {
+        headers: { RSC: "1", "Next-Router-Prefetch": "1" },
+      }).catch(() => undefined);
+    }, reviewHref!);
+    await expect.poll(() => heldStreams).toBeGreaterThan(0);
+    const documentResponse = page.waitForResponse((response) => {
+      const request = response.request(), url = new URL(response.url());
+      return url.pathname === "/schedule" && url.searchParams.get("sessionId") === reviewUrl.searchParams.get("sessionId")
+        && request.isNavigationRequest() && request.resourceType() === "document";
+    });
+    const [, response] = await Promise.all([reviewLink.click(), documentResponse]);
+    expect(response.status()).toBe(200);
+    await expect(page).toHaveURL(reviewUrl.href);
+    await expect(page.getByRole("dialog", { name: "Session", exact: true })).toBeVisible();
+  } finally {
+    releaseStreams();
+    await page.unroute("**/schedule?**", holdReviewStream);
+  }
 
   // Apply a future revision to the last two visits. The first occurrence must
   // retain its original series and hours, while time off stops conflicting.

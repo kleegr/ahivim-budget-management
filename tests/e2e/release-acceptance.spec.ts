@@ -144,6 +144,11 @@ test("Calculations and the two detail profiles expose real linked plan, activity
 
 test("Owner Home, Masser, and Agency Financials reconcile to the same seeded facts", async ({ page }) => {
   await signIn(page);
+  // Earlier write journeys invalidate the shared disposable ledger. Rebuild it
+  // through the real Owner API before asserting current calculated balances.
+  const refresh = await page.request.post("/api/settlements/refresh", { data: {} });
+  expect(refresh.status()).toBe(200);
+  expect((await refresh.json()).ok).toBe(true);
   let main = await openReady(page, "/dashboard", /^Home$/);
   const transactionSection = main.locator('section[aria-labelledby="owner-transactions-heading"]');
   await expectMetric(transactionSection, "Funder billed", "$350.00");
