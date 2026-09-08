@@ -64,7 +64,9 @@ test.describe("Masser statement document navigation", () => {
       try {
         expect((await page.goto("/masser?month=2026-09"))?.status()).toBe(200);
         const row = page.locator("#main").getByRole("row").filter({ hasText: "Linked Individual" });
-        await expect(row).toContainText("Held balances excluded");
+        await expect(row).toContainText("Historical balances remain on hold; excluded from this month.");
+        await expect(row.getByText("Ready", { exact: true })).toBeVisible();
+        await expect(row.getByRole("cell").nth(3)).toHaveText("$260.00");
         const link = row.getByRole("link", { name: "View statement", exact: true });
         await expect(link).toHaveAttribute("href", STATEMENT);
 
@@ -88,14 +90,13 @@ test.describe("Masser statement document navigation", () => {
         await expect(page).toHaveURL(new URL(STATEMENT, page.url()).href);
         const main = page.locator("#main");
         await expect(main.getByRole("heading", { level: 1, name: "Linked Individual", exact: true })).toBeVisible();
-        await expect(main.getByText("Source review required", { exact: true })).toBeVisible();
+        await expect(main.getByText("Historical balances remain on hold", { exact: true })).toBeVisible();
         await expect(main.getByText("Approved monthly plan", { exact: true }).locator("..")).toContainText("$260.00");
         await expect(main.getByText("Recorded over plan period", { exact: true }).locator("..")).toContainText("$0.00");
-        for (const label of ["Remaining in plan period", "Credit"]) {
+        for (const [label, amount] of [["Remaining in plan period", "$260.00"], ["Credit", "$0.00"]] as const) {
           const metric = main.getByText(label, { exact: true }).locator("..");
-          await expect(metric).toContainText("Unavailable");
-          await expect(metric).toContainText("Source review required");
-          await expect(metric).not.toContainText("$0.00");
+          await expect(metric).toContainText(amount);
+          await expect(metric).toContainText("Verified balance");
         }
         expect(await financialFacts()).toEqual(before);
         expect(errors).toEqual([]);

@@ -480,6 +480,7 @@ export async function getCollectionsWorkspace(
   const employeeScope = employeeFinancialClause(scope, "o.employee_id", employeeParams);
   const individualParams: unknown[] = [month];
   const individualScope = individualFinancialClause(scope, "i.id", individualParams);
+  const reviewedIndividualScope = individualScope.replaceAll("i.id", "review_source.individual_id");
 
   const [employeeResult, individualResult, targets, payrollChecks, employeeOptions, payrollCheckCounts, freshness] = await Promise.all([
     pool.query<{
@@ -534,7 +535,11 @@ export async function getCollectionsWorkspace(
       tracked_plans: string; actionable_plans: string; review_required_plans: string; missing_renewal_plans: string;
       expected_balance_plans?: string; missing_balance_renewal_plans?: string; historical_review_required_plans?: string;
     }>(
-       `WITH ${effectiveStrategyPlansCtes("$1")}, plan_candidates AS (
+       `WITH ${effectiveStrategyPlansCtes("$1")}, reviewed_obligations AS MATERIALIZED (
+          SELECT review_source.id, ${settlementSourceReviewSql("review_source")} AS review_required
+            FROM settlement_obligations review_source
+           WHERE review_source.individual_id IS NOT NULL${reviewedIndividualScope}
+        ), plan_candidates AS (
           SELECT o.individual_id, o.calculation_strategy_id, o.period_begin, o.period_end,
                  max(o.created_at) AS latest_root_at,
                  max(CASE WHEN o.calculation_metadata->>'amountBasis' = 'monthly'
@@ -597,14 +602,15 @@ export async function getCollectionsWorkspace(
        ), obligation_balances AS (
          SELECT COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) AS root_key,
                 o.direction,
-                ${settlementSourceReviewSql("o")} AS review_required,
+                COALESCE(review.review_required, true) AS review_required,
                 o.original_amount - COALESCE(sum(se.amount), 0) AS balance
            FROM settlement_obligations o
+           LEFT JOIN reviewed_obligations review ON review.id = o.id
            JOIN roots root
              ON COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) = root.id::text
            LEFT JOIN settlement_events se ON se.settlement_obligation_id = o.id
           WHERE o.status = 'active'
-          GROUP BY o.id
+          GROUP BY o.id, review.review_required
        ), current_balances AS (
          SELECT r.individual_id, r.id,
                 r.current_direction,
@@ -649,12 +655,12 @@ export async function getCollectionsWorkspace(
                    AND (historical.period_begin IS NULL OR historical.period_begin <= (SELECT month_end FROM requested))
                    AND NOT (historical.calculation_metadata ? 'adjustmentForObligationId')
                    AND NOT EXISTS (SELECT 1 FROM roots selected_root WHERE selected_root.id = historical.id)
-                   AND (${settlementSourceReviewSql("historical")}
+                   AND (COALESCE((SELECT review_required FROM reviewed_obligations review WHERE review.id = historical.id), true)
                      OR EXISTS (
                        SELECT 1 FROM settlement_obligations correction
                         WHERE correction.status = 'active'
                           AND correction.calculation_metadata->>'adjustmentForObligationId' = historical.id::text
-                          AND ${settlementSourceReviewSql("correction")}
+                          AND COALESCE((SELECT review_required FROM reviewed_obligations review WHERE review.id = correction.id), true)
                      ))
               ), 0)::text AS historical_review_required_plans
          FROM individuals i
@@ -766,7 +772,11 @@ export async function getIndividualMasserStatement(
       remaining_reserve: string; available_credit: string;
       expected_balance_plans?: string; missing_balance_renewal_plans?: string; historical_review_required_plans?: string;
     }>(
-      `WITH ${effectiveStrategyPlansCtes("$2")}, strategy_plan AS (
+      `WITH ${effectiveStrategyPlansCtes("$2")}, reviewed_obligations AS MATERIALIZED (
+          SELECT review_source.id, ${settlementSourceReviewSql("review_source")} AS review_required
+            FROM settlement_obligations review_source
+           WHERE review_source.individual_id = $1
+        ), strategy_plan AS (
          SELECT COALESCE(max(plan.approved_monthly_plan), 0) AS approved_monthly_plan,
                 COALESCE(max(plan.active_plans), 0) AS active_plans,
                 COALESCE(max(plan.expected_balance_plans), 0) AS expected_balance_plans,
@@ -822,14 +832,15 @@ export async function getIndividualMasserStatement(
        ), obligation_balances AS (
          SELECT COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) AS root_key,
                 o.direction,
-                ${settlementSourceReviewSql("o")} AS review_required,
+                COALESCE(review.review_required, true) AS review_required,
                 o.original_amount - COALESCE(sum(event.amount), 0) AS balance
            FROM settlement_obligations o
+           LEFT JOIN reviewed_obligations review ON review.id = o.id
            JOIN roots root
              ON COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) = root.id::text
            LEFT JOIN settlement_events event ON event.settlement_obligation_id = o.id
           WHERE o.status = 'active'
-          GROUP BY o.id
+          GROUP BY o.id, review.review_required
        ), current_balances AS (
          SELECT root.id, root.current_direction,
                 bool_or(entry.review_required) AS review_required,
@@ -854,12 +865,12 @@ export async function getIndividualMasserStatement(
                    AND (historical.period_begin IS NULL OR historical.period_begin <= (SELECT month_end FROM requested))
                    AND NOT (historical.calculation_metadata ? 'adjustmentForObligationId')
                    AND NOT EXISTS (SELECT 1 FROM roots selected_root WHERE selected_root.id = historical.id)
-                   AND (${settlementSourceReviewSql("historical")}
+                   AND (COALESCE((SELECT review_required FROM reviewed_obligations review WHERE review.id = historical.id), true)
                      OR EXISTS (
                        SELECT 1 FROM settlement_obligations correction
                         WHERE correction.status = 'active'
                           AND correction.calculation_metadata->>'adjustmentForObligationId' = historical.id::text
-                          AND ${settlementSourceReviewSql("correction")}
+                          AND COALESCE((SELECT review_required FROM reviewed_obligations review WHERE review.id = correction.id), true)
                      ))
               ), 0)::text AS historical_review_required_plans,
               strategy_plan.approved_monthly_plan::text AS approved_monthly_plan,
