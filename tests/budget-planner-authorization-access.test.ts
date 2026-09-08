@@ -68,7 +68,17 @@ function resultRecord() {
     internalRate: "21.0000",
     agencyRate: "25.0000",
     individualRateOverride: "23.0000",
+    paymentRecipient: "employee",
+    rateScope: "per_individual",
+    rateBasis: "individual_override",
+    allowIndividualRateOverride: true,
   };
+}
+
+function expectNoFinancialConfiguration(data: Record<string, unknown>) {
+  for (const field of ["paymentRecipient", "rateScope", "rateBasis", "allowIndividualRateOverride"]) {
+    expect(data, `hours-only response exposed ${field}`).not.toHaveProperty(field);
+  }
 }
 
 describe("budget planner hour-authorization capability", () => {
@@ -131,6 +141,7 @@ describe("budget planner hour-authorization capability", () => {
       individualRateOverride: null,
     });
     expect(JSON.stringify(redacted)).not.toMatch(/3000|2800|21\.0000|25\.0000|23\.0000/);
+    expectNoFinancialConfiguration(redacted);
   });
 });
 
@@ -199,6 +210,7 @@ describe("budget planner authorization routes", () => {
     );
     expect(body.data).toMatchObject({ authorizedHours: "120.0000", internalRate: null, agencyRate: null });
     expect(JSON.stringify(body)).not.toMatch(/3000|2800|21\.0000|25\.0000|23\.0000/);
+    expectNoFinancialConfiguration(body.data);
   });
 
   it("rejects a planner's dollar or rate fields before any write", async () => {
@@ -250,6 +262,7 @@ describe("budget planner authorization routes", () => {
     );
     expect(body.data.internalRate).toBeNull();
     expect(body.data.authorizedDollars).toBeNull();
+    expectNoFinancialConfiguration(body.data);
   });
 
   it("revises or cancels an hour authorization but rejects financial revisions", async () => {
@@ -262,6 +275,7 @@ describe("budget planner authorization routes", () => {
       { params: Promise.resolve({ id: AUTHORIZATION_ID }) },
     );
     expect(revised.status).toBe(200);
+    expectNoFinancialConfiguration((await revised.json()).data);
     expect(mocks.reviseAuthorization).toHaveBeenCalledWith(
       expect.anything(),
       AUTHORIZATION_ID,
@@ -288,6 +302,7 @@ describe("budget planner authorization routes", () => {
       { params: Promise.resolve({ id: AUTHORIZATION_ID }) },
     );
     expect(cancelled.status).toBe(200);
+    expectNoFinancialConfiguration((await cancelled.json()).data);
     expect(mocks.cancelAuthorization).toHaveBeenCalled();
   });
 
@@ -309,6 +324,9 @@ describe("budget planner authorization routes", () => {
     expect(response.status).toBe(201);
     expect(mocks.canCreateHourProgramBudget).not.toHaveBeenCalled();
     expect(mocks.createProgramBudget).toHaveBeenCalled();
-    expect((await response.json()).data.agencyRate).toBe("25.0000");
+    expect((await response.json()).data).toMatchObject({
+      agencyRate: "25.0000", paymentRecipient: "employee",
+      rateScope: "per_individual", rateBasis: "individual_override", allowIndividualRateOverride: true,
+    });
   });
 });

@@ -25,10 +25,10 @@ export async function GET(
   try {
     const found = await accessibleClassInvoice(id, "manage");
     if ("error" in found) return found.error as Response;
-    if (found.invoice.status !== "issued") {
-      return jsonError("Only issued class invoices can have reimbursement cover sheets.", 409);
-    }
     const preview = new URL(request.url).searchParams.get("preview") === "1";
+    if (found.invoice.status !== "issued" && !(preview && found.invoice.status === "draft")) {
+      return jsonError("Preview a draft cover sheet, or issue the invoice before downloading its finalized cover sheet.", 409);
+    }
     const profile = preview
       ? await getClassReimbursementProfile(found.access.pool, found.invoice.individualId)
       : await getClassCoverSheetSnapshot(found.access.pool, found.invoice.id);

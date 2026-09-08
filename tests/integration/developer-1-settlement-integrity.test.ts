@@ -295,7 +295,8 @@ suite("Developer 1 settlement integrity regressions (real PostgreSQL)", () => {
     // Withdrawing check verification immediately removes its current due from
     // portal totals, even before the next refresh processes the source change.
     const portal = await directEmployeeSummaries(pool, portalContext, "2026-08");
-    expect(portal[0].giveBack).toMatchObject({ dueThisMonth: "0.0000", remaining: "0.0000", collectedThisMonth: "2.0000" });
+    expect(portal[0].giveBack).toMatchObject({ dueThisMonth: null, remaining: null,
+      dueStatus: "Source review required", balanceStatus: "Source review required", collectedThisMonth: "2.0000" });
     const profile = await getEmployeeMoneyProfile(pool, employeeId);
     expect(profile.roots).toHaveLength(0);
     expect(profile.events).toHaveLength(1);

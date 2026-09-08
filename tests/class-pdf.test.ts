@@ -114,6 +114,13 @@ describe("class PDF generation", () => {
     expect(pdf.getForm().getFields()).toEqual([]);
   });
 
+  it("marks pre-issue cover-sheet previews as drafts", async () => {
+    const draft = { ...invoice(), status: "draft" as const };
+    const pdf = await PDFDocument.load(await buildClassCoverSheetPdf(draft, profile));
+    expect(pdf.getTitle()).toBe("DRAFT - Reimbursement application 8514");
+    expect(pdf.getPageCount()).toBe(1);
+  });
+
   it("preserves Unicode names and activities without failing PDF generation", async () => {
     const unicodeInvoice = invoice(1);
     unicodeInvoice.billToName = "שלום לוי";

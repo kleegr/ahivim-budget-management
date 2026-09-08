@@ -90,8 +90,12 @@ test.describe("Masser statement document navigation", () => {
         await expect(main.getByRole("heading", { level: 1, name: "Linked Individual", exact: true })).toBeVisible();
         await expect(main.getByText("Source review required", { exact: true })).toBeVisible();
         await expect(main.getByText("Approved monthly plan", { exact: true }).locator("..")).toContainText("$260.00");
-        for (const label of ["Remaining in plan period", "Recorded over plan period", "Credit"]) {
-          await expect(main.getByText(label, { exact: true }).locator("..")).toContainText("$0.00");
+        await expect(main.getByText("Recorded over plan period", { exact: true }).locator("..")).toContainText("$0.00");
+        for (const label of ["Remaining in plan period", "Credit"]) {
+          const metric = main.getByText(label, { exact: true }).locator("..");
+          await expect(metric).toContainText("Unavailable");
+          await expect(metric).toContainText("Source review required");
+          await expect(metric).not.toContainText("$0.00");
         }
         expect(await financialFacts()).toEqual(before);
         expect(errors).toEqual([]);

@@ -6,6 +6,7 @@ import {
   E2E_CLASS_DRAFT_INVOICE,
   E2E_CLASS_ISSUED_INVOICE,
   E2E_CLASS_MONTH,
+  LINKED_INDIVIDUAL_ID,
   REPRESENTATIVE_ACCOUNTS,
   passwordFor,
   type RepresentativeAccount,
@@ -13,6 +14,7 @@ import {
 
 const classBilling = REPRESENTATIVE_ACCOUNTS.find((account) => account.preset === "class_billing")!;
 const budgetPlanner = REPRESENTATIVE_ACCOUNTS.find((account) => account.preset === "budget_planner")!;
+const owner = REPRESENTATIVE_ACCOUNTS.find((account) => account.preset === "owner")!;
 
 async function signIn(page: Page, account: RepresentativeAccount): Promise<void> {
   await page.goto("/signin");
@@ -57,6 +59,7 @@ async function exerciseClassAndDocumentFlow(
     await expect(records.filter({ hasText: E2E_CLASS_BUDGET_LABEL }).first()).toBeVisible();
     await expect(records.filter({ hasText: E2E_CLASS_DRAFT_INVOICE }).first()).toBeVisible();
     await expect(records.filter({ hasText: E2E_CLASS_ISSUED_INVOICE }).first()).toBeVisible();
+    await expect(records.filter({ hasText: E2E_CLASS_ISSUED_INVOICE }).first().getByRole("button", { name: "Void invoice", exact: true })).toBeVisible();
     await expect(page.locator("#main").getByRole("alert")).toHaveCount(0);
     await expectNoHorizontalOverflow(page);
 
@@ -109,6 +112,108 @@ for (const viewport of [
 ]) {
   test(`class billing opens seeded invoices and the truthful PDF editor at ${viewport.name} size`, async ({ browser }) => {
     await exerciseClassAndDocumentFlow(browser, viewport);
+  });
+}
+
+for (const viewport of [
+  { name: "desktop", width: 1365, height: 900, month: "2027-05" },
+  { name: "phone", width: 390, height: 844, month: "2028-01" },
+]) {
+  test(`class allowance, draft previews, issue, separate receipt and void at ${viewport.name} size`, async ({ browser }) => {
+    test.setTimeout(120_000);
+    const context = await browser.newContext({ baseURL: BASE_URL, viewport });
+    const ownerContext = await browser.newContext({ baseURL: BASE_URL });
+    const page = await context.newPage();
+    const ownerPage = await ownerContext.newPage();
+    const invoiceNumber = `E2E-LIFECYCLE-${viewport.name}`;
+    const label = `E2E lifecycle ${viewport.name} allowance`;
+    try {
+      await signIn(page, classBilling);
+      await page.goto(`/classes?month=${viewport.month}`);
+      await page.getByRole("button", { name: "Allowance", exact: true }).click();
+      const allowance = page.getByRole("dialog");
+      await allowance.getByRole("combobox", { name: "Individual", exact: true }).selectOption(LINKED_INDIVIDUAL_ID);
+      await allowance.getByLabel("Label", { exact: true }).fill(label);
+      await allowance.getByLabel("Starts", { exact: true }).fill(`${viewport.month}-01`);
+      await allowance.getByLabel("Ends", { exact: true }).fill(`${viewport.month}-31`);
+      await allowance.getByLabel("Authorized amount").fill("20000");
+      const budgetResponse = page.waitForResponse((response) => response.url().endsWith("/api/classes/budgets") && response.request().method() === "POST");
+      await allowance.getByRole("button", { name: "Save", exact: true }).click();
+      const budgetResult = await budgetResponse;
+      expect(budgetResult.status()).toBe(201);
+      const budget = (await budgetResult.json()).data;
+      await expect(allowance).toHaveCount(0);
+      const record = (viewport.width < 1024 ? page.locator("article") : page.getByRole("row")).filter({ hasText: label }).first();
+      await record.getByRole("button", { name: "Draft", exact: true }).click();
+      const builder = page.getByRole("dialog");
+      await builder.getByLabel("Invoice number", { exact: true }).fill(invoiceNumber);
+      const dates = builder.getByLabel("Service date", { exact: true }).filter({ visible: true });
+      await expect(dates).toHaveCount(22);
+      for (const value of await dates.evaluateAll((inputs) => inputs.map((input) => (input as HTMLInputElement).value))) {
+        expect(value.startsWith(viewport.month)).toBe(true);
+        expect(new Date(`${value}T00:00:00Z`).getUTCDay()).not.toBe(6);
+      }
+      // Both selected months begin on Saturday; adding a date must still be eligible.
+      await builder.getByRole("button", { name: "Add date", exact: true }).click();
+      expect(await dates.last().inputValue()).toBe(`${viewport.month}-02`);
+      await builder.getByRole("button", { name: "22 dates", exact: true }).click();
+      await expect(dates).toHaveCount(22);
+      const draftResponse = page.waitForResponse((response) => response.url().endsWith("/api/classes/invoices") && response.request().method() === "POST");
+      await builder.getByRole("button", { name: "Save draft", exact: true }).click();
+      const savedDraftResponse = await draftResponse;
+      expect(savedDraftResponse.status()).toBe(201);
+      const draft = (await savedDraftResponse.json()).data;
+      await expect(builder).toHaveCount(0);
+      const readBudget = async () => (await (await page.request.get(`/api/classes/budgets/${budget.id}`)).json()).data;
+      expect(await readBudget()).toMatchObject({ consumedAmount: "0.0000", remainingAmount: "20000.0000" });
+      const preview = await page.request.get(`/api/classes/invoices/${draft.id}/pdf?preview=1`);
+      expect(preview.status()).toBe(200);
+      expect((await PDFDocument.load(await preview.body())).getTitle()).toBe(`DRAFT - Invoice ${invoiceNumber}`);
+      await record.getByRole("button", { name: "Preview draft cover sheet", exact: true }).click();
+      const cover = page.getByRole("dialog");
+      await cover.getByLabel("Listed in Life Plan").check();
+      await cover.getByLabel("Form completed by").fill("Synthetic authorized representative");
+      await cover.getByRole("button", { name: "Save profile", exact: true }).click();
+      await expect(cover.getByRole("status")).toHaveText("Saved");
+      const coverPreview = await page.request.get(`/api/classes/invoices/${draft.id}/cover-sheet?preview=1`);
+      expect(coverPreview.status()).toBe(200);
+      expect((await PDFDocument.load(await coverPreview.body())).getTitle()).toBe(`DRAFT - Reimbursement application ${invoiceNumber}`);
+      expect((await page.request.post(`/api/classes/invoices/${draft.id}/cover-sheet`, { data: {} })).status()).toBe(409);
+      await page.keyboard.press("Escape");
+      await record.getByRole("button", { name: "Issue", exact: true }).click();
+      await expect(record.getByRole("button", { name: "Void invoice", exact: true })).toBeVisible();
+      expect(await readBudget()).toMatchObject({ consumedAmount: "3300.0000", remainingAmount: "16700.0000" });
+      expect((await page.request.post(`/api/classes/invoices/${draft.id}/issue`, { data: {} })).status()).toBe(409);
+      const issuedPdf = await page.request.get(`/api/classes/invoices/${draft.id}/pdf`);
+      expect(issuedPdf.status()).toBe(200);
+      expect((await PDFDocument.load(await issuedPdf.body())).getTitle()).toBe(`Invoice ${invoiceNumber}`);
+      expect((await page.request.post(`/api/classes/invoices/${draft.id}/cover-sheet`, { data: {} })).status()).toBe(200);
+      expect((await page.request.get(`/api/classes/invoices/${draft.id}/cover-sheet`)).status()).toBe(200);
+
+      const receiptInput = { serviceDate: draft.invoiceDate, sourceType: "class", sourceRef: invoiceNumber, grossAmount: "3300", notes: "Synthetic actual payment" };
+      expect((await page.request.post("/api/agency-financials/income", { data: receiptInput })).status()).toBe(403);
+      await signIn(ownerPage, owner);
+      const receiptResponse = await ownerPage.request.post("/api/agency-financials/income", { data: receiptInput });
+      expect(receiptResponse.status()).toBe(201);
+      const receipt = (await receiptResponse.json()).data;
+      // The seeded approved 75% split takes precedence over ad-hoc assumptions.
+      expect(receipt).toMatchObject({ individualId: LINKED_INDIVIDUAL_ID, agencyAmount: "2475.0000", individualAmount: "825.0000" });
+      expect(await readBudget()).toMatchObject({ consumedAmount: "3300.0000", remainingAmount: "16700.0000" });
+
+      await record.getByRole("button", { name: "Void invoice", exact: true }).click();
+      const reason = page.getByRole("dialog");
+      await reason.getByLabel("Reason", { exact: true }).fill("Synthetic invoice void acceptance");
+      await reason.getByRole("button", { name: "Void invoice", exact: true }).click();
+      await expect(reason).toHaveCount(0);
+      expect(await readBudget()).toMatchObject({ consumedAmount: "0.0000", remainingAmount: "20000.0000" });
+      expect((await page.request.post(`/api/classes/invoices/${draft.id}/void`, { data: { reason: "Repeated void acceptance" } })).status()).toBe(409);
+      expect((await ownerPage.request.post(`/api/agency-financials/income/${receipt.id}/void`, { data: { reason: "Synthetic payment returned" } })).status()).toBe(200);
+      await expectNoHorizontalOverflow(page);
+      await expect(page.locator("#main").getByRole("alert")).toHaveCount(0);
+    } finally {
+      await context.close();
+      await ownerContext.close();
+    }
   });
 }
 

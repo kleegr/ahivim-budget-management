@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import { CalendarX2, Pencil, Plus, Save, Search } from "lucide-react";
-import { useRouter } from "next/navigation";
 
 import { EmptyState, Hours, StatusBadge, Table, Td, Th, Tr } from "@/components/ui";
 import type { PlanningAssignmentRow } from "@/lib/data/planning-queries";
@@ -60,7 +59,6 @@ export default function AssignmentManager({
   canManage?: boolean;
   showAllowedHours?: boolean;
 }) {
-  const router = useRouter();
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<PlanningAssignmentRow | "new" | null>(null);
   const [draft, setDraft] = useState<AssignmentDraft>(EMPTY);
@@ -136,7 +134,7 @@ export default function AssignmentManager({
       return;
     }
     setEditing(null);
-    router.refresh();
+    window.location.reload();
   };
 
   const endAssignment = async () => {
@@ -157,7 +155,7 @@ export default function AssignmentManager({
       return;
     }
     setEditing(null);
-    router.refresh();
+    window.location.reload();
   };
 
   return (

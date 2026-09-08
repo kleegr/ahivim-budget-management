@@ -91,7 +91,7 @@ const SETTLEMENT_COLUMNS: ColumnDef<SettlementRow>[] = [
   { key: "date", label: "Date", kind: "date", width: 142, accessor: (row) => rowDate(row) },
   { key: "original", label: "Original", kind: "money", width: 112, align: "right", accessor: (row) => row.originalAmount },
   { key: "applied", label: "Applied", kind: "money", width: 112, align: "right", accessor: (row) => row.appliedAmount },
-  { key: "balance", label: "Balance", kind: "money", width: 112, align: "right", accessor: (row) => row.balance },
+  { key: "balance", label: "Balance", kind: "money", width: 112, align: "right", accessor: (row) => row.reviewRequired ? null : row.balance },
   {
     key: "state",
     label: "State",
@@ -363,7 +363,17 @@ function CalculationDetail({ row }: { row: SettlementRow }) {
   );
 }
 
-function SettlementCell({ row, column }: { row: SettlementRow; column: ColumnDef<SettlementRow> }) {
+function SourceReviewNextStep({ row, canSeeEmployeeDeals, canManageFinancialPlans }: { row: SettlementRow; canSeeEmployeeDeals: boolean; canManageFinancialPlans: boolean }) {
+  if (row.personType === "employee" && canSeeEmployeeDeals) {
+    return <Link href={`/employees/${row.personId}?view=deal`} className="mt-1 block text-xs text-[var(--color-primary)] underline">Review employee deal</Link>;
+  }
+  if (row.personType === "individual" && canManageFinancialPlans) {
+    return <Link href={`/individuals/${row.personId}?view=financial`} className="mt-1 block text-xs text-[var(--color-primary)] underline">Review Financial Setup</Link>;
+  }
+  return <p className="mt-1 text-xs text-[var(--color-ink-soft)]">Ask an administrator to review {row.personName}&apos;s {row.personType === "employee" ? "employee deal and payroll check" : "Financial Setup"}, then refresh.</p>;
+}
+
+function SettlementCell({ row, column, canSeeEmployeeDeals, canManageFinancialPlans }: { row: SettlementRow; column: ColumnDef<SettlementRow>; canSeeEmployeeDeals: boolean; canManageFinancialPlans: boolean }) {
   switch (column.key) {
     case "person":
       return (
@@ -381,6 +391,7 @@ function SettlementCell({ row, column }: { row: SettlementRow; column: ColumnDef
         <div>
           <span className="block truncate font-medium" title={row.label}>{row.label}</span>
           <span className="text-xs text-[var(--color-ink-faint)]">{row.transactionCount} transaction{row.transactionCount === 1 ? "" : "s"}</span>
+          {row.reviewRequired ? <SourceReviewNextStep row={row} canSeeEmployeeDeals={canSeeEmployeeDeals} canManageFinancialPlans={canManageFinancialPlans} /> : null}
         </div>
       );
     case "direction":
@@ -402,11 +413,13 @@ function SettlementCell({ row, column }: { row: SettlementRow; column: ColumnDef
     case "applied":
       return <span className="text-[var(--color-ink-soft)]">{formatMoney(row.appliedAmount)}</span>;
     case "balance":
-      return <span className={`font-semibold ${row.state === "credit" ? "text-[var(--color-primary)]" : ""}`}>{formatMoney(row.balance)}</span>;
+      return row.reviewRequired
+        ? <span className="font-semibold text-[var(--color-warn)]">Unavailable</span>
+        : <span className={`font-semibold ${row.state === "credit" ? "text-[var(--color-primary)]" : ""}`}>{formatMoney(row.balance)}</span>;
     case "state":
       return (
         <div>
-          <StateBadge state={row.state} />
+          {row.reviewRequired ? <span className="text-xs font-semibold text-[var(--color-warn)]">Source review required</span> : <StateBadge state={row.state} />}
           {row.voidReason ? <span className="mt-1 block truncate text-xs text-[var(--color-ink-faint)]" title={row.voidReason}>{row.voidReason}</span> : null}
         </div>
       );
@@ -456,9 +469,11 @@ function SummaryBand({
   onSelect: (queue: QueueFilter) => void;
 }) {
   const actionableCredits = data.rows.filter((source) => (
-    source.state === "credit"
+    !source.reviewRequired
+    && source.state === "credit"
     && data.rows.some((target) => (
-      target.id !== source.id
+      !target.reviewRequired
+      && target.id !== source.id
       && target.personType === source.personType
       && target.personId === source.personId
       && target.direction === source.direction
@@ -467,12 +482,22 @@ function SummaryBand({
     ))
   )).length;
   const needsAction = data.summary.openCount + data.summary.partialCount + actionableCredits;
+  const activeRows = data.rows.filter((row) => row.state !== "void");
+  const metric = (rows: SettlementRow[], value: string, hint: string) => {
+    if (data.freshness.dirty) return { value: "Unavailable", hint: "Refresh needed" };
+    const heldCount = rows.filter((row) => row.reviewRequired).length;
+    if (heldCount === 0) return { value, hint };
+    const excluded = `${heldCount} held ${heldCount === 1 ? "item" : "items"} excluded`;
+    return heldCount === rows.length
+      ? { value: "Unavailable", hint: `${heldCount} ${heldCount === 1 ? "item requires" : "items require"} source review` }
+      : { value, hint: `Verified subtotal · ${excluded}` };
+  };
   const metrics = [
-    { queue: "open" as const, label: "Open work", value: needsAction.toLocaleString(), hint: `${data.summary.partialCount} partially completed`, icon: <CreditCard className="h-4 w-4" aria-hidden /> },
-    { queue: "payable" as const, label: "Agency pays", value: formatMoney(data.summary.agencyOwes), hint: "Employee payments", icon: <ArrowUpRight className="h-4 w-4" aria-hidden /> },
-    { queue: "receivable" as const, label: "Agency receives", value: formatMoney(data.summary.employeesOwe), hint: "Employee give-backs", icon: <ArrowDownLeft className="h-4 w-4" aria-hidden /> },
-    { queue: "reserve" as const, label: "Set aside", value: formatMoney(data.summary.reservesToSetAside), hint: "Individual annual reserves", icon: <PiggyBank className="h-4 w-4" aria-hidden /> },
-    { queue: "credit" as const, label: "Credits", value: formatMoney(data.summary.credits), hint: `${actionableCredits} ready to apply`, icon: <BadgeCheck className="h-4 w-4" aria-hidden /> },
+    { queue: "open" as const, label: "Open work", ...metric(activeRows, needsAction.toLocaleString(), `${data.summary.partialCount} partially completed`), icon: <CreditCard className="h-4 w-4" aria-hidden /> },
+    { queue: "payable" as const, label: "Agency pays", ...metric(activeRows.filter((row) => row.direction === "payable"), formatMoney(data.summary.agencyOwes), "Employee payments"), icon: <ArrowUpRight className="h-4 w-4" aria-hidden /> },
+    { queue: "receivable" as const, label: "Agency receives", ...metric(activeRows.filter((row) => row.direction === "receivable"), formatMoney(data.summary.employeesOwe), "Employee give-backs"), icon: <ArrowDownLeft className="h-4 w-4" aria-hidden /> },
+    { queue: "reserve" as const, label: "Set aside", ...metric(activeRows.filter((row) => row.direction === "reserve"), formatMoney(data.summary.reservesToSetAside), "Individual annual reserves"), icon: <PiggyBank className="h-4 w-4" aria-hidden /> },
+    { queue: "credit" as const, label: "Credits", ...metric(activeRows.filter((row) => row.state === "credit" || row.reviewRequired), formatMoney(data.summary.credits), `${actionableCredits} ready to apply`), icon: <BadgeCheck className="h-4 w-4" aria-hidden /> },
   ];
 
   return (
@@ -487,7 +512,7 @@ function SummaryBand({
         >
           <p className={`flex items-center gap-2 text-xs font-semibold ${active === metric.queue ? "text-[var(--color-primary)]" : "text-[var(--color-ink-soft)]"}`}>{metric.icon}{metric.label}</p>
           <p className="tnum mt-1 truncate text-lg font-semibold text-[var(--color-ink)]">{metric.value}</p>
-          <p className="mt-0.5 truncate text-xs text-[var(--color-ink-faint)]">{metric.hint}</p>
+          <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">{metric.hint}</p>
         </button>
       ))}
     </section>
@@ -576,6 +601,8 @@ function ItemsTable({
   grid,
   rows,
   canManage,
+  canSeeEmployeeDeals,
+  canManageFinancialPlans,
   selected,
   expanded,
   onToggle,
@@ -589,6 +616,8 @@ function ItemsTable({
   grid: UseGridResult<SettlementRow, unknown>;
   rows: SettlementRow[];
   canManage: boolean;
+  canSeeEmployeeDeals: boolean;
+  canManageFinancialPlans: boolean;
   selected: ReadonlySet<string>;
   expanded: ReadonlySet<string>;
   onToggle: (id: string) => void;
@@ -682,7 +711,7 @@ function ItemsTable({
                     const numeric = isNumericKind(column.kind) || column.align === "right";
                     return (
                       <td key={column.key} className={`overflow-hidden px-3 py-2 align-top ${numeric ? "tnum text-right" : "text-left"}`}>
-                        <SettlementCell row={row} column={column} />
+                        <SettlementCell row={row} column={column} canSeeEmployeeDeals={canSeeEmployeeDeals} canManageFinancialPlans={canManageFinancialPlans} />
                       </td>
                     );
                   })}
@@ -732,6 +761,7 @@ export default function SettlementDashboard({
   canManage,
   canManagePayrollChecks,
   canSeeEmployeeDeals,
+  canManageFinancialPlans = false,
   canSeeTransactions,
   initialPersonName,
   initialPersonId,
@@ -743,6 +773,7 @@ export default function SettlementDashboard({
   canManage: boolean;
   canManagePayrollChecks: boolean;
   canSeeEmployeeDeals: boolean;
+  canManageFinancialPlans?: boolean;
   canSeeTransactions: boolean;
   initialPersonName?: string | null;
   initialPersonId?: string | null;
@@ -1088,6 +1119,8 @@ export default function SettlementDashboard({
                 grid={grid}
                 rows={grid.sorted}
                 canManage={canRecord}
+                canSeeEmployeeDeals={canSeeEmployeeDeals}
+                canManageFinancialPlans={canManageFinancialPlans}
                 selected={selected}
                 expanded={expanded}
                 onToggle={toggleSelected}

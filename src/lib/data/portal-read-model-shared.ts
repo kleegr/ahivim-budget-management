@@ -102,10 +102,12 @@ export interface PortalEmployeeSummary {
   directPay: PortalEmployeeDirectPaySummary[] | null;
   giveBack: {
     month: string;
-    dueThisMonth: string;
+    dueThisMonth: string | null;
     collectedThisMonth: string;
-    remaining: string;
-    credit: string;
+    balanceStatus?: string;
+    dueStatus?: string;
+    remaining: string | null;
+    credit: string | null;
     recentActivity: PortalEmployeeGiveBackActivity[];
   } | null;
   upcomingSchedule: PortalUpcomingSchedule | null;
@@ -134,9 +136,11 @@ export interface PortalAgencyEmployeeSummary {
   payrollNetThisMonth: string | null;
   checks: PortalPayrollCheckSummary[] | null;
   giveBack: {
-    dueThisMonth: string;
+    dueThisMonth: string | null;
     collectedThisMonth: string;
-    remaining: string;
+    balanceStatus?: string;
+    dueStatus?: string;
+    remaining: string | null;
   } | null;
 }
 
@@ -159,6 +163,7 @@ export interface PortalAgencySummary {
   payrollGrossThisMonth: string | null;
   payrollNetThisMonth: string | null;
   giveBackRemaining: string | null;
+  giveBackBalanceStatus?: string;
   individuals: PortalAgencyIndividualSummary[] | null;
   employees: PortalAgencyEmployeeSummary[] | null;
 }
@@ -236,6 +241,10 @@ export interface PayrollCheckRow {
 }
 
 export interface GiveBackRow {
+  held_count?: string;
+  held_month_count?: string;
+  verified_month_count?: string;
+  verified_count?: string;
   scope_id: string;
   due_this_month: string;
   collected_this_month: string;
@@ -278,7 +287,8 @@ export interface AgencyFinancialRow {
   agency_paid_this_month: string | null;
   payroll_gross_this_month: string | null;
   payroll_net_this_month: string | null;
-  giveback_remaining: string | null;
+  giveback_remaining?: string | null;
+  giveback_position?: { remaining: string; held: number; verified: number };
 }
 
 export interface AgencyIndividualMemberRow {
@@ -321,6 +331,10 @@ export interface AgencyEmployeeCheckRow {
 }
 
 export interface AgencyEmployeeGiveBackRow {
+  held_count?: string;
+  held_month_count?: string;
+  verified_month_count?: string;
+  verified_count?: string;
   agency_id: string;
   person_id: string;
   due_this_month: string;

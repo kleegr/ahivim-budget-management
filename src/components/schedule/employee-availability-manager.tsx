@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { AlertTriangle, Archive, CalendarOff, Clock3, Plus } from "lucide-react";
 import { EmptyState, Table, Td, Th, Tr } from "@/components/ui";
 import type {
@@ -276,12 +275,13 @@ export default function EmployeeAvailabilityManager({
                           <p className="font-semibold">{dateLabel(conflict.sessionDate)} · {conflict.startTime ? `${prettyTime(conflict.startTime)}${conflict.endTime ? ` to ${prettyTime(conflict.endTime)}` : ""}` : `${conflict.durationHours} hours`}</p>
                           <p className="truncate text-xs text-[var(--color-ink-soft)]">{conflict.programName} · {conflict.individualNames.join(", ") || "Individual not assigned"}</p>
                         </div>
-                        <Link
+                        {/* Load fresh calendar state even if its prefetched route is still pending. */}
+                        <a
                           className="btn btn-sm btn-secondary shrink-0"
                           href={`/schedule?view=calendar&calendarView=day&date=${encodeURIComponent(conflict.sessionDate)}&employeeId=${encodeURIComponent(employeeId)}&sessionId=${encodeURIComponent(conflict.id)}`}
                         >
                           Review session
-                        </Link>
+                        </a>
                       </li>
                     ))}
                   </ul>

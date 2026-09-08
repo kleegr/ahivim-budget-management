@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { generateMonthlyClassDates } from "@/lib/business/class-invoicing";
 import { getClassBudget } from "@/lib/data/class-invoices";
+import { getAgencyFinancialReport } from "@/lib/data/agency-financial-report";
 import {
   getClassCoverSheetSnapshot,
   getClassReimbursementProfile,
@@ -22,6 +23,7 @@ import {
   saveClassReimbursementProfile,
 } from "@/lib/manage/class-reimbursement-profiles";
 import { createIndividual } from "@/lib/manage/individuals";
+import { createManualIncomeEntry, voidManualIncomeEntry } from "@/lib/manage/agency-financials";
 import {
   closeTestPool,
   hasTestDatabase,
@@ -181,6 +183,12 @@ suite("class invoice ledger (real PostgreSQL)", () => {
     expect(draft.status).toBe("draft");
     expect(draft.lines).toHaveLength(22);
     expect(draft.totalAmount).toBe("3300.0000");
+    expect(await getClassBudget(pool, budget.id)).toMatchObject({
+      consumedAmount: "0.0000", remainingAmount: "20000.0000",
+    });
+    expect((await pool.query(`SELECT 1 FROM program_budget_events WHERE source_id = $1`, [draft.id])).rows)
+      .toHaveLength(0);
+    expect((await getAgencyFinancialReport(pool, "2026-08")).totals.income.classes).toBe("0.0000");
 
     const manual = await pool.connect();
     try {
@@ -219,6 +227,29 @@ suite("class invoice ledger (real PostgreSQL)", () => {
         WHERE source_type = 'class_invoice' AND source_id = $1`,
       [draft.id],
     )).rows).toEqual([{ event_type: "consume", amount: "3300.0000" }]);
+    await expect(issueClassInvoice(pool, draft.id, ACTOR))
+      .resolves.toMatchObject({ ok: false, code: "immutable" });
+    const beforeReceipt = await getAgencyFinancialReport(pool, "2026-08");
+    expect(beforeReceipt.totals.income.classes).toBe("0.0000");
+    expect(beforeReceipt.classInvoices.find((invoice) => invoice.id === draft.id))
+      .toMatchObject({ countedInIncome: false });
+
+    const receipt = unwrap(await createManualIncomeEntry(pool, {
+      serviceDate: "2026-08-03", sourceType: "class", sourceRef: "8513",
+      grossAmount: "3300", agencySharePercent: "0.80",
+      notes: "Actual payment received for the issued invoice",
+    }, ACTOR));
+    await expect(createManualIncomeEntry(pool, {
+      serviceDate: "2026-08-03", sourceType: "class", sourceRef: "8513",
+      grossAmount: "3300", agencySharePercent: "0.80",
+    }, ACTOR)).resolves.toMatchObject({ ok: false, code: "conflict" });
+    const afterReceipt = await getAgencyFinancialReport(pool, "2026-08");
+    expect(afterReceipt.totals.income.classes).toBe("3300.0000");
+    expect(afterReceipt.manualIncome.find((entry) => entry.id === receipt.id))
+      .toMatchObject({ countedInIncome: true, agencyAmount: "2640.0000", individualAmount: "660.0000" });
+    expect(await getClassBudget(pool, budget.id)).toMatchObject({ consumedAmount: "3300.0000" });
+    expect((await pool.query(`SELECT 1 FROM program_budget_events WHERE source_id = $1`, [receipt.id])).rows)
+      .toHaveLength(0);
 
     await expect(updateClassInvoiceDraft(pool, draft.id, { notes: "too late" }, ACTOR))
       .resolves.toMatchObject({ ok: false, code: "immutable" });
@@ -258,6 +289,16 @@ suite("class invoice ledger (real PostgreSQL)", () => {
       { event_type: "consume", amount: "3300.0000" },
       { event_type: "reverse", amount: "-3300.0000" },
     ]);
+    await expect(voidClassInvoice(pool, draft.id, ACTOR, "Repeated void request"))
+      .resolves.toMatchObject({ ok: false, code: "immutable" });
+    expect((await getAgencyFinancialReport(pool, "2026-08")).totals.income.classes).toBe("3300.0000");
+    unwrap(await voidManualIncomeEntry(pool, receipt.id, ACTOR, "Payment returned after the invoice was voided"));
+    expect((await getAgencyFinancialReport(pool, "2026-08")).totals.income.classes).toBe("0.0000");
+    expect(await getClassBudget(pool, budget.id)).toMatchObject({
+      consumedAmount: "0.0000", remainingAmount: "20000.0000",
+    });
+    expect((await pool.query(`SELECT event_type FROM class_budget_ledger WHERE class_invoice_id = $1`, [draft.id])).rows)
+      .toHaveLength(2);
     await expect(pool.query(
       `UPDATE class_budget_ledger SET amount = 1 WHERE class_invoice_id = $1`,
       [draft.id],

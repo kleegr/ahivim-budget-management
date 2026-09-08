@@ -32,6 +32,7 @@ export default async function SettlementsPage({
         canManage: false,
         canManagePayrollChecks: false,
         canSeeEmployeeDeals: false,
+        canManageFinancialPlans: false,
         canSeeTransactions: false,
       };
     }
@@ -45,6 +46,7 @@ export default async function SettlementsPage({
         && scope.canSeeCheckNet
         && scope.canSeeTaxes,
       canSeeEmployeeDeals: scope.canSeeEmployeeDeals,
+      canManageFinancialPlans: user.role !== "viewer" && scope.full && scope.canSeeBudgets,
       canSeeTransactions: scope.canSeeTransactions,
     };
   });
@@ -92,6 +94,7 @@ export default async function SettlementsPage({
           canManage={result.data.canManage}
           canManagePayrollChecks={result.data.canManagePayrollChecks}
           canSeeEmployeeDeals={result.data.canSeeEmployeeDeals}
+          canManageFinancialPlans={result.data.canManageFinancialPlans}
           canSeeTransactions={result.data.canSeeTransactions}
           initialPersonName={initialPersonName}
           initialPersonId={requestedPersonId}

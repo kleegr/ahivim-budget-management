@@ -38,6 +38,13 @@ function present<T>(value: T | null): value is T {
   return value !== null;
 }
 
+function PortalBalance({ value, status }: { value: string | null; status?: string }) {
+  return <span>
+    {value === null ? <Plain value="Unavailable" /> : <Money value={value} />}
+    {status ? <span className="mt-1 block text-xs font-normal text-[var(--color-warn)]">{status}. Ask your agency administrator to review the source.</span> : null}
+  </span>;
+}
+
 function monthLabel(month: string): string {
   return new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
     .format(new Date(`${month}-01T00:00:00Z`));
@@ -321,13 +328,13 @@ function AgencyEmployeeMember({
             ? { label: `Check net (${selectedMonth})`, value: <Money value={employee.payrollNetThisMonth} /> }
             : null,
           employee.giveBack !== null
-            ? { label: `Give-back due (${selectedMonth})`, value: <Money value={employee.giveBack.dueThisMonth} /> }
+            ? { label: `Give-back due (${selectedMonth})`, value: <PortalBalance value={employee.giveBack.dueThisMonth} status={employee.giveBack.dueStatus} /> }
             : null,
           employee.giveBack !== null
             ? { label: `Collected (${selectedMonth})`, value: <Money value={employee.giveBack.collectedThisMonth} /> }
             : null,
           employee.giveBack !== null
-            ? { label: "Give-back remaining", value: <Money value={employee.giveBack.remaining} /> }
+            ? { label: "Give-back remaining", value: <PortalBalance value={employee.giveBack.remaining} status={employee.giveBack.balanceStatus} /> }
             : null,
         ].filter(present)} />
         {canReadChecks && employee.checks !== null ? employee.checks.length === 0 ? (
@@ -456,7 +463,7 @@ function AgencyAccess({ agency }: { agency: PortalAgencySummary }) {
             : <Money value={agency.payrollGrossThisMonth} />,
         } : null,
         agency.payrollNetThisMonth !== null ? { label: `Check net (${selectedMonth})`, value: <Money value={agency.payrollNetThisMonth} /> } : null,
-        agency.giveBackRemaining !== null ? { label: "Give-back remaining", value: <Money value={agency.giveBackRemaining} /> } : null,
+        agency.giveBackRemaining !== null || agency.giveBackBalanceStatus ? { label: "Give-back remaining", value: <PortalBalance value={agency.giveBackRemaining} status={agency.giveBackBalanceStatus} /> } : null,
       ].filter(present)} />
 
       {accessLabels.length > 0 ? (
@@ -600,10 +607,10 @@ function EmployeeAccess({ employee }: { employee: PortalEmployeeSummary }) {
         fullHref={`/portal/schedule?employeeId=${encodeURIComponent(employee.id)}`}
       />
       {employee.giveBack ? <SummaryGrid items={[
-        { label: `Give-back due (${selectedMonth})`, value: <Money value={employee.giveBack.dueThisMonth} /> },
+        { label: `Give-back due (${selectedMonth})`, value: <PortalBalance value={employee.giveBack.dueThisMonth} status={employee.giveBack.dueStatus} /> },
         { label: `Recorded (${selectedMonth})`, value: <Money value={employee.giveBack.collectedThisMonth} /> },
-        { label: "Give-back remaining", value: <Money value={employee.giveBack.remaining} /> },
-        { label: "Available credit", value: <Money value={employee.giveBack.credit} /> },
+        { label: "Give-back remaining", value: <PortalBalance value={employee.giveBack.remaining} status={employee.giveBack.balanceStatus} /> },
+        { label: "Available credit", value: <PortalBalance value={employee.giveBack.credit} status={employee.giveBack.balanceStatus} /> },
       ]} /> : null}
       {employee.directPay !== null ? employee.directPay.length === 0 ? (
         <EmptyState compact title={`No direct-pay services linked to verified checks for ${selectedMonth}`} icon={<ReceiptText aria-hidden className="h-5 w-5" />} />

@@ -22,7 +22,7 @@ vi.mock("@/lib/manage/class-reimbursement-profiles", () => ({
   createClassCoverSheetSnapshot: vi.fn(),
 }));
 
-import { GET } from "@/app/api/classes/invoices/[id]/cover-sheet/route";
+import { GET, POST } from "@/app/api/classes/invoices/[id]/cover-sheet/route";
 
 const ID = "00000000-0000-4000-8000-000000000001";
 const INDIVIDUAL_ID = "00000000-0000-4000-8000-000000000002";
@@ -60,5 +60,31 @@ describe("class cover-sheet preview", () => {
     expect(response.headers.get("content-disposition")).toContain("attachment");
     expect(mocks.getClassCoverSheetSnapshot).toHaveBeenCalledWith({}, ID);
     expect(mocks.getClassReimbursementProfile).not.toHaveBeenCalled();
+  });
+
+  it("allows a manager to preview a draft before issue without creating a frozen output", async () => {
+    const draft = { ...invoice, status: "draft" };
+    mocks.accessibleClassInvoice.mockResolvedValue({ invoice: draft, access: { pool: {} } });
+    mocks.getClassReimbursementProfile.mockResolvedValue(profile);
+    const response = await GET(new NextRequest(`http://localhost/api/classes/invoices/${ID}/cover-sheet?preview=1`), context);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-disposition")).toContain("inline");
+    expect(mocks.accessibleClassInvoice).toHaveBeenCalledWith(ID, "manage");
+    expect(mocks.buildClassCoverSheetPdf).toHaveBeenCalledWith(draft, profile);
+    expect(mocks.getClassCoverSheetSnapshot).not.toHaveBeenCalled();
+  });
+
+  it.each(["draft", "void"])("blocks finalized downloads and finalization for %s invoices", async (status) => {
+    mocks.accessibleClassInvoice.mockResolvedValue({ invoice: { ...invoice, status }, access: { pool: {} } });
+    expect((await GET(new NextRequest(`http://localhost/api/classes/invoices/${ID}/cover-sheet`), context)).status).toBe(409);
+    expect((await POST(new NextRequest(`http://localhost/api/classes/invoices/${ID}/cover-sheet`, { method: "POST" }), context)).status).toBe(409);
+    expect(mocks.getClassCoverSheetSnapshot).not.toHaveBeenCalled();
+    expect(mocks.buildClassCoverSheetPdf).not.toHaveBeenCalled();
+  });
+
+  it("blocks preview of a void invoice", async () => {
+    mocks.accessibleClassInvoice.mockResolvedValue({ invoice: { ...invoice, status: "void" }, access: { pool: {} } });
+    expect((await GET(new NextRequest(`http://localhost/api/classes/invoices/${ID}/cover-sheet?preview=1`), context)).status).toBe(409);
+    expect(mocks.buildClassCoverSheetPdf).not.toHaveBeenCalled();
   });
 });

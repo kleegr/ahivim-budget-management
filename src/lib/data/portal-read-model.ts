@@ -1,3 +1,4 @@
+import { verifiedBalancePresentation } from "@/lib/business/verified-balance-presentation";
 import type { PgLikePool } from "@/lib/import/commit";
 import { settlementCurrentAmountSql } from "@/lib/data/settlement-eligibility";
 import { toMoney } from "@/lib/money";
@@ -312,8 +313,12 @@ export async function getPortalHomeReadModel(
                        )
                        AND ${agencyPayrollCheckVisibilitySql("checks", "requested.agency_id")}
                   ), 0)::text END AS payroll_net_this_month,
-                  CASE WHEN requested.agency_id = ANY($6::uuid[]) THEN COALESCE((
-                    SELECT sum(GREATEST(obligation.original_amount - COALESCE(events.applied, 0), 0))
+                  CASE WHEN requested.agency_id = ANY($6::uuid[]) THEN (
+                    SELECT jsonb_build_object(
+                      'remaining', COALESCE(sum(GREATEST(obligation.original_amount - COALESCE(events.applied, 0), 0)) FILTER (WHERE ${settlementCurrentAmountSql("obligation")}), 0)::text,
+                      'held', count(*) FILTER (WHERE NOT ${settlementCurrentAmountSql("obligation")}),
+                      'verified', count(*) FILTER (WHERE ${settlementCurrentAmountSql("obligation")})
+                    )
                       FROM settlement_obligations obligation
                       LEFT JOIN LATERAL (
                         SELECT COALESCE(sum(event.amount), 0) AS applied
@@ -321,7 +326,6 @@ export async function getPortalHomeReadModel(
                       ) events ON true
                      WHERE obligation.status = 'active'
                        AND obligation.direction = 'receivable' AND obligation.kind LIKE 'employee_giveback%'
-                       AND ${settlementCurrentAmountSql("obligation")}
                        AND EXISTS (
                          SELECT 1
                            FROM agency_employees membership
@@ -338,7 +342,7 @@ export async function getPortalHomeReadModel(
                                     obligation.period_end))
                        )
                        AND ${agencyGiveBackVisibilitySql("obligation", "requested.agency_id")}
-                  ), 0)::text END AS giveback_remaining
+                  ) END AS giveback_position
              FROM unnest($1::uuid[]) AS requested(agency_id)`,
           [
             financialAgencyIds,
@@ -409,6 +413,7 @@ export async function getPortalHomeReadModel(
     const canReadHours = hourAgencyIds.includes(row.id);
     const canReadDollars = dollarAgencyIds.includes(row.id);
     const financial = agencyFinancials.get(row.id);
+    const giveBackBalance = verifiedBalancePresentation(Number(financial?.giveback_position?.held ?? 0), Number(financial?.giveback_position?.verified ?? 0));
     const rosterCounts = agencyRosterCounts.get(row.id);
     const agencyIndividuals = canReadPeople && !agencySummaryOnly
       ? agencyMembers.individuals.get(row.id) ?? []
@@ -442,7 +447,8 @@ export async function getPortalHomeReadModel(
           : toMoney(financial?.payroll_gross_this_month ?? 0)
         : null,
       payrollNetThisMonth: checkAgencyIds.includes(row.id) ? toMoney(financial?.payroll_net_this_month ?? 0) : null,
-      giveBackRemaining: giveBackAgencyIds.includes(row.id) ? toMoney(financial?.giveback_remaining ?? 0) : null,
+      giveBackRemaining: giveBackAgencyIds.includes(row.id) ? giveBackBalance.amount(financial?.giveback_position?.remaining ?? financial?.giveback_remaining) : null,
+      ...(giveBackAgencyIds.includes(row.id) && giveBackBalance.status ? { giveBackBalanceStatus: giveBackBalance.status } : {}),
       individuals: agencyIndividuals,
       employees: agencyEmployees,
     };

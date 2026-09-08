@@ -4,6 +4,7 @@ import {
   generateClassDatesBetween,
   generateMonthlyClassDates,
   isSaturday,
+  onOrAfterNonSaturday,
   prepareClassInvoiceLines,
 } from "@/lib/business/class-invoicing";
 import { dec } from "@/lib/money";
@@ -29,6 +30,16 @@ describe("class invoice rules", () => {
     expect(dates[0]).toBe("2026-07-02");
     expect(dates.at(-1)).toBe("2026-07-27");
     expect(dates.every((date) => !isSaturday(date))).toBe(true);
+  });
+
+  it("limits generated dates to 22 and stays inside a short allowance", () => {
+    expect(() => generateMonthlyClassDates("2026-07", 23)).toThrow(/22 generated class dates/);
+    expect(() => generateClassDatesBetween("2026-07-01", "2026-07-31", 23))
+      .toThrow(/22 generated class dates/);
+    expect(generateClassDatesBetween("2026-07-25", "2026-07-28"))
+      .toEqual(["2026-07-26", "2026-07-27", "2026-07-28"]);
+    expect(generateClassDatesBetween("2026-07-25", "2026-07-25")).toEqual([]);
+    expect(onOrAfterNonSaturday("2026-07-25")).toBe("2026-07-26");
   });
 
   it("prices 22 one-lesson lines at the configurable $150 default to $3,300", () => {

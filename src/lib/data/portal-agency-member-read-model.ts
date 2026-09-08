@@ -1,5 +1,6 @@
+import { verifiedBalancePresentation } from "@/lib/business/verified-balance-presentation";
 import type { PgLikePool } from "@/lib/import/commit";
-import { settlementCurrentAmountSql } from "@/lib/data/settlement-eligibility";
+import { settlementCurrentAmountSql, settlementGiveBackCoverageSql } from "@/lib/data/settlement-eligibility";
 import { toMoney } from "@/lib/money";
 import {
   AGENCY_PORTAL_HOURS_SCOPE,
@@ -482,6 +483,7 @@ export async function agencyMemberSummaries(
            )
            SELECT membership.agency_id,
                   obligation.employee_id AS person_id,
+                  ${settlementGiveBackCoverageSql("obligation", "$2")},
                   COALESCE(sum(obligation.original_amount) FILTER (
                     WHERE obligation.status = 'active'
                       AND ${settlementCurrentAmountSql("obligation")}
@@ -585,6 +587,8 @@ export async function agencyMemberSummaries(
     const key = agencyPersonKey(person.agency_id, person.person_id);
     const checks = employeeChecks.get(key);
     const giveBack = employeeGiveBack.get(key);
+    const balance = verifiedBalancePresentation(Number(giveBack?.held_count ?? 0), Number(giveBack?.verified_count ?? 0));
+    const dueBalance = verifiedBalancePresentation(Number(giveBack?.held_month_count ?? 0), Number(giveBack?.verified_month_count ?? 0));
     const summary: PortalAgencyEmployeeSummary = {
       id: person.person_id,
       name: person.name,
@@ -601,9 +605,11 @@ export async function agencyMemberSummaries(
         ? agencyPayrollChecks(checks?.checks)
         : null,
       giveBack: memberGiveBack.includes(person.agency_id) ? {
-        dueThisMonth: toMoney(giveBack?.due_this_month ?? 0),
+        dueThisMonth: dueBalance.amount(giveBack?.due_this_month),
         collectedThisMonth: toMoney(giveBack?.collected_this_month ?? 0),
-        remaining: toMoney(giveBack?.remaining ?? 0),
+        ...(balance.status ? { balanceStatus: balance.status } : {}),
+        ...(dueBalance.status ? { dueStatus: dueBalance.status } : {}),
+        remaining: balance.amount(giveBack?.remaining),
       } : null,
     };
     employees.set(person.agency_id, [...(employees.get(person.agency_id) ?? []), summary]);

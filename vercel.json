@@ -3,6 +3,11 @@
   "framework": "nextjs",
   "installCommand": "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-audit --no-fund",
   "buildCommand": "npm run build",
+  "git": {
+    "deploymentEnabled": {
+      "codex/ahivim-final-delivery": false
+    }
+  },
   "crons": [
     { "path": "/api/sync/cron", "schedule": "0 * * * *" }
   ]

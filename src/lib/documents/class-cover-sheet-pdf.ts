@@ -207,7 +207,7 @@ export async function buildClassCoverSheetPdf(
   profile: ClassReimbursementProfile,
 ): Promise<Uint8Array> {
   const document = await PDFDocument.create();
-  document.setTitle(`Reimbursement application ${invoice.invoiceNumber}`);
+  document.setTitle(`${invoice.status === "draft" ? "DRAFT - " : ""}Reimbursement application ${invoice.invoiceNumber}`);
   document.setAuthor("Ahivim");
   document.setCreator("Ahivim Budget Management");
   const [{ regular, bold }, logo] = await Promise.all([
@@ -222,6 +222,9 @@ export async function buildClassCoverSheetPdf(
   ]);
   const page = document.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   drawHeader(page, logo, regular, bold);
+  if (invoice.status === "draft") {
+    page.drawText("DRAFT - NOT ISSUED", { x: MARGIN, y: 569, size: 9, font: bold, color: rgb(0.72, 0.12, 0.12) });
+  }
   drawProfile(page, profile, regular, bold);
   drawAttestation(page, bold);
   const totalY = drawExpenseTable(page, invoice, profile, regular, bold);

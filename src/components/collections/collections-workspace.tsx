@@ -1,5 +1,8 @@
 "use client";
 
+import { reservePresentation } from "@/lib/business/reserve-presentation";
+import { verifiedBalancePresentation } from "@/lib/business/verified-balance-presentation";
+
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { agencyDate } from "@/lib/business/agency-time";
@@ -55,12 +58,19 @@ export function payrollCheckRowsHref(check: Pick<PayrollCheckRow,
   return `/transactions?${params.toString()}`;
 }
 
-function SummaryMetric({ label, value, tone = "normal" }: { label: string; value: string; tone?: "normal" | "good" | "warn" }) {
+function CollectionBalance({ value, held = 0, verified = 0, dirty = false }: { value: string; held?: number; verified?: number; dirty?: boolean }) {
+  const balance = verifiedBalancePresentation(held, verified);
+  const amount = dirty ? null : balance.amount(value);
+  return <span>{amount === null ? "Unavailable" : formatMoney(amount)}{balance.status || dirty ? <span className="block text-xs font-normal text-[var(--color-warn)]">{dirty ? "Refresh needed" : balance.status}</span> : null}</span>;
+}
+
+function SummaryMetric({ label, value, status, tone = "normal" }: { label: string; value: string | null; status?: string; tone?: "normal" | "good" | "warn" }) {
   const color = tone === "good" ? "text-[var(--color-success)]" : tone === "warn" ? "text-[var(--color-warn)]" : "text-[var(--color-ink)]";
   return (
     <div className="min-w-0 border-r border-[var(--color-rule)] px-4 py-3 last:border-r-0">
       <p className="text-xs font-semibold text-[var(--color-ink-faint)]">{label}</p>
-      <p className={`tnum mt-1 text-lg font-semibold ${color}`}>{formatMoney(value)}</p>
+      <p className={`tnum mt-1 text-lg font-semibold ${color}`}>{value === null ? "Unavailable" : formatMoney(value)}</p>
+      {status ? <p className="mt-1 text-xs text-[var(--color-warn)]">{status}</p> : null}
     </div>
   );
 }
@@ -304,9 +314,15 @@ export default function CollectionsWorkspace({
     && data.visibility.canSeeCheckNet
     && data.visibility.canSeeTaxes;
   const checksToReview = data.payrollCheckCounts.unverified;
+  const employeeCoverage = data.employeeCollections.reduce((total, row) => ({
+    held: total.held + (row.heldCount ?? 0), verified: total.verified + (row.verifiedCount ?? 0),
+    heldMonth: total.heldMonth + (row.heldMonthCount ?? 0), verifiedMonth: total.verifiedMonth + (row.verifiedMonthCount ?? 0),
+  }), { held: 0, verified: 0, heldMonth: 0, verifiedMonth: 0 });
+  const employeeBalance = verifiedBalancePresentation(employeeCoverage.held, employeeCoverage.verified);
+  const employeeDue = verifiedBalancePresentation(employeeCoverage.heldMonth, employeeCoverage.verifiedMonth);
   const reviewRequiredPlans = data.individualSetAsides.reduce((total, row) => total + row.reviewRequiredPlans, 0);
   const missingRenewalPlans = data.individualSetAsides.reduce(
-    (total, row) => total + row.missingRenewalPlans,
+    (total, row) => total + (row.missingBalanceRenewalPlans ?? row.missingRenewalPlans),
     0,
   );
   const targetGrid = data.visibility.canSeeTargetMoney && data.visibility.canSeeTargetHours
@@ -449,9 +465,9 @@ export default function CollectionsWorkspace({
       ) : null}
       <div className="overflow-x-auto border-y border-[var(--color-rule-strong)] bg-[var(--color-surface)]">
         <div className="grid min-w-[760px] grid-cols-5">
-          <SummaryMetric label="Give-backs from checks" value={data.summary.dueFromChecks} />
+          <SummaryMetric label="Give-backs from checks" value={data.ledgerDirty ? null : employeeDue.amount(data.summary.dueFromChecks)} status={data.ledgerDirty ? "Refresh needed" : employeeDue.status} />
           <SummaryMetric label="Collected this month" value={data.summary.collectedThisMonth} tone="good" />
-          <SummaryMetric label="Employee balance" value={data.summary.remainingReceivable} tone="warn" />
+          <SummaryMetric label="Employee balance" value={data.ledgerDirty ? null : employeeBalance.amount(data.summary.remainingReceivable)} status={data.ledgerDirty ? "Refresh needed" : employeeBalance.status} tone="warn" />
           {data.setupHistoryAvailable
             ? <SummaryMetric label="Approved monthly set-aside" value={data.summary.approvedMonthlySetAside} />
             : <div className="min-w-0 border-r border-[var(--color-rule)] px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Approved monthly set-aside</p><p className="mt-1 text-lg font-semibold text-[var(--color-warn)]">Unavailable</p></div>}
@@ -481,7 +497,7 @@ export default function CollectionsWorkspace({
         <div id="collections-panel-summary" role="tabpanel" aria-labelledby="collections-tab-summary" className="grid gap-4 xl:grid-cols-2">
           <Card title="Employee receivables" description={`Check obligations and collection position for ${data.month}.`}>
             {data.employeeCollections.length === 0 ? <EmptyState compact title="No employee collection activity" /> : (
-              <div className="overflow-x-auto"><table className="touch-table w-full min-w-[720px] text-sm"><thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]"><tr><th className="px-4 py-2.5 text-left">Employee</th><th className="px-3 py-2.5 text-right">Due</th><th className="px-3 py-2.5 text-right">Collected</th><th className="px-3 py-2.5 text-right">Remaining</th><th className="px-3 py-2.5 text-right">Credit</th>{canManage ? <th className="px-3 py-2.5 text-right">Action</th> : null}</tr></thead><tbody className="divide-y divide-[var(--color-rule)]">{data.employeeCollections.map((row) => <tr key={row.employeeId}><td className="px-4 py-3"><p className="font-medium">{row.employeeName}</p>{canSeeEmployeeDeals ? <><Link className="text-xs font-medium text-[var(--color-primary)] hover:underline" href={`/employees/${row.employeeId}?view=deal`}>{canManageEmployeeDeals ? "View or change deal" : "View deal"}</Link>{!canManageEmployeeDeals ? <span className="ml-1 text-xs text-[var(--color-ink-faint)]">(manager changes)</span> : null}</> : null}</td><td className="tnum px-3 py-3 text-right">{formatMoney(row.dueFromChecks)}</td><td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.collectedThisMonth)}</td><td className="tnum px-3 py-3 text-right font-semibold">{formatMoney(row.remainingReceivable)}</td><td className="tnum px-3 py-3 text-right">{formatMoney(row.availableCredit)}</td>{canManage ? <td className="px-3 py-3 text-right"><Link className="btn btn-sm btn-ghost whitespace-nowrap" href={`/settlements?employeeId=${row.employeeId}&queue=receivable`}>{data.ledgerDirty || Number(row.remainingReceivable) <= 0 ? "Review money operations" : "Record collection"}</Link></td> : null}</tr>)}</tbody></table></div>
+              <div className="overflow-x-auto"><table className="touch-table w-full min-w-[720px] text-sm"><thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]"><tr><th className="px-4 py-2.5 text-left">Employee</th><th className="px-3 py-2.5 text-right">Due</th><th className="px-3 py-2.5 text-right">Collected</th><th className="px-3 py-2.5 text-right">Remaining</th><th className="px-3 py-2.5 text-right">Credit</th>{canManage ? <th className="px-3 py-2.5 text-right">Action</th> : null}</tr></thead><tbody className="divide-y divide-[var(--color-rule)]">{data.employeeCollections.map((row) => <tr key={row.employeeId}><td className="px-4 py-3"><p className="font-medium">{row.employeeName}</p>{canSeeEmployeeDeals ? <><Link className="text-xs font-medium text-[var(--color-primary)] hover:underline" href={`/employees/${row.employeeId}?view=deal`}>{canManageEmployeeDeals ? "View or change deal" : "View deal"}</Link>{!canManageEmployeeDeals ? <span className="ml-1 text-xs text-[var(--color-ink-faint)]">(manager changes)</span> : null}</> : null}</td><td className="tnum px-3 py-3 text-right"><CollectionBalance value={row.dueFromChecks} held={row.heldMonthCount} verified={row.verifiedMonthCount} dirty={data.ledgerDirty} /></td><td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.collectedThisMonth)}</td><td className="tnum px-3 py-3 text-right font-semibold"><CollectionBalance value={row.remainingReceivable} held={row.heldCount} verified={row.verifiedCount} dirty={data.ledgerDirty} /></td><td className="tnum px-3 py-3 text-right"><CollectionBalance value={row.availableCredit} held={row.heldCount} verified={row.verifiedCount} dirty={data.ledgerDirty} /></td>{canManage ? <td className="px-3 py-3 text-right"><Link className="btn btn-sm btn-ghost whitespace-nowrap" href={`/settlements?employeeId=${row.employeeId}&queue=receivable`}>{data.ledgerDirty || Number(row.remainingReceivable) <= 0 ? "Review money operations" : "Record collection"}</Link></td> : null}</tr>)}</tbody></table></div>
             )}
           </Card>
           <Card title="Individual set-asides" description={data.setupHistoryAvailable
@@ -503,7 +519,8 @@ export default function CollectionsWorkspace({
                   <tbody className="divide-y divide-[var(--color-rule)]">
                     {data.individualSetAsides.map((row) => {
                       const noSetAsideDue = Number(row.approvedMonthlyPlan) === 0;
-                      const ledgerIncomplete = row.actionablePlans < row.activePlans;
+                      const ledgerIncomplete = row.actionablePlans < (row.expectedBalancePlans ?? row.activePlans);
+                      const balance = reservePresentation({ ...row, ledgerDirty: data.ledgerDirty, setupHistoryAvailable: data.setupHistoryAvailable });
                       return (
                         <tr key={row.individualId}>
                           <td className="px-4 py-3">
@@ -514,7 +531,7 @@ export default function CollectionsWorkspace({
                           </td>
                           <td className="tnum px-3 py-3 text-right">{data.setupHistoryAvailable ? formatMoney(row.approvedMonthlyPlan) : <span className="text-[var(--color-warn)]">Unavailable</span>}</td>
                           <td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.setAsideThisMonth)}</td>
-                          <td className="tnum px-3 py-3 text-right font-semibold">{formatMoney(row.remainingSetAside)}{row.reviewRequiredPlans > 0 ? <p className="text-xs font-normal text-[var(--color-warn)]">Held balances excluded</p> : null}</td>
+                          <td className="tnum px-3 py-3 text-right font-semibold">{balance.display(row.remainingSetAside)}{row.reviewRequiredPlans > 0 ? <p className="text-xs font-normal text-[var(--color-warn)]">Held balances excluded</p> : null}</td>
                           <td className="px-3 py-3">
                             {!data.setupHistoryAvailable ? (
                               <span className="font-semibold text-[var(--color-warn)]">History unavailable</span>
@@ -524,7 +541,7 @@ export default function CollectionsWorkspace({
                               </Link>
                             ) : data.ledgerDirty ? (
                               <Link className="font-semibold text-[var(--color-warn)] underline" href="/settlements">Refresh needed</Link>
-                            ) : row.missingRenewalPlans > 0 ? (
+                            ) : (row.missingBalanceRenewalPlans ?? row.missingRenewalPlans) > 0 ? (
                               canManageFinancialPlans ? (
                                 <Link className="font-semibold text-[var(--color-warn)] underline" href={`/individuals/${row.individualId}?view=financial`}>
                                   Add renewal date

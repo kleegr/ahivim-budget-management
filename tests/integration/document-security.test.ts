@@ -13,7 +13,8 @@ import type { DocumentAccessContext } from "@/lib/auth/document-policy";
 import { createClassBudget, createClassInvoiceDraft } from "@/lib/manage/class-invoices";
 import { MIGRATIONS } from "@/lib/db/migrations.generated";
 import { prepareOriginalPdfUpload } from "@/lib/documents/pdf-document-upload";
-import { parsePdfEditorManifest } from "@/lib/documents/pdf-editor-persistence";
+import { createPdfEditorManifest, parsePdfEditorManifest } from "@/lib/documents/pdf-editor-persistence";
+import { createTextOverlay } from "@/lib/documents/pdf-editor";
 
 const state = vi.hoisted(() => ({ pool: null as unknown as PgLikePool, user: null as AuthenticatedUser | null, files: new Map<string, Blob>() }));
 vi.mock("@/lib/db", () => ({ getPool: () => state.pool }));
@@ -319,6 +320,116 @@ suite("document resource authorization (real PostgreSQL and route handlers)", ()
     const coworker = await account("coworker", CLASS_BILLING_ACCESS);
     await login(coworker);
     expect((await detail(request(), params(created.data.document.id))).status).toBe(404);
+  });
+
+  it("saves, reopens, edits again, restores and archives without losing the editable master or source context", async () => {
+    const budget = unwrap(await createClassBudget(pool, {
+      individualId: I1, startDate: "2026-01-01", endDate: "2026-12-31", authorizedAmount: "1000",
+    }, OWNER));
+    const invoice = unwrap(await createClassInvoiceDraft(pool, {
+      classBudgetPeriodId: budget.id, invoiceNumber: "DOCUMENT-LIFECYCLE", invoiceDate: "2026-01-05",
+      servicePeriodStart: "2026-01-01", servicePeriodEnd: "2026-01-31",
+      lines: [{ serviceDate: "2026-01-02", description: "Class", unitPrice: "100" }],
+    }, OWNER));
+    const source = await PDFDocument.create();
+    const sourcePage = source.addPage([612, 792]);
+    source.setTitle("PRIVATE_EDITABLE_MASTER");
+    sourcePage.drawText("Private source text");
+    const field = source.getForm().createTextField("attestation");
+    field.setText("Original value");
+    field.addToPage(sourcePage, { x: 50, y: 50, width: 200, height: 30 });
+    const sourceBytes = await source.save();
+    const initial = await prepareOriginalPdfUpload(sourceBytes);
+    await login(classUser);
+    const registration = await upload(request("/api/documents", "POST", {
+      title: "Editable invoice", filename: "invoice.pdf", byteSize: sourceBytes.length,
+      source: `/api/classes/invoices/${invoice.id}/pdf`,
+    }));
+    expect(registration.status).toBe(201);
+    const { data: created } = await registration.json();
+    const id = created.document.id as string;
+    const expectedContext = created.document.accessContext;
+    expect(expectedContext).toMatchObject({ kind: "private", individualId: I1, sourceInvoiceId: invoice.id });
+
+    async function complete(reservation: { pathname: string; intentId: string }, bytes: Uint8Array) {
+      state.files.set(reservation.pathname, new Blob([Uint8Array.from(bytes).buffer]));
+      unwrap(await completeDocumentUpload(pool, reservation.intentId, {
+        pathname: reservation.pathname, etag: reservation.intentId, contentType: "application/pdf", size: bytes.length,
+      }));
+    }
+    await complete(created.upload, sourceBytes);
+    const originalResponse = await finalizeUpload(request("/api/documents", "POST", {
+      intentId: created.upload.intentId, idempotencyKey: randomUUID(), exportMode: "source", ...initial,
+    }), params(id));
+    expect(originalResponse.status).toBe(201);
+    const original = (await originalResponse.json()).data;
+
+    const manifest = createPdfEditorManifest({
+      overlays: [createTextOverlay(1, { text: "First saved overlay" })], pageOrder: [1],
+      pageRotations: { 1: 90 }, formValues: { attestation: "First saved value" }, exportMode: "secure",
+    });
+    const outputBytes = await (await rasterPdf()).save();
+    async function append(baseVersionId: string, editorState: ReturnType<typeof createPdfEditorManifest>) {
+      const response = await reserveVersion(request("/api/documents", "POST", {
+        filename: "invoice-sanitized.pdf", byteSize: outputBytes.length, baseVersionId,
+      }), params(id));
+      expect(response.status).toBe(201);
+      const reservation = (await response.json()).data;
+      await complete(reservation, outputBytes);
+      const body = {
+        intentId: reservation.intentId, idempotencyKey: randomUUID(), baseVersionId, exportMode: "secure",
+        editorSchemaVersion: 2, editorState, pageCount: 1,
+      };
+      const result = await finalizeUpload(request("/api/documents", "POST", body), params(id));
+      expect(result.status).toBe(201);
+      const saved = (await result.json()).data;
+      const retry = await finalizeUpload(request("/api/documents", "POST", body), params(id));
+      expect(retry.status).toBe(201);
+      expect((await retry.json()).data.id).toBe(saved.id);
+      return saved;
+    }
+    const first = await append(original.id, manifest);
+    const reopened = (await (await detail(request(), params(id))).json()).data;
+    expect(reopened.document.accessContext).toEqual(expectedContext);
+    expect(reopened.versions[0].editorState).toEqual(manifest);
+    const secondManifest = { ...manifest, overlays: [{ ...manifest.overlays[0], text: "Second saved overlay" }], formValues: { attestation: "Second saved value" } };
+    expect((await saveDraft(request("/api/documents", "PUT", {
+      baseVersionId: first.id, expectedRevision: null, editorSchemaVersion: 2, editorState: secondManifest,
+    }), params(id))).status).toBe(200);
+    expect((await (await detail(request(), params(id))).json()).data.draft.editorState).toEqual(secondManifest);
+    const second = await append(first.id, secondManifest);
+    expect(second.versionNumber).toBe(3);
+    const retained = await file(request("/api/documents?source=1"), vparams(id, second.id));
+    expect(new Uint8Array(await retained.arrayBuffer())).toEqual(sourceBytes);
+    const retainedPdf = await PDFDocument.load(sourceBytes);
+    expect(retainedPdf.getForm().getTextField("attestation").getText()).toBe("Original value");
+    const download = await file(request("/api/documents?download=1"), vparams(id, second.id));
+    expect(download.headers.get("content-disposition")).toContain("attachment");
+    expect(new Uint8Array(await download.arrayBuffer())).toEqual(outputBytes);
+
+    expect((await share(id, first.id)).status).toBe(200);
+    await login(parentUser);
+    expect((await (await detail(request(), params(id))).json()).data.document.currentVersionId).toBe(first.id);
+    expect((await file(request(), vparams(id, second.id))).status).toBe(404);
+    await login(classUser);
+    const restoredResponse = await restore(request("/api/documents", "POST", {
+      expectedCurrentVersionId: second.id, idempotencyKey: randomUUID(), reason: "Restore the first saved version",
+    }), vparams(id, first.id));
+    expect(restoredResponse.status).toBe(201);
+    const restored = (await restoredResponse.json()).data;
+    expect(restored).toMatchObject({ versionNumber: 4, restoredFromVersionId: first.id, editorState: manifest });
+    const afterRestore = (await (await detail(request(), params(id))).json()).data;
+    expect(afterRestore.document).toMatchObject({ accessContext: expectedContext, originalVersionId: original.id, currentVersionId: restored.id });
+    expect(afterRestore.versions).toHaveLength(4);
+    expect(afterRestore.draft).toBeNull();
+    expect((await metadata(request("/api/documents", "PATCH", { status: "archived" }), params(id))).status).toBe(200);
+    expect((await reserveVersion(request("/api/documents", "POST", {
+      filename: "blocked.pdf", byteSize: outputBytes.length, baseVersionId: restored.id,
+    }), params(id))).status).toBe(409);
+    await login(parentUser);
+    expect((await detail(request(), params(id))).status).toBe(404);
+    expect((await file(request(), vparams(id, first.id))).status).toBe(404);
+    expect((await pool.query(`SELECT 1 FROM document_versions WHERE document_id = $1`, [id])).rows).toHaveLength(4);
   });
 
   it("enforces exact agency, dated membership and current responsibility for published output", async () => {
