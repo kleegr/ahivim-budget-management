@@ -54,6 +54,7 @@ import type {
 import { agencyDate } from "@/lib/business/agency-time";
 import { collectionsPayrollCheckFocusHref } from "@/lib/nav/collections-links";
 import { dec } from "@/lib/money";
+import { agencyFinancialResultIncomplete } from "@/lib/business/agency-financial-completeness";
 
 type Modal = "income" | "program-split" | "employee-term" | null;
 
@@ -94,6 +95,8 @@ export default function AgencyFinancialWorkspace({
     row.sourceType !== "class" && row.countedInIncome
   )).length;
   const resultNegative = dec(report.totals.agencyResult).isNegative();
+  const resultIncomplete = agencyFinancialResultIncomplete(report.coverage);
+  const firstUncoveredDirectTransaction = report.transactions.find((row) => row.paymentRecipient === "employee" && !row.payrollCheckExpenseIncluded);
   const firstMissingTransactionAmount = report.transactions.find((row) => row.grossAmount === null);
   const firstMissingEmployeeBase = report.transactions.find((row) => row.paymentRecipient === "excellent_staffing" && row.baseAmount === null);
   const firstMissingPayRule = report.transactions.find((row) => row.payRuleSource === "missing");
@@ -187,11 +190,12 @@ export default function AgencyFinancialWorkspace({
           <div className="grid gap-3 sm:grid-cols-3">
             <SummaryMetric label="Actual income" value={report.totals.income.total} detail="Google Sheet transactions, class receipts, and other recorded payments" />
             <SummaryMetric label="Expenses" value={report.totals.expenses.total} detail="Set-asides, verified withholding, employee shares, and individual shares" />
-            <SummaryMetric label="Agency result" value={report.totals.agencyResult} detail="Actual income minus the listed expenses" tone={resultNegative ? "negative" : "positive"} />
+            <SummaryMetric label={resultIncomplete ? "Agency result (incomplete)" : "Agency result"} value={report.totals.agencyResult} detail={resultIncomplete ? "Missing actuals or expenses are excluded. Resolve the items below before relying on this result." : "Actual income minus the listed expenses"} tone={resultIncomplete ? "default" : resultNegative ? "negative" : "positive"} />
           </div>
 
           {issueCount > 0 ? (
             <Notice tone="warning" title={`${issueCount} item${issueCount === 1 ? "" : "s"} need attention`}>
+              {firstUncoveredDirectTransaction ? <Link className="touch-target inline-flex items-center px-1 underline" href={firstUncoveredDirectTransaction.payrollCheckId ? collectionsPayrollCheckFocusHref({ payrollCheckId: firstUncoveredDirectTransaction.payrollCheckId, month: firstUncoveredDirectTransaction.payrollCheckServiceDate?.slice(0, 7) ?? report.month }) : `/transactions?transactionId=${firstUncoveredDirectTransaction.id}`}>{report.coverage.directTransactionsMissingVerifiedCheck} direct-pay transactions need check expense review for this month</Link> : null}
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
                 {report.coverage.transactionsMissingAmount && firstMissingTransactionAmount ? <Link className="touch-target inline-flex items-center px-1 underline" href={`/transactions?transactionId=${firstMissingTransactionAmount.id}`}>{report.coverage.transactionsMissingAmount} missing transaction amount</Link> : null}
                 {report.coverage.agencyTransactionsMissingBase && firstMissingEmployeeBase ? <Link className="touch-target inline-flex items-center px-1 underline" href={`/transactions?transactionId=${firstMissingEmployeeBase.id}`}>{report.coverage.agencyTransactionsMissingBase} missing employee base</Link> : null}

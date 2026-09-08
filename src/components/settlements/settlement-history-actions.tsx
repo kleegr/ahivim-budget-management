@@ -170,7 +170,7 @@ export function HistoryTable({
                   <span className="text-[var(--color-ink-faint)]">{formatDate(event.createdAt.slice(0, 10))}</span>
                 </td>
                 {canManage ? <td className="px-3 py-2 text-right align-top">
-                  {!isReversal && !reversed ? <div className="flex justify-end gap-1">
+                  {event.reviewRequired ? <span className="text-xs text-[var(--color-danger)]">Source review required</span> : !isReversal && !reversed ? <div className="flex justify-end gap-1">
                     {event.eventType === "payment" || event.eventType === "set_aside" ? (
                       <button type="button" className="btn btn-sm btn-ghost" onClick={() => onCorrect(event)}>Correct</button>
                     ) : null}

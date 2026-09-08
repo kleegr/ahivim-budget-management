@@ -322,6 +322,18 @@ export async function syncImportedPayrollCheckReviews(
               'Imported check NET; verify the whole check before collecting.',
               $2, $2
          FROM candidates candidate
+        WHERE NOT EXISTS (
+          SELECT 1 FROM payroll_transactions other_source
+          LEFT JOIN programs other_program ON other_program.id = other_source.program_id
+           WHERE other_source.employee_id = candidate.employee_id
+             AND NULLIF(btrim(other_source.check_number), '') IS NOT DISTINCT FROM candidate.check_number
+             AND other_source.check_date IS NOT DISTINCT FROM candidate.check_date
+             AND other_source.period_begin IS NOT DISTINCT FROM candidate.period_begin
+             AND other_source.period_end IS NOT DISTINCT FROM candidate.period_end
+             AND effective_payment_recipient(other_source.payment_recipient, other_program.payment_recipient) = 'employee'
+             AND other_source.total_net_pay IS NOT NULL
+             AND other_source.total_net_pay <> candidate.actual_net
+        )
        ON CONFLICT DO NOTHING
        RETURNING id`,
       [importBatchId, actorId],
@@ -548,7 +560,8 @@ export async function savePayrollCheck(
         );
       }
       // Keep an existing check's links when only its number/date is corrected,
-      // and attach any unlinked rows that match the strongest supplied identity.
+      // and require every supplied coordinate when attaching unlinked rows.
+      // A pay period alone can contain multiple checks on different dates.
       if (sourceTransactionIds.length > 0) {
         await client.query(
           `UPDATE payroll_transactions
@@ -568,6 +581,7 @@ export async function savePayrollCheck(
                  (SELECT p.payment_recipient FROM programs p WHERE p.id = t.program_id)
                ) = 'employee'
                AND (t.payroll_check_id IS NULL OR t.payroll_check_id = $1)
+               AND ($4::date IS NULL OR t.check_date = $4::date)
               AND (
                 ($3::text IS NOT NULL
                     AND NULLIF(btrim(t.check_number), '') = $3

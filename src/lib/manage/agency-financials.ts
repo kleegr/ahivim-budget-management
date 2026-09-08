@@ -983,6 +983,19 @@ export async function createManualIncomeEntry(
     if (input.sourceType === "custom_program" && !term) {
       return fail("conflict", "Set this individual's program split before recording the income.");
     }
+    if (individualId && programId && !term) {
+      const history = await client.query<{ required: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM individual_program_revenue_terms
+            WHERE individual_id = $1 AND program_id = $2
+              AND effective_from <= $3::date
+         ) AS required`,
+        [individualId, programId, splitEffectiveDate],
+      );
+      if (history.rows[0]?.required) {
+        return fail("conflict", "This individual and program have a prior split. Set an approved split covering the receipt date before recording this income.");
+      }
+    }
     const requestedShare = input.agencySharePercent === undefined
       ? ok("1.000000")
       : checkedFraction(input.agencySharePercent, "Agency share");

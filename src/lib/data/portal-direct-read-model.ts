@@ -1,4 +1,5 @@
 import type { PgLikePool } from "@/lib/import/commit";
+import { settlementCurrentAmountSql } from "@/lib/data/settlement-eligibility";
 import { calculateDirectEmployeeCheck } from "@/lib/business/deal-engine";
 import { toHours, toMoney } from "@/lib/money";
 import {
@@ -448,6 +449,7 @@ export async function directEmployeeSummaries(
                   COALESCE(sum(o.original_amount) FILTER (
                     WHERE o.direction = 'receivable'
                       AND o.status = 'active'
+                      AND ${settlementCurrentAmountSql("o")}
                       AND canonical_service_date(o.period_begin, o.check_date, o.period_end) IS NOT NULL
                       AND date_trunc('month', canonical_service_date(
                             o.period_begin, o.check_date, o.period_end
@@ -456,10 +458,10 @@ export async function directEmployeeSummaries(
                   ), 0)::text AS due_this_month,
                   COALESCE(sum(events.applied_month) FILTER (WHERE o.direction = 'receivable'), 0)::text AS collected_this_month,
                   COALESCE(sum(GREATEST(o.original_amount - COALESCE(events.applied, 0), 0)) FILTER (
-                    WHERE o.status = 'active' AND o.direction = 'receivable'
+                    WHERE o.status = 'active' AND o.direction = 'receivable' AND ${settlementCurrentAmountSql("o")}
                   ), 0)::text AS remaining,
                   COALESCE(sum(GREATEST(COALESCE(events.applied, 0) - o.original_amount, 0)) FILTER (
-                    WHERE o.status = 'active' AND o.direction = 'receivable'
+                    WHERE o.status = 'active' AND o.direction = 'receivable' AND ${settlementCurrentAmountSql("o")}
                   ), 0)::text AS credit,
                   COALESCE((
                     SELECT jsonb_agg(jsonb_build_object(

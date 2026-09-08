@@ -1,4 +1,5 @@
 import type { AccessScope } from "@/lib/auth/access";
+import { settlementCurrentAmountSql } from "@/lib/data/settlement-eligibility";
 import { agencyMonth } from "@/lib/business/agency-time";
 import {
   directPayTargetProgress,
@@ -457,18 +458,20 @@ export async function getCollectionsWorkspace(
        SELECT o.employee_id, e.display_name AS employee_name,
               count(*) FILTER (
                 WHERE o.direction = 'receivable'
+                  AND ${settlementCurrentAmountSql("o")}
                   AND to_char(canonical_service_date(o.period_begin, o.check_date, o.period_end), 'YYYY-MM') = $1
               )::text AS obligations_created,
               COALESCE(sum(o.original_amount) FILTER (
                 WHERE o.direction = 'receivable'
+                  AND ${settlementCurrentAmountSql("o")}
                   AND to_char(canonical_service_date(o.period_begin, o.check_date, o.period_end), 'YYYY-MM') = $1
               ), 0)::text AS due_from_checks,
               COALESCE(sum(ev.applied_month) FILTER (WHERE o.direction = 'receivable'), 0)::text AS collected_this_month,
               COALESCE(sum(ev.applied_month) FILTER (WHERE o.direction = 'payable'), 0)::text AS refunded_this_month,
               COALESCE(sum(GREATEST(o.original_amount - COALESCE(ev.applied, 0), 0))
-                FILTER (WHERE o.status = 'active' AND o.direction = 'receivable'), 0)::text AS remaining_receivable,
+                FILTER (WHERE ${settlementCurrentAmountSql("o")} AND o.direction = 'receivable'), 0)::text AS remaining_receivable,
               COALESCE(sum(GREATEST(COALESCE(ev.applied, 0) - o.original_amount, 0))
-                FILTER (WHERE o.status = 'active' AND o.direction = 'receivable'), 0)::text AS available_credit
+                FILTER (WHERE ${settlementCurrentAmountSql("o")} AND o.direction = 'receivable'), 0)::text AS available_credit
          FROM settlement_obligations o
          JOIN employees e ON e.id = o.employee_id
          LEFT JOIN event_totals ev ON ev.settlement_obligation_id = o.id

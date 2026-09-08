@@ -42,6 +42,10 @@ export interface AgencyTransactionActual {
   employeeName: string | null;
   programName: string | null;
   paymentRecipient: string;
+  payrollCheckId: string | null;
+  payrollCheckVerified: boolean;
+  payrollCheckServiceDate: string | null;
+  payrollCheckExpenseIncluded: boolean;
   grossAmount: string | null;
   baseAmount: string | null;
   /** Funder billed minus Employee base. This stays outside every deal. */
@@ -123,6 +127,8 @@ export interface AgencyFinancialCoverage {
   transactionsMissingAmount: number;
   agencyTransactionsMissingBase: number;
   agencyTransactionsMissingPayRule: number;
+  /** Direct transactions without their verified check in this month's expense snapshot. */
+  directTransactionsMissingVerifiedCheck: number;
   directChecksMissingGross: number;
   directChecksMissingWithholding: number;
   directChecksGrossBelowNet: number;
@@ -195,6 +201,9 @@ interface TransactionRow {
   employee_name: string | null;
   program_name: string | null;
   payment_recipient: string;
+  payroll_check_id: string | null;
+  payroll_check_verified: boolean;
+  payroll_check_service_date: string | null;
   gross_amount: string | null;
   base_amount: string | null;
   person_share_percent: string | null;
@@ -425,6 +434,10 @@ export async function getAgencyFinancialReport(
                    ELSE COALESCE(employee.display_name, employee.normalized_name) END AS employee_name,
               program.name AS program_name,
               effective_payment_recipient(t.payment_recipient, program.payment_recipient) AS payment_recipient,
+              t.payroll_check_id,
+              COALESCE(verified_check.verification_status = 'verified', false) AS payroll_check_verified,
+              to_char(canonical_service_date(verified_check.period_begin, verified_check.check_date,
+                                            verified_check.period_end), 'YYYY-MM-DD') AS payroll_check_service_date,
               t.imported_amount::text AS gross_amount,
               COALESCE(
                 t.calculated_internal_amount,
@@ -439,6 +452,8 @@ export async function getAgencyFinancialReport(
          LEFT JOIN individuals individual ON individual.id = t.individual_id
          LEFT JOIN employees employee ON employee.id = t.employee_id
          LEFT JOIN programs program ON program.id = t.program_id
+         LEFT JOIN employee_payroll_checks verified_check
+           ON verified_check.id = t.payroll_check_id AND verified_check.employee_id = t.employee_id
          LEFT JOIN LATERAL (
            SELECT term.employee_share_percent
              FROM employee_individual_compensation_terms term
@@ -495,6 +510,7 @@ export async function getAgencyFinancialReport(
               FROM payroll_transactions source_transaction
               LEFT JOIN programs source_program ON source_program.id = source_transaction.program_id
              WHERE source_transaction.payroll_check_id = check_fact.id
+               AND source_transaction.employee_id = check_fact.employee_id
                AND effective_payment_recipient(
                      source_transaction.payment_recipient,
                      source_program.payment_recipient
@@ -611,6 +627,7 @@ export async function getAgencyFinancialReport(
     listManualIncomeEntries(pool, { from: range.start, to: range.endInclusive }),
   ]);
 
+  const includedCheckEmployees = new Map(checkResult.rows.map((row) => [row.id, row.employee_id]));
   const transactions: AgencyTransactionActual[] = transactionResult.rows.map((row): AgencyTransactionActual => {
     const routed = row.payment_recipient === "excellent_staffing"
       ? agencyRoutedEmployeeShare({
@@ -636,6 +653,12 @@ export async function getAgencyFinancialReport(
       employeeName: row.employee_name,
       programName: row.program_name,
       paymentRecipient: row.payment_recipient,
+      payrollCheckId: row.payroll_check_id ?? null,
+      payrollCheckVerified: row.payroll_check_verified === true,
+      payrollCheckServiceDate: row.payroll_check_service_date ?? null,
+      payrollCheckExpenseIncluded: row.payroll_check_verified === true
+        && row.payroll_check_id !== null
+        && includedCheckEmployees.get(row.payroll_check_id) === row.employee_id,
       grossAmount,
       baseAmount,
       agencySpread,
@@ -913,6 +936,9 @@ export async function getAgencyFinancialReport(
       )).length,
       agencyTransactionsMissingPayRule: transactions.filter((row) => (
         row.paymentRecipient === "excellent_staffing" && row.payRuleSource === "missing"
+      )).length,
+      directTransactionsMissingVerifiedCheck: transactions.filter((row) => (
+        row.paymentRecipient === "employee" && !row.payrollCheckExpenseIncluded
       )).length,
       directChecksMissingGross: directChecks.filter((row) => row.grossAmount === null).length,
       directChecksMissingWithholding: directChecks.filter((row) => (

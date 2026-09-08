@@ -1152,10 +1152,14 @@ export const settlementLedgerState = pgTable(
     lastRefreshedAt: timestamp("last_refreshed_at", { withTimezone: true }),
     refreshedForDate: date("refreshed_for_date"),
     lastRefreshError: text("last_refresh_error"),
+    blockedObligationIds: uuid("blocked_obligation_ids").array().default(sql`'{}'::uuid[]`).notNull(),
+    sourceReviewCount: integer("source_review_count").default(0).notNull(),
+    sourceReviewSummary: text("source_review_summary"),
     updatedAt: updatedAt(),
   },
   (table) => [
     check("settlement_ledger_state_singleton_check", sql`${table.singleton}`),
+    check("settlement_ledger_state_source_review_count_check", sql`${table.sourceReviewCount} >= 0`),
     check(
       "settlement_ledger_state_versions_check",
       sql`${table.sourceVersion} >= 0 and ${table.refreshedVersion} >= 0 and ${table.refreshedVersion} <= ${table.sourceVersion}`,

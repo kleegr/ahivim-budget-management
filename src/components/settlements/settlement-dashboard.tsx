@@ -131,7 +131,7 @@ function formatDate(value: string | null): string {
 }
 
 function isActionable(row: SettlementRow): boolean {
-  return row.state !== "void" && dec(row.balance).greaterThan(0);
+  return !row.reviewRequired && row.state !== "void" && dec(row.balance).greaterThan(0);
 }
 
 function eventSearchText(event: SettlementEventRow): string {
@@ -686,7 +686,9 @@ function ItemsTable({
                     );
                   })}
                   {canManage ? <td className="px-3 py-2 text-right align-top">
-                    {row.state === "credit" ? (
+                    {row.reviewRequired ? (
+                      <span className="text-xs text-[var(--color-danger)]">Source review required</span>
+                    ) : row.state === "credit" ? (
                       <div className="flex flex-wrap justify-end gap-1">
                         <button
                           type="button"
@@ -823,7 +825,9 @@ export default function SettlementDashboard({
   );
 
   const creditTargetsFor = (source: SettlementRow) => data.rows.filter((row) => (
-    row.id !== source.id
+    !row.reviewRequired
+    && !source.reviewRequired
+    && row.id !== source.id
     && row.personType === source.personType
     && row.personId === source.personId
     && row.direction === source.direction
@@ -969,6 +973,14 @@ export default function SettlementDashboard({
           <p className="font-medium">Refresh required before recording payment activity.</p>
           <p className="mt-0.5">Payroll, deal, plan, or rate information changed after these balances were calculated. Payments, credits, and reversals are temporarily blocked.</p>
           {data.freshness.lastRefreshError ? <p className="mt-0.5">{data.freshness.lastRefreshError}</p> : null}
+        </div>
+      ) : null}
+
+      {!data.freshness.dirty && data.freshness.sourceReviewSummary ? (
+        <div role="status" className="rounded border border-[var(--color-rule-strong)] px-3 py-2 text-sm">
+          <p className="font-medium">Financial review is incomplete.</p>
+          <p>{data.freshness.sourceReviewSummary}</p>
+          <p className="mt-0.5">Review Payroll Checks, Employee Deals, or Financial Setup for the affected person, then refresh.</p>
         </div>
       ) : null}
 

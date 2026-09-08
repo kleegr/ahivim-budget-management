@@ -30,6 +30,53 @@ production evidence. Database-backed integration suites that skip without
 
 ## Production Acceptance Log
 
+### 2026-09-07 - Developer 1 financial release in preparation
+
+The Developer 1 assignment continues from PR #33, commit
+`1b6ecbcba6d26f00690787662056e8099ee50fce`, and preserves the existing
+requirement inventory in `AHIVIM 100% COMPLETION TRACKER (1).xlsx`.
+The following are implementation/rehearsal results, not production acceptance:
+
+- Inbound sync preserves pending schedule matching across changed snapshots and
+  failed source reads. Truncated quoted CSV is rejected before missing-source
+  reconciliation. Exact repeats remain source evidence. Google Sheets remains
+  permanently inbound-only, including Paid state.
+- Budget retries replay their original result. Renewal changes preserve prior
+  consumption. Confirmed group-session allocations credit each individual's full
+  hours consistently in budget balances, histories, profiles, and existing scoped
+  portal projections. Ambiguous legacy rows retain their prior treatment. Money
+  allocations and role boundaries do not change.
+- Financial Setup preserves explicit zero overrides, legacy seven-month rows,
+  missing effective dates, and entered small percentages. Archived rates do not
+  silently become active calculation inputs.
+- Settlement refresh separates unresolved source holds from unrelated known
+  obligations. Held roots and correction descendants cannot receive new money
+  activity, including either side of a paired credit reversal. Existing immutable
+  obligations, events, and audit history remain intact. Check confirmation checks
+  the complete matching source identity across import batches.
+- Owner actuals identify missing expense coverage in the screen and exports,
+  retain valid income, and expose exact source identifiers. A receipt whose prior
+  split has expired requires an approved effective replacement, including a valid
+  zero-percent arrangement. Issued invoices remain receivables rather than income.
+- Migrations `0044` and `0045` rehearsed from the 44-migration baseline. Business
+  table hashes and a synthetic partial-payment balance were preserved. A second
+  migration pass applied nothing. This disposable rehearsal is not a production
+  recovery point.
+
+The existing tracker references for this work include rows 422-444 (inbound),
+466-573 (budgets/setup), 721-730 (group hours), 748-799 (checks/settlements),
+930-956 (reports/receipts), and 1182-1193 (controlled source cases).
+Post-deployment requirements 1407-1409 remain open until authenticated live
+exports, two inbound syncs, and duplicate checks are observed.
+
+Production currently serves the PR #33 commit. Public health checks passed and
+the cron route rejected unauthenticated requests. Runtime logs showed hourly
+accepted cron requests, including recovered database connection retries. Those
+HTTP responses do not establish which scheduled runs imported data: configuration
+and database run history still require authenticated inspection. Production
+sign-in, a fresh verified recovery point, merge/deployment, and direct role
+acceptance remain release prerequisites.
+
 ### 2026-09-01 - current release, agencies, and schedule matching
 
 - Production commit `2801cf164af974fc78b8f94dd085ecafab54e3ea`

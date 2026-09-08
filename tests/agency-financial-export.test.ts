@@ -34,6 +34,10 @@ const REPORT: AgencyFinancialReport = {
     employeeName: "Employee One",
     programName: "Community Habilitation",
     paymentRecipient: "excellent_staffing",
+    payrollCheckId: null,
+    payrollCheckVerified: false,
+    payrollCheckServiceDate: null,
+    payrollCheckExpenseIncluded: false,
     grossAmount: "100.0000",
     baseAmount: "60.0000",
     agencySpread: "40.0000",
@@ -158,6 +162,7 @@ const REPORT: AgencyFinancialReport = {
     transactionsMissingAmount: 0,
     agencyTransactionsMissingBase: 0,
     agencyTransactionsMissingPayRule: 0,
+    directTransactionsMissingVerifiedCheck: 0,
     directChecksMissingGross: 0,
     directChecksMissingWithholding: 0,
     directChecksGrossBelowNet: 0,
@@ -193,6 +198,7 @@ describe("Agency Financial export", () => {
       month: REPORT.month,
       periodStart: REPORT.periodStart,
       periodEnd: REPORT.periodEnd,
+      resultStatus: "No identified actuals coverage gaps",
     }]);
     expect(table("Summary totals").rows).toContainEqual({
       section: "Result",
