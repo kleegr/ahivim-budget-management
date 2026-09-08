@@ -243,12 +243,53 @@ suite("Audited repair of historical agency base projections", () => {
       .toEqual({calculated_internal_amount:"0.0000",employee_payment_amount:"0.0000",agency_additional_amount:"0.0001"});
   },40_000);
 
-  it("rejects over-precision source P rather than silently rounding it into an eligible repair",async () => {
-    const {action} = await setup(values => {values[3]![15]="84.00001";});
+  it("keeps original/current high-precision source P exact while projecting the established four-decimal amount",async () => {
+    const {pool,action} = await setup(values => {values[3]![10]="Day Hab";values[3]![5]="$ 18.00";values[3]![6]="$ 52.02";values[3]![7]="$ 1,803.10";values[3]![15]="46.54421053";});
+    const accepted = await action(); expect(accepted).toMatchObject({ok:true});
+    expect((await pool.query("SELECT calculated_internal_amount,employee_payment_amount,agency_additional_amount FROM payroll_transactions WHERE imported_amount=52.02")).rows[0])
+      .toEqual({calculated_internal_amount:"46.5442",employee_payment_amount:"46.5442",agency_additional_amount:"5.4758"});
+    expect((await pool.query("SELECT metadata FROM audit_logs WHERE action='source_base_recovery_accepted' AND metadata->>'originalSourceBase'='46.54421053'")).rows[0])
+      .toMatchObject({metadata:{originalSourceBase:"46.54421053",currentSourceBases:["46.54421053"],projectionScale:4}});
+  },40_000);
+
+  it("holds distinct original/current P values even when both round to the same stored amount",async () => {
+    const {action,values} = await setup(values => {values[3]![15]="84.00001";});
+    const changed=values.map(row=>[...row]);changed[3]![15]="84.00002";
+    const csv=sheetValuesToCsv(changed);
     const before = await allMutable();
-    expect(await action()).toMatchObject({ok:false});
+    expect(await action({sourceHash:parseSheetCsv(csv).snapshotSha256},csv)).toMatchObject({ok:false});
     expect(await allMutable()).toEqual(before);
   },40_000);
+
+  it("holds a source value across the four-decimal rounding boundary when stored-rate calculation disagrees",async () => {
+    const {action} = await setup(values=>{values[3]![15]="84.00005";});
+    const before=await allMutable();expect(await action()).toMatchObject({ok:false});expect(await allMutable()).toEqual(before);
+  },40_000);
+
+  it("accepts and undoes duplicate occurrence helper variation while preserving exact source NET and P",async () => {
+    const {pool,action} = await setup(values=>{values[3]![7]="123.45";values[3]![18]="123.45";
+      const repeated=[...values[3]!];repeated[18]="0";values.push(repeated);});
+    const before=await controls(),accepted=await action();if(!accepted.ok)throw new Error(accepted.message);
+    expect(await controls()).toEqual(before);
+    expect((await pool.query("SELECT metadata FROM audit_logs WHERE action='source_base_recovery_accepted' AND metadata->>'originalDedupNetHelper'='123.45'")).rows[0])
+      .toMatchObject({metadata:{originalDedupNetHelper:"123.45",currentDedupNetHelpers:["123.45","0"]}});
+    expect(await action({action:"undo",transactionIds:undefined,acceptanceAuditId:accepted.data.acceptanceAuditId})).toMatchObject({ok:true});
+    expect(await controls()).toEqual(before);
+  },40_000);
+
+  for (const change of ["net","base","single_helper","no_original_helper"] as const) {
+    it(`holds ${change} drift despite otherwise matching duplicate source identity`,async () => {
+      const {action,values}=await setup(values=>{values[3]![7]="123.45";values[3]![18]="123.45";
+        if(change!=="single_helper"){const repeat=[...values[3]!];repeat[18]="0";values.push(repeat);}});
+      const changed=values.map(row=>[...row]);
+      if(change==="net")changed[6]![7]="123.46";
+      if(change==="base")changed[6]![15]="84.00001";
+      if(change==="single_helper"||change==="no_original_helper")changed[3]![18]="0";
+      const csv=sheetValuesToCsv(changed),before=await allMutable();
+      expect(await action({sourceHash:parseSheetCsv(csv).snapshotSha256},csv)).toMatchObject({ok:false});
+      expect(await allMutable()).toEqual(before);
+    },40_000);
+  }
 
   it("records the real per-group fallback budget change while preserving allocations, authorization and source history",async () => {
     const {pool,action,ids} = await setup(values => {values[3]![10]="Day Hab";values[3]![5]="19";values[3]![6]="95";values[3]![15]="85";});

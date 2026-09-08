@@ -4,7 +4,7 @@ import { resolveAuditAttribution } from "@/lib/auth/audit-attribution";
 import { createPersonIdentityResolver, type PersonIdentityDirectory } from "@/lib/business/person-identity";
 import { calculateInternalAmount, isAgencyPayee } from "@/lib/business/internal-rate";
 import { resolveProgram } from "@/lib/business/program-normalization";
-import { dec } from "@/lib/money";
+import { dec, toMoney } from "@/lib/money";
 import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
 import { fail, ok, type Result } from "@/lib/manage/errors";
 import { AHIVIM_HEADER_ALIASES, AHIVIM_POSITIONAL, type AhivimField } from "@/lib/excel/column-map";
@@ -70,12 +70,19 @@ type Audit = { id: string; entity_id: string | null; action: string; created_at:
 type Item = SourceBaseRecoveryHistoryItem & { auditId: string;
   originalSourceHash: string; otherFieldsHash: string; importRowId: string; sourceRowNumbers: number[];
   originalWarningHash:string; originalWarningIds:string[];
+  originalSourceBase:string; currentSourceBases:string[];
+  originalDedupNetHelper:string; currentDedupNetHelpers:string[];
   groupBudgetBasis: boolean; appliedInternalRate: string; appliedAgencyRate: string };
 
 function exact(value: unknown): string | null {
   if (typeof value !== "string" || !/^\d+(?:\.\d+)?$/.test(value.trim())) return null;
   const amount = dec(value);
   return amount.decimalPlaces() <= 4 && amount.lt("10000000000") ? amount.toFixed(4) : null;
+}
+/** Original/current cells retain exact precision; only the stored projection uses the existing money scale. */
+function sourceProjection(value:unknown):string|null {
+  if (typeof value !== "string" || !/^\d+(?:\.\d+)?$/.test(value.replace(/[\s$,]/g,""))) return null;
+  return exact(toMoney(value));
 }
 function projection(row: Row): SourceBaseProjection | null {
   const base = exact(row.calculated_internal_amount), employeePayment = exact(row.employee_payment_amount), agencyAdditional = exact(row.agency_additional_amount);
@@ -244,13 +251,13 @@ function originalParsed(row: Row) {
   }
   return parseSheetCsv(sheetValuesToCsv([[],header,values])).ahivimRows[0]?.parsed;
 }
-function sameMappedSource(before: Record<string,unknown>, current: Record<string,unknown>): boolean {
+function sameMappedSource(before: Record<string,unknown>, current: Record<string,unknown>, duplicateHelper = false): boolean {
   const numeric = new Set(["hours","rate","amount","calculatedInternalAmount","totalNetPay"]);
   return Object.entries(before).every(([field,value]) => {
-    if (field === "paid") return true;
+    if (field === "paid" || (duplicateHelper && field === "dedupNetPayFormula")) return true;
     const next = current[field];
     if (numeric.has(field) && text(value) && text(next)) {
-      try { return dec(String(value)).eq(String(next)); } catch { return false; }
+      try { return dec(String(value)).eq(dec(String(next))); } catch { return false; }
     }
     return text(value) === text(next);
   });
@@ -276,17 +283,24 @@ async function sourceEvidence(db:Db, rows:Row[], source:ReturnType<typeof parseS
   const sourceByIdentity = new Map<string,typeof source.ahivimRows>();
   for (const row of source.ahivimRows) { const key = sheetSourceIdentityKey({...sheetSourceIdentity(row)});
     if (key) sourceByIdentity.set(key,[...(sourceByIdentity.get(key) ?? []),row]); }
+  const checkCandidates = sourceBaseCheckCandidates(source.ahivimRows,directory.employees);
   const tracking = (await db.query<{payroll_transaction_id:string;state:string;fingerprint:string}>(`SELECT payroll_transaction_id,state,fingerprint
     FROM sheet_sync_rows WHERE payroll_transaction_id=ANY($1::uuid[])`,[rows.map(row => row.id)])).rows;
   const result = new Map<string,{reason:string|null;rowNumbers:number[]}>(), groupCache = new Map<number,boolean>();
   for (const row of rows) {
     const next = replacement(row), original = originalParsed(row), key = sheetSourceIdentityKey(identity(row));
     const matches = key ? sourceByIdentity.get(key) ?? [] : [], records = tracking.filter(record => record.payroll_transaction_id === row.id);
+    // S deliberately counts NET only once across duplicate occurrences. Its
+    // differing helper result never changes H (actual source NET) or P/base.
+    // Preserve at least one exact original occurrence and check all money and
+    // identity fields on every occurrence before allowing that one helper.
+    const duplicateHelper = matches.length > 1 && matches.some(sourceRow => sourceRow.parsed
+      && text(sourceRow.parsed.dedupNetPayFormula) === text(original?.dedupNetPayFormula));
     let reason:string|null = null;
-    if (row.import_status !== "imported" || !row.employee_id || !row.individual_id || !row.program_id || !next || !original || exact(original.calculatedInternalAmount) !== next.base || !matches.length
+    if (row.import_status !== "imported" || !row.employee_id || !row.individual_id || !row.program_id || !next || !original || sourceProjection(original.calculatedInternalAmount) !== next.base || !matches.length
       || records.length !== 1 || records[0]!.state !== "active" || records[0]!.fingerprint !== row.transaction_fingerprint
-      || matches.some(sourceRow => !sourceRow.parsed || exact(sourceRow.parsed.calculatedInternalAmount) !== next.base
-        || !sameMappedSource(original,sourceRow.parsed) || text(sourceRow.parsed.payTo) !== text(row.pay_to_raw)
+      || matches.some(sourceRow => !sourceRow.parsed || sourceProjection(sourceRow.parsed.calculatedInternalAmount) !== next.base
+        || !sameMappedSource(original,sourceRow.parsed,duplicateHelper) || text(sourceRow.parsed.payTo) !== text(row.pay_to_raw)
         || resolveEmployee(sourceRow.parsed.employee).matchedId !== row.employee_id
         || resolveIndividual(sourceRow.parsed.individual).matchedId !== row.individual_id
         || !programs.some(program => program.id === row.program_id && program.code === resolveProgram(sourceRow.parsed!.programDescription,programAliases).code))) {
@@ -294,7 +308,7 @@ async function sourceEvidence(db:Db, rows:Row[], source:ReturnType<typeof parseS
     } else {
       let unresolved = groupCache.get(matches[0]!.sourceRowNumber);
       if (unresolved === undefined) {
-        const group = sourceNetCheckGroup(source.ahivimRows,identity(row),row.employee_id,
+        const group = sourceNetCheckGroup(checkCandidates(row.employee_id!),identity(row),row.employee_id,
           {employees:directory.employees.people,aliases:directory.employees.aliases,merges:directory.employees.merges});
         unresolved = group.unresolved;
         for (const rowNumber of group.rowNumbers) groupCache.set(rowNumber,unresolved);
@@ -304,6 +318,23 @@ async function sourceEvidence(db:Db, rows:Row[], source:ReturnType<typeof parseS
     result.set(row.id,{reason,rowNumbers:matches.map(match => match.sourceRowNumber)});
   }
   return result;
+}
+
+/** Reuse the existing identity boundary once per preview; check/date/ambiguity rules still run in sourceNetCheckGroup. */
+export function sourceBaseCheckCandidates(rows:ReturnType<typeof parseSheetCsv>["ahivimRows"],directory:PersonIdentityDirectory) {
+  const byEmployee = new Map<string,typeof rows>(), uncertain:typeof rows = [];
+  const knownIds = new Set(directory.people.map(person => person.id));
+  const resolve = createPersonIdentityResolver(directory,{maxSuggestions:0},"employee");
+  for (const row of rows) {
+    const match = resolve(row.parsed?.employee ?? row.raw.employee);
+    // Unknown/dangling names stay in every possible group. Known disjoint
+    // interpretations cannot affect another employee. Do not filter dates.
+    const possible = match.matchedId ? [match.matchedId]
+      : match.possibleIds.size && [...match.possibleIds].every(id => knownIds.has(id)) ? [...match.possibleIds] : null;
+    if (possible === null) uncertain.push(row);
+    else for (const id of possible) byEmployee.set(id,[...(byEmployee.get(id) ?? []),row]);
+  }
+  return (employeeId:string) => [...(byEmployee.get(employeeId) ?? []),...uncertain];
 }
 
 /**
@@ -393,6 +424,10 @@ export async function recoverSourceBase(
           sourceFileId:row.source_file_id,sourceRowNumber:row.source_row_number,individual:row.individual,employee:row.employee,
           originalSourceHash:hash(row.raw_values),otherFieldsHash:row.other_fields_hash,importRowId:row.import_row_id,
           originalWarningHash:hash(row.warnings),originalWarningIds:row.warnings.map(warning => warning.id),
+          originalSourceBase:String(originalParsed(row)!.calculatedInternalAmount),
+          currentSourceBases:[...new Set(source.ahivimRows.filter(sourceRow => checked.rowNumbers.includes(sourceRow.sourceRowNumber)).map(sourceRow => String(sourceRow.parsed!.calculatedInternalAmount)))],
+          originalDedupNetHelper:String(originalParsed(row)!.dedupNetPayFormula),
+          currentDedupNetHelpers:[...new Set(source.ahivimRows.filter(sourceRow => checked.rowNumbers.includes(sourceRow.sourceRowNumber)).map(sourceRow => String(sourceRow.parsed!.dedupNetPayFormula)))],
           sourceRowNumbers:checked.rowNumbers,groupBudgetBasis:row.rate_scope === "per_group",
           appliedInternalRate:String(row.internal_rate_applied),appliedAgencyRate:String(row.agency_rate_applied)});
       }
@@ -407,6 +442,8 @@ export async function recoverSourceBase(
         metadata:{operationKey:input.operationKey,requestHash,batchAuditId,previous:item.previous,next:item.next,sourceHash:source.snapshotSha256,
           originalSourceHash:item.originalSourceHash,otherFieldsHash:item.otherFieldsHash,originalImportRowId:item.importRowId,sourceRowNumbers:item.sourceRowNumbers,
           originalWarningHash:item.originalWarningHash,originalWarningIds:item.originalWarningIds,originalWarningsUnchanged:true,
+          originalSourceBase:item.originalSourceBase,currentSourceBases:item.currentSourceBases,projectionScale:4,
+          originalDedupNetHelper:item.originalDedupNetHelper,currentDedupNetHelpers:item.currentDedupNetHelpers,
           appliedInternalRate:item.appliedInternalRate,appliedAgencyRate:item.appliedAgencyRate,rule:"agency_rate_converted",
           groupBudgetBasis:item.groupBudgetBasis,rateReviewUnchanged:true,
           ...(acceptedBatch ? {acceptanceAuditId:acceptedItems.find(saved => saved.transactionId === item.transactionId)!.auditId} : {}),
