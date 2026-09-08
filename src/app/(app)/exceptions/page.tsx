@@ -23,8 +23,11 @@ import {
 } from "@/lib/nav/review-actions";
 import RateExceptionActions from "@/components/exceptions/rate-exception-actions";
 import DuplicateWarningActions from "@/components/exceptions/duplicate-warning-actions";
+import SourceBaseRecoveryPanel from "@/components/source-base-recovery-panel";
+import { listSourceBaseRecoveryReview } from "@/lib/sheets/base-recovery";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 export const metadata = { title: "Exceptions — Ahivim Budget Management" };
 
 const PAGE_SIZE = 100;
@@ -55,7 +58,7 @@ export default async function ExceptionsPage({
   const showDuplicates = kind === "all" || kind === "possible_duplicate";
 
   const result = await withDb(async (pool) => {
-    const [counts, rates, aliases, importIssues, duplicateIssues] = await Promise.all([
+    const [counts, rates, aliases, importIssues, duplicateIssues, sourceBaseReview] = await Promise.all([
       exceptionCounts(pool),
       showRates
         ? listRateExceptions(pool, { resolution: "open", limit: PAGE_SIZE, offset })
@@ -67,8 +70,9 @@ export default async function ExceptionsPage({
       showDuplicates
         ? listCommittedDuplicateWarnings(pool, { limit: PAGE_SIZE, offset })
         : Promise.resolve({ rows: [], total: 0 }),
+      showRates ? listSourceBaseRecoveryReview(pool) : Promise.resolve(null),
     ]);
-    return { counts, rates, aliases, importIssues, duplicateIssues };
+    return { counts, rates, aliases, importIssues, duplicateIssues, sourceBaseReview };
   });
 
   return (
@@ -111,6 +115,7 @@ export default async function ExceptionsPage({
           </div>
 
           <div className="mt-4 space-y-4">
+            {result.data.sourceBaseReview ? <SourceBaseRecoveryPanel review={result.data.sourceBaseReview} /> : null}
             {showImportIssues ? (
               <Card
                 title={kind === "unknown_program" ? "Unknown programs" : kind === "unmatched_name" ? "Unmatched names" : "Imported rows to review"}

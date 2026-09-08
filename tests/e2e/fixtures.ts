@@ -63,6 +63,10 @@ export function assertSafeE2eDatabaseReset(input: {
   if (target.protocol !== "postgres:" && target.protocol !== "postgresql:") {
     throw new Error("TEST_DATABASE_URL must use the postgres or postgresql protocol.");
   }
+  const connectionOverrides = new Set(["host", "hostaddr", "port", "database", "dbname", "user", "password", "options", "service", "servicefile"]);
+  if ([...target.searchParams.keys()].some(key => connectionOverrides.has(key.toLowerCase()))) {
+    throw new Error("TEST_DATABASE_URL cannot override its connection target through query parameters; reset refused.");
+  }
   if (target.hostname.toLowerCase() !== input.expectedHost.trim().toLowerCase()) {
     throw new Error("TEST_DATABASE_URL does not match E2E_EXPECTED_DB_HOST; reset refused.");
   }

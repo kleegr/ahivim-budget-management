@@ -33,6 +33,18 @@ describe("E2E destructive database reset interlock", () => {
     );
   });
 
+  it.each(["host", "HOST", "hostaddr", "port", "database", "Database", "dbname", "user", "password", "options", "service", "servicefile"])(
+    "rejects a %s query override before connecting, without exposing its value", field => {
+      const connectionString = `${disposableUrl}?${field}=private-override`;
+      expect(() => assertReset({ connectionString })).toThrow(
+        "TEST_DATABASE_URL cannot override its connection target through query parameters; reset refused.",
+      );
+    });
+
+  it("retains ordinary TLS connection options on the verified disposable target", () => {
+    expect(() => assertReset({ connectionString: `${disposableUrl}?sslmode=verify-full` })).not.toThrow();
+  });
+
   it("rejects non-PostgreSQL URLs and URLs without a database name", () => {
     expect(() => assertReset({ connectionString: "https://disposable-db.example.test/ahivim_e2e" })).toThrow(
       "TEST_DATABASE_URL must use the postgres or postgresql protocol.",
