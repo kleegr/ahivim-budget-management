@@ -24,16 +24,21 @@ describe("versioned Sheet snapshot fast path", () => {
       previousSha256: "same",
       previousSourceTrackingVersion: "occurrence-v1+source-evidence-v2",
       currentSha256: "same",
+    })).toBe(false);
+    expect(canSkipVersionedSheetSnapshot({
+      previousSha256: "same",
+      previousSourceTrackingVersion: "occurrence-v1+source-evidence-v2+unknown-net-review-v1",
+      currentSha256: "same",
     })).toBe(true);
     expect(canSkipVersionedSheetSnapshot({
       previousSha256: "same",
-      previousSourceTrackingVersion: "occurrence-v1+source-evidence-v2",
+      previousSourceTrackingVersion: "occurrence-v1+source-evidence-v2+unknown-net-review-v1",
       previousPendingAtomicGroupHolds: 1,
       currentSha256: "same",
     })).toBe(false);
     expect(canSkipVersionedSheetSnapshot({
       previousSha256: "old",
-      previousSourceTrackingVersion: "occurrence-v1+source-evidence-v2",
+      previousSourceTrackingVersion: "occurrence-v1+source-evidence-v2+unknown-net-review-v1",
       currentSha256: "new",
     })).toBe(false);
   });

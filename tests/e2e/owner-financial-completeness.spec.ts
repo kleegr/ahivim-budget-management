@@ -1,6 +1,7 @@
 import { expect, test, type Download, type Page } from "@playwright/test";
 import ExcelJS from "exceljs";
 import { Pool } from "pg";
+import { agencyDate } from "../../src/lib/business/agency-time";
 import {
   ADMIN_EMAIL,
   ADMIN_PASSWORD,
@@ -34,10 +35,63 @@ async function downloadBytes(download: Download): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-async function verifyIncompleteReport(page: Page): Promise<void> {
+async function verifyIncompleteHome(page: Page, pool: Pool): Promise<void> {
+  assertSafeE2eDatabaseReset({
+    connectionString: TEST_DB_URL,
+    expectedHost: EXPECTED_DISPOSABLE_DB_HOST,
+    confirmation: RESET_CONFIRMATION,
+  });
+  const original = await pool.query<{ period_begin: string | null; period_end: string | null }>(
+    `SELECT period_begin::text, period_end::text FROM payroll_transactions
+      WHERE id = $1 AND transaction_fingerprint = 'e2e-direct-row-1' AND payroll_check_id IS NULL`,
+    [DIRECT_TRANSACTION_ONE_ID],
+  );
+  expect(original.rows).toHaveLength(1);
+  const saved = original.rows[0]!;
+  const today = agencyDate();
+  let shifted = false;
+  try {
+    // Home always uses the current agency month. Move only this detached
+    // synthetic service period, then restore it before dated report assertions.
+    const updated = await pool.query(
+      `UPDATE payroll_transactions SET period_begin = $2::date, period_end = $2::date
+        WHERE id = $1 AND transaction_fingerprint = 'e2e-direct-row-1' AND payroll_check_id IS NULL`,
+      [DIRECT_TRANSACTION_ONE_ID, today],
+    );
+    expect(updated.rowCount).toBe(1);
+    shifted = true;
+    await signInAsOwner(page);
+    const homeMoney = page.getByRole("region", { name: "Money", exact: true });
+    await expect(homeMoney.getByText("Agency result (incomplete)", { exact: true })).toBeVisible();
+    await expect(homeMoney.getByText("Some amounts are missing or need review. This result is incomplete.", { exact: false })).toBeVisible();
+    await expect(homeMoney.getByRole("link", { name: "Review source details", exact: true })).toHaveAttribute(
+      "href", `/reports/agency-financials?month=${today.slice(0, 7)}`,
+    );
+    await expect(page.getByRole("link", { name: /Money needs a refresh/ })).toBeVisible();
+    await expect(page.getByText("Verified employee give-back obligations with a remaining balance.", { exact: true })).toHaveCount(0);
+    await page.screenshot({ path: test.info().outputPath("owner-home-incomplete.png"), fullPage: true });
+  } finally {
+    if (shifted) {
+      const restored = await pool.query(
+        `UPDATE payroll_transactions SET period_begin = $2::date, period_end = $3::date
+          WHERE id = $1 AND transaction_fingerprint = 'e2e-direct-row-1'
+            AND period_begin = $4::date AND period_end = $4::date`,
+        [DIRECT_TRANSACTION_ONE_ID, saved.period_begin, saved.period_end, today],
+      );
+      expect(restored.rowCount).toBe(1);
+      const restoredDates = await pool.query(
+        "SELECT period_begin::text, period_end::text FROM payroll_transactions WHERE id = $1",
+        [DIRECT_TRANSACTION_ONE_ID],
+      );
+      expect(restoredDates.rows).toEqual([saved]);
+    }
+  }
+}
+
+async function verifyIncompleteReport(page: Page, pool: Pool): Promise<void> {
   const runtimeErrors: string[] = [];
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
-  await signInAsOwner(page);
+  await verifyIncompleteHome(page, pool);
   const navigation = await page.goto(REPORT_PATH);
   expect(navigation?.status()).toBe(200);
   const main = page.locator("#main");
@@ -154,7 +208,7 @@ test.describe.serial("Owner financial completeness from exact source evidence", 
   ]) {
     test(`owner sees incomplete actuals, exact source, and honest exports on ${viewport.label}`, async ({ page }) => {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await verifyIncompleteReport(page);
+      await verifyIncompleteReport(page, pool!);
     });
   }
 });

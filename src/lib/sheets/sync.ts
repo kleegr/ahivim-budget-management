@@ -100,7 +100,7 @@ const SCHEDULE_MATCH_REVIEW_HREF = "/schedule?view=matching" as const;
 const SHEET_SYNC_ADVISORY_LOCK = "ahivim:sheet-sync:canonical-ledger:v1";
 const SHEET_SYNC_LOCK_WAIT_MS = 120_000;
 const SHEET_SYNC_LOCK_POLL_MS = 250;
-const SHEET_SYNC_SOURCE_TRACKING_VERSION = "occurrence-v1+source-evidence-v2";
+const SHEET_SYNC_SOURCE_TRACKING_VERSION = "occurrence-v1+source-evidence-v2+unknown-net-review-v1";
 
 function heldNewSourceClaimKey(naturalKey: string, fingerprint: string): string {
   return JSON.stringify([naturalKey, fingerprint]);
@@ -1374,7 +1374,7 @@ export async function runSheetSync(
           sourceFingerprints: [staged.fingerprint],
           sourceEvidenceKeys: evidenceKey ? [evidenceKey] : [],
           sourceEvidenceVariants: [variant],
-          fallbackPreviousIdentity: changedTarget?.identity ?? null,
+          fallbackPreviousIdentity: unchangedTarget?.identity ?? changedTarget?.identity ?? null,
         });
         continue;
       }
@@ -1435,6 +1435,31 @@ export async function runSheetSync(
     const previousTrackingByTxn = new Map<string, PreviousTrackingRow>();
     const openMissingConflictRows: OpenMissingConflictRow[] = [];
     const openSourceEvidenceConflictRows: OpenSourceEvidenceConflictRow[] = [];
+    const recoveredUnknownNetTxnIds = new Set([...currentEvidenceByTxn]
+      .filter(([, current]) => current.fallbackPreviousIdentity?.totalNetPay === null
+        && current.sourceEvidenceVariants.some(variant => typeof variant.totalNetPay === "string"
+          && /^[+-]?\d+(?:\.\d+)?$/.test(variant.totalNetPay)))
+      .map(([txnId]) => txnId));
+    const acknowledgedEvidenceByTxn = new Map<string, string[][]>();
+    if (recoveredUnknownNetTxnIds.size > 0) {
+      const { rows: acknowledged } = await pool.query<{
+        payroll_transaction_id: string;
+        incoming: unknown;
+      }>(
+        `SELECT payroll_transaction_id, incoming FROM sheet_sync_conflicts
+          WHERE payroll_transaction_id = ANY($1::uuid[])
+            AND type = 'changed' AND status = 'dismissed'
+            AND resolution IN ('source_evidence_adopted', 'source_change_acknowledged')`,
+        [[...recoveredUnknownNetTxnIds]],
+      );
+      for (const row of acknowledged) {
+        const evidence = storedSourceEvidence(row.incoming);
+        if (!evidence.explicit) continue;
+        const prior = acknowledgedEvidenceByTxn.get(row.payroll_transaction_id) ?? [];
+        prior.push(evidence.keys);
+        acknowledgedEvidenceByTxn.set(row.payroll_transaction_id, prior);
+      }
+    }
     if (evidenceTxnIds.length > 0) {
       const { rows: previousTrackingRows } = await pool.query<PreviousTrackingRow>(
         `SELECT id, payroll_transaction_id, source_row_number, identity
@@ -1577,8 +1602,9 @@ export async function runSheetSync(
       .filter((conflict) => (positiveInteger(jsonRecord(conflict.previous).sourceOccurrenceCount) ?? 1) > 1)
       .map((conflict) => conflict.id);
     // Routing and source-net evidence is versioned separately from the canonical
-    // transaction fingerprint. Legacy rows get one silent bootstrap; after that,
-    // drift or multiple variants within one fingerprint group stays review-only.
+    // transaction fingerprint. Legacy routing can bootstrap, but a recovered
+    // numeric NET must not silently become the baseline while canonical NET is
+    // still unknown. Explicit acknowledgement remains authoritative.
     const openSourceEvidenceByTxn = new Map<string, OpenSourceEvidenceConflictRow>();
     for (const conflict of openSourceEvidenceConflictRows) {
       if (!openSourceEvidenceByTxn.has(conflict.payroll_transaction_id)) {
@@ -1591,7 +1617,25 @@ export async function runSheetSync(
     for (const [txnId, current] of currentEvidenceByTxn) {
       const previousRow = previousTrackingByTxn.get(txnId);
       const openConflict = openSourceEvidenceByTxn.get(txnId);
-      const previousIdentity = previousRow?.identity ?? current.fallbackPreviousIdentity;
+      let previousIdentity = previousRow?.identity ?? current.fallbackPreviousIdentity;
+      const previousEvidence = storedSourceEvidence(previousIdentity);
+      const unknownNetNeedsReview = recoveredUnknownNetTxnIds.has(txnId)
+        && !openConflict
+        && (!previousEvidence.explicit || sameSourceEvidenceKeys(previousEvidence.keys, current.sourceEvidenceKeys))
+        && !(acknowledgedEvidenceByTxn.get(txnId) ?? [])
+          .some(keys => sameSourceEvidenceKeys(keys, current.sourceEvidenceKeys));
+      if (unknownNetNeedsReview) {
+        // A previous release may already have advanced tracking without a
+        // review. Retain the known canonical NULL, using current routing only
+        // to isolate the NET discrepancy rather than guess legacy routing.
+        previousIdentity = {
+          ...jsonRecord(previousIdentity),
+          totalNetPay: null,
+          sourceEvidenceKeyVersion: SOURCE_EVIDENCE_KEY_VERSION,
+          sourceEvidenceKeys: normalizedSourceEvidenceKeys(current.sourceEvidenceVariants
+            .map(variant => sourceEvidenceKey({ ...variant, totalNetPay: null }))),
+        };
+      }
       const transition = classifySourceEvidenceTransition({
         hasPreviousTracking: previousIdentity !== null && previousIdentity !== undefined,
         previousIdentity,
@@ -1608,9 +1652,7 @@ export async function runSheetSync(
       sourceEvidenceConflictTxnIds.add(txnId);
       const baselineIdentity = openConflict
         ? jsonRecord(openConflict.previous)
-        : previousRow
-          ? jsonRecord(previousRow.identity)
-          : jsonRecord(current.fallbackPreviousIdentity);
+        : jsonRecord(previousIdentity);
       const previousPayload = {
         ...baselineIdentity,
         sourceEvidenceConflict: SOURCE_EVIDENCE_CONFLICT_MARKER,

@@ -11,6 +11,8 @@ import { summarizeAuthorizationPortfolio } from "@/lib/data/authorization-portfo
 import type { StrategyGridRow } from "@/lib/manage/calculation-strategies";
 import type { OwnerScheduleAttention, OwnerScheduleAttentionVisit } from "@/lib/dashboard/owner-schedule-attention";
 import { dec, formatMoney } from "@/lib/money";
+import type { AgencyFinancialReport } from "@/lib/data/agency-financial-report";
+import { agencyFinancialResultIncomplete } from "@/lib/business/agency-financial-completeness";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -88,11 +90,20 @@ export interface OwnerDashboardSummary {
 }
 
 export interface OwnerAttentionMoney {
+  dirty: boolean;
   agencyOwes: string;
   employeesOwe: string;
   reservesToSetAside: string;
   credits: string;
   creditCount: number;
+}
+
+export function buildOwnerActualMoney(report: Pick<AgencyFinancialReport, "month" | "totals" | "coverage">) {
+  return {
+    month: report.month,
+    totals: report.totals,
+    incomplete: agencyFinancialResultIncomplete(report.coverage),
+  };
 }
 
 export interface OwnerAttentionItem {
@@ -392,6 +403,7 @@ export function buildOwnerAttentionItems(
   schedule?: OwnerScheduleAttention,
 ): OwnerAttentionItem[] {
   const items: OwnerAttentionItem[] = [];
+  const currentMoney = money && !money.dirty ? money : undefined;
 
   if (canonicalCheckIssueCount > 0) {
     const count = canonicalCheckIssueCount;
@@ -402,6 +414,17 @@ export function buildOwnerAttentionItems(
       detail: `${count.toLocaleString()} ${plural(count, "check group")} ${plural(count, "has", "have")} missing or conflicting routing, net pay, identity, duplicate, or group-review data.`,
       href: "/settlements?focus=check-issues",
       action: "Verify checks",
+    });
+  }
+
+  if (money?.dirty) {
+    items.push({
+      key: "money-refresh",
+      category: "Money",
+      title: "Money needs a refresh",
+      detail: "Review the latest checks and financial setup before using collection, payment, put-away, or credit totals.",
+      href: "/masser",
+      action: "Review and refresh money",
     });
   }
 
@@ -453,33 +476,33 @@ export function buildOwnerAttentionItems(
     });
   }
 
-  if (money && dec(money.agencyOwes).greaterThan(0)) {
+  if (currentMoney && dec(currentMoney.agencyOwes).greaterThan(0)) {
     items.push({
       key: "agency-payments",
       category: "Money",
-      title: `${formatMoney(money.agencyOwes)} needs to be paid`,
-      detail: "Agency-to-employee obligations with a remaining balance.",
+      title: `${formatMoney(currentMoney.agencyOwes)} needs to be paid`,
+      detail: "Recorded payables with a remaining balance.",
       href: "/settlements?queue=payable",
       action: "Review payments",
     });
   }
 
-  if (money && dec(money.employeesOwe).greaterThan(0)) {
+  if (currentMoney && dec(currentMoney.employeesOwe).greaterThan(0)) {
     items.push({
       key: "employee-collections",
       category: "Money",
-      title: `${formatMoney(money.employeesOwe)} needs to be collected`,
-      detail: "Verified employee give-back obligations with a remaining balance.",
+      title: `${formatMoney(currentMoney.employeesOwe)} needs to be collected`,
+      detail: "Recorded receivables with a remaining balance.",
       href: "/settlements?queue=receivable",
       action: "Review collections",
     });
   }
 
-  if (money && dec(money.reservesToSetAside).greaterThan(0)) {
+  if (currentMoney && dec(currentMoney.reservesToSetAside).greaterThan(0)) {
     items.push({
       key: "individual-put-away",
       category: "Money",
-      title: `${formatMoney(money.reservesToSetAside)} needs to be put away`,
+      title: `${formatMoney(currentMoney.reservesToSetAside)} needs to be put away`,
       detail: "Approved individual set-aside obligations with a remaining balance.",
       href: "/settlements?queue=reserve",
       action: "Review put-away",
@@ -544,12 +567,12 @@ export function buildOwnerAttentionItems(
     });
   }
 
-  if (money && money.creditCount > 0 && dec(money.credits).greaterThan(0)) {
+  if (currentMoney && currentMoney.creditCount > 0 && dec(currentMoney.credits).greaterThan(0)) {
     items.push({
       key: "money-credits",
       category: "Money",
-      title: `${formatMoney(money.credits)} is available as credit`,
-      detail: `${money.creditCount.toLocaleString()} ${plural(money.creditCount, "credit")} ${plural(money.creditCount, "needs", "need")} review before another payment is recorded.`,
+      title: `${formatMoney(currentMoney.credits)} is available as credit`,
+      detail: `${currentMoney.creditCount.toLocaleString()} ${plural(currentMoney.creditCount, "credit")} ${plural(currentMoney.creditCount, "needs", "need")} review before another payment is recorded.`,
       href: "/settlements?queue=credit",
       action: "Review credits",
     });
