@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fullAccess } from "@/lib/auth/access";
 import { getCollectionsWorkspace, getIndividualMasserStatement, getPayrollCheckCounts, listPayrollChecks } from "@/lib/data/direct-pay-operations";
 import { individualPutAwayReport, REPORTS } from "@/lib/data/report-queries";
+import { reservePresentation } from "@/lib/business/reserve-presentation";
 import type { PgLikePool } from "@/lib/import/commit";
 import { closeTestPool, hasTestDatabase, resetSchema, testPool, truncateBusinessTables } from "../support/database";
 
@@ -129,10 +130,10 @@ suite("Masser source-review read integrity (PostgreSQL)", () => {
     expect((await individualPutAwayReport(pool, { month: "2026-09", status: "complete" })).rows).toEqual([]);
     const reviewed = await individualPutAwayReport(pool, { month: "2026-09", status: "review-required" });
     expect(reviewed.rows).toEqual([expect.objectContaining({ individualId: id, approvedMonthlyPlan: "200.0000",
-      setAsideThisMonth: "20.0000", remainingSetAside: "0.0000", reviewRequiredPlans: 1 })]);
+      setAsideThisMonth: "20.0000", remainingSetAside: null, reviewRequiredPlans: 1 })]);
     const [table] = await REPORTS["individual-put-away"]!.run(pool, { month: "2026-09" });
     expect(table!.rows[0]).toMatchObject({ approvedMonthlyPlan: "200.0000", setAsideThisMonth: "20.0000",
-      remainingSetAside: "0.0000", reviewRequiredPlans: 1, balanceStatus: "Source review required; held balances excluded" });
+      remainingSetAside: null, reviewRequiredPlans: 1, balanceStatus: "Source review required; held balances excluded" });
   });
 
   it("does not report a previously completed known plan as complete after a new source write", async () => {
@@ -145,6 +146,21 @@ suite("Masser source-review read integrity (PostgreSQL)", () => {
     const [table] = await REPORTS["individual-put-away"]!.run(pool, { month: "2026-09" });
     expect(table!.rows[0]).toMatchObject({ balanceStatus: "Refresh needed", setAsideThisMonth: "100.0000" });
     expect(await getIndividualMasserStatement(pool, scope, id, "2026-09")).toMatchObject({ ledgerDirty: true, recordedReserve: "100.0000" });
+  });
+
+  it("keeps a verified zero or credit complete beside an explicit-zero setup with no obligation", async () => {
+    const id = await person("Synthetic verified plus zero setup"), plan = await strategy(id, "100", "1");
+    const zero = await strategy(id, "0", "12");
+    await pool.query("UPDATE calculation_strategies SET renewal_date = NULL WHERE id = $1", [zero]);
+    const obligation = await root(id, plan, "100", undefined, { monthlyAmount: "100", monthDivisor: "1" });
+    await cash(id, obligation, "100"); await markFixtureProcessed();
+    const statement = (await getIndividualMasserStatement(pool, scope, id, "2026-09"))!;
+    expect(statement).toMatchObject({ activePlans: 2, actionablePlans: 1, expectedBalancePlans: 1, missingBalanceRenewalPlans: 0 });
+    expect(reservePresentation(statement).display(statement.remainingReserve)).toBe("$0.00");
+    expect((await individualPutAwayReport(pool, { month: "2026-09", status: "complete" })).rows).toHaveLength(1);
+    await cash(id, obligation, "25"); await markFixtureProcessed();
+    const credited = (await getIndividualMasserStatement(pool, scope, id, "2026-09"))!;
+    expect(reservePresentation(credited).display(credited.availableCredit)).toBe("$25.00");
   });
 
   it("counts all scoped unverified checks independently of the 100-row or focused-check display", async () => {

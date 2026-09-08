@@ -1,5 +1,6 @@
+import { verifiedBalancePresentation } from "@/lib/business/verified-balance-presentation";
 import type { PgLikePool } from "@/lib/import/commit";
-import { settlementCurrentAmountSql } from "@/lib/data/settlement-eligibility";
+import { settlementCurrentAmountSql, settlementGiveBackCoverageSql } from "@/lib/data/settlement-eligibility";
 import { calculateDirectEmployeeCheck } from "@/lib/business/deal-engine";
 import { toHours, toMoney } from "@/lib/money";
 import {
@@ -448,6 +449,7 @@ export async function directEmployeeSummaries(
               GROUP BY settlement_obligation_id
            )
            SELECT o.employee_id AS scope_id,
+                  ${settlementGiveBackCoverageSql("o", "$2")},
                   COALESCE(sum(o.original_amount) FILTER (
                     WHERE o.direction = 'receivable'
                       AND o.status = 'active'
@@ -546,6 +548,8 @@ export async function directEmployeeSummaries(
   const schedules = new Map(scheduleResults);
   return peopleResult.rows.map((person) => {
     const collection = giveBack.get(person.id);
+    const balance = verifiedBalancePresentation(Number(collection?.held_count ?? 0), Number(collection?.verified_count ?? 0));
+    const dueBalance = verifiedBalancePresentation(Number(collection?.held_month_count ?? 0), Number(collection?.verified_month_count ?? 0));
     return {
       id: person.id,
       name: person.name,
@@ -559,10 +563,12 @@ export async function directEmployeeSummaries(
       directPay: directPayIds.includes(person.id) ? directPay.get(person.id) ?? [] : null,
       giveBack: giveBackIds.includes(person.id) ? {
         month,
-        dueThisMonth: toMoney(collection?.due_this_month ?? 0),
+        dueThisMonth: dueBalance.amount(collection?.due_this_month),
         collectedThisMonth: toMoney(collection?.collected_this_month ?? 0),
-        remaining: toMoney(collection?.remaining ?? 0),
-        credit: toMoney(collection?.credit ?? 0),
+        ...(balance.status ? { balanceStatus: balance.status } : {}),
+        ...(dueBalance.status ? { dueStatus: dueBalance.status } : {}),
+        remaining: balance.amount(collection?.remaining),
+        credit: balance.amount(collection?.credit),
         recentActivity: employeeGiveBackActivity(collection?.recent_activity),
       } : null,
       upcomingSchedule: schedules.get(person.id) ?? null,

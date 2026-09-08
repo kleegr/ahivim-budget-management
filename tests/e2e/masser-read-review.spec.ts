@@ -74,7 +74,8 @@ test.describe.serial("Masser retained source-review balances across actual route
       const row = main.getByRole("row").filter({ hasText: "Linked Individual" });
       await expect(row).toContainText("$260.00");
       await expect(row).toContainText("Held balances excluded");
-      await expect(row.getByRole("cell").nth(3)).toContainText("$0.00");
+      await expect(row.getByRole("cell").nth(3)).toContainText("Unavailable");
+      await expect(row.getByRole("cell").nth(3)).not.toContainText("$0.00");
       await expect(row.getByText("Ready", { exact: true })).toHaveCount(0);
       await expect(row.getByRole("link", { name: "Record set-aside", exact: true })).toHaveCount(0);
       await expect(row.getByRole("link", { name: "Source review required", exact: true }))
@@ -89,9 +90,10 @@ test.describe.serial("Masser retained source-review balances across actual route
       await expect(main.getByRole("heading", { level: 1, name: "Linked Individual", exact: true })).toBeVisible();
       await expect(main.getByText("Source review required", { exact: true })).toBeVisible();
       await expect(main.getByText("Approved monthly plan", { exact: true }).locator("..")).toContainText("$260.00");
-      await expect(main.getByText("Remaining in plan period", { exact: true }).locator("..")).toContainText("$0.00");
+      await expect(main.getByText("Remaining in plan period", { exact: true }).locator("..")).toContainText("Unavailable");
       await expect(main.getByText("Recorded over plan period", { exact: true }).locator("..")).toContainText("$0.00");
-      await expect(main.getByText("Credit", { exact: true }).locator("..")).toContainText("$0.00");
+      await expect(main.getByText("Credit", { exact: true }).locator("..")).toContainText("Unavailable");
+      await page.screenshot({ path: test.info().outputPath("masser-held-statement.png"), fullPage: true });
 
       expect((await page.goto(REPORT))?.status()).toBe(200);
       const reportRow = main.getByRole("row").filter({ hasText: "Linked Individual" });
@@ -124,7 +126,7 @@ test.describe.serial("Masser retained source-review balances across actual route
           expect(rows).toHaveLength(1);
           const value = (header: string) => rows[0]!.getCell(headers.indexOf(header)).value;
           expect(value("Approved monthly plan")).toBe(260);
-          expect(value("Remaining reserve")).toBe(0);
+          expect(value("Verified remaining reserve subtotal")).toBeNull();
           expect(value("Plans on source review")).toBe(1);
           expect(value("Balance review")).toBe(REVIEW_STATUS);
           expect(value("Source statement")).toBe(LINKED_INDIVIDUAL_ID);

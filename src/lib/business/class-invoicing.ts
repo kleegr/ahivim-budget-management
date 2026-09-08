@@ -40,8 +40,8 @@ export function generateMonthlyClassDates(
   if (year < 1900 || year > 2200 || month < 1 || month > 12) {
     throw new RangeError("Month must use YYYY-MM.");
   }
-  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_CLASS_INVOICE_LINES) {
-    throw new RangeError(`Choose between 1 and ${MAX_CLASS_INVOICE_LINES} class dates.`);
+  if (!Number.isInteger(limit) || limit < 1 || limit > DEFAULT_MONTHLY_CLASS_DAYS) {
+    throw new RangeError(`Choose between 1 and ${DEFAULT_MONTHLY_CLASS_DAYS} generated class dates.`);
   }
 
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -61,8 +61,8 @@ export function generateClassDatesBetween(
   if (!isIsoCalendarDate(startDate) || !isIsoCalendarDate(endDate) || endDate < startDate) {
     throw new RangeError("Class date range must use valid YYYY-MM-DD dates.");
   }
-  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_CLASS_INVOICE_LINES) {
-    throw new RangeError(`Choose between 1 and ${MAX_CLASS_INVOICE_LINES} class dates.`);
+  if (!Number.isInteger(limit) || limit < 1 || limit > DEFAULT_MONTHLY_CLASS_DAYS) {
+    throw new RangeError(`Choose between 1 and ${DEFAULT_MONTHLY_CLASS_DAYS} generated class dates.`);
   }
 
   const dates: string[] = [];

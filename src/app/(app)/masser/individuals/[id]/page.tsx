@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { resolveAccessScope } from "@/lib/auth/access";
 import { requireUser } from "@/lib/auth/session";
 import { agencyMonth } from "@/lib/business/agency-time";
+import { reservePresentation } from "@/lib/business/reserve-presentation";
 import { getIndividualMasserStatement } from "@/lib/data/direct-pay-operations";
 import { withDb } from "@/lib/data/pool";
 import { formatMoney } from "@/lib/money";
@@ -46,6 +47,7 @@ export default async function IndividualMasserStatementPage({
   if (result.ok && result.data.denied) redirect("/masser");
   if (result.ok && !result.data.statement) notFound();
   const statement = result.ok ? result.data.statement : null;
+  const balance = statement ? reservePresentation(statement) : null;
   const canManageFinancialPlans = result.ok && result.data.canManageFinancialPlans;
 
   return (
@@ -95,8 +97,8 @@ export default async function IndividualMasserStatementPage({
             <div className="grid grid-cols-2 border-y border-[var(--color-rule-strong)] bg-[var(--color-surface)] sm:grid-cols-4 sm:divide-x sm:divide-[var(--color-rule)]">
               <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Approved monthly plan</p><p className={`mt-1 text-xl font-semibold ${statement.setupHistoryAvailable ? "tnum" : "text-[var(--color-warn)]"}`}>{statement.setupHistoryAvailable ? formatMoney(statement.approvedMonthlyPlan) : "Unavailable"}</p><p className="mt-1 text-xs text-[var(--color-ink-faint)]">{statement.setupHistoryAvailable ? `${statement.activePlans.toLocaleString()} active ${statement.activePlans === 1 ? "setup" : "setups"} as of month-end` : "Reliable history begins August 2026"}</p></div>
               <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Recorded over plan period</p><p className="tnum mt-1 text-xl font-semibold text-[var(--color-success)]">{formatMoney(statement.recordedReserve)}</p><p className="mt-1 text-xs text-[var(--color-ink-faint)]">{statement.trackedPlans.toLocaleString()} {statement.trackedPlans === 1 ? "setup" : "setups"} tracked</p></div>
-              <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Remaining in plan period</p><p className="tnum mt-1 text-xl font-semibold">{formatMoney(statement.remainingReserve)}</p></div>
-              <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Credit</p><p className="tnum mt-1 text-xl font-semibold text-[var(--color-info)]">{formatMoney(statement.availableCredit)}</p></div>
+              <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Remaining in plan period</p><p className="tnum mt-1 text-xl font-semibold">{balance!.display(statement.remainingReserve)}</p><p className="mt-1 text-xs text-[var(--color-ink-faint)]">{balance!.status}</p></div>
+              <div className="px-4 py-3"><p className="text-xs font-semibold text-[var(--color-ink-faint)]">Credit</p><p className="tnum mt-1 text-xl font-semibold text-[var(--color-info)]">{balance!.display(statement.availableCredit)}</p><p className="mt-1 text-xs text-[var(--color-ink-faint)]">{balance!.status}</p></div>
             </div>
             <Card title="Monthly history" description="This is aggregate set-aside ledger activity only. Employee and payroll details are excluded.">
               {statement.history.length === 0 ? <p className="px-4 py-6 text-sm text-[var(--color-ink-faint)]">No put-away activity has been recorded yet.</p>

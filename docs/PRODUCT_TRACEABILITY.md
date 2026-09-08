@@ -32,6 +32,61 @@ suites that skip without `TEST_DATABASE_URL` do not count as database validation
 
 ## Production Acceptance Log
 
+### 2026-09-08 - Integrated final delivery candidate
+
+Baseline: `0bf845dff10b3e2919cb339ba8adcca71e4af12e`, confirmed against
+the production deployment. This entry supplements the prior acceptance below;
+it does not repeat historical repairs or certify missing business agreements.
+No migrations, source repairs, Sheet writes, production payments, or permission
+framework changes are included. The delivery branch explicitly disables its
+Vercel preview because generic Preview variables inherit production resources.
+Browser fixtures use a disposable localhost database and independent test auth.
+
+Changes distinguish held balances from verified zero in individual statements,
+Masser, settlement queues, reports/exports, and scoped employee/agency views.
+Mixed positions identify the verified subtotal; approved monthly amounts and
+recorded cash/credit history remain intact. Monthly due coverage uses that
+service month, while remaining/credit coverage uses the whole scoped ledger.
+Explicit zero Financial Setup does not require a fabricated reserve obligation.
+Authorized source-review links lead to the exact person's setup or employee deal.
+The Budget Planner authorization response also omits financial configuration
+metadata. Classes retain draft previews, issued output, and accessible void actions.
+Successful shared record forms, assignment changes, and service-schedule changes
+reload the current URL so saved records immediately replace stale server-rendered
+content. Failed saves retain the open form and its entered values.
+
+Compact coverage of the PDF's 20 success criteria:
+
+| # | Evidence and current disposition |
+| --- | --- |
+| 1 | Existing financial read-model/export and source drilldown suites; held export cells now remain blank with review status. Unresolved source facts are still excluded. |
+| 2 | Existing cohort/filter/export acceptance retained; no aggregation definitions changed. |
+| 3 | New `operations-journey.spec.ts` exercises authorization, staffing, recurring visits, time off, revisions and history as Budget Planner; financial response regression added. |
+| 4 | The same connected journey uses direct Staffing login; program-budget mutations and financial payloads remain denied. Assignment hours caps are operational staffing data. |
+| 5 | `money-operations.spec.ts`, settlement PostgreSQL integration, and Masser browser coverage exercise partial/extra payments, credit, correction, reversal and statements on isolated data. Production agreements/check confirmations remain owner work. |
+| 6 | Fresh desktop/phone class allowance → 22 eligible dates → invoice/cover draft → issue → separate receipt → void passed; invoice and cover PDF responses verified. |
+| 7 | Scoped portal PostgreSQL regressions cover held/mixed balances, month boundaries, agency attribution and category denial; existing preset contract tests remain required. |
+| 8 | Existing access lifecycle/direct-login and owner impersonation coverage retained; prior production impersonation evidence remains dated separately. |
+| 9 | Existing inbound-only/idempotency suites and prior authenticated replay evidence retained. No Sheet write-back is introduced. |
+| 10 | Existing canonical consumption/authorization suites retained; new connected schedule acceptance separates actual use from future visits. |
+| 11 | Class receipt browser acceptance and existing agency financial count-separately suites retained; approved monthly expense remains distinct from reserve cash. |
+| 12 | Existing verified-check NET settlement suites retained. Unknown or held give-back projections are no longer ordinary zero. |
+| 13 | Existing employee-base/agency-spread calculation coverage retained; no monetary formula changed. |
+| 14 | Existing group allocation/matching coverage retained. Ambiguous production group links remain source-review decisions. |
+| 15 | Exact permission-gated setup/deal review links added; missing dates, agreements and historical amount basis cannot be inferred. |
+| 16 | Connected mutation tests cover save feedback and append-only lost-response retries; no timeout increases are used to mask failures. |
+| 17 | Existing audit/immutability suites retained; document and class lifecycle regressions verify preserved history. |
+| 18 | All 13 direct-login preset contracts and desktop/phone role suites remain part of the mandatory final browser gate. Earlier production role evidence is not relabeled as fresh acceptance. |
+| 19 | New PostgreSQL upload/save/reopen/second-save/restore/archive and class invoice/receipt lifecycle coverage; Blob is mocked in those integration cases. Live provider round-trip acceptance must be recorded separately. |
+| 20 | Supported editable forms/overlays retained. Licensed native source-text reflow remains an explicit external dependency; no SDK purchase or Adobe-equivalence claim. |
+
+Release requires both remote Quality Gate jobs and exact deployed-SHA verification.
+Final workflow/deployment identifiers and production evidence belong in the
+delivery record. A passing release remains qualified while owner source facts,
+historical approvals, or the licensed PDF dependency are unresolved. Code recovery
+uses the confirmed baseline deployment and current data; no pre-repair database
+backup is represented as a lossless rollback.
+
 ### 2026-09-08 - Developer 1 final financial controls
 
 PRs #37, #39, #40 and #41 are merged. The startup/performance release #41

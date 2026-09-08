@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
@@ -248,7 +247,6 @@ export function CreateButton({
   size?: "sm" | "md";
   onDone?: () => void;
 }) {
-  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -267,7 +265,7 @@ export function CreateButton({
     }
     setOpen(false);
     onDone?.();
-    router.refresh();
+    window.location.reload();
   }
 
   return (
@@ -322,7 +320,6 @@ export function ActionButton({
   variant?: "primary" | "secondary" | "danger";
   size?: "sm" | "md";
 }) {
-  const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reasonOpen, setReasonOpen] = useState(false);
@@ -345,7 +342,7 @@ export function ActionButton({
     }
     setReasonOpen(false);
     setReason("");
-    router.refresh();
+    window.location.reload();
   }
 
   function requestAction() {

@@ -20,6 +20,7 @@ import { listAliases } from "@/lib/manage/aliases";
 import { type CalendarSession } from "@/lib/data/schedule-queries";
 import { getPersonSettlementBalance } from "@/lib/data/settlements";
 import { getIndividualMasserStatement } from "@/lib/data/direct-pay-operations";
+import { reservePresentation } from "@/lib/business/reserve-presentation";
 import {
   getIndividualProfileContext,
   individualProfileMainAction,
@@ -463,6 +464,7 @@ export default async function IndividualDetailPage({
     ? dec(operationalBudget.usedHours).plus(operationalBudget.hoursLeft ?? 0)
     : dec(0);
   const nextSession = profileContext.upcomingSessions[0] ?? null;
+  const reserve = masserStatement ? reservePresentation(masserStatement) : null;
   const profileAction = individualProfileMainAction({
     individualId: id,
     status: individual.status,
@@ -473,7 +475,7 @@ export default async function IndividualDetailPage({
     missingRenewal: operationalBudget?.missingRenewal ?? false,
     hoursAfterScheduled: operationalBudget?.hoursAfterScheduled ?? null,
     assignmentCount: assignments.length,
-    remainingReserve: canSeeSettlements ? masserStatement?.remainingReserve ?? settlement.reserve : null,
+    remainingReserve: canSeeSettlements && masserStatement ? reserve!.amount(masserStatement.remainingReserve) : null,
   });
 
   // Months left until the (rolled) renewal, for the financial plan's remaining pace.
@@ -579,7 +581,7 @@ export default async function IndividualDetailPage({
         assignments={assignments}
         agencies={profileContext.agencies}
         outstandingPutAway={canSeeSettlements
-          ? formatMoney(masserStatement?.remainingReserve ?? settlement.reserve)
+          ? masserStatement ? reserve!.display(masserStatement.remainingReserve) : "Unavailable"
           : null}
         nextSession={nextSession}
         canOpenSchedule={canPlan}
@@ -672,7 +674,7 @@ export default async function IndividualDetailPage({
                 strategyLabels={canSeeFinancialSetup ? financialSetupOverview.labels : []}
                 approvedMonthlyPutAway={canSeeFinancialSetup ? financialSetupOverview.approvedMonthly : null}
                 recordedPutAway={canSeeSettlements ? masserStatement?.recordedReserve ?? "0" : null}
-                remainingPutAway={canSeeSettlements ? masserStatement?.remainingReserve ?? settlement.reserve : null}
+                remainingPutAway={canSeeSettlements ? masserStatement ? reserve!.display(masserStatement.remainingReserve) : "Unavailable" : null}
                 canSeeTransactions={canSeeTransactions}
                 transactionFrom={canSeeBudgets ? budget.periodStart : null}
                 transactionTo={canSeeBudgets ? budget.periodEnd : null}
@@ -1077,7 +1079,7 @@ function OverviewSnapshot({
           <div><dt className="eyebrow">Active financial setups</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{strategyLabels.length > 0 ? strategyLabels.join(", ") : "Current plans"}{approvedMonthlyPutAway !== null ? ` · ${formatMoney(approvedMonthlyPutAway)} total approved monthly` : ""}</dd></div>
         ) : null}
         {recordedPutAway !== null || remainingPutAway !== null ? (
-          <div><dt className="eyebrow">Put-away position</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{formatMoney(recordedPutAway ?? "0")} recorded · {formatMoney(remainingPutAway ?? "0")} remaining</dd></div>
+          <div><dt className="eyebrow">Put-away position</dt><dd className="mt-1 text-sm text-[var(--color-ink)]">{formatMoney(recordedPutAway ?? "0")} recorded · {remainingPutAway ?? "Unavailable"} remaining</dd></div>
         ) : null}
       </dl>
     </section>

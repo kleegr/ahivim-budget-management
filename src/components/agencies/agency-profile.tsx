@@ -288,8 +288,8 @@ function FinancialActivity({ profile }: { profile: AgencyProfileReadModel }) {
     { label: "Agency-paid employee base", value: agency.agencyPaidThisMonth },
     { label: "Verified direct-check gross", value: agency.payrollGrossThisMonth },
     { label: "Verified direct-check net", value: agency.payrollNetThisMonth },
-    { label: "Current give-back remaining", value: agency.giveBackRemaining },
-  ].filter((item): item is { label: string; value: string } => item.value !== null);
+    { label: "Current give-back remaining", value: agency.giveBackRemaining, status: agency.giveBackBalanceStatus },
+  ].filter((item) => item.value !== null || item.status);
   if (financialItems.length === 0) return null;
   const individuals = agency.individuals ?? [];
   const employees = agency.employees ?? [];
@@ -304,7 +304,7 @@ function FinancialActivity({ profile }: { profile: AgencyProfileReadModel }) {
         {financialItems.map((item) => (
           <div key={item.label} className="border-b border-r border-[var(--color-rule)] px-4 py-3">
             <dt className="text-xs text-[var(--color-ink-faint)]">{item.label}</dt>
-            <dd className="tnum mt-1 text-base font-semibold"><Money value={item.value} /></dd>
+            <dd className="tnum mt-1 text-base font-semibold">{item.value === null ? "Unavailable" : <Money value={item.value} />}{item.status ? <span className="mt-1 block text-xs font-normal text-[var(--color-warn)]">{item.status}</span> : null}</dd>
           </div>
         ))}
       </dl>

@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { CalendarDays, Pencil, Plus, Search, X } from "lucide-react";
 import { EmptyState, StatusBadge, Table, Td, Th, Tr } from "@/components/ui";
@@ -102,7 +101,6 @@ export default function ServiceSchedules({
     programId?: string;
   };
 }) {
-  const router = useRouter();
   const [search, setSearch] = useState("");
   const [employeeId, setEmployeeId] = useState(initialFilters?.employeeId ?? "");
   const [individualId, setIndividualId] = useState(initialFilters?.individualId ?? "");
@@ -314,7 +312,7 @@ export default function ServiceSchedules({
           onClose={() => setCreating(false)}
           onCreated={() => {
             setCreating(false);
-            router.refresh();
+            window.location.reload();
           }}
         />
       ) : null}
@@ -330,7 +328,7 @@ export default function ServiceSchedules({
           onClose={() => setEditing(null)}
           onUpdated={() => {
             setEditing(null);
-            router.refresh();
+            window.location.reload();
           }}
         />
       ) : null}

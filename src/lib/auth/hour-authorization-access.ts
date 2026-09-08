@@ -164,8 +164,10 @@ export async function canChangeHourBudgetPeriod(
 
 /** Remove every amount/rate field from a planner mutation response. */
 export function redactHourAuthorizationResult<T extends object>(data: T): T {
+  const operational = { ...data } as Record<string, unknown>;
+  for (const field of ["paymentRecipient", "rateScope", "rateBasis", "allowIndividualRateOverride"]) delete operational[field];
   return {
-    ...data,
+    ...operational,
     authorizedDollars: null,
     consumedDollars: null,
     remainingDollars: null,

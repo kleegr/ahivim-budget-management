@@ -2,6 +2,19 @@ function assertAlias(alias: string): void {
   if (!/^[a-z_][a-z0-9_]*$/.test(alias)) throw new Error("Invalid settlement table alias");
 }
 
+/** Coverage follows the same scoped obligations and service month as their amounts. */
+export function settlementGiveBackCoverageSql(alias: string, monthParameter: string): string {
+  assertAlias(alias);
+  if (!/^\$\d+$/.test(monthParameter)) throw new Error("Invalid month parameter");
+  const active = `${alias}.status = 'active' AND ${alias}.direction = 'receivable'`;
+  const current = settlementCurrentAmountSql(alias);
+  const month = `to_char(canonical_service_date(${alias}.period_begin, ${alias}.check_date, ${alias}.period_end), 'YYYY-MM') = left(${monthParameter}::text, 7)`;
+  return `count(*) FILTER (WHERE ${active} AND NOT ${current})::text AS held_count,
+          count(*) FILTER (WHERE ${active} AND ${current})::text AS verified_count,
+          count(*) FILTER (WHERE ${active} AND NOT ${current} AND ${month})::text AS held_month_count,
+          count(*) FILTER (WHERE ${active} AND ${current} AND ${month})::text AS verified_month_count`;
+}
+
 /** These historical explanation rows do not establish an approved final amount. */
 export function settlementLegacyIndividualKindSql(alias: string): string {
   assertAlias(alias);

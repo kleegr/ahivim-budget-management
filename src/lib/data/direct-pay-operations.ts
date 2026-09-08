@@ -1,5 +1,5 @@
 import type { AccessScope } from "@/lib/auth/access";
-import { settlementCurrentAmountSql, settlementSourceReviewSql } from "@/lib/data/settlement-eligibility";
+import { settlementCurrentAmountSql, settlementGiveBackCoverageSql, settlementSourceReviewSql } from "@/lib/data/settlement-eligibility";
 import { agencyMonth } from "@/lib/business/agency-time";
 import { getSettlementLedgerFreshness } from "@/lib/manage/settlement-freshness";
 import {
@@ -70,6 +70,8 @@ function effectiveStrategyPlansCtes(monthParameter: "$1" | "$2"): string {
                  COALESCE(sum(abs(state.after_all))
                    FILTER (WHERE state.after_all IS NOT NULL), 0) AS approved_monthly_plan,
                  count(*) FILTER (WHERE state.after_all IS NOT NULL) AS active_plans,
+                 count(*) FILTER (WHERE state.after_all <> 0) AS expected_balance_plans,
+                 count(*) FILTER (WHERE state.after_all <> 0 AND state.renewal_date IS NULL) AS missing_balance_renewal_plans,
                  count(*) FILTER (
                    WHERE state.after_all IS NOT NULL
                      AND state.renewal_date IS NULL
@@ -133,6 +135,10 @@ export interface PayrollCheckRow {
 }
 
 export interface EmployeeCollectionMonthRow {
+  heldCount?: number;
+  verifiedCount?: number;
+  heldMonthCount?: number;
+  verifiedMonthCount?: number;
   employeeId: string;
   employeeName: string;
   obligationsCreated: number;
@@ -144,6 +150,8 @@ export interface EmployeeCollectionMonthRow {
 }
 
 export interface IndividualSetAsideMonthRow {
+  expectedBalancePlans?: number;
+  missingBalanceRenewalPlans?: number;
   individualId: string;
   individualName: string;
   approvedMonthlyPlan: string;
@@ -183,6 +191,8 @@ export interface CollectionsWorkspaceData {
 }
 
 export interface IndividualMasserStatementData {
+  expectedBalancePlans?: number;
+  missingBalanceRenewalPlans?: number;
   individualId: string;
   individualName: string;
   setupHistoryAvailable: boolean;
@@ -472,6 +482,7 @@ export async function getCollectionsWorkspace(
   const [employeeResult, individualResult, targets, payrollChecks, employeeOptions, payrollCheckCounts, freshness] = await Promise.all([
     pool.query<{
       employee_id: string; employee_name: string; obligations_created: string;
+      held_count?: string; verified_count?: string; held_month_count?: string; verified_month_count?: string;
       due_from_checks: string; collected_this_month: string; refunded_this_month: string;
       remaining_receivable: string; available_credit: string;
     }>(
@@ -483,6 +494,7 @@ export async function getCollectionsWorkspace(
           GROUP BY settlement_obligation_id
        )
        SELECT o.employee_id, e.display_name AS employee_name,
+              ${settlementGiveBackCoverageSql("o", "$1")},
               count(*) FILTER (
                 WHERE o.direction = 'receivable'
                   AND ${settlementCurrentAmountSql("o")}
@@ -518,6 +530,7 @@ export async function getCollectionsWorkspace(
       individual_id: string; individual_name: string; approved_monthly_plan: string;
       set_aside_this_month: string; remaining_set_aside: string; active_plans: string;
       tracked_plans: string; actionable_plans: string; review_required_plans: string; missing_renewal_plans: string;
+      expected_balance_plans?: string; missing_balance_renewal_plans?: string;
     }>(
        `WITH ${effectiveStrategyPlansCtes("$1")}, plan_candidates AS (
           SELECT o.individual_id, o.calculation_strategy_id, o.period_begin, o.period_end,
@@ -615,6 +628,8 @@ export async function getCollectionsWorkspace(
               COALESCE(ev.set_aside_month, 0)::text AS set_aside_this_month,
               COALESCE(b.remaining, 0)::text AS remaining_set_aside,
               COALESCE(plan.active_plans, 0)::text AS active_plans,
+              COALESCE(plan.expected_balance_plans, 0)::text AS expected_balance_plans,
+              COALESCE(plan.missing_balance_renewal_plans, 0)::text AS missing_balance_renewal_plans,
               COALESCE(ledger.tracked_plans, 0)::text AS tracked_plans,
               COALESCE(ledger.actionable_plans, 0)::text AS actionable_plans,
               COALESCE(ledger.review_required_plans, 0)::text AS review_required_plans,
@@ -651,6 +666,7 @@ export async function getCollectionsWorkspace(
     employeeId: row.employee_id,
     employeeName: row.employee_name,
     obligationsCreated: Number(row.obligations_created),
+    ...(row.held_count !== undefined ? { heldCount: Number(row.held_count), verifiedCount: Number(row.verified_count), heldMonthCount: Number(row.held_month_count), verifiedMonthCount: Number(row.verified_month_count) } : {}),
     dueFromChecks: toMoney(row.due_from_checks),
     collectedThisMonth: toMoney(row.collected_this_month),
     refundedThisMonth: toMoney(row.refunded_this_month),
@@ -658,6 +674,8 @@ export async function getCollectionsWorkspace(
     availableCredit: toMoney(row.available_credit),
   }));
   const individualSetAsides = individualResult.rows.map((row) => ({
+    ...(row.expected_balance_plans === undefined ? {} : { expectedBalancePlans: Number(row.expected_balance_plans) }),
+    ...(row.missing_balance_renewal_plans === undefined ? {} : { missingBalanceRenewalPlans: Number(row.missing_balance_renewal_plans) }),
     individualId: row.individual_id,
     individualName: row.individual_name,
     approvedMonthlyPlan: toMoney(row.approved_monthly_plan),
@@ -722,10 +740,13 @@ export async function getIndividualMasserStatement(
       actionable_plans: string; review_required_plans: string;
       missing_renewal_plans: string; recorded_reserve: string;
       remaining_reserve: string; available_credit: string;
+      expected_balance_plans?: string; missing_balance_renewal_plans?: string;
     }>(
       `WITH ${effectiveStrategyPlansCtes("$2")}, strategy_plan AS (
          SELECT COALESCE(max(plan.approved_monthly_plan), 0) AS approved_monthly_plan,
                 COALESCE(max(plan.active_plans), 0) AS active_plans,
+                COALESCE(max(plan.expected_balance_plans), 0) AS expected_balance_plans,
+                COALESCE(max(plan.missing_balance_renewal_plans), 0) AS missing_balance_renewal_plans,
                 COALESCE(max(plan.missing_renewal_plans), 0) AS missing_renewal_plans
            FROM strategy_plans plan
           WHERE plan.individual_id = $1
@@ -798,6 +819,8 @@ export async function getIndividualMasserStatement(
        )
        SELECT strategy_plan.approved_monthly_plan::text AS approved_monthly_plan,
               strategy_plan.active_plans::text AS active_plans,
+              strategy_plan.expected_balance_plans::text AS expected_balance_plans,
+              strategy_plan.missing_balance_renewal_plans::text AS missing_balance_renewal_plans,
               strategy_plan.missing_renewal_plans::text AS missing_renewal_plans,
               COALESCE(ledger_plans.tracked_plans, 0)::text AS tracked_plans,
               COALESCE(ledger_plans.actionable_plans, 0)::text AS actionable_plans,
@@ -886,6 +909,8 @@ export async function getIndividualMasserStatement(
   ]);
   const plan = planResult.rows[0];
   return {
+    ...(plan?.expected_balance_plans === undefined ? {} : { expectedBalancePlans: Number(plan.expected_balance_plans) }),
+    ...(plan?.missing_balance_renewal_plans === undefined ? {} : { missingBalanceRenewalPlans: Number(plan.missing_balance_renewal_plans) }),
     individualId,
     individualName: person.rows[0].display_name,
     setupHistoryAvailable: month >= FIRST_RELIABLE_MASSER_SETUP_MONTH,

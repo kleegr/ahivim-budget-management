@@ -115,6 +115,61 @@ suite("Developer 2 portal privacy through handlers and PostgreSQL", () => {
   beforeAll(resetSchema, 60_000);
   afterAll(closeTestPool);
 
+  it("discloses held give-back balances consistently without hiding recorded cash or scoped verified zero", async () => {
+    const f = await fixture();
+    const check = await f.check("HELD BALANCE CHECK");
+    const source = await f.transaction({ checkId: check });
+    const held = await f.obligation([source], check);
+    await f.pool.query(`INSERT INTO settlement_events (settlement_obligation_id, employee_id, event_type, amount, occurred_on)
+      VALUES ($1,$2,'payment',5,$3)`, [held, f.employeeA, DAY]);
+    await f.pool.query("UPDATE settlement_ledger_state SET blocked_obligation_ids = ARRAY[$1::uuid]", [held]);
+    const ownHeld = (await portal(f.employeeUser)).employees[0]!.giveBack!;
+    expect(ownHeld).toMatchObject({ dueThisMonth: null, remaining: null, credit: null,
+      collectedThisMonth: "5.0000", balanceStatus: "Source review required" });
+    expect(ownHeld.recentActivity).toHaveLength(1);
+    const agencyHeld = (await portal(f.agencyUser)).agencies[0]!;
+    expect(agencyHeld).toMatchObject({ giveBackRemaining: null, giveBackBalanceStatus: "Source review required" });
+    expect(agencyHeld.employees![0]!.giveBack).toMatchObject({ remaining: null, collectedThisMonth: "5.0000", balanceStatus: "Source review required" });
+
+    const knownCheck = await f.check("VERIFIED BALANCE CHECK");
+    const knownSource = await f.transaction({ checkId: knownCheck });
+    const known = await f.obligation([knownSource], knownCheck);
+    await f.pool.query(`INSERT INTO settlement_events (settlement_obligation_id, employee_id, event_type, amount, occurred_on)
+      VALUES ($1,$2,'payment',25,$3)`, [known, f.employeeA, DAY]);
+    const mixed = (await portal(f.employeeUser)).employees[0]!.giveBack!;
+    expect(mixed).toMatchObject({ dueThisMonth: "20.0000", remaining: "0.0000", credit: "5.0000",
+      collectedThisMonth: "30.0000", balanceStatus: "Verified subtotal; held items excluded" });
+    const agencyMixed = (await portal(f.agencyUser)).agencies[0]!;
+    expect(agencyMixed).toMatchObject({ giveBackRemaining: "0.0000", giveBackBalanceStatus: mixed.balanceStatus });
+    expect(agencyMixed.employees![0]!.giveBack).toMatchObject({ remaining: "0.0000", balanceStatus: mixed.balanceStatus });
+    await f.pool.query(`UPDATE user_employee_relationships SET capability_denials=ARRAY['employee_giveback.self.read'] WHERE user_id=$1`, [f.employeeUser]);
+    expect((await portal(f.employeeUser)).employees[0]!.giveBack).toBeNull();
+  });
+
+  it("distinguishes a fully held service month from prior verified balances and an empty month", async () => {
+    const f = await fixture();
+    const knownCheck = await f.check("PRIOR MONTH CHECK");
+    const knownSource = await f.transaction({ checkId: knownCheck });
+    const known = await f.obligation([knownSource], knownCheck);
+    const heldCheck = await f.check("CURRENT MONTH HELD CHECK");
+    const heldSource = await f.transaction({ checkId: heldCheck });
+    const held = await f.obligation([heldSource], heldCheck);
+    await f.pool.query("UPDATE settlement_ledger_state SET blocked_obligation_ids = ARRAY[$1::uuid]", [held]);
+    // A prior month's verified position cannot turn an entirely held month into zero.
+    await f.pool.query("UPDATE agency_employees SET effective_from='2026-04-01' WHERE agency_id=$1", [f.agencyA]);
+    await f.pool.query("UPDATE agency_individuals SET effective_from='2026-04-01' WHERE agency_id=$1", [f.agencyA]);
+    await f.pool.query("UPDATE employee_payroll_checks SET check_date='2026-04-15' WHERE id=$1", [knownCheck]);
+    await f.pool.query("UPDATE payroll_transactions SET check_date='2026-04-15' WHERE id=$1", [knownSource]);
+    await f.pool.query("UPDATE settlement_obligations SET check_date='2026-04-15' WHERE id=$1", [known]);
+    const heldMonth = (await portal(f.employeeUser)).employees[0]!.giveBack!;
+    expect(heldMonth).toMatchObject({ dueThisMonth: null, dueStatus: "Source review required", remaining: "20.0000" });
+    const agencyHeldMonth = (await portal(f.agencyUser)).agencies[0]!;
+    expect(agencyHeldMonth.employees![0]!.giveBack).toMatchObject({ dueThisMonth: null, dueStatus: "Source review required" });
+    const emptyMonth = (await portal(f.employeeUser, "2026-06")).employees[0]!.giveBack!;
+    expect(emptyMonth.dueThisMonth).toBe("0.0000");
+    expect(emptyMonth.dueStatus).toBeUndefined();
+  });
+
   it.each(["individual", "employee", "agency", "collector", "scheduler", "staffing_manager"] as const)("updates Approved documents for an existing %s relationship without erasing other policy", async (kind) => {
     const f = await fixture();
     const owner = await f.user("owner");

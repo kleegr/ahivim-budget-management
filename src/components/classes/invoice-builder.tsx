@@ -219,8 +219,9 @@ export default function InvoiceBuilder({
     () => activities.filter((activity) => activity.isActive),
     [activities],
   );
-  const serviceStart = maxDate(`${month}-01`, budget.startDate);
-  const serviceEnd = minDate(monthEnd(month), budget.endDate);
+  const serviceStart = invoice?.servicePeriodStart ?? maxDate(`${month}-01`, budget.startDate);
+  const serviceEnd = invoice?.servicePeriodEnd ?? minDate(monthEnd(month), budget.endDate);
+  const firstEligibleDate = onOrAfterNonSaturday(serviceStart);
   const [invoiceNumber, setInvoiceNumber] = useState(
     invoice?.invoiceNumber ?? suggestedInvoiceNumber(month, budget.id, existingInvoiceNumbers),
   );
@@ -274,7 +275,8 @@ export default function InvoiceBuilder({
   };
 
   const regenerate = () => {
-    setLines(draftLines(month, budget, activeActivities));
+    setLines(generateClassDatesBetween(serviceStart, serviceEnd)
+      .map((date, index) => makeLine(date, activeActivities[0], index)));
     setError(null);
   };
 
@@ -470,7 +472,8 @@ export default function InvoiceBuilder({
         <button
           type="button"
           className="btn btn-sm btn-secondary"
-          onClick={() => setLines((current) => [...current, makeLine(serviceStart, activeActivities[0], current.length)])}
+          disabled={firstEligibleDate > serviceEnd}
+          onClick={() => setLines((current) => [...current, makeLine(firstEligibleDate, activeActivities[0], current.length)])}
         >
           <Plus className="h-4 w-4" aria-hidden />
           Add date

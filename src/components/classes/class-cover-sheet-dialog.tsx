@@ -175,10 +175,12 @@ export default function ClassCoverSheetDialog({
   };
 
   const disabled = loading || !canManage;
+  const draft = invoice.status === "draft";
 
   return (
     <ModalShell title={`Reimbursement - ${invoice.individualName}`} onClose={onClose} wide>
       <div className="space-y-4">
+        {draft ? <p className="text-sm text-[var(--color-ink-soft)]">Preview this draft cover sheet before issuing the invoice. Issue the invoice to finalize and save its cover sheet.</p> : null}
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="text-xs font-semibold text-[var(--color-ink-soft)]">
             Name
@@ -241,7 +243,7 @@ export default function ClassCoverSheetDialog({
         {saved ? <p className="text-sm font-medium text-[var(--color-success)]" role="status">Saved</p> : null}
 
         <div className="flex flex-wrap justify-between gap-2 border-t border-[var(--color-rule)] pt-4">
-          {canEditDocuments && canManage ? (
+          {canEditDocuments && canManage && !draft ? (
             <button type="button" className="btn btn-secondary" disabled={loading || saving} onClick={() => void saveAndOpenEditor()}>
               <FilePenLine className="h-4 w-4" aria-hidden />
               {saving ? "Saving..." : "Save & edit PDF"}
@@ -260,10 +262,10 @@ export default function ClassCoverSheetDialog({
                 {saving ? "Saving..." : "Save profile"}
               </button>
             ) : null}
-            <button type="button" className="btn btn-primary" disabled={loading || saving} onClick={() => void saveAndDownload()}>
+            {!draft ? <button type="button" className="btn btn-primary" disabled={loading || saving} onClick={() => void saveAndDownload()}>
               <Download className="h-4 w-4" aria-hidden />
               {saving ? "Saving..." : "Cover sheet"}
-            </button>
+            </button> : null}
           </div>
         </div>
       </div>

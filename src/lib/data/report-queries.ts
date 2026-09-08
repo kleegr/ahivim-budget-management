@@ -8,6 +8,7 @@ import {
 import { agencyDate, agencyMonth } from "@/lib/business/agency-time";
 import { fullAccess } from "@/lib/auth/access";
 import { getCollectionsWorkspace } from "@/lib/data/direct-pay-operations";
+import { reservePresentation } from "@/lib/business/reserve-presentation";
 import { listTransactionsForGrid } from "@/lib/data/transactions-grid";
 import {
   listCurrentProgramBudgets,
@@ -149,19 +150,22 @@ export async function individualPutAwayReport(
     ledgerDirty: workspace.ledgerDirty,
     rows: workspace.individualSetAsides
       .filter((row) => {
+        const balance = reservePresentation({ ...row, ledgerDirty: workspace.ledgerDirty, setupHistoryAvailable: workspace.setupHistoryAvailable });
         if (individual && !row.individualName.toLocaleLowerCase().includes(individual)) return false;
-        if (opts.status === "outstanding" && !dec(row.remainingSetAside).gt(0)) return false;
+        if (opts.status === "outstanding" && (balance.unavailable || !dec(row.remainingSetAside).gt(0))) return false;
         if (
           opts.status === "missing-renewal"
           && workspace.setupHistoryAvailable
           && row.missingRenewalPlans === 0
         ) return false;
         if (opts.status === "review-required" && row.reviewRequiredPlans === 0) return false;
-        if (opts.status === "complete" && (workspace.ledgerDirty || row.reviewRequiredPlans > 0 || !dec(row.remainingSetAside).eq(0))) return false;
+        if (opts.status === "complete" && (balance.unavailable || balance.incomplete || !dec(row.remainingSetAside).eq(0))) return false;
         return true;
       })
       .map((row) => ({
         ...row,
+        remainingSetAside: reservePresentation({ ...row, ledgerDirty: workspace.ledgerDirty, setupHistoryAvailable: workspace.setupHistoryAvailable }).amount(row.remainingSetAside),
+        balanceStatus: reservePresentation({ ...row, ledgerDirty: workspace.ledgerDirty, setupHistoryAvailable: workspace.setupHistoryAvailable }).status,
         approvedMonthlyPlan: workspace.setupHistoryAvailable ? row.approvedMonthlyPlan : null,
         activePlans: workspace.setupHistoryAvailable ? row.activePlans : null,
         missingRenewalPlans: workspace.setupHistoryAvailable ? row.missingRenewalPlans : null,
@@ -1784,7 +1788,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
           { key: "approvedMonthlyPlan", header: "Approved monthly plan", type: "money" },
           { key: "setupStatus", header: "Setup history", type: "text" },
           { key: "setAsideThisMonth", header: "Put away this month", type: "money" },
-          { key: "remainingSetAside", header: "Remaining reserve", type: "money" },
+          { key: "remainingSetAside", header: "Verified remaining reserve subtotal", type: "money" },
           { key: "activePlans", header: "Active plans", type: "int" },
           { key: "trackedPlans", header: "Tracked plans", type: "int" },
           { key: "reviewRequiredPlans", header: "Plans on source review", type: "int" },
@@ -1802,8 +1806,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
           activePlans: row.activePlans,
           trackedPlans: row.trackedPlans,
           reviewRequiredPlans: row.reviewRequiredPlans,
-          balanceStatus: data.ledgerDirty ? "Refresh needed"
-            : row.reviewRequiredPlans > 0 ? "Source review required; held balances excluded" : "No source holds",
+          balanceStatus: row.balanceStatus,
           missingRenewalPlans: row.missingRenewalPlans,
           statementSource: row.individualId,
           reportMonth: data.month,

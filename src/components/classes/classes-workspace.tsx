@@ -80,16 +80,19 @@ function InvoicePdfActions({
   invoice,
   canManage,
   canEditDocuments,
+  onPreviewCover,
   subtle = false,
 }: {
   invoice: InvoiceSummary;
   canManage: boolean;
   canEditDocuments: boolean;
+  onPreviewCover: () => void;
   subtle?: boolean;
 }) {
   const buttonClass = `btn btn-sm ${subtle ? "btn-ghost" : "btn-secondary"} btn-icon`;
   if (invoice.status === "draft") {
     return canManage ? (
+      <>
       <a
         className={buttonClass}
         href={`/api/classes/invoices/${invoice.id}/pdf?preview=1`}
@@ -100,6 +103,10 @@ function InvoicePdfActions({
       >
         <Eye className="h-4 w-4" aria-hidden />
       </a>
+      <button type="button" className={buttonClass} onClick={onPreviewCover} aria-label="Preview draft cover sheet" title="Preview draft cover sheet">
+        <FileText className="h-4 w-4" aria-hidden />
+      </button>
+      </>
     ) : null;
   }
   if (invoice.status !== "issued") return null;
@@ -684,14 +691,14 @@ export default function ClassesWorkspace({
                       {current?.status === "draft" && canManage ? (
                         <>
                           <button type="button" className="btn btn-sm btn-secondary" disabled={loadingInvoiceId === current.id} onClick={() => void editInvoice(current)}><FilePenLine className="h-4 w-4" aria-hidden /> {loadingInvoiceId === current.id ? "Opening..." : "Edit"}</button>
-                          <InvoicePdfActions invoice={current} canManage={canManage} canEditDocuments={canEditDocuments} />
+                          <InvoicePdfActions invoice={current} onPreviewCover={() => setCoverInvoice(current)} canManage={canManage} canEditDocuments={canEditDocuments} />
                           <button type="button" className="btn btn-sm btn-primary" disabled={busyId === current.id} aria-busy={busyId === current.id} onClick={() => void issue(current).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not issue invoice."))}>{busyId === current.id ? "Issuing..." : "Issue"}</button>
                           <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === current.id} onClick={() => setDiscardInvoice(current)} aria-label="Discard draft" title="Discard draft"><Trash2 className="h-4 w-4" aria-hidden /></button>
                         </>
                       ) : null}
                       {current?.status === "issued" ? (
                         <>
-                          <InvoicePdfActions invoice={current} canManage={canManage} canEditDocuments={canEditDocuments} />
+                          <InvoicePdfActions invoice={current} onPreviewCover={() => setCoverInvoice(current)} canManage={canManage} canEditDocuments={canEditDocuments} />
                           {canManage ? <button type="button" className="btn btn-sm btn-secondary btn-icon" onClick={() => setCoverInvoice(current)} aria-label="Reimbursement cover sheet" title="Reimbursement cover sheet"><FileText className="h-4 w-4" aria-hidden /></button> : null}
                           {canManage ? <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" onClick={() => setVoidInvoice(current)} aria-label="Void invoice" title="Void invoice"><Ban className="h-4 w-4" aria-hidden /></button> : null}
                         </>
@@ -756,14 +763,14 @@ export default function ClassesWorkspace({
                             {current?.status === "draft" && canManage ? (
                               <>
                                 <button type="button" className="btn btn-sm btn-secondary" disabled={loadingInvoiceId === current.id} onClick={() => void editInvoice(current)}><FilePenLine className="h-4 w-4" aria-hidden /> {loadingInvoiceId === current.id ? "Opening..." : "Edit"}</button>
-                                <InvoicePdfActions invoice={current} canManage={canManage} canEditDocuments={canEditDocuments} />
+                                <InvoicePdfActions invoice={current} onPreviewCover={() => setCoverInvoice(current)} canManage={canManage} canEditDocuments={canEditDocuments} />
                                 <button type="button" className="btn btn-sm btn-primary" disabled={busyId === current.id} aria-busy={busyId === current.id} onClick={() => void issue(current).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not issue invoice."))}>{busyId === current.id ? "Issuing..." : "Issue"}</button>
                                 <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === current.id} onClick={() => setDiscardInvoice(current)} aria-label="Discard draft" title="Discard draft"><Trash2 className="h-4 w-4" aria-hidden /></button>
                               </>
                             ) : null}
                             {current?.status === "issued" ? (
                               <>
-                                <InvoicePdfActions invoice={current} canManage={canManage} canEditDocuments={canEditDocuments} />
+                                <InvoicePdfActions invoice={current} onPreviewCover={() => setCoverInvoice(current)} canManage={canManage} canEditDocuments={canEditDocuments} />
                                 {canManage ? <button type="button" className="btn btn-sm btn-secondary btn-icon" onClick={() => setCoverInvoice(current)} aria-label="Reimbursement cover sheet" title="Reimbursement cover sheet"><FileText className="h-4 w-4" aria-hidden /></button> : null}
                                 {canManage ? <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" onClick={() => setVoidInvoice(current)} aria-label="Void invoice" title="Void invoice"><Ban className="h-4 w-4" aria-hidden /></button> : null}
                               </>
@@ -804,14 +811,15 @@ export default function ClassesWorkspace({
                         {invoice.status === "draft" && canManage ? (
                           <>
                             <button type="button" className="btn btn-sm btn-secondary" disabled={loadingInvoiceId === invoice.id} onClick={() => void editInvoice(invoice)}><Pencil className="h-4 w-4" aria-hidden /> {loadingInvoiceId === invoice.id ? "Opening..." : "Edit"}</button>
-                            <InvoicePdfActions invoice={invoice} canManage={canManage} canEditDocuments={canEditDocuments} />
+                            <InvoicePdfActions invoice={invoice} onPreviewCover={() => setCoverInvoice(invoice)} canManage={canManage} canEditDocuments={canEditDocuments} />
                             <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === invoice.id} onClick={() => setDiscardInvoice(invoice)} aria-label="Discard draft" title="Discard draft"><Trash2 className="h-4 w-4" aria-hidden /></button>
                           </>
                         ) : null}
                         {invoice.status === "issued" ? (
                           <>
-                            <InvoicePdfActions invoice={invoice} canManage={canManage} canEditDocuments={canEditDocuments} />
+                            <InvoicePdfActions invoice={invoice} onPreviewCover={() => setCoverInvoice(invoice)} canManage={canManage} canEditDocuments={canEditDocuments} />
                             {canManage ? <button type="button" className="btn btn-sm btn-secondary btn-icon" onClick={() => setCoverInvoice(invoice)} aria-label="Reimbursement cover sheet" title="Reimbursement cover sheet"><FileText className="h-4 w-4" aria-hidden /></button> : null}
+                            {canManage ? <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === invoice.id} onClick={() => setVoidInvoice(invoice)} aria-label="Void invoice" title="Void invoice"><Ban className="h-4 w-4" aria-hidden /></button> : null}
                           </>
                         ) : null}
                       </div>
@@ -837,14 +845,15 @@ export default function ClassesWorkspace({
                             {invoice.status === "draft" && canManage ? (
                               <>
                                 <button type="button" className="btn btn-sm btn-ghost btn-icon" disabled={loadingInvoiceId === invoice.id} onClick={() => void editInvoice(invoice)} aria-label="Edit invoice" title="Edit invoice"><Pencil className="h-4 w-4" aria-hidden /></button>
-                                <InvoicePdfActions invoice={invoice} canManage={canManage} canEditDocuments={canEditDocuments} subtle />
+                                <InvoicePdfActions invoice={invoice} onPreviewCover={() => setCoverInvoice(invoice)} canManage={canManage} canEditDocuments={canEditDocuments} subtle />
                                 <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === invoice.id} onClick={() => setDiscardInvoice(invoice)} aria-label="Discard draft" title="Discard draft"><Trash2 className="h-4 w-4" aria-hidden /></button>
                               </>
                             ) : null}
                             {invoice.status === "issued" ? (
                               <>
-                                <InvoicePdfActions invoice={invoice} canManage={canManage} canEditDocuments={canEditDocuments} subtle />
+                                <InvoicePdfActions invoice={invoice} onPreviewCover={() => setCoverInvoice(invoice)} canManage={canManage} canEditDocuments={canEditDocuments} subtle />
                                 {canManage ? <button type="button" className="btn btn-sm btn-ghost btn-icon" onClick={() => setCoverInvoice(invoice)} aria-label="Reimbursement cover sheet" title="Reimbursement cover sheet"><FileText className="h-4 w-4" aria-hidden /></button> : null}
+                                {canManage ? <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === invoice.id} onClick={() => setVoidInvoice(invoice)} aria-label="Void invoice" title="Void invoice"><Ban className="h-4 w-4" aria-hidden /></button> : null}
                               </>
                             ) : null}
                           </div>
