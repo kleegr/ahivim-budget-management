@@ -108,11 +108,21 @@ async function createAuthorization(page: Page, journey: Journey) {
   await dialog.getByLabel("Renewal date").fill(journey.renewal);
   await dialog.getByLabel("Authorized hours").fill("12");
   await expect(dialog.getByLabel(/rate|amount/i)).toHaveCount(0);
+  // Capture real server bytes before the successful save reloads the page.
+  // CDP response handles can be evicted by that navigation.
+  let savedJson: unknown;
+  await page.route("**/api/program-budgets", async (route) => {
+    const response = await route.fetch();
+    savedJson = await response.json();
+    await route.fulfill({ response, json: savedJson });
+  });
   const saved = page.waitForResponse((response) => response.url().endsWith("/api/program-budgets") && response.request().method() === "POST");
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   const response = await saved;
   expect(response.status()).toBe(201);
-  expect(privateValues(await response.json())).toEqual([]);
+  expect(savedJson).toHaveProperty("data.authorizationId");
+  expect(privateValues(savedJson)).toEqual([]);
+  await page.unroute("**/api/program-budgets");
   await expect(dialog).toHaveCount(0);
   await metric(page.locator("#main"), "Hours authorized", "12");
 }
