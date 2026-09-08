@@ -557,6 +557,7 @@ export const serviceAllocations = pgTable(
   },
   (table) => [
     index("service_allocations_individual_idx").on(table.individualId),
+    index("service_allocations_payroll_transaction_idx").on(table.payrollTransactionId),
     uniqueIndex("service_allocations_session_individual_key").on(
       table.serviceSessionId,
       table.individualId,

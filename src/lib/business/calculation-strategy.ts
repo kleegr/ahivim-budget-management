@@ -68,9 +68,10 @@ export interface StrategyResult {
 /** Accept 0.24 or 24 (or "24%") and return a fraction. Values > 1 are percents. */
 function toFraction(value: MoneyInput): Decimal {
   if (value === null || value === undefined || value === "") return dec(0);
+  const explicitPercent = typeof value === "string" && value.trim().endsWith("%");
   const raw = typeof value === "string" ? value.replace("%", "") : value;
   const d = dec(raw);
-  const fraction = d.abs().greaterThan(1) ? d.dividedBy(100) : d;
+  const fraction = explicitPercent || d.abs().greaterThan(1) ? d.dividedBy(100) : d;
   if (fraction.lessThan(0) || fraction.greaterThan(1)) {
     throw new RangeError("Cut percentages must be between 0% and 100%.");
   }

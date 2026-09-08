@@ -343,8 +343,8 @@ describe("portal-safe home read model", () => {
       expect(statement).toContain("FROM physical_authorization_base physical");
       expect(statement).toContain("LEFT JOIN payroll_transactions payroll");
       expect(statement).toContain("physical.consumption_source IN ('payroll', 'mixed')");
-      expect(statement).toContain("WHEN physical.rate_scope = 'per_group'");
-      expect(statement).toContain("/ physical.internal_rate");
+      expect(statement).toContain("canonical_budget_transaction_hours(");
+      expect(statement).toContain("payroll, physical.internal_rate");
       expect(statement).toContain("), 0)::numeric(10, 4) AS used_hours");
       expect(statement).toContain("physical_event_usage AS");
       expect(statement).toContain("LEFT JOIN program_budget_events event");
@@ -364,11 +364,9 @@ describe("portal-safe home read model", () => {
       expect(statement).toContain("PARTITION BY payroll.id");
       expect(statement).toContain("ORDER BY synthetic.start_date DESC");
       expect(statement).toContain("WHERE match_rank = 1");
-      expect(statement).toContain("WHEN rate_scope = 'per_group'");
+      expect(statement).toContain("canonical_budget_transaction_hours(payroll_row, internal_rate)");
       expect(statement).toContain("payroll.calculated_internal_amount");
       expect(statement).toContain("payroll.spreadsheet_internal_amount");
-      expect(statement).toContain("internal_rate_applied * imported_hours");
-      expect(statement).toContain("/ internal_rate");
       expect(statement).toContain("COALESCE(sum(synthetic.authorized_hours), 0)");
       expect(statement).toContain("effective_hours.authorized_hours - effective_hours.used_hours");
       expect(statement).not.toContain("effective_billed_hours");

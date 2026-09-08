@@ -3,22 +3,11 @@ import { listIndividualBudgetBoard } from "@/lib/data/queries";
 import { agencyDate } from "@/lib/business/agency-time";
 
 describe("individual budget portfolio read model", () => {
-  it("converts group-session internal money to used hours before every portfolio calculation", async () => {
+  it("uses canonical group credits before every portfolio calculation", async () => {
     const capturedSql: string[] = [];
     const pool = {
       query: async (sql: string) => {
         capturedSql.push(sql);
-        if (sql.includes("FROM program_rate_schedules")) {
-          return {
-            rows: [{
-              program_id: "day-hab",
-              effective_from: "2026-01-01",
-              effective_to: "2026-12-31",
-              internal_rate: "17",
-              agency_rate: "19",
-            }],
-          };
-        }
         return {
           rows: [{
             id: "person-1",
@@ -35,7 +24,7 @@ describe("individual budget portfolio read model", () => {
             authorized_hours: "200",
             rate_override: null,
             rate_override_effective_from: null,
-            billed_hours: "10",
+            billed_hours: "100",
             billed_internal: "1700",
             billed_amount: "2500",
             transaction_count: 2,
@@ -69,6 +58,7 @@ describe("individual budget portfolio read model", () => {
       "max(canonical_service_date(t.period_begin, t.check_date, t.period_end))",
     );
     expect(capturedSql[0]).toContain("t.spreadsheet_internal_amount");
-    expect(capturedSql[1]).toContain("FROM program_rate_schedules");
+    expect(capturedSql[0]).toContain("FROM program_rate_schedules");
+    expect(capturedSql[0]).toContain("canonical_budget_transaction_hours(t,");
   });
 });

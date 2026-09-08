@@ -367,19 +367,9 @@ physical_authorization_base AS (
 ),
 physical_payroll_usage AS (
   SELECT physical.authorization_id,
-         COALESCE(sum(
-           CASE
-             WHEN physical.rate_scope = 'per_group'
-              AND COALESCE(physical.internal_rate, 0) > 0
-               THEN COALESCE(
-                      payroll.calculated_internal_amount,
-                      payroll.spreadsheet_internal_amount,
-                      payroll.internal_rate_applied * payroll.imported_hours,
-                      0
-                    ) / physical.internal_rate
-             ELSE COALESCE(payroll.imported_hours, 0)
-           END
-         ), 0)::numeric(10, 4) AS used_hours
+         COALESCE(sum(canonical_budget_transaction_hours(
+           payroll, physical.internal_rate
+         )), 0)::numeric(10, 4) AS used_hours
     FROM physical_authorization_base physical
     LEFT JOIN payroll_transactions payroll
       ON physical.consumption_source IN ('payroll', 'mixed')
@@ -442,6 +432,7 @@ synthetic_transaction_matches AS (
   SELECT synthetic.individual_id,
          synthetic.program_id,
          payroll.id AS transaction_id,
+         payroll AS payroll_row,
          synthetic.internal_rate,
          synthetic.rate_scope,
          payroll.imported_hours,
@@ -467,17 +458,7 @@ synthetic_transaction_usage AS (
   SELECT individual_id,
          program_id,
          transaction_id,
-         CASE
-           WHEN rate_scope = 'per_group'
-            AND COALESCE(internal_rate, 0) > 0
-             THEN COALESCE(
-                    calculated_internal_amount,
-                    spreadsheet_internal_amount,
-                    internal_rate_applied * imported_hours,
-                    0
-                  ) / internal_rate
-           ELSE COALESCE(imported_hours, 0)
-         END AS used_hours
+         canonical_budget_transaction_hours(payroll_row, internal_rate) AS used_hours
     FROM synthetic_transaction_matches
    WHERE match_rank = 1
 ),

@@ -85,7 +85,7 @@ describe("strategy actual-vs-plan analytics", () => {
       if (sql.includes("JOIN payroll_transactions")) {
         return {
           rows: [
-            { strategy_id: STRATEGY_ID, individual_id: INDIVIDUAL_ID, program_id: DAY_HAB_ID, program_code: "DAY_HAB", hours: "30", internal: "170", observations: "2" },
+            { strategy_id: STRATEGY_ID, individual_id: INDIVIDUAL_ID, program_id: DAY_HAB_ID, program_code: "DAY_HAB", hours: "10", internal: "170", observations: "2" },
             { strategy_id: STRATEGY_ID, individual_id: INDIVIDUAL_ID, program_id: COM_HAB_ID, program_code: "COM_HAB", hours: "5", internal: "105", observations: "1" },
             { strategy_id: SECOND_STRATEGY_ID, individual_id: INDIVIDUAL_ID, program_id: COM_HAB_ID, program_code: "COM_HAB", hours: "9", internal: "189", observations: "1" },
           ],
@@ -141,7 +141,11 @@ describe("strategy actual-vs-plan analytics", () => {
     expect(billedCall?.sql).toContain(") < w.end_date");
     expect(billedCall?.sql).not.toContain("BETWEEN w.start_date AND w.end_date");
     expect(billedCall?.sql).not.toContain("AND t.period_begin >=");
-    expect(scheduledCall?.params).toEqual(billedCall?.params);
+    expect(scheduledCall?.params).toEqual(billedCall?.params?.slice(0, 5));
+    expect(billedCall?.sql).toContain("canonical_budget_transaction_hours(");
+    expect(JSON.parse(String(billedCall?.params?.[5]))).toMatchObject({
+      [STRATEGY_ID]: { [DAY_HAB_ID]: "17", [COM_HAB_ID]: "21" },
+    });
     expect(scheduledCall?.sql).toContain("ss.session_date >= w.start_date");
     expect(scheduledCall?.sql).toContain("ss.session_date < w.end_date");
   });

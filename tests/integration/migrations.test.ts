@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { hasTestDatabase, testPool, resetSchema, closeTestPool } from "../support/database";
 import { runMigrations, ledgerExists, listTables, tableCounts, LEDGER_TABLE } from "@/lib/db/migrate";
+import { MIGRATIONS } from "@/lib/db/migrations.generated";
 
 const suite = hasTestDatabase ? describe : describe.skip;
 
@@ -16,8 +17,8 @@ suite("migration runner (real PostgreSQL)", () => {
     await pool.query(`CREATE SCHEMA public`);
 
     const results = await Promise.all([runMigrations(pool), runMigrations(pool)]);
-    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, 44]);
-    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, 44]);
+    expect(results.map((result) => result.applied).sort((a, b) => a - b)).toEqual([0, MIGRATIONS.length]);
+    expect(results.map((result) => result.skipped).sort((a, b) => a - b)).toEqual([0, MIGRATIONS.length]);
   }, 60_000);
 
   it("creates the ledger and every expected table", async () => {
@@ -61,7 +62,7 @@ suite("migration runner (real PostgreSQL)", () => {
   it("is idempotent: a second run applies nothing and skips everything", async () => {
     const again = await runMigrations(testPool());
     expect(again.applied).toBe(0);
-    expect(again.skipped).toBe(44);
+    expect(again.skipped).toBe(MIGRATIONS.length);
     expect(again.outcomes.every((o) => o.status === "skipped")).toBe(true);
   });
 
@@ -69,7 +70,7 @@ suite("migration runner (real PostgreSQL)", () => {
     const { rows } = await testPool().query<{ name: string; checksum: string }>(
       `SELECT name, checksum FROM ${LEDGER_TABLE} ORDER BY name`,
     );
-    expect(rows).toHaveLength(44);
+    expect(rows).toHaveLength(MIGRATIONS.length);
     expect(rows[0].name).toBe("0000_init.sql");
     expect(rows[1].name).toBe("0001_seed_programs_and_rates.sql");
     expect(rows[2].name).toBe("0002_editable_operations.sql");
@@ -114,6 +115,7 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[41].name).toBe("0041_calculation_workbook_provenance.sql");
     expect(rows[42].name).toBe("0042_permission_granularity.sql");
     expect(rows[43].name).toBe("0043_verified_payroll_check_invariant.sql");
+    expect(rows[44].name).toBe("0044_confirmed_group_budget_hours.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 
@@ -200,7 +202,7 @@ suite("migration runner (real PostgreSQL)", () => {
 
     const result = await runMigrations(pool);
     expect(result.applied).toBe(1);
-    expect(result.skipped).toBe(43);
+    expect(result.skipped).toBe(MIGRATIONS.length - 1);
 
     const { rows } = await pool.query<{
       email: string;
