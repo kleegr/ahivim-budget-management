@@ -21,6 +21,7 @@ import OwnerSavedViews from "@/components/dashboard/owner-saved-views";
 import { ButtonLink, PageHeader } from "@/components/ui";
 import {
   buildOwnerAttentionItems,
+  buildOwnerActualMoney,
   type OwnerActivityFilterOptions,
   type OwnerActivitySelection,
   type OwnerAttentionItem,
@@ -28,16 +29,11 @@ import {
 } from "@/lib/dashboard/owner-summary";
 import { formatHours, formatMoney } from "@/lib/money";
 import type { GridView } from "@/lib/manage/grid-views";
-import { getAgencyFinancialReport, type AgencyFinancialReport } from "@/lib/data/agency-financial-report";
+import { getAgencyFinancialReport } from "@/lib/data/agency-financial-report";
 import { getSettlementDashboard } from "@/lib/data/settlements";
 import { getOwnerScheduleAttention } from "@/lib/dashboard/owner-schedule-attention";
 import { withDb } from "@/lib/data/pool";
 import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
-
-export interface OwnerActualMoney {
-  month: string;
-  totals: AgencyFinancialReport["totals"];
-}
 
 const LONG_DATE = new Intl.DateTimeFormat("en-US", {
   month: "long",
@@ -275,7 +271,10 @@ async function OwnerAttentionData({
     <OwnerAttentionSection
       items={buildOwnerAttentionItems(
         summary,
-        settlementResult.ok ? settlementResult.data.summary : undefined,
+        settlementResult.ok ? {
+          ...settlementResult.data.summary,
+          dirty: settlementResult.data.freshness.dirty,
+        } : undefined,
         settlementResult.ok ? settlementResult.data.checkIssues.length : 0,
         scheduleResult.ok ? scheduleResult.data : undefined,
       )}
@@ -289,7 +288,7 @@ async function OwnerActualMoneySection({ month }: { month: string }) {
     pool,
     async (client) => {
       const report = await getAgencyFinancialReport(client, month);
-      return { month: report.month, totals: report.totals } satisfies OwnerActualMoney;
+      return buildOwnerActualMoney(report);
     },
   ));
 
@@ -307,6 +306,14 @@ async function OwnerActualMoneySection({ month }: { month: string }) {
   const actualMoney = result.data;
   return (
     <OwnerMoneyShell month={actualMoney.month}>
+      {actualMoney.incomplete ? (
+        <p role="status" className="mt-4 text-sm text-[var(--color-warn)]">
+          Some amounts are missing or need review. This result is incomplete.{" "}
+          <Link className="font-semibold underline" href={`/reports/agency-financials?month=${actualMoney.month}`}>
+            Review source details
+          </Link>
+        </p>
+      ) : null}
       <div className="mt-4 grid grid-cols-1 divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] sm:grid-cols-3 sm:divide-x sm:divide-y-0">
         <SummaryMetric
           label="Actual income"
@@ -321,7 +328,7 @@ async function OwnerActualMoneySection({ month }: { month: string }) {
           hint="Set-asides, taxes, and shares"
         />
         <SummaryMetric
-          label="Agency result"
+          label={actualMoney.incomplete ? "Agency result (incomplete)" : "Agency result"}
           value={formatMoney(actualMoney.totals.agencyResult)}
           href={`/reports/agency-financials?month=${actualMoney.month}`}
           hint="Income minus listed expenses"

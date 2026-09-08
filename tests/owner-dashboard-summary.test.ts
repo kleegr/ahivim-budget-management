@@ -17,6 +17,31 @@ const ids = {
 };
 const AS_OF = new Date("2026-09-04T12:00:00Z");
 
+describe("owner money source status", () => {
+  it("replaces stale legacy balances with review guidance without changing the recorded snapshot", () => {
+    const summary = buildOwnerDashboardSummary({
+      transactions: [], programBudgets: [], budgetBoard: [], strategies: [], asOf: AS_OF,
+    });
+    const money = Object.freeze({
+      dirty: true, agencyOwes: "25.00", employeesOwe: "44400.00",
+      reservesToSetAside: "394690.38", credits: "12.50", creditCount: 1,
+    });
+    const items = buildOwnerAttentionItems(summary, money, 698);
+    expect(items.map((item) => item.key)).toEqual(["check-verification", "money-refresh"]);
+    expect(items[1]).toMatchObject({ title: "Money needs a refresh", href: "/masser" });
+    expect(JSON.stringify(items)).not.toMatch(/\$|Verified employee give-back|needs to be (paid|collected|put away)|available as credit/);
+    expect(money.employeesOwe).toBe("44400.00");
+    expect(money.reservesToSetAside).toBe("394690.38");
+
+    const fresh = buildOwnerAttentionItems(summary, { ...money, dirty: false });
+    expect(fresh.find((item) => item.key === "employee-collections")).toMatchObject({
+      title: "$44,400.00 needs to be collected",
+      detail: "Recorded receivables with a remaining balance.",
+    });
+    expect(fresh.map((item) => item.key)).not.toContain("money-refresh");
+  });
+});
+
 function transaction(overrides: Partial<GridTransaction>): GridTransaction {
   return {
     id: ids.latest1,
@@ -283,6 +308,7 @@ describe("buildOwnerDashboardSummary", () => {
     });
 
     const items = buildOwnerAttentionItems(summary, {
+      dirty: false,
       agencyOwes: "75.0000",
       employeesOwe: "80.0000",
       reservesToSetAside: "40.0000",
@@ -310,6 +336,7 @@ describe("buildOwnerDashboardSummary", () => {
     });
     expect(items[2]).toMatchObject({
       title: "$80.00 needs to be collected",
+      detail: "Recorded receivables with a remaining balance.",
       href: "/settlements?queue=receivable",
     });
     expect(items[3]).toMatchObject({
@@ -380,6 +407,7 @@ describe("buildOwnerDashboardSummary", () => {
     });
 
     const items = buildOwnerAttentionItems(summary, {
+      dirty: false,
       agencyOwes: "25",
       employeesOwe: "0",
       reservesToSetAside: "0",
@@ -467,6 +495,7 @@ describe("buildOwnerDashboardSummary", () => {
     });
 
     expect(buildOwnerAttentionItems(summary, {
+      dirty: false,
       agencyOwes: "0",
       employeesOwe: "0",
       reservesToSetAside: "0",

@@ -30,6 +30,53 @@ production evidence. Database-backed integration suites that skip without
 
 ## Production Acceptance Log
 
+### 2026-09-08 - Developer 1 deployment and live controls
+
+PRs #34, #35, and #36 are merged. Production deployment
+`dpl_DHCujvX6HcTcq2MVw4iz91igYATA` serves exact commit
+`aea9488d345d88383db2dc99b7d1f39d25bdf2e4`. All 46 migrations are
+applied; the original 44 checksums and all 72 existing business-table hashes
+were preserved across deployment. A retained main-derived recovery branch was
+verified against 43 exported financial-table hashes before production changes.
+The same migrations passed a PostgreSQL 17 clone rehearsal and a zero-change
+retry. The final merged tree passed the remote application gate (1,789 tests;
+10 historical private-fixture skips), all 35 browser cases, lint, types, and
+the production build. Current private payroll evidence was separately replayed
+against an isolated database; it is not committed to this public repository.
+
+One authenticated inbound sync completed under the owner account. Canonical
+transaction counts, money, Paid state, payroll checks, obligations, and events
+were unchanged. Live inspection found that 26 recovered source NET values still
+had unknown canonical NET and no review flag. The follow-up adds a versioned
+source-evidence pass that creates review without overwriting financial facts,
+including tracking already bootstrapped by the first deployed sync. Repeated
+source runs, explicit acknowledgements, restoration, and explicit zero have
+regressions. Two authenticated post-fix runs remain an acceptance requirement.
+
+Live Home inspection also found stale individual receivables described as
+verified employee give-back. The follow-up suppresses stale monetary actions,
+links to money refresh/review, uses neutral recorded-receivable wording, and
+retains missing-expense coverage in the owner actual-result label and source
+link. Unit and PostgreSQL regressions pass; affected desktop/mobile acceptance
+and exact follow-up deployment verification remain open.
+
+At 2026-09-08 03:05 UTC, a separately reviewed, source-pinned production budget
+repair committed exactly two periods, eight authorizations, and ten attributed
+audits. It preserved all prior 35 periods and 63 authorizations and 13 protected
+financial-table hashes. An API retry inserted zero records or audits before the
+outer transaction committed. Current effective authorization controls changed
+from 69 / 45,278 hours to 71 / 46,175 hours, as predicted by the record-level
+source bridge. This is verified production data repair; the three affected
+Budget pages still require signed-in browser acceptance. Missing setup dates,
+ambiguous identities, and conflicting approved monthly amounts remain review
+items; no agreement or accounting treatment was invented.
+
+Restricted-role provisioning and privacy acceptance are coordinated with
+Developer 2. Both developers' preview branches use isolated databases and
+independent session secrets. Production synthetic financial tests remain
+prohibited. These controls do not mark an entire business workflow
+`PRODUCTION VERIFIED` before its remaining acceptance evidence is complete.
+
 ### 2026-09-07 - Developer 1 financial release in preparation
 
 The Developer 1 assignment continues from PR #33, commit
@@ -69,13 +116,13 @@ The existing tracker references for this work include rows 422-444 (inbound),
 Post-deployment requirements 1407-1409 remain open until authenticated live
 exports, two inbound syncs, and duplicate checks are observed.
 
-Production currently serves the PR #33 commit. Public health checks passed and
+At the preparation baseline, production served PR #33. Public health checks passed and
 the cron route rejected unauthenticated requests. Runtime logs showed hourly
 accepted cron requests, including recovered database connection retries. Those
 HTTP responses do not establish which scheduled runs imported data: configuration
-and database run history still require authenticated inspection. Production
-sign-in, a fresh verified recovery point, merge/deployment, and direct role
-acceptance remain release prerequisites.
+and database run history still required authenticated inspection. Production
+sign-in, a fresh verified recovery point, and merge/deployment were completed
+in the September 8 entry above; direct role acceptance remains open.
 
 ### 2026-09-01 - current release, agencies, and schedule matching
 

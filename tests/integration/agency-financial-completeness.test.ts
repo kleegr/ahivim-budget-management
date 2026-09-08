@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { agencyFinancialResultIncomplete } from "@/lib/business/agency-financial-completeness";
+import { buildOwnerActualMoney } from "@/lib/dashboard/owner-summary";
 import { getAgencyFinancialReport } from "@/lib/data/agency-financial-report";
 import { agencyFinancialExportTables } from "@/lib/export/agency-financial-report";
 import { createEmployee } from "@/lib/manage/employees";
@@ -43,6 +44,7 @@ suite("Owner actuals completeness and receipt controls", () => {
     expect(before.directChecks).toHaveLength(0);
     expect(before.coverage.directTransactionsMissingVerifiedCheck).toBe(1);
     expect(agencyFinancialResultIncomplete(before.coverage)).toBe(true);
+    expect(buildOwnerActualMoney(before)).toEqual({ month: "2026-08", totals: before.totals, incomplete: true });
     const beforeTables = agencyFinancialExportTables(before);
     expect(beforeTables.find((table) => table.title === "Summary totals")!.rows).toContainEqual({
       section: "Result", metric: "Agency result (incomplete)", records: null, amount: "1000.0000",
@@ -58,6 +60,7 @@ suite("Owner actuals completeness and receipt controls", () => {
     const after = await getAgencyFinancialReport(pool, "2026-08");
     expect(after.coverage.directTransactionsMissingVerifiedCheck).toBe(0);
     expect(agencyFinancialResultIncomplete(after.coverage)).toBe(false);
+    expect(buildOwnerActualMoney(after)).toEqual({ month: "2026-08", totals: after.totals, incomplete: false });
     expect(after.directChecks).toHaveLength(1);
     expect(after.totals.expenses.taxes).toBe("200.0000");
     expect(after.totals.expenses.directEmployeeKeeps).toBe("720.0000");
