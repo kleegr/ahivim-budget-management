@@ -12,6 +12,10 @@ import { normalizePersonName } from "@/lib/business/name-matching";
 import { backfillPaymentAttribution } from "@/lib/manage/payment-attribution";
 import { acquireSettlementSourceLock } from "@/lib/manage/settlement-freshness";
 import { syncImportedPayrollCheckReviews } from "@/lib/manage/direct-pay-operations";
+import { createEmployeeIdentityResolver } from "@/lib/business/employee-identity";
+import { loadEmployeeIdentityDirectory } from "@/lib/data/employee-identity";
+import { createPersonIdentityResolver } from "@/lib/business/person-identity";
+import { loadIndividualIdentityDirectory } from "@/lib/data/individual-identity";
 
 /**
  * IMPORT COMMIT
@@ -312,6 +316,36 @@ async function writeImport(client: PgLikeClient, input: CommitInput): Promise<Co
   // This is deterministic and happens before any batch counters or rows write.
   holdPartialMultiPersonGroups(staging);
 
+  const parsedByRow = new Map<number, ParsedAhivimRow>(parsedRows.map(row => [row.sourceRowNumber, row]));
+  const employees = new Map<string, string>();
+  const newEmployeeNames = new Map<string, string>();
+  const individuals = new Map<string, string>();
+  const newIndividualNames = new Map<string, string>();
+  if (staging.rows.some(row => row.status === "valid" && parsedByRow.get(row.sourceRowNumber)?.parsed)) {
+    // The financial source lock is already held. Normal person/alias edits do
+    // not all use it, so prevent name/alias changes between validation and write.
+    await client.query("LOCK TABLE employees, employee_aliases, individuals, individual_aliases IN SHARE ROW EXCLUSIVE MODE");
+    const resolveEmployee = createEmployeeIdentityResolver(await loadEmployeeIdentityDirectory(client));
+    const resolveIndividual = createPersonIdentityResolver(await loadIndividualIdentityDirectory(client));
+    for (const staged of staging.rows) {
+      const parsed = parsedByRow.get(staged.sourceRowNumber)?.parsed;
+      if (staged.status !== "valid" || !parsed) continue;
+      const individual = resolveIndividual(parsed.individual);
+      if (individual.outcome === "ambiguous" || individual.matchedId !== staged.individualId) {
+        throw new Error(`Individual identity changed or needs review on source row ${staged.sourceRowNumber}. Refresh the import review; nothing was imported.`);
+      }
+      if (individual.matchedId) individuals.set(individual.normalizedName, individual.matchedId);
+      else if (individual.normalizedName) newIndividualNames.set(individual.normalizedName, parsed.individual.trim());
+      if (!parsed.employee) continue;
+      const current = resolveEmployee(parsed.employee);
+      if (current.outcome === "ambiguous" || current.matchedId !== staged.employeeId) {
+        throw new Error(`Employee identity changed or needs review on source row ${staged.sourceRowNumber}. Refresh the import review; nothing was imported.`);
+      }
+      if (current.matchedId) employees.set(current.normalizedName, current.matchedId);
+      else if (current.normalizedName) newEmployeeNames.set(current.normalizedName, parsed.employee.trim());
+    }
+  }
+
   /* ---- 1. imported_files ------------------------------------------------- */
   const fileRows = await client.query<{ id: string }>(
     `INSERT INTO imported_files
@@ -368,24 +402,9 @@ async function writeImport(client: PgLikeClient, input: CommitInput): Promise<Co
   // A `needs_review` row must not silently mint an individual: that is how an
   // unresolved misspelling becomes a permanent second record.
   const stagedByRow = new Map<number, StagedRow>(staging.rows.map((r) => [r.sourceRowNumber, r]));
-  const parsedByRow = new Map<number, ParsedAhivimRow>(
-    parsedRows.map((r) => [r.sourceRowNumber, r]),
-  );
 
-  const individualNames = new Map<string, string>();
-  const employeeNames = new Map<string, string>();
-  for (const staged of staging.rows) {
-    if (staged.status !== "valid") continue;
-    const parsed = parsedByRow.get(staged.sourceRowNumber)?.parsed;
-    if (!parsed) continue;
-    const iKey = normalizePersonName(parsed.individual);
-    if (iKey) individualNames.set(iKey, parsed.individual.trim());
-    const eKey = normalizePersonName(parsed.employee);
-    if (eKey) employeeNames.set(eKey, parsed.employee.trim());
-  }
-
-  const individuals = await upsertPeople(client, "individuals", individualNames);
-  const employees = await upsertPeople(client, "employees", employeeNames);
+  for (const [key, id] of await upsertPeople(client, "individuals", newIndividualNames)) individuals.set(key, id);
+  for (const [key, id] of await upsertPeople(client, "employees", newEmployeeNames)) employees.set(key, id);
 
   /* ---- 4. programs -------------------------------------------------------- */
   const { rows: programRows } = await client.query<{ id: string; code: string }>(
@@ -839,8 +858,8 @@ async function writeImport(client: PgLikeClient, input: CommitInput): Promise<Co
     transactions: transactionIds.size,
     serviceSessions: sessionCount,
     serviceAllocations: allocationCount,
-    individualsCreated: individuals.size,
-    employeesCreated: employees.size,
+    individualsCreated: newIndividualNames.size,
+    employeesCreated: newEmployeeNames.size,
     rateExceptions: rateExceptionCount,
     warnings: staging.warnings.length,
     reviewRows: staging.counts.needsReview,

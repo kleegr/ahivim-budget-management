@@ -303,7 +303,8 @@ export default function CollectionsWorkspace({
     && data.visibility.canSeeCheckGross
     && data.visibility.canSeeCheckNet
     && data.visibility.canSeeTaxes;
-  const checksToReview = data.payrollChecks.filter((check) => check.verificationStatus === "unverified");
+  const checksToReview = data.payrollCheckCounts.unverified;
+  const reviewRequiredPlans = data.individualSetAsides.reduce((total, row) => total + row.reviewRequiredPlans, 0);
   const missingRenewalPlans = data.individualSetAsides.reduce(
     (total, row) => total + row.missingRenewalPlans,
     0,
@@ -414,7 +415,7 @@ export default function CollectionsWorkspace({
   }
   return (
     <div className="space-y-4">
-      {checksToReview.length > 0 ? (
+      {checksToReview > 0 ? (
         <Notice
           tone="warning"
           action={(
@@ -423,7 +424,17 @@ export default function CollectionsWorkspace({
             </button>
           )}
         >
-          {checksToReview.length.toLocaleString()} imported {checksToReview.length === 1 ? "check needs" : "checks need"} confirmation. No employee collection is created until the whole-check net is verified.
+          {checksToReview.toLocaleString()} payroll {checksToReview === 1 ? "check needs" : "checks need"} confirmation. No employee collection is created until the whole-check net is verified.
+        </Notice>
+      ) : null}
+      {data.ledgerDirty ? (
+        <Notice tone="warning" title="Money calculations need refresh" action={<Link className="btn btn-sm btn-secondary" href="/settlements">Open money operations</Link>}>
+          Refresh money operations before recording activity. Approved monthly amounts and recorded history remain visible.
+        </Notice>
+      ) : null}
+      {reviewRequiredPlans > 0 ? (
+        <Notice tone="warning" title="Source review required">
+          {reviewRequiredPlans.toLocaleString()} {reviewRequiredPlans === 1 ? "plan has" : "plans have"} balances on hold. Those balances are excluded from ledger remaining. Review their source and monthly or full-period amount basis; approved monthly amounts and recorded history remain visible.
         </Notice>
       ) : null}
       {!data.setupHistoryAvailable ? (
@@ -470,7 +481,7 @@ export default function CollectionsWorkspace({
         <div id="collections-panel-summary" role="tabpanel" aria-labelledby="collections-tab-summary" className="grid gap-4 xl:grid-cols-2">
           <Card title="Employee receivables" description={`Check obligations and collection position for ${data.month}.`}>
             {data.employeeCollections.length === 0 ? <EmptyState compact title="No employee collection activity" /> : (
-              <div className="overflow-x-auto"><table className="touch-table w-full min-w-[720px] text-sm"><thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]"><tr><th className="px-4 py-2.5 text-left">Employee</th><th className="px-3 py-2.5 text-right">Due</th><th className="px-3 py-2.5 text-right">Collected</th><th className="px-3 py-2.5 text-right">Remaining</th><th className="px-3 py-2.5 text-right">Credit</th>{canManage ? <th className="px-3 py-2.5 text-right">Action</th> : null}</tr></thead><tbody className="divide-y divide-[var(--color-rule)]">{data.employeeCollections.map((row) => <tr key={row.employeeId}><td className="px-4 py-3"><p className="font-medium">{row.employeeName}</p>{canSeeEmployeeDeals ? <><Link className="text-xs font-medium text-[var(--color-primary)] hover:underline" href={`/employees/${row.employeeId}?view=deal`}>{canManageEmployeeDeals ? "View or change deal" : "View deal"}</Link>{!canManageEmployeeDeals ? <span className="ml-1 text-xs text-[var(--color-ink-faint)]">(manager changes)</span> : null}</> : null}</td><td className="tnum px-3 py-3 text-right">{formatMoney(row.dueFromChecks)}</td><td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.collectedThisMonth)}</td><td className="tnum px-3 py-3 text-right font-semibold">{formatMoney(row.remainingReceivable)}</td><td className="tnum px-3 py-3 text-right">{formatMoney(row.availableCredit)}</td>{canManage ? <td className="px-3 py-3 text-right"><Link className="btn btn-sm btn-ghost whitespace-nowrap" href={`/settlements?employeeId=${row.employeeId}&queue=receivable`}>Record collection</Link></td> : null}</tr>)}</tbody></table></div>
+              <div className="overflow-x-auto"><table className="touch-table w-full min-w-[720px] text-sm"><thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]"><tr><th className="px-4 py-2.5 text-left">Employee</th><th className="px-3 py-2.5 text-right">Due</th><th className="px-3 py-2.5 text-right">Collected</th><th className="px-3 py-2.5 text-right">Remaining</th><th className="px-3 py-2.5 text-right">Credit</th>{canManage ? <th className="px-3 py-2.5 text-right">Action</th> : null}</tr></thead><tbody className="divide-y divide-[var(--color-rule)]">{data.employeeCollections.map((row) => <tr key={row.employeeId}><td className="px-4 py-3"><p className="font-medium">{row.employeeName}</p>{canSeeEmployeeDeals ? <><Link className="text-xs font-medium text-[var(--color-primary)] hover:underline" href={`/employees/${row.employeeId}?view=deal`}>{canManageEmployeeDeals ? "View or change deal" : "View deal"}</Link>{!canManageEmployeeDeals ? <span className="ml-1 text-xs text-[var(--color-ink-faint)]">(manager changes)</span> : null}</> : null}</td><td className="tnum px-3 py-3 text-right">{formatMoney(row.dueFromChecks)}</td><td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.collectedThisMonth)}</td><td className="tnum px-3 py-3 text-right font-semibold">{formatMoney(row.remainingReceivable)}</td><td className="tnum px-3 py-3 text-right">{formatMoney(row.availableCredit)}</td>{canManage ? <td className="px-3 py-3 text-right"><Link className="btn btn-sm btn-ghost whitespace-nowrap" href={`/settlements?employeeId=${row.employeeId}&queue=receivable`}>{data.ledgerDirty || Number(row.remainingReceivable) <= 0 ? "Review money operations" : "Record collection"}</Link></td> : null}</tr>)}</tbody></table></div>
             )}
           </Card>
           <Card title="Individual set-asides" description={data.setupHistoryAvailable
@@ -492,7 +503,7 @@ export default function CollectionsWorkspace({
                   <tbody className="divide-y divide-[var(--color-rule)]">
                     {data.individualSetAsides.map((row) => {
                       const noSetAsideDue = Number(row.approvedMonthlyPlan) === 0;
-                      const ledgerIncomplete = row.trackedPlans < row.activePlans;
+                      const ledgerIncomplete = row.actionablePlans < row.activePlans;
                       return (
                         <tr key={row.individualId}>
                           <td className="px-4 py-3">
@@ -503,10 +514,16 @@ export default function CollectionsWorkspace({
                           </td>
                           <td className="tnum px-3 py-3 text-right">{data.setupHistoryAvailable ? formatMoney(row.approvedMonthlyPlan) : <span className="text-[var(--color-warn)]">Unavailable</span>}</td>
                           <td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.setAsideThisMonth)}</td>
-                          <td className="tnum px-3 py-3 text-right font-semibold">{formatMoney(row.remainingSetAside)}</td>
+                          <td className="tnum px-3 py-3 text-right font-semibold">{formatMoney(row.remainingSetAside)}{row.reviewRequiredPlans > 0 ? <p className="text-xs font-normal text-[var(--color-warn)]">Held balances excluded</p> : null}</td>
                           <td className="px-3 py-3">
                             {!data.setupHistoryAvailable ? (
                               <span className="font-semibold text-[var(--color-warn)]">History unavailable</span>
+                            ) : row.reviewRequiredPlans > 0 ? (
+                              <Link className="font-semibold text-[var(--color-warn)] underline" href={`/settlements?individualId=${row.individualId}`}>
+                                Source review required
+                              </Link>
+                            ) : data.ledgerDirty ? (
+                              <Link className="font-semibold text-[var(--color-warn)] underline" href="/settlements">Refresh needed</Link>
                             ) : row.missingRenewalPlans > 0 ? (
                               canManageFinancialPlans ? (
                                 <Link className="font-semibold text-[var(--color-warn)] underline" href={`/individuals/${row.individualId}?view=financial`}>
@@ -521,7 +538,8 @@ export default function CollectionsWorkspace({
                           </td>
                           <td className="px-3 py-3">
                             <div className="flex justify-end gap-1">
-                              {canManage && row.trackedPlans > 0 ? <Link className="btn btn-sm btn-secondary whitespace-nowrap" href={`/settlements?individualId=${row.individualId}&queue=reserve`}>Record set-aside</Link> : null}
+                              {canManage && !data.ledgerDirty && row.actionablePlans > 0 && Number(row.remainingSetAside) > 0 ? <Link className="btn btn-sm btn-secondary whitespace-nowrap" href={`/settlements?individualId=${row.individualId}&queue=reserve`}>Record set-aside</Link> : null}
+                              {row.reviewRequiredPlans > 0 && canManageFinancialPlans ? <Link className="btn btn-sm btn-secondary whitespace-nowrap" href={`/individuals/${row.individualId}?view=financial`}>Review Financial Setup</Link> : null}
                               <Link className="btn btn-sm btn-ghost whitespace-nowrap" href={`/masser/individuals/${row.individualId}?month=${data.month}`}>View statement</Link>
                             </div>
                           </td>
@@ -546,6 +564,7 @@ export default function CollectionsWorkspace({
         <Card title="Actual payroll checks" action={canManageChecks ? <div className="flex flex-wrap gap-2">{canRepairImports ? <button type="button" disabled={repairingImports} className="btn btn-secondary" onClick={() => void repairImportedChecks()}>{repairingImports ? "Checking..." : "Find imported checks"}</button> : null}<button type="button" className="btn btn-secondary" onClick={() => { setEditingCheck(null); setCheckDraft(null); setCreatingCheck(true); }}><Plus size={15} aria-hidden /> Add check</button></div> : null}>
           {canManageChecks && (creatingCheck || editingCheck) ? <PayrollCheckForm key={editingCheck?.id ?? `new-check:${checkDraft?.employeeId ?? "blank"}:${checkDraft?.sourceTransactionIds.join(",") ?? "manual"}`} data={data} initial={editingCheck} draft={editingCheck ? null : checkDraft} onCancel={() => { setCreatingCheck(false); setEditingCheck(null); setCheckDraft(null); }} onDone={(nextNotice) => { setNotice(nextNotice); setCreatingCheck(false); setEditingCheck(null); setCheckDraft(null); }} /> : null}
           {focusedCheckId ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] pb-3 text-sm"><span>Showing the payroll check opened from the financial report.</span><Link className="font-semibold text-[var(--color-primary)] hover:underline" href={`/masser?view=checks&month=${data.month}`}>Show all checks</Link></div> : null}
+          {!focusedCheckId && data.payrollCheckCounts.total > data.payrollChecks.length ? <p className="mb-3 text-sm text-[var(--color-ink-soft)]">Showing {data.payrollChecks.length.toLocaleString()} of {data.payrollCheckCounts.total.toLocaleString()} payroll checks. Checks needing review appear first.</p> : null}
           {data.payrollChecks.length === 0 ? (
             <EmptyState compact title={focusedCheckId ? "This payroll check is not available" : "No payroll checks recorded"} />
           ) : (

@@ -9,6 +9,7 @@ import { DEFAULT_SHEET_ID, DEFAULT_SHEET_NAME, getSyncConfig } from "./config";
 import { fetchSheetCsv, sheetValuesToCsv, type CsvFetcher } from "./fetch";
 import { parseSheetCsv } from "./parse-csv";
 import { sheetSourceIdentity, sheetSourceIdentityKey, sourceEvidenceKey } from "./identity";
+import { sourceNetCheckGroup, type SourceNetEmployeeDirectory } from "./source-net-check-group";
 
 const ACCEPT = "source_net_recovery_accepted";
 const REVERSE = "source_net_recovery_reversed";
@@ -66,15 +67,6 @@ function compatibleCheckSql(left: string, right: string): string {
       AND ${compatibleDate("check_date")} AND ${compatibleDate("period_begin")} AND ${compatibleDate("period_end")}
       AND (${left}.check_date = ${right}.check_date OR ${left}.period_begin = ${right}.period_begin OR ${left}.period_end = ${right}.period_end))
   )`;
-}
-
-function compatibleSourceCheck(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
-  if (text(left.employee) !== text(right.employee)) return false;
-  const compatibleDate = (field: string) => !text(left[field]) || !text(right[field]) || text(left[field]) === text(right[field]);
-  const a = text(left.checkNumber), b = text(right.checkNumber);
-  if (a && b) return a === b && compatibleDate("checkDate");
-  return ["checkDate", "periodBegin", "periodEnd"].every(compatibleDate)
-    && ["checkDate", "periodBegin", "periodEnd"].some(field => text(left[field]) && text(left[field]) === text(right[field]));
 }
 
 /** All other mapped source values must still describe the immutable original row. */
@@ -248,23 +240,22 @@ export async function recoverSourceNet(
           || !unchangedSource(rawFields(transaction.raw_values), row.parsed, row.raw))) {
         return fail("conflict", "Current source routing, NET, or another source value does not match this recovery. Nothing was changed.");
       }
-      const groupIdentities: Record<string, unknown>[] = [canonicalIdentity(transaction)];
-      const checkGroup = new Set<number>();
-      let expanded = true;
-      while (expanded) {
-        expanded = false;
-        for (const row of source.ahivimRows) {
-          if (!row.parsed || checkGroup.has(row.sourceRowNumber)) continue;
-          if (!groupIdentities.some(member => compatibleSourceCheck(row.parsed!, member))) continue;
-          checkGroup.add(row.sourceRowNumber);
-          groupIdentities.push(row.parsed);
-          expanded = true;
-        }
-      }
-      const ambiguousMalformedSibling = source.ahivimRows.some(row => !row.parsed
-        && groupIdentities.some(member => text(row.raw.employee) === text(member.employee)
-          && (!text(row.raw.checkNumber) || !text(member.checkNumber) || text(row.raw.checkNumber) === text(member.checkNumber))));
-      if (ambiguousMalformedSibling || source.ahivimRows.some(row => checkGroup.has(row.sourceRowNumber)
+      // Read canonical people and approved/pending aliases in one snapshot,
+      // using the same exact matcher and precedence as transaction import.
+      const directory = (await client.query<SourceNetEmployeeDirectory>(`SELECT
+        (SELECT COALESCE(jsonb_agg(jsonb_build_object('id', id, 'normalizedName', normalized_name,
+          'displayName', display_name, 'status', status)), '[]'::jsonb) FROM employees) AS employees,
+        (SELECT COALESCE(jsonb_agg(jsonb_build_object('normalizedAlias', normalized_alias,
+          'targetId', employee_id, 'status', status)), '[]'::jsonb) FROM employee_aliases) AS aliases,
+        (SELECT COALESCE(jsonb_agg(jsonb_build_object('mergedId', metadata->>'mergedId',
+          'survivorId', entity_id, 'mergedName', metadata->>'mergedName')), '[]'::jsonb)
+          FROM audit_logs WHERE action = 'employees_merged' AND entity_type = 'employee') AS merges`)).rows[0];
+      if (!directory) return fail("conflict", "Employee matching is unavailable. Review the source check group first.");
+      const checkGroup = sourceNetCheckGroup(source.ahivimRows, canonicalIdentity(transaction), transaction.employee_id, directory);
+      // Undo also requires a certifiable group: a newly conflicting identity
+      // could refer to another employee's verified check or posted history.
+      if (checkGroup.unresolved) return fail("conflict", "The source check group has unresolved or conflicting employee names. Review employee identity before accepting or undoing this repair. Nothing was changed.");
+      if (source.ahivimRows.some(row => checkGroup.rowNumbers.has(row.sourceRowNumber)
         && (!row.parsed || exactNet(row.parsed.totalNetPay) !== net))) {
         return fail("conflict", "The source check group contains different or unknown NET evidence. Review the whole check first.");
       }

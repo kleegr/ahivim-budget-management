@@ -16,6 +16,8 @@ import {
 } from "./stage";
 import type { PgLikePool } from "./commit";
 import { agencyDate } from "@/lib/business/agency-time";
+import { loadEmployeeIdentityDirectory } from "@/lib/data/employee-identity";
+import { loadIndividualIdentityDirectory } from "@/lib/data/individual-identity";
 
 /**
  * Shared plumbing between the upload route, the review page, and the commit
@@ -178,26 +180,8 @@ export async function loadStagingContext(
       WHERE a.status = 'approved' AND p.is_active = true`,
   );
 
-  const individuals = await pool.query<{
-    id: string;
-    normalized_name: string;
-    display_name: string;
-  }>(`SELECT id, normalized_name, display_name FROM individuals`);
-  const individualAliases = await pool.query<{
-    normalized_alias: string;
-    individual_id: string;
-    status: string;
-  }>(`SELECT normalized_alias, individual_id, status FROM individual_aliases`);
-  const employees = await pool.query<{
-    id: string;
-    normalized_name: string;
-    display_name: string;
-  }>(`SELECT id, normalized_name, display_name FROM employees`);
-  const employeeAliases = await pool.query<{
-    normalized_alias: string;
-    employee_id: string;
-    status: string;
-  }>(`SELECT normalized_alias, employee_id, status FROM employee_aliases`);
+  const individualDirectory = await loadIndividualIdentityDirectory(pool);
+  const employeeDirectory = await loadEmployeeIdentityDirectory(pool);
 
   const committed = await pool.query<{
     check_number: string | null;
@@ -255,26 +239,12 @@ export async function loadStagingContext(
     programAliases: Object.fromEntries(
       programAliases.rows.map((row) => [row.normalized_alias, row.code]),
     ),
-    individuals: individuals.rows.map((r) => ({
-      id: r.id,
-      normalizedName: r.normalized_name,
-      displayName: r.display_name,
-    })),
-    individualAliases: individualAliases.rows.map((r) => ({
-      normalizedAlias: r.normalized_alias,
-      targetId: r.individual_id,
-      status: (r.status === "approved" ? "approved" : "pending") as "approved" | "pending",
-    })),
-    employees: employees.rows.map((r) => ({
-      id: r.id,
-      normalizedName: r.normalized_name,
-      displayName: r.display_name,
-    })),
-    employeeAliases: employeeAliases.rows.map((r) => ({
-      normalizedAlias: r.normalized_alias,
-      targetId: r.employee_id,
-      status: (r.status === "approved" ? "approved" : "pending") as "approved" | "pending",
-    })),
+    individuals: individualDirectory.people,
+    individualAliases: individualDirectory.aliases,
+    individualMerges: individualDirectory.merges,
+    employees: employeeDirectory.employees,
+    employeeAliases: employeeDirectory.aliases,
+    employeeMerges: employeeDirectory.merges,
     knownFingerprints,
     knownNaturalKeys,
     workbookTotals,

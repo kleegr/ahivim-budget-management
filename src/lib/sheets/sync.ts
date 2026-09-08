@@ -484,6 +484,7 @@ async function loadLedger(pool: PgLikePool): Promise<Ledger> {
     total_net_pay: string | null;
     transaction_fingerprint: string;
     tracking_fingerprint: string | null;
+    tracking_natural_key: string | null;
   }>(`
     SELECT t.id,
            t.check_number,
@@ -499,7 +500,8 @@ async function loadLedger(pool: PgLikePool): Promise<Ledger> {
            t.pay_to_raw,
            t.total_net_pay::text    AS total_net_pay,
            t.transaction_fingerprint,
-           tracking.fingerprint       AS tracking_fingerprint
+           tracking.fingerprint       AS tracking_fingerprint,
+           tracking.natural_key       AS tracking_natural_key
       FROM payroll_transactions t
       LEFT JOIN programs p    ON p.id = t.program_id
       LEFT JOIN individuals i ON i.id = t.individual_id
@@ -550,7 +552,6 @@ async function loadLedger(pool: PgLikePool): Promise<Ledger> {
       },
     };
     ledger.fingerprints.add(txn.fingerprint);
-    ledger.naturalKeys.add(naturalKey);
     const fingerprints = ledger.byFingerprint.get(txn.fingerprint) ?? [];
     fingerprints.push(txn);
     ledger.byFingerprint.set(txn.fingerprint, fingerprints);
@@ -559,9 +560,15 @@ async function loadLedger(pool: PgLikePool): Promise<Ledger> {
       accepted.push(txn);
       ledger.byAcceptedSourceFingerprint.set(r.tracking_fingerprint, accepted);
     }
-    const list = ledger.byNaturalKey.get(naturalKey) ?? [];
-    list.push(txn);
-    ledger.byNaturalKey.set(naturalKey, list);
+    // Approved person merges can change the canonical name while the Sheet
+    // keeps its original spelling. Its recorded source key still identifies
+    // later changed figures; it must not become a second transaction.
+    for (const key of new Set([naturalKey, r.tracking_natural_key].filter((value): value is string => Boolean(value)))) {
+      ledger.naturalKeys.add(key);
+      const list = ledger.byNaturalKey.get(key) ?? [];
+      if (!list.some(candidate => candidate.id === txn.id)) list.push(txn);
+      ledger.byNaturalKey.set(key, list);
+    }
   }
   return ledger;
 }

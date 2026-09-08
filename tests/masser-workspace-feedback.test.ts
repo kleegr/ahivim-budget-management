@@ -78,7 +78,7 @@ describe("Masser request feedback", () => {
     expect(workspaceSource).toContain("Recorded this month");
     expect(workspaceSource).toContain("Ledger remaining");
     expect(workspaceSource).toContain("data.summary.approvedMonthlySetAside");
-    expect(workspaceSource).toContain("canManage && row.trackedPlans > 0");
+    expect(workspaceSource).toContain("canManage && !data.ledgerDirty && row.actionablePlans > 0");
   });
 
   it("discloses unavailable historical setup state instead of displaying a false zero", () => {

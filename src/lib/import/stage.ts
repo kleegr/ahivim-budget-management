@@ -1,7 +1,9 @@
 import { dec, toMoney, closeEnough, type MoneyInput } from "@/lib/money";
 import type { ParsedAhivimRow } from "@/lib/excel/parse-workbook";
 import { resolveProgram } from "@/lib/business/program-normalization";
-import { matchPerson, type CanonicalRecord, type AliasRecord } from "@/lib/business/name-matching";
+import type { AliasRecord } from "@/lib/business/name-matching";
+import { createEmployeeIdentityResolver, type EmployeeIdentityDirectory } from "@/lib/business/employee-identity";
+import { createPersonIdentityResolver, type PersonIdentityDirectory } from "@/lib/business/person-identity";
 import {
   calculateInternalAmount,
   compareInternalAmounts,
@@ -64,10 +66,12 @@ export interface StagingContext {
   rateFallbackDate?: string;
   /** Approved database aliases. Seed aliases remain the fallback for pure callers. */
   programAliases?: Readonly<Record<string, string>>;
-  individuals: readonly CanonicalRecord[];
+  individuals: PersonIdentityDirectory["people"];
   individualAliases: readonly AliasRecord[];
-  employees: readonly CanonicalRecord[];
+  individualMerges?: PersonIdentityDirectory["merges"];
+  employees: EmployeeIdentityDirectory["employees"];
   employeeAliases: readonly AliasRecord[];
+  employeeMerges?: EmployeeIdentityDirectory["merges"];
   knownFingerprints: ReadonlySet<string>;
   knownNaturalKeys: ReadonlySet<string>;
   /** Totals read from the workbook itself, for reconciliation. */
@@ -357,6 +361,8 @@ function normalizedGroupDate(value: string): string | null {
 function provisionalInvalidGroupCandidate(
   row: ParsedAhivimRow,
   ctx: StagingContext,
+  resolveEmployee: ReturnType<typeof createEmployeeIdentityResolver>,
+  resolveIndividual: ReturnType<typeof createPersonIdentityResolver>,
 ): {
   candidate: GroupCandidateRow;
   individualId: string | null;
@@ -369,9 +375,9 @@ function provisionalInvalidGroupCandidate(
   // unreadable, there is no defensible automatic relationship to another row.
   if (hours === null || rate === null) return null;
 
-  const individual = matchPerson(row.raw.individual, ctx.individuals, ctx.individualAliases);
+  const individual = resolveIndividual(row.raw.individual);
   const employee = row.raw.employee
-    ? matchPerson(row.raw.employee, ctx.employees, ctx.employeeAliases)
+    ? resolveEmployee(row.raw.employee)
     : null;
   const program = resolveProgram(row.raw.programDescription, ctx.programAliases);
   const groupIndividualKey = individual.matchedId
@@ -421,6 +427,8 @@ export function stageRows(
   const warnings: StagedWarning[] = [];
   const staged: StagedRow[] = [];
   const groupCandidates: GroupCandidateRow[] = [];
+  const resolveEmployee = createEmployeeIdentityResolver({ employees: ctx.employees, aliases: ctx.employeeAliases, merges: ctx.employeeMerges });
+  const resolveIndividual = createPersonIdentityResolver({ people: ctx.individuals, aliases: ctx.individualAliases, merges: ctx.individualMerges });
 
   const unknownProgramLabels = new Set<string>();
   const unmatchedIndividualNames = new Set<string>();
@@ -451,7 +459,7 @@ export function stageRows(
     const rowWarnings: StagedWarning[] = [];
 
     if (!row.parsed) {
-      const provisionalGroup = provisionalInvalidGroupCandidate(row, ctx);
+      const provisionalGroup = provisionalInvalidGroupCandidate(row, ctx, resolveEmployee, resolveIndividual);
       if (provisionalGroup) groupCandidates.push(provisionalGroup.candidate);
       staged.push({
         sourceRowNumber: row.sourceRowNumber,
@@ -491,7 +499,7 @@ export function stageRows(
     }
 
     // --- people ------------------------------------------------------------
-    const individual = matchPerson(p.individual, ctx.individuals, ctx.individualAliases);
+    const individual = resolveIndividual(p.individual);
     if (individual.outcome === "ambiguous") {
       ambiguousCount++;
       rowWarnings.push({
@@ -524,7 +532,7 @@ export function stageRows(
     }
 
     const employee = p.employee
-      ? matchPerson(p.employee, ctx.employees, ctx.employeeAliases)
+      ? resolveEmployee(p.employee)
       : null;
     if (employee && employee.outcome === "ambiguous") {
       ambiguousCount++;

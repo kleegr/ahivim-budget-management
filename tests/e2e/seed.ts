@@ -23,6 +23,7 @@ import { refreshSettlementObligations } from "../../src/lib/manage/settlements";
 import { seedReleaseAcceptanceData } from "./release-data";
 import { seedClassDocumentAcceptanceData } from "./class-document-data";
 import { seedMoneyOperationsAcceptanceData } from "./money-operations-data";
+import { seedMasserReadReviewData } from "./masser-read-review-data";
 import {
   TEST_DB_URL,
   EXPECTED_DISPOSABLE_DB_HOST,
@@ -163,6 +164,7 @@ async function main(): Promise<void> {
       pool as unknown as PgLikePool,
       actorId,
     );
+    await seedMasserReadReviewData(pool as unknown as PgLikePool, actorId);
 
     // Class and money fixtures change financial sources after the release
     // fixture's initial refresh. Certify the final seed through the real

@@ -23,12 +23,103 @@ production acceptance are deliberately separate.
 - `MISSING`: the requested workflow does not exist.
 - `WRONG`: current behavior contradicts the business rule.
 
-**Current production verdict:** no row in this document is yet
-`PRODUCTION VERIFIED`. Passing focused tests is implementation evidence, not
-production evidence. Database-backed integration suites that skip without
-`TEST_DATABASE_URL` also do not count as production verification.
+**Current production verdict:** the dated acceptance log records bounded live
+workflows, including the full inbound replay, budget repairs, source NET repairs,
+financial exports, and restricted-role access. These results do not certify the
+entire operating system or unresolved financial agreements. Passing focused
+tests is implementation evidence, not production evidence. Database-backed
+suites that skip without `TEST_DATABASE_URL` do not count as database validation.
 
 ## Production Acceptance Log
+
+### 2026-09-08 - Developer 1 final financial controls
+
+PRs #37, #39, #40 and #41 are merged. The startup/performance release #41
+merged at `4e30f0569a2e86b537412cd2b48c53d0780d4ce9`; deployment
+`dpl_9UbGFposxNjqm5RdDv1LmPiHvoNL` served that exact commit. Both remote
+quality runs passed 1,995 unit/PostgreSQL cases and 52 real-browser cases,
+lint, types, build, and a zero-finding dependency audit. Ten historical private
+fixture cases remained skipped and are not counted as passes. The local
+production build and all 52 browser cases also passed. A pooled Neon rehearsal
+verified migration transaction ownership, rollback, contention and retry with
+all 48 migrations applied once. Production retains 48 migrations and 75 tables.
+
+A fresh main-derived recovery branch was retained before the final financial
+changes and verified against the original complete table hashes. The later
+48-migration preservation comparison retained all existing financial records.
+All three repaired Budget pages passed Owner desktop and phone acceptance.
+Canonical budget reads retained every ordered record while eliminating repeated
+aggregation; the deployed Owner Home loaded in approximately 2.2 seconds on a
+fresh navigation, with matching controls and no desktop or phone body overflow.
+
+All 26 reviewed source NET recoveries were saved through the authenticated
+Owner workflow, with exact Saved history links and transaction drilldowns.
+Independent full-row comparison proved that only those intended unknown NET
+projections changed; original import evidence, all other transaction fields,
+Paid state, checks, obligations and cash history were preserved. Exactly 26
+attributed acceptance audits were appended. Acceptance, retry, Undo and Undo
+retry also passed for all 26 source cases on a disposable real-source clone.
+Current source grouping independently passes all 26 cases. One existing,
+exactly audited employee merge resolves the retained archived-name alias;
+no new identity decision or historical reassignment is required.
+
+Two subsequent authenticated inbound runs,
+`101ccb79-783e-472f-be0e-bf5d873d8ec8` and
+`c62cc8c2-3301-4cba-8d5b-f55f9c0c9fc5`, read the same complete designated
+source. Each added, updated, flagged and failed zero rows. Only run history
+changed among the 75 table controls; all accepted NETs, transactions, Paid
+states, payroll checks, obligations and cash events remained identical.
+The configured hourly cron, authorized scheduled history and daily/off-window
+behavior were inspected. An authorized controlled cron request returned the
+expected off-window result; an unauthenticated request was rejected. Google
+Sheets remains permanently inbound-only, including Paid. Editing access and
+write-back are not release requirements.
+
+Two authenticated Money operations refreshes then created, changed, voided or
+duplicated no obligations. Independent proofs retained all 80 original full
+obligation rows and all cash history, with only the expected review/freshness
+state and one refresh audit changing. The second replay changed only freshness
+timestamps and its audit. Source holds remain explicit and block new
+financial activity. Missing agreements, check verification, unknown setup dates
+and legacy amount-basis decisions were preserved for review, not guessed.
+
+Owner Agency Financials reconciled its selected-month screen, actual CSV and
+Excel downloads and exact transaction links. Incomplete expense coverage remains
+visible in the result and exports. Issued invoices are not received income.
+Positive check/payment/credit/correction/receipt cases use isolated PostgreSQL
+and browser fixtures; no synthetic production money was created to claim live
+acceptance. Later export clicks produced no new captured download; an ordinary
+navigation to the observed CSV link explicitly returned the browser's
+`net::ERR_BLOCKED_BY_CLIENT`. These attempts are not counted as new downloads.
+
+The final implementation follow-up carries the same source holds into Masser,
+individual statements and put-away reports, keeps approved monthly amounts and
+cash history visible, and counts the full scoped check population before the
+display limit. Fresh NET checks include canonical names, approved aliases and
+exact audited merge lineage; uncertain compatible identities fail closed.
+Both bounded changes passed independent review and dedicated PostgreSQL/UI
+regressions. New-source-row regressions also exposed assignments to an archived
+predecessor after an approved merge and creation of a second person from an
+approved individual alias. This can put budget usage against the wrong person.
+Staging and commit must preserve approved employee and individual identities,
+revalidate them before writes, and report only actually created people. Changed
+source figures after an approved merge must also remain attached to their
+recorded source identity: they enter explicit review instead of creating a
+second transaction. Canonical and recorded source keys share a deduplicated
+candidate index; competing transaction claims remain ambiguous. Real employee
+and individual merge regressions cover unchanged, changed, reordered and full
+snapshot replays, explicit apply/dismiss, and preserved financial history.
+
+The full current-source identity comparison found three previously imported
+payroll/allocation pairs still assigned to an archived individual after an
+existing approved merge. A narrow audited data repair is being rehearsed;
+source records, fingerprints, dates, money and payment history must remain
+unchanged. These proven person bindings require no new business decision.
+A fresh retained recovery copy matches all 75 production table controls.
+The final combined release, bounded repair and live acceptance remain pending
+until recorded by exact merged commit in the Developer 1 completion report and
+existing tracker. No schema migration is required. The dated release records
+below remain historical evidence.
 
 ### 2026-09-08 - Developer 1 deployment and live controls
 
@@ -156,13 +247,16 @@ This record attests to the tested `f902f35` release, not the later revision.
 These access results do not mark those follow-ups, the entire operating system,
 or its remaining business workflows `PRODUCTION VERIFIED`.
 
-#### PR #42 account-action feedback - production pending
+#### PR #42 account-action feedback - production verified
 
-The account-action UI fix at local commit `74e51e1` is included in PR #42's
-tested remote head `eb71e4458864a33458e1478d76b991764a3322b5`. Remote gate
-`34191815114` passed 1,986 tests across 285 files, 54 browser cases, lint,
-types, the zero-finding dependency audit, and build. Ten private-workbook tests
-in two files remained skipped. Regressions verify that a successful mutation
+PR #42 merged at `46cb4f9b8f14f2d3974cddf7eaec0977f951646e` after incorporating
+the accepted Developer 1 startup release. Deployment
+`dpl_H44nrG2BXBjCxdzaW3m8yRUK7qaw` was independently verified READY on the
+production aliases at that exact commit. Its final head
+`79d9086da5b53c3c9c771231d4fbb84de3c23b89` passed remote runs `34193158856`
+and `34193157626`: 1,994 tests across 287 files, 54 browser cases, lint,
+types, the zero-finding dependency audit, and build. Ten historical private
+fixture cases remained skipped. Regressions verify that a successful mutation
 updates the UI and retains its credential result even when the subsequent list
 reload fails or stalls; explicit retry reloads the list without repeating the
 mutation.
@@ -171,9 +265,14 @@ On isolated deployment `dpl_aEvMVAffwz3wmddhJKsxAonbJtti`, normal Owner login
 and account enable/disable each passed on desktop and a 390-pixel phone viewport.
 Observed updates took 383-809 ms without a full-page reload, responses remained
 private/no-store, and the temporary account was disabled at the end. This is
-bounded automated and isolated-preview evidence. Production release is held
-for Developer 1's PR #41 and financial acceptance; neither that acceptance nor
-final release completion is claimed here.
+bounded automated and isolated-preview evidence. Final production normal Owner
+sign-out/sign-in and Custom Access enable/disable also passed on desktop and
+a 390-pixel phone. Four updates took 300-570 ms without full-page reload or body
+overflow, and responses remained private/no-store. All 13 temporary acceptance
+accounts, including the temporary Owner used for financial verification, were
+disabled through normal controls. The two original active users were unchanged.
+The old temporary Owner session was rejected with 401; the original Owner
+session was restored. The earlier retained-Owner cleanup note is superseded.
 
 ### 2026-09-07 - Developer 1 financial release in preparation
 
@@ -211,8 +310,10 @@ The following are implementation/rehearsal results, not production acceptance:
 The existing tracker references for this work include rows 422-444 (inbound),
 466-573 (budgets/setup), 721-730 (group hours), 748-799 (checks/settlements),
 930-956 (reports/receipts), and 1182-1193 (controlled source cases).
-Post-deployment requirements 1407-1409 remain open until authenticated live
-exports, two inbound syncs, and duplicate checks are observed.
+At preparation, post-deployment requirements 1407-1409 awaited authenticated
+live exports, two inbound syncs, and duplicate checks. The September 8 final
+financial-controls entry supplies that bounded evidence without claiming
+unrelated positive financial workflows in production.
 
 At the preparation baseline, production served PR #33. Public health checks passed and
 the cron route rejected unauthenticated requests. Runtime logs showed hourly
@@ -343,45 +444,46 @@ role-specific read models and API tests.
 | Portal statements, trends, and schedules | IMPLEMENTED | Individual/parent portal supports selected-month detail, a twelve-month default trend (bounded to 24), capability-gated categories, printable statement, and CSV download without employee/check/tax/gross/net leakage. The deployed individual/parent schedule projection returns only date, time, duration, program, and group facts; it omits employee identity, internal IDs, and group peers. Employee views receive only their assigned participants. Evidence: `src/lib/data/portal-schedule.ts`, `tests/portal-schedule.test.ts`, `tests/portal-schedule-ui.test.ts`. | Privacy hardening, direct Parent response/DOM and mobile inspection, both bound profiles, HTML/CSV, an actual downloaded-byte audit, and foreign-record denial passed on f902f35. Empty months, renewal boundaries, full print layout, and schedule/category cases beyond the recorded evidence remain to be verified. |
 | Imports, reconciliation, and matching | IMPLEMENTED | Upload/stage/review/commit, duplicate recognition, correction routes, alias decisions, person merges, and payroll-check review exist; actual transaction visibility does not depend on creating a deal for each import. Workbook parsing is field-aware, including recovery of numeric payroll amounts that Excel tagged as date cells. A successful Sheet commit optionally links only unambiguous one-person, non-group, same-employee, same-program, exact-date, exact-hours daily records; optional matching failure cannot turn the committed import into a failed sync and remains retryable from the next refresh. The supplied payroll workbook parses 5,307 valid rows with zero invalid rows and restores 26 previously blank net-pay values. | Commit the original workbooks in production, verify exact auto-match and ambiguous/group review cases, confirm unmatched/invalid rows lead to the exact repair screen, and reconcile post-commit totals and repeated check-number identities. |
 | Actionable errors and first-click UX | IMPLEMENTED | Global route-progress feedback covers internal links and native forms; shared mutation controls disable and acknowledge submits while retaining entered work and visible failures; every client component that writes through `fetch` is audited for busy and error paths; server-load failures provide a plain-language retry; and high-use import, transaction, group, collection, financial, schedule-conflict, and role-denial states link to the exact next record or repair screen. A denied redirect now explains that access was blocked after the role-specific home reload, and budget-status failures remain visible without discarding the edit. Evidence: `src/components/app-nav.tsx`, `src/components/auth/access-notice.tsx`, `src/components/manage/client.tsx`, `src/components/ui.tsx`, `tests/workflow-clarity.test.ts`, `tests/transaction-cross-drills.test.ts`, `tests/collections-deep-links.test.ts`. | Bounded signed-in navigation and desktop/phone access acceptance passed for all 13 presets on f902f35. Error recovery, positive mutations, and first-click behavior beyond that scope remain open; dashboard/startup/query performance belongs to Developer 1. |
-| Google Sheet read-only refresh | IMPLEMENTED | The button runs only the inbound sync, commits valid transaction evidence to Neon, preserves source values for audit, refreshes visible results, and links directly to Schedule matching when optional matching needs review. Paid, review, and correction decisions remain in Neon; the code contains no Sheet mutation module or write OAuth scope. | Configure Viewer-only production access and verify a full unfiltered authoritative-source read, idempotent retry, failure recovery, and zero outbound mutation requests. Any transport copy also requires a verified full digest and fail-closed mismatch alert. |
+| Google Sheet read-only refresh | IMPLEMENTED | The authenticated button reads the complete designated source, preserves source evidence and application-owned Paid/review/correction state, and links optional matching review. Two post-repair live runs proved unchanged source adds or changes no transactions, checks, obligations or cash; only run history changed. The code contains no Sheet mutation module or write OAuth scope. | Full-source reads and unchanged replays are production verified. New-row approved-person identity, parser/transport failure recovery and fail-closed inconsistent reads are tested in isolation; retain their final release evidence separately. Sheets is permanently inbound-only; no editing access or write-back is required. |
 | Adobe-class source-text PDF editing | EXTERNAL BLOCKER | The current editor is an overlay/form/document editor, not arbitrary reflow of existing source text in proprietary embedded fonts. | Choose and license a commercial source-text PDF SDK, integrate it, and verify embedded-font fidelity on the supplied PDFs; otherwise narrow the product promise to the implemented overlay editor. |
 
 ## External Dependencies And Known Limits
 
 | Dependency or limitation | Gate |
 | --- | --- |
-| Google Sheet read-only transport | Viewer-only service-account access plus production proof of a full unfiltered authoritative-source read. Any transport copy requires complete digest verification and a fail-closed mismatch alert. |
+| Google Sheet read-only transport | Complete designated-source reads and two authenticated unchanged replays passed in production. Digest mismatch is fail-closed; application-owned changes remain in Neon. The owner's inbound-only decision requires no Sheet editing access. |
 | Adobe-equivalent source-text editing | Licensed SDK/product decision; the current overlay editor cannot truthfully be called Adobe-equivalent. |
 | Legacy unlinked group history | Repair or backfill session links before historical physical employee hours can be exactly deduplicated. |
 | Production document storage | Private Blob is configured; isolated live upload/edit/save/reopen/approved-download/revocation passed. Positive production document workflows and the remaining second-save/restore/archive cases are not established by that isolated evidence. |
 | Class PDF identity | Owner approval of exact logo, brand marks, signatures, and final rendered examples. |
 | Historical approved set-asides | Saved setup revisions provide as-of values from August 2026 forward. Earlier months without trustworthy snapshots remain disclosed and excluded until source history is supplied. |
-| Dedicated test database | The release gate ran with a dedicated PostgreSQL database: 1,928 tests passed, alongside 50 browser cases. Ten historical private-workbook tests remained skipped; supplying and replaying those fixtures remains a separate evidence requirement. |
+| Dedicated test database | Final accepted PR #42 used a dedicated PostgreSQL database: 1,994 tests passed alongside 54 browser cases. Ten historical private-workbook skips remain explicitly separate from passes. Current private source evidence was independently replayed on disposable clones and is excluded from the public repository. |
 
 ## Remaining Delivery Order
 
-1. Retain tested production commit
-   `f902f35d7248a9cf2c924617edcca223e648eae4` and its 48-migration
-   September 8 access evidence. Developer 1's later PR #40 (`87538c1`) and any
-   later release require their own acceptance record; this is not a claim that
-   `f902f35` is the current production revision.
+1. Retain the dated `f902f35` access matrix, the later Developer 1 financial
+   controls and startup evidence, and PR #42's exact `46cb4f9` production
+   acceptance. Every later release still requires its own commit/deployment
+   record; earlier tested revisions are historical evidence.
 2. Preserve completed 13-preset direct-login, desktop/phone, server-scope, and
    Owner-to-Budget-Planner Sign In As/return evidence. Complete first-click,
    error-recovery, and positive workflow cases beyond that bounded acceptance.
-3. Retain the dedicated-PostgreSQL release gate: 1,928 passing tests, 50 browser
-   cases, and its lint/type/build evidence. The 10 historical private-workbook
-   skips are not passes; replay them when their required fixtures are supplied.
+3. Retain each dedicated-PostgreSQL release gate, including final accepted
+   PR #42's 1,994 tests and 54 browser cases and its lint/type/build evidence.
+   The 10 historical private-workbook skips are not passes; preserve separately
+   replayed current-source evidence and replay the old fixtures when supplied.
 4. Reconcile representative production truth end to end: one normal and one
    group transaction, a renewal boundary, billing without budget, direct and
    agency-routed pay, Masser credit/correction, class invoice, manual income,
    custom split, employee-person rule, and owner agency result.
-5. Configure Viewer-only Google Sheet access, then verify the full, unfiltered,
-   idempotent inbound import and confirm that no mutation request is made. Private
-   Blob is configured but still needs its complete production document
-   round trip. Repair legacy group links needed for exact history.
+5. Retain the completed full-source, authenticated inbound replays and
+   application-owned-state preservation proofs. Google Sheets is permanently
+   inbound-only. Private Blob is configured but still needs its complete
+   production document round trip. Repair legacy group links needed for exact
+   history when trustworthy source links are available.
 6. Preserve the recorded normal-UI provisioning and direct-login evidence for
-   all 13 presets. The 12 temporary non-Owners are disabled; Developer 1 owns
-   final acceptance and later cleanup of the retained temporary Owner. Execute
+   all 13 presets. All 13 temporary accounts are now disabled, with the original
+   two active users unchanged and revoked-session checks completed. Execute
    the remaining daily-workflow cases below with representative records and
    retain private screenshots/exports, inspected API payloads, date, and result.
 7. Obtain class PDF visual approval and make the explicit Adobe SDK versus
