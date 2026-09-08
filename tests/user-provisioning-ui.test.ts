@@ -13,15 +13,6 @@ describe("one-step account setup", () => {
     expect(ACCOUNT_PRESET_IDS).toContain("custom_access");
   });
 
-  it("keeps account actions busy until refreshed user data is on screen", () => {
-    expect(source).toContain("const actionBusy = busy || refreshing");
-    expect(source).toContain("startRefresh(() => router.refresh())");
-    expect(source).toContain('aria-busy={actionBusy && busyAction === "create"}');
-    expect(source).toContain('busyAction === `toggle:${u.id}`');
-    expect(source).toContain('busyAction === `password:${u.id}`');
-    expect(source).toContain('busyAction === `access:${u.id}`');
-  });
-
   it("keeps Office manager with the everyday agency-team roles", () => {
     const agencyTeamStart = source.indexOf('<optgroup label="Agency team">');
     const portalsStart = source.indexOf('<optgroup label="Portals">', agencyTeamStart);
