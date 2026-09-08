@@ -58,6 +58,12 @@ export function settlementAmountBasisReviewSql(alias: string): string {
       )
       OR (
         COALESCE(${alias}.period_end, 'infinity'::date) > (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date
+        AND NOT COALESCE((
+          COALESCE(${alias}.calculation_metadata->>'amountBasis', '') = 'monthly'
+          AND ${alias}.calculation_metadata->>'monthDivisor' = '1'
+          AND ${alias}.period_begin = date_trunc('month', ${alias}.period_begin)::date
+          AND ${alias}.period_end = (${alias}.period_begin + interval '1 month')::date
+        ), false)
         AND EXISTS (
           SELECT 1 FROM calculation_strategies basis_source
            WHERE basis_source.id = ${alias}.calculation_strategy_id

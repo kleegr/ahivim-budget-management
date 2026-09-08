@@ -172,10 +172,13 @@ test("Owner Home, Masser, and Agency Financials reconcile to the same seeded fac
   const individualRow = main.getByRole("row").filter({ hasText: "Linked Individual" });
   await expect(individualRow).toContainText("2 approved setups");
   await expect(individualRow).toContainText("$260.00");
-  // The approved monthly finals do not authorize converting divisor-12 plans
-  // into period balances. Keep those totals while requiring basis review.
-  await expect(individualRow.getByText("Source review required", { exact: true })).toBeVisible();
-  await expect(individualRow.getByRole("link", { name: "Record set-aside" })).toHaveCount(0);
+  // The Owner confirmed these finals are monthly. The new $260 monthly item
+  // is actionable while the unchanged historical annual balance remains held.
+  await expect(individualRow).toContainText("Historical balances remain on hold; excluded from this month.");
+  await expect(individualRow.getByText("Ready", { exact: true })).toBeVisible();
+  await expect(individualRow.getByRole("cell").nth(3)).toHaveText("$260.00");
+  await expect(individualRow.getByRole("link", { name: "Record set-aside", exact: true }))
+    .toHaveAttribute("href", `/settlements?individualId=${LINKED_INDIVIDUAL_ID}&queue=reserve`);
 
   main = await openReady(page, "/reports/agency-financials?month=2026-09", /^Agency financials$/i);
   await expectMetric(main, "Actual income", "$500.00");

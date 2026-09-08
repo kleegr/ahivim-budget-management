@@ -150,6 +150,7 @@ export interface EmployeeCollectionMonthRow {
 }
 
 export interface IndividualSetAsideMonthRow {
+  historicalReviewRequiredPlans?: number;
   expectedBalancePlans?: number;
   missingBalanceRenewalPlans?: number;
   individualId: string;
@@ -191,6 +192,7 @@ export interface CollectionsWorkspaceData {
 }
 
 export interface IndividualMasserStatementData {
+  historicalReviewRequiredPlans?: number;
   expectedBalancePlans?: number;
   missingBalanceRenewalPlans?: number;
   individualId: string;
@@ -478,6 +480,7 @@ export async function getCollectionsWorkspace(
   const employeeScope = employeeFinancialClause(scope, "o.employee_id", employeeParams);
   const individualParams: unknown[] = [month];
   const individualScope = individualFinancialClause(scope, "i.id", individualParams);
+  const reviewedIndividualScope = individualScope.replaceAll("i.id", "review_source.individual_id");
 
   const [employeeResult, individualResult, targets, payrollChecks, employeeOptions, payrollCheckCounts, freshness] = await Promise.all([
     pool.query<{
@@ -530,11 +533,18 @@ export async function getCollectionsWorkspace(
       individual_id: string; individual_name: string; approved_monthly_plan: string;
       set_aside_this_month: string; remaining_set_aside: string; active_plans: string;
       tracked_plans: string; actionable_plans: string; review_required_plans: string; missing_renewal_plans: string;
-      expected_balance_plans?: string; missing_balance_renewal_plans?: string;
+      expected_balance_plans?: string; missing_balance_renewal_plans?: string; historical_review_required_plans?: string;
     }>(
-       `WITH ${effectiveStrategyPlansCtes("$1")}, plan_candidates AS (
+       `WITH ${effectiveStrategyPlansCtes("$1")}, reviewed_obligations AS MATERIALIZED (
+          SELECT review_source.id, ${settlementSourceReviewSql("review_source")} AS review_required
+            FROM settlement_obligations review_source
+           WHERE review_source.individual_id IS NOT NULL${reviewedIndividualScope}
+        ), plan_candidates AS (
           SELECT o.individual_id, o.calculation_strategy_id, o.period_begin, o.period_end,
-                 max(o.created_at) AS latest_root_at
+                 max(o.created_at) AS latest_root_at,
+                 max(CASE WHEN o.calculation_metadata->>'amountBasis' = 'monthly'
+                   AND o.period_begin = requested.month_start
+                   AND o.period_end = requested.month_end_exclusive THEN 1 ELSE 0 END) AS monthly_priority
             FROM settlement_obligations o
             CROSS JOIN requested
            WHERE o.individual_id IS NOT NULL
@@ -548,10 +558,10 @@ export async function getCollectionsWorkspace(
            GROUP BY o.individual_id, o.calculation_strategy_id, o.period_begin, o.period_end
         ), selected_plans AS (
           SELECT DISTINCT ON (individual_id, calculation_strategy_id)
-                 individual_id, calculation_strategy_id, period_begin, period_end
+                 individual_id, calculation_strategy_id, period_begin, period_end, monthly_priority
             FROM plan_candidates
            ORDER BY individual_id, calculation_strategy_id DESC NULLS LAST,
-                    period_begin DESC, period_end DESC, latest_root_at DESC
+                    monthly_priority DESC, period_begin DESC, period_end DESC, latest_root_at DESC
         ), roots AS (
           SELECT o.*,
                  COALESCE(latest.calculation_metadata->>'recalculatedDirection', o.direction) AS current_direction,
@@ -562,6 +572,7 @@ export async function getCollectionsWorkspace(
              AND selected.calculation_strategy_id IS NOT DISTINCT FROM o.calculation_strategy_id
              AND selected.period_begin = o.period_begin
              AND selected.period_end = o.period_end
+            AND (selected.monthly_priority = 0 OR o.calculation_metadata->>'amountBasis' = 'monthly')
             LEFT JOIN LATERAL (
              SELECT correction.calculation_metadata
                FROM settlement_obligations correction
@@ -591,14 +602,15 @@ export async function getCollectionsWorkspace(
        ), obligation_balances AS (
          SELECT COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) AS root_key,
                 o.direction,
-                ${settlementSourceReviewSql("o")} AS review_required,
+                COALESCE(review.review_required, true) AS review_required,
                 o.original_amount - COALESCE(sum(se.amount), 0) AS balance
            FROM settlement_obligations o
+           LEFT JOIN reviewed_obligations review ON review.id = o.id
            JOIN roots root
              ON COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) = root.id::text
            LEFT JOIN settlement_events se ON se.settlement_obligation_id = o.id
           WHERE o.status = 'active'
-          GROUP BY o.id
+          GROUP BY o.id, review.review_required
        ), current_balances AS (
          SELECT r.individual_id, r.id,
                 r.current_direction,
@@ -633,7 +645,24 @@ export async function getCollectionsWorkspace(
               COALESCE(ledger.tracked_plans, 0)::text AS tracked_plans,
               COALESCE(ledger.actionable_plans, 0)::text AS actionable_plans,
               COALESCE(ledger.review_required_plans, 0)::text AS review_required_plans,
-              COALESCE(plan.missing_renewal_plans, 0)::text AS missing_renewal_plans
+              COALESCE(plan.missing_renewal_plans, 0)::text AS missing_renewal_plans,
+              COALESCE((
+                SELECT count(DISTINCT COALESCE(historical.calculation_strategy_id::text, historical.id::text))
+                  FROM settlement_obligations historical
+                 WHERE historical.individual_id = i.id
+                   AND historical.status = 'active'
+                   AND historical.calculation_metadata->>'flow' = 'individual_plan'
+                   AND (historical.period_begin IS NULL OR historical.period_begin <= (SELECT month_end FROM requested))
+                   AND NOT (historical.calculation_metadata ? 'adjustmentForObligationId')
+                   AND NOT EXISTS (SELECT 1 FROM roots selected_root WHERE selected_root.id = historical.id)
+                   AND (COALESCE((SELECT review_required FROM reviewed_obligations review WHERE review.id = historical.id), true)
+                     OR EXISTS (
+                       SELECT 1 FROM settlement_obligations correction
+                        WHERE correction.status = 'active'
+                          AND correction.calculation_metadata->>'adjustmentForObligationId' = historical.id::text
+                          AND COALESCE((SELECT review_required FROM reviewed_obligations review WHERE review.id = correction.id), true)
+                     ))
+              ), 0)::text AS historical_review_required_plans
          FROM individuals i
          LEFT JOIN strategy_plans plan ON plan.individual_id = i.id
          LEFT JOIN event_totals ev ON ev.individual_id = i.id
@@ -678,6 +707,7 @@ export async function getCollectionsWorkspace(
     ...(row.missing_balance_renewal_plans === undefined ? {} : { missingBalanceRenewalPlans: Number(row.missing_balance_renewal_plans) }),
     individualId: row.individual_id,
     individualName: row.individual_name,
+    historicalReviewRequiredPlans: Number(row.historical_review_required_plans ?? 0),
     approvedMonthlyPlan: toMoney(row.approved_monthly_plan),
     setAsideThisMonth: toMoney(row.set_aside_this_month),
     remainingSetAside: toMoney(row.remaining_set_aside),
@@ -740,9 +770,13 @@ export async function getIndividualMasserStatement(
       actionable_plans: string; review_required_plans: string;
       missing_renewal_plans: string; recorded_reserve: string;
       remaining_reserve: string; available_credit: string;
-      expected_balance_plans?: string; missing_balance_renewal_plans?: string;
+      expected_balance_plans?: string; missing_balance_renewal_plans?: string; historical_review_required_plans?: string;
     }>(
-      `WITH ${effectiveStrategyPlansCtes("$2")}, strategy_plan AS (
+      `WITH ${effectiveStrategyPlansCtes("$2")}, reviewed_obligations AS MATERIALIZED (
+          SELECT review_source.id, ${settlementSourceReviewSql("review_source")} AS review_required
+            FROM settlement_obligations review_source
+           WHERE review_source.individual_id = $1
+        ), strategy_plan AS (
          SELECT COALESCE(max(plan.approved_monthly_plan), 0) AS approved_monthly_plan,
                 COALESCE(max(plan.active_plans), 0) AS active_plans,
                 COALESCE(max(plan.expected_balance_plans), 0) AS expected_balance_plans,
@@ -752,7 +786,10 @@ export async function getIndividualMasserStatement(
           WHERE plan.individual_id = $1
        ), plan_candidates AS (
          SELECT o.calculation_strategy_id, o.period_begin, o.period_end,
-                max(o.created_at) AS latest_root_at
+                max(o.created_at) AS latest_root_at,
+                 max(CASE WHEN o.calculation_metadata->>'amountBasis' = 'monthly'
+                   AND o.period_begin = requested.month_start
+                   AND o.period_end = requested.month_end_exclusive THEN 1 ELSE 0 END) AS monthly_priority
            FROM settlement_obligations o
            CROSS JOIN requested
           WHERE o.individual_id = $1
@@ -766,10 +803,10 @@ export async function getIndividualMasserStatement(
           GROUP BY o.calculation_strategy_id, o.period_begin, o.period_end
        ), selected_plans AS (
          SELECT DISTINCT ON (calculation_strategy_id)
-                calculation_strategy_id, period_begin, period_end
+                calculation_strategy_id, period_begin, period_end, monthly_priority
            FROM plan_candidates
           ORDER BY calculation_strategy_id DESC NULLS LAST,
-                   period_begin DESC, period_end DESC, latest_root_at DESC
+                   monthly_priority DESC, period_begin DESC, period_end DESC, latest_root_at DESC
        ), roots AS (
          SELECT o.*,
                 COALESCE(latest.calculation_metadata->>'recalculatedDirection', o.direction) AS current_direction,
@@ -779,6 +816,7 @@ export async function getIndividualMasserStatement(
              ON selected.calculation_strategy_id IS NOT DISTINCT FROM o.calculation_strategy_id
             AND selected.period_begin = o.period_begin
             AND selected.period_end = o.period_end
+            AND (selected.monthly_priority = 0 OR o.calculation_metadata->>'amountBasis' = 'monthly')
            LEFT JOIN LATERAL (
              SELECT correction.calculation_metadata
                FROM settlement_obligations correction
@@ -794,14 +832,15 @@ export async function getIndividualMasserStatement(
        ), obligation_balances AS (
          SELECT COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) AS root_key,
                 o.direction,
-                ${settlementSourceReviewSql("o")} AS review_required,
+                COALESCE(review.review_required, true) AS review_required,
                 o.original_amount - COALESCE(sum(event.amount), 0) AS balance
            FROM settlement_obligations o
+           LEFT JOIN reviewed_obligations review ON review.id = o.id
            JOIN roots root
              ON COALESCE(o.calculation_metadata->>'adjustmentForObligationId', o.id::text) = root.id::text
            LEFT JOIN settlement_events event ON event.settlement_obligation_id = o.id
           WHERE o.status = 'active'
-          GROUP BY o.id
+          GROUP BY o.id, review.review_required
        ), current_balances AS (
          SELECT root.id, root.current_direction,
                 bool_or(entry.review_required) AS review_required,
@@ -817,7 +856,24 @@ export async function getIndividualMasserStatement(
                   FILTER (WHERE balance.review_required) AS review_required_plans
            FROM roots root JOIN current_balances balance ON balance.id = root.id
        )
-       SELECT strategy_plan.approved_monthly_plan::text AS approved_monthly_plan,
+       SELECT COALESCE((
+                SELECT count(DISTINCT COALESCE(historical.calculation_strategy_id::text, historical.id::text))
+                  FROM settlement_obligations historical
+                 WHERE historical.individual_id = $1
+                   AND historical.status = 'active'
+                   AND historical.calculation_metadata->>'flow' = 'individual_plan'
+                   AND (historical.period_begin IS NULL OR historical.period_begin <= (SELECT month_end FROM requested))
+                   AND NOT (historical.calculation_metadata ? 'adjustmentForObligationId')
+                   AND NOT EXISTS (SELECT 1 FROM roots selected_root WHERE selected_root.id = historical.id)
+                   AND (COALESCE((SELECT review_required FROM reviewed_obligations review WHERE review.id = historical.id), true)
+                     OR EXISTS (
+                       SELECT 1 FROM settlement_obligations correction
+                        WHERE correction.status = 'active'
+                          AND correction.calculation_metadata->>'adjustmentForObligationId' = historical.id::text
+                          AND COALESCE((SELECT review_required FROM reviewed_obligations review WHERE review.id = correction.id), true)
+                     ))
+              ), 0)::text AS historical_review_required_plans,
+              strategy_plan.approved_monthly_plan::text AS approved_monthly_plan,
               strategy_plan.active_plans::text AS active_plans,
               strategy_plan.expected_balance_plans::text AS expected_balance_plans,
               strategy_plan.missing_balance_renewal_plans::text AS missing_balance_renewal_plans,
@@ -851,13 +907,17 @@ export async function getIndividualMasserStatement(
     ),
     pool.query<{ month: string; set_aside: string; corrections: string; reversals: string }>(
       `WITH requested AS (
-         SELECT (month_start + interval '1 month' - interval '1 day')::date AS month_end
+         SELECT month_start, (month_start + interval '1 month')::date AS month_end_exclusive,
+                (month_start + interval '1 month' - interval '1 day')::date AS month_end
            FROM (
              SELECT make_date(split_part($2, '-', 1)::int, split_part($2, '-', 2)::int, 1) AS month_start
            ) value
        ), plan_candidates AS (
          SELECT obligation.calculation_strategy_id, obligation.period_begin, obligation.period_end,
-                max(obligation.created_at) AS latest_root_at
+                max(obligation.created_at) AS latest_root_at,
+                max(CASE WHEN obligation.calculation_metadata->>'amountBasis' = 'monthly'
+                  AND obligation.period_begin = requested.month_start
+                  AND obligation.period_end = requested.month_end_exclusive THEN 1 ELSE 0 END) AS monthly_priority
            FROM settlement_obligations obligation
            CROSS JOIN requested
           WHERE obligation.individual_id = $1
@@ -871,10 +931,10 @@ export async function getIndividualMasserStatement(
           GROUP BY obligation.calculation_strategy_id, obligation.period_begin, obligation.period_end
        ), selected_plans AS (
          SELECT DISTINCT ON (calculation_strategy_id)
-                calculation_strategy_id, period_begin, period_end
+                calculation_strategy_id, period_begin, period_end, monthly_priority
            FROM plan_candidates
           ORDER BY calculation_strategy_id DESC NULLS LAST,
-                   period_begin DESC, period_end DESC, latest_root_at DESC
+                   monthly_priority DESC, period_begin DESC, period_end DESC, latest_root_at DESC
        ), roots AS (
          SELECT obligation.id
            FROM settlement_obligations obligation
@@ -882,6 +942,7 @@ export async function getIndividualMasserStatement(
              ON selected.calculation_strategy_id IS NOT DISTINCT FROM obligation.calculation_strategy_id
             AND selected.period_begin = obligation.period_begin
             AND selected.period_end = obligation.period_end
+            AND (selected.monthly_priority = 0 OR obligation.calculation_metadata->>'amountBasis' = 'monthly')
           WHERE obligation.individual_id = $1
             AND obligation.status = 'active'
             AND obligation.calculation_metadata->>'flow' = 'individual_plan'
@@ -913,6 +974,7 @@ export async function getIndividualMasserStatement(
     ...(plan?.missing_balance_renewal_plans === undefined ? {} : { missingBalanceRenewalPlans: Number(plan.missing_balance_renewal_plans) }),
     individualId,
     individualName: person.rows[0].display_name,
+    historicalReviewRequiredPlans: Number(plan?.historical_review_required_plans ?? 0),
     setupHistoryAvailable: month >= FIRST_RELIABLE_MASSER_SETUP_MONTH,
     ledgerDirty: freshness.dirty,
     approvedMonthlyPlan: toMoney(plan?.approved_monthly_plan ?? 0),

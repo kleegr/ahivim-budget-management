@@ -42,6 +42,7 @@ describe("individual Masser statement", () => {
     )).resolves.toEqual({
       individualId: INDIVIDUAL_ID,
       individualName: "Example Individual",
+      historicalReviewRequiredPlans: 0,
       setupHistoryAvailable: true,
       ledgerDirty: true,
       approvedMonthlyPlan: "1200.0000",
@@ -113,6 +114,7 @@ describe("individual Masser statement", () => {
     expect(workspace.individualSetAsides).toEqual([{
       individualId: INDIVIDUAL_ID,
       individualName: "Example Individual",
+      historicalReviewRequiredPlans: 0,
       approvedMonthlyPlan: "33930.0000",
       setAsideThisMonth: "1200.0000",
       remainingSetAside: "850.0000",

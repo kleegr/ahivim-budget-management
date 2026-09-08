@@ -224,6 +224,7 @@ function calculationForClient(
     "billedAmount", "baseAmount", "agencySpread", "agencyCut", "employeePayable", "agencyKeepsTotal",
     "reconciles", "netValueCount", "targetLabel", "strategyLabel", "strategyRevisionCount", "account", "formula",
     "monthlyAmount", "yearlyGross", "plannedHours", "actualHours", "actualInternal",
+    "amountBasis", "calculationMonthDivisor", "planPeriodStart", "planPeriodEnd",
     "utilizationPercent", "timeElapsedPercent", "paceStatus", "adjustmentAmount",
     "priorOriginalAmount", "recalculatedOriginalAmount", "previouslyAppliedAmount",
   ];

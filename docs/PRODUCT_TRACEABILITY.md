@@ -30,6 +30,12 @@ entire operating system or unresolved financial agreements. Passing focused
 tests is implementation evidence, not production evidence. Database-backed
 suites that skip without `TEST_DATABASE_URL` do not count as database validation.
 
+## Owner scope clarification — 2026-09-08 continuation
+
+The Owner confirmed that After All is a monthly put-away amount. First and second cuts are explanatory and must not become additional obligations. Current-month obligations use distinct monthly source keys and the exact approved monthly amount, with no inferred historical backfill. Historical obligations retain their original rows and remain held where their meaning is unknown. Missing financial renewal dates will be entered manually by the Owner; saving the source and refreshing must unlock a valid monthly item without depending on unrelated historical holds.
+
+Advanced PDF editing and native source-text reflow are **Deferred by Owner** and are outside this delivery's completion criteria. Ordinary documents, permissions, invoice and cover generation, editable saves and version history remain in scope. Sheets remain permanently inbound-only.
+
 ## Production Acceptance Log
 
 ### 2026-09-08 - Integrated final delivery candidate

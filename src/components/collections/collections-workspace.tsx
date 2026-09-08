@@ -450,7 +450,7 @@ export default function CollectionsWorkspace({
       ) : null}
       {reviewRequiredPlans > 0 ? (
         <Notice tone="warning" title="Source review required">
-          {reviewRequiredPlans.toLocaleString()} {reviewRequiredPlans === 1 ? "plan has" : "plans have"} balances on hold. Those balances are excluded from ledger remaining. Review their source and monthly or full-period amount basis; approved monthly amounts and recorded history remain visible.
+          {reviewRequiredPlans.toLocaleString()} {reviewRequiredPlans === 1 ? "plan has" : "plans have"} balances on hold. Review the original meaning of historical balances. New put-away items use the approved monthly final; recorded history remains visible.
         </Notice>
       ) : null}
       {!data.setupHistoryAvailable ? (
@@ -528,6 +528,7 @@ export default function CollectionsWorkspace({
                             <p className="text-xs text-[var(--color-ink-faint)]">
                               {row.activePlans.toLocaleString()} approved {row.activePlans === 1 ? "setup" : "setups"}
                             </p>
+                            {(row.historicalReviewRequiredPlans ?? 0) > 0 ? <p className="text-xs text-[var(--color-warn)]">Historical balances remain on hold; excluded from this month.</p> : null}
                           </td>
                           <td className="tnum px-3 py-3 text-right">{data.setupHistoryAvailable ? formatMoney(row.approvedMonthlyPlan) : <span className="text-[var(--color-warn)]">Unavailable</span>}</td>
                           <td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.setAsideThisMonth)}</td>
@@ -555,8 +556,10 @@ export default function CollectionsWorkspace({
                           </td>
                           <td className="px-3 py-3">
                             <div className="flex justify-end gap-1">
+                              {canManageFinancialPlans && (row.missingBalanceRenewalPlans ?? row.missingRenewalPlans) > 0 && (data.ledgerDirty || row.reviewRequiredPlans > 0) ? <Link className="btn btn-sm btn-secondary whitespace-nowrap" href={`/individuals/${row.individualId}?view=financial`}>Add renewal date</Link> : null}
                               {canManage && !data.ledgerDirty && row.actionablePlans > 0 && Number(row.remainingSetAside) > 0 ? <Link className="btn btn-sm btn-secondary whitespace-nowrap" href={`/settlements?individualId=${row.individualId}&queue=reserve`}>Record set-aside</Link> : null}
                               {row.reviewRequiredPlans > 0 && canManageFinancialPlans ? <Link className="btn btn-sm btn-secondary whitespace-nowrap" href={`/individuals/${row.individualId}?view=financial`}>Review Financial Setup</Link> : null}
+                              {(row.historicalReviewRequiredPlans ?? 0) > 0 ? <Link className="btn btn-sm btn-ghost whitespace-nowrap" href={`/settlements?individualId=${row.individualId}`}>Review historical holds</Link> : null}
                               <a className="btn btn-sm btn-ghost whitespace-nowrap" href={`/masser/individuals/${row.individualId}?month=${data.month}`}>View statement</a>
                             </div>
                           </td>

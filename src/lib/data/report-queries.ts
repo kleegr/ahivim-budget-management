@@ -158,7 +158,7 @@ export async function individualPutAwayReport(
           && workspace.setupHistoryAvailable
           && row.missingRenewalPlans === 0
         ) return false;
-        if (opts.status === "review-required" && row.reviewRequiredPlans === 0) return false;
+        if (opts.status === "review-required" && row.reviewRequiredPlans === 0 && (row.historicalReviewRequiredPlans ?? 0) === 0) return false;
         if (opts.status === "complete" && (balance.unavailable || balance.incomplete || !dec(row.remainingSetAside).eq(0))) return false;
         return true;
       })
@@ -1792,6 +1792,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
           { key: "activePlans", header: "Active plans", type: "int" },
           { key: "trackedPlans", header: "Tracked plans", type: "int" },
           { key: "reviewRequiredPlans", header: "Plans on source review", type: "int" },
+          { key: "historicalReviewRequiredPlans", header: "Historical plans on hold", type: "int" },
           { key: "balanceStatus", header: "Balance review", type: "text" },
           { key: "missingRenewalPlans", header: "Missing renewals", type: "int" },
           { key: "statementSource", header: "Source statement", type: "text" },
@@ -1806,6 +1807,7 @@ export const REPORTS: Record<string, ReportDefinition> = {
           activePlans: row.activePlans,
           trackedPlans: row.trackedPlans,
           reviewRequiredPlans: row.reviewRequiredPlans,
+          historicalReviewRequiredPlans: row.historicalReviewRequiredPlans ?? 0,
           balanceStatus: row.balanceStatus,
           missingRenewalPlans: row.missingRenewalPlans,
           statementSource: row.individualId,
