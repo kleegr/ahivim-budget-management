@@ -24,8 +24,15 @@ export function hasDocumentStorage(): boolean {
   return Boolean(process.env.BLOB_READ_WRITE_TOKEN?.trim());
 }
 
+/** Keep server reads/writes in the same store as signed browser uploads. */
+export function privateDocumentStorageToken(): string {
+  const token = process.env.BLOB_READ_WRITE_TOKEN?.trim();
+  if (!token) throw new Error("Private document storage is not configured.");
+  return token;
+}
+
 export async function inspectPrivateDocumentBlob(pathname: string): Promise<DocumentBlobMetadata> {
-  const blob = await head(pathname);
+  const blob = await head(pathname, { token: privateDocumentStorageToken() });
   return {
     pathname: blob.pathname,
     etag: blob.etag,
@@ -36,19 +43,21 @@ export async function inspectPrivateDocumentBlob(pathname: string): Promise<Docu
 
 export async function readPrivateDocumentBlob(pathname: string, ifNoneMatch?: string | null) {
   return get(pathname, {
+    token: privateDocumentStorageToken(),
     access: "private",
     ifNoneMatch: ifNoneMatch || undefined,
   });
 }
 
 export async function deletePrivateDocumentBlob(pathname: string): Promise<void> {
-  await del(pathname);
+  await del(pathname, { token: privateDocumentStorageToken() });
 }
 
 /** Server-created immutable publication artifact, never a client upload path. */
 export async function writePrivateDocumentPublication(pathname: string, bytes: Uint8Array): Promise<void> {
   if (!/^documents\/[0-9a-f-]{36}\/publications\/[0-9a-f-]{36}\.pdf$/i.test(pathname)) throw new Error("Invalid publication path.");
   await put(pathname, Buffer.from(bytes), {
+    token: privateDocumentStorageToken(),
     access: "private", contentType: "application/pdf", addRandomSuffix: false, allowOverwrite: false,
   });
 }

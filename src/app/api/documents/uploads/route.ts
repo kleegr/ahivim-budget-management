@@ -4,6 +4,7 @@ import { apiDocumentEditorUser } from "@/lib/auth/document-access";
 import {
   hasDocumentStorage,
   inspectPrivateDocumentBlob,
+  privateDocumentStorageToken,
 } from "@/lib/documents/document-storage";
 import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
 import type { PgLikePool } from "@/lib/import/commit";
@@ -35,6 +36,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const response = await handleUpload({
+      token: privateDocumentStorageToken(),
       request,
       body,
       onBeforeGenerateToken: async (pathname, clientPayload) => {
