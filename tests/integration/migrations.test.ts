@@ -52,11 +52,11 @@ suite("migration runner (real PostgreSQL)", () => {
       "employee_payroll_checks", "employee_direct_pay_targets",
       "employee_weekly_availability", "employee_unavailability",
       "documents", "document_blobs", "document_versions", "document_drafts",
-      "document_upload_intents",
+      "document_upload_intents", "document_publications",
     ]) {
       expect(tables, `missing table ${table}`).toContain(table);
     }
-    expect(tables.length).toBe(74);
+    expect(tables.length).toBe(75);
   });
 
   it("is idempotent: a second run applies nothing and skips everything", async () => {
@@ -117,6 +117,8 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[43].name).toBe("0043_verified_payroll_check_invariant.sql");
     expect(rows[44].name).toBe("0044_confirmed_group_budget_hours.sql");
     expect(rows[45].name).toBe("0045_settlement_source_review.sql");
+    expect(rows[46].name).toBe("0046_document_access_context.sql");
+    expect(rows[47].name).toBe("0047_user_session_version.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 

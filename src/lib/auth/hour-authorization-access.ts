@@ -39,7 +39,9 @@ export async function getHourAuthorizationOperator(): Promise<HourAuthorizationO
   const pool = getPool() as unknown as PgLikePool;
   try {
     const scope = await resolveAccessScope(pool, user);
-    if (user.role !== "viewer") return { user, scope, pool, mode: "full" };
+    if (scope.full && (scope.role === "admin" || scope.role === "manager")) {
+      return { user, scope, pool, mode: "full" };
+    }
     if (!canManageHourAuthorizations(scope)) return null;
     return { user, scope, pool, mode: "hours_only" };
   } catch {
@@ -90,6 +92,7 @@ export async function canCreateHourAuthorization(
        JOIN programs program ON program.id = $2
       WHERE period.id = $1
         AND period.status = 'active'
+        AND period.archived_at IS NULL
         AND program.is_active = true
         AND program.code <> 'CLASSES'
         AND program.required_auth_type = 'hours'
@@ -112,7 +115,13 @@ export async function canChangeHourAuthorization(
     `SELECT budget_auth.individual_id
        FROM budget_authorizations budget_auth
        JOIN programs program ON program.id = budget_auth.program_id
+       JOIN budget_periods period ON period.id = budget_auth.budget_period_id
       WHERE budget_auth.id = $1
+        AND budget_auth.status = 'active'
+        AND budget_auth.archived_at IS NULL
+        AND period.status = 'active'
+        AND period.archived_at IS NULL
+        AND program.is_active = true
         AND program.code <> 'CLASSES'
         AND program.required_auth_type = 'hours'
       LIMIT 1`,
@@ -134,7 +143,7 @@ export async function canChangeHourBudgetPeriod(
   const { rows } = await pool.query<{ individual_id: string; allowed: boolean }>(
     `SELECT period.individual_id,
             count(budget_auth.id) > 0
-            AND bool_and(program.code <> 'CLASSES' AND program.required_auth_type = 'hours') AS allowed
+            AND bool_and(program.is_active AND program.code <> 'CLASSES' AND program.required_auth_type = 'hours') AS allowed
        FROM budget_periods period
        JOIN budget_authorizations budget_auth
          ON budget_auth.budget_period_id = period.id
@@ -163,5 +172,10 @@ export function redactHourAuthorizationResult<T extends object>(data: T): T {
     internalRate: null,
     agencyRate: null,
     individualRateOverride: null,
+    // Historical free-form notes and import references are not classified as
+    // operational. Revising only hours must not echo their private contents.
+    notes: null,
+    source: null,
+    sourceRowRef: null,
   } as unknown as T;
 }

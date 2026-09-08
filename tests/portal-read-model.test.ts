@@ -483,7 +483,7 @@ describe("portal-safe home read model", () => {
     expect(agencyFinancialSql).toBeDefined();
 
     for (const sql of [memberCheckSql!, agencyFinancialSql!]) {
-      expect(sql).toContain("count(DISTINCT candidate_membership.agency_id)");
+      expect(sql).not.toContain("count(DISTINCT candidate_membership.agency_id)");
       expect(sql).toContain("SELECT count(*) > 0");
       expect(sql).toContain("source_transaction.payroll_check_id = checks.id");
       expect(sql).toContain("bool_and(");

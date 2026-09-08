@@ -61,32 +61,37 @@ export function settlementAmountBasisReviewSql(alias: string): string {
 /** Read original provenance without treating a prior persisted hold as new evidence. */
 export function settlementIndividualSourceReviewSql(alias: string): string {
   assertAlias(alias);
-  return `EXISTS (
-      WITH RECURSIVE source_ancestors AS (
-        SELECT ${alias}.id, ${alias}.kind, ${alias}.calculation_metadata,
-               ${alias}.period_end, ${alias}.calculation_strategy_id, ${alias}.individual_id, ${alias}.original_amount
-        UNION
-        SELECT parent.id, parent.kind, parent.calculation_metadata,
-               parent.period_end, parent.calculation_strategy_id, parent.individual_id, parent.original_amount
-          FROM settlement_obligations parent
-          JOIN source_ancestors child
-            ON parent.id::text = child.calculation_metadata->>'adjustmentForObligationId'
-      )
-      SELECT 1 FROM source_ancestors ancestor
-       WHERE ${settlementLegacyIndividualKindSql("ancestor")}
-          OR ${settlementAmountBasisReviewSql("ancestor")}
-          OR (
-            ${alias}.kind ~ '^individual_masser(_correction)*$'
-            AND NOT EXISTS (
-              SELECT 1 FROM source_ancestors terminal_source
-               WHERE NOT EXISTS (
+  // Evaluate source facts once per statement, then traverse the compact lineage.
+  // A correlated recursive query repeats all basis checks per displayed row and
+  // inflates planner cost enough to trigger expensive JIT on small ledgers.
+  return `${alias}.id IN (
+      WITH RECURSIVE source_facts AS MATERIALIZED (
+        SELECT fact.id,
+               fact.calculation_metadata->>'adjustmentForObligationId' AS parent_id,
+               fact.kind ~ '^individual_masser(_correction)*$' AS requires_terminal,
+               (${settlementLegacyIndividualKindSql("fact")} OR ${settlementAmountBasisReviewSql("fact")}) AS needs_review,
+               NOT EXISTS (
                  SELECT 1 FROM settlement_obligations terminal_parent
-                  WHERE terminal_parent.id::text = terminal_source.calculation_metadata->>'adjustmentForObligationId'
-                    AND terminal_parent.id <> terminal_source.id
-                    AND terminal_parent.individual_id = terminal_source.individual_id
-               )
-            )
-          )
+                  WHERE terminal_parent.id::text = fact.calculation_metadata->>'adjustmentForObligationId'
+                    AND terminal_parent.id <> fact.id
+                    AND terminal_parent.individual_id = fact.individual_id
+               ) AS is_terminal
+          FROM settlement_obligations fact
+      ), source_ancestors AS (
+        SELECT fact.id AS obligation_id, fact.requires_terminal,
+               fact.id, fact.parent_id, fact.needs_review, fact.is_terminal
+          FROM source_facts fact
+        UNION
+        SELECT child.obligation_id, child.requires_terminal,
+               parent.id, parent.parent_id, parent.needs_review, parent.is_terminal
+          FROM source_facts parent
+          JOIN source_ancestors child
+            ON parent.id::text = child.parent_id
+      )
+      SELECT ancestor.obligation_id FROM source_ancestors ancestor
+       GROUP BY ancestor.obligation_id
+       HAVING bool_or(ancestor.needs_review)
+          OR (bool_or(ancestor.requires_terminal) AND NOT bool_or(ancestor.is_terminal))
     )`;
 }
 

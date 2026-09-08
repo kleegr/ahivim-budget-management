@@ -1,5 +1,11 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+import DocumentLibrary from "@/components/documents/document-library";
+import DocumentViewerWorkspace from "@/components/documents/document-viewer-workspace";
+
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 const accessEditor = readFileSync("src/components/settings/user-access-admin.tsx", "utf8");
 const documentLibrary = readFileSync("src/components/documents/document-library.tsx", "utf8");
@@ -22,11 +28,14 @@ describe("permission granularity UI", () => {
   });
 
   it("keeps the document library useful and truthful for a read-only account", () => {
-    expect(documentLibrary).toContain("DocumentLibrary({ canEdit }");
-    expect(documentLibrary).toContain("View saved PDFs, download copies, and browse recoverable history.");
-    expect(documentLibrary).toContain("View only");
+    const readOnlyLibrary = renderToStaticMarkup(createElement(DocumentLibrary, { canEdit: false }));
+    expect(readOnlyLibrary).toContain("View only");
+    expect(readOnlyLibrary).toContain("View and download the saved PDFs approved for your account.");
+    expect(readOnlyLibrary).not.toMatch(/Upload PDF|Incomplete|recoverable history|Classify or share/);
+    expect(renderToStaticMarkup(createElement(DocumentLibrary, { canEdit: true }))).toContain("Upload PDF");
     expect(documentLibrary).toContain("canEdit && status === \"active\"");
-    expect(documentViewer).toContain("This account cannot restore or change them.");
+    expect(renderToStaticMarkup(createElement(DocumentViewerWorkspace, { documentId: null }))).toContain("This account has view-only access.");
+    expect(documentViewer).toContain("This is the saved output available to your account.");
     expect(documentViewer).toContain("Download");
     expect(documentViewer).toContain("<iframe");
   });

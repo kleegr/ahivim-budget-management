@@ -9,6 +9,8 @@ const CONNECTED = "00000000-0000-4000-8000-000000000002";
 
 function viewerRow(canSeeMoney: boolean) {
   return {
+    role: "viewer",
+    is_active: true,
     access_scope: "scoped",
     see_all_individuals: false,
     see_all_employees: false,

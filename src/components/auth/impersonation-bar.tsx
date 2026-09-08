@@ -31,7 +31,7 @@ export default function ImpersonationBar({
             className="btn btn-sm border-[#9b6d0a] bg-white text-[#5f4100] hover:bg-[#fff9e8]"
           >
             <RotateCcw aria-hidden className="h-4 w-4" />
-            <span className="hidden sm:inline">Return to owner portal</span>
+            <span className="hidden sm:inline">Return to your portal</span>
             <span className="sm:hidden">Return</span>
           </button>
         </form>

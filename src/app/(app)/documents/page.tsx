@@ -6,5 +6,5 @@ export const metadata = { title: "Documents - Ahivim Budget Management" };
 
 export default async function DocumentsPage() {
   const access = await requireDocumentViewerUser();
-  return <DocumentLibrary canEdit={access.scope.canEditDocuments} />;
+  return <DocumentLibrary canEdit={!access.external && access.scope.canEditDocuments} isOwner={access.user.role === "admin"} />;
 }

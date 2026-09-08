@@ -36,7 +36,7 @@ import TransactionsGrid from "@/components/transactions/transactions-grid";
 import EmployeeMerge from "@/components/employees/employee-merge";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
-import { planningEmployeeProfile } from "@/lib/auth/employee-planning-access";
+import { employeeRecordForAccess } from "@/lib/auth/person-record-access";
 import { agencyDate } from "@/lib/business/agency-time";
 import {
   getEmployeeMoneyProfile,
@@ -249,7 +249,7 @@ export default async function EmployeeDetailPage({
       allowedHours.map((evaluation) => [evaluation.assignmentId, evaluation]),
     );
     return {
-      employee: planningOnly ? planningEmployeeProfile(employee) : employee,
+      employee: employeeRecordForAccess(scope, employee),
       report,
       assignments: activeAssignments.map((assignment) => ({
         ...assignment,

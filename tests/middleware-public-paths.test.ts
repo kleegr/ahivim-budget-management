@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
 import { middleware } from "@/middleware";
+import { cacheControlDirectives } from "./support/cache-control";
 
 describe("middleware public path allowlist", () => {
+  it.each(["/home", "/settings", "/api/admin/users", "/api/auth/impersonation/start", "/api/auth/impersonation/stop", "/signin", "/api/auth/login", "/api/auth/logout"])("prevents caching identity-dependent pages and APIs: %s", (pathname) => {
+    const response = middleware(new NextRequest(`http://localhost${pathname}`, { headers: { cookie: "ahivim_session=signed-cookie" } }));
+    const cacheDirectives = cacheControlDirectives(response.headers.get("cache-control"));
+    expect(cacheDirectives).toEqual(expect.arrayContaining(["private", "no-store", "max-age=0"]));
+    expect(cacheDirectives).not.toContain("public");
+  });
   it.each([
     "/api/health/db",
     "/api/health/env",

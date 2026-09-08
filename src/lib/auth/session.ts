@@ -47,6 +47,7 @@ export const ROLE_LABELS: Record<Role, string> = {
 
 type SessionUser = {
   id: string;
+  sessionVersion?: number;
   role: string;
   displayName: string;
 };
@@ -68,6 +69,7 @@ function sessionPayload(
 ): SessionPayload {
   return {
     userId: user.id,
+    sessionVersion: user.sessionVersion ?? 0,
     role: user.role,
     displayName: user.displayName,
     ...(impersonatorUserId ? { impersonatorUserId } : {}),
@@ -131,6 +133,7 @@ export async function createImpersonationSession(
 
   const payload: ImpersonationPayload = {
     ownerUserId: owner.id,
+    ownerSessionVersion: owner.sessionVersion ?? 0,
     targetUserId: target.id,
     ownerSessionExpiresAt,
     exp,
@@ -154,6 +157,7 @@ export async function restoreOwnerSession(
   const now = Date.now();
   if (
     owner.id !== impersonation.ownerUserId
+    || (owner.sessionVersion ?? 0) !== (impersonation.ownerSessionVersion ?? 0)
     || impersonation.ownerSessionExpiresAt <= now
   ) return false;
 
@@ -173,6 +177,7 @@ export async function restoreOwnerSession(
 
 export interface AuthenticatedUser {
   id: string;
+  sessionVersion?: number;
   /** The signed-in person responsible for writes; differs from id during owner preview. */
   actorId: string;
   email: string;
@@ -190,19 +195,20 @@ export interface CurrentImpersonation {
 export function impersonationAuthorityIsValid(
   impersonation: ImpersonationPayload,
   effectiveSession: SessionPayload,
-  owner: { id: string; role: string; isActive: boolean } | null,
+  owner: { id: string; role: string; isActive: boolean; sessionVersion?: number } | null,
 ): boolean {
   return impersonation.targetUserId === effectiveSession.userId
     && effectiveSession.impersonatorUserId === impersonation.ownerUserId
     && owner?.id === impersonation.ownerUserId
     && owner.isActive
+    && (owner.sessionVersion ?? 0) === (impersonation.ownerSessionVersion ?? 0)
     && owner.role === "admin";
 }
 
 /**
  * Authoritative check. Verifies the cookie signature and expiry, then confirms
- * the account still exists, is still active, and still holds the role the
- * cookie claims. Returns null rather than throwing so callers choose their own
+ * the account still exists, is still active, and has not revoked this session.
+ * Its current database role supersedes the cookie's role. Returns null so callers choose their own
  * failure mode (redirect for pages, status code for APIs).
  */
 async function loadAuthenticationContext(): Promise<{
@@ -221,10 +227,11 @@ async function loadAuthenticationContext(): Promise<{
   } catch {
     return null;
   }
-  if (!record || !record.isActive) return null;
+  if (!record || !record.isActive || (record.sessionVersion ?? 0) !== (session.sessionVersion ?? 0)) return null;
 
   const user: AuthenticatedUser = {
     id: record.id,
+    sessionVersion: record.sessionVersion,
     actorId: record.id,
     email: record.email,
     displayName: record.displayName,
@@ -251,6 +258,7 @@ async function loadAuthenticationContext(): Promise<{
     impersonation: {
       owner: {
         id: ownerRecord.id,
+        sessionVersion: ownerRecord.sessionVersion,
         actorId: ownerRecord.id,
         email: ownerRecord.email,
         displayName: ownerRecord.displayName,

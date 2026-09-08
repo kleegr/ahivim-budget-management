@@ -19,6 +19,7 @@ import {
 import { sql } from "drizzle-orm";
 import {
   budgetAuthorizations,
+  agencies,
   budgetPeriods,
   calculationStrategies,
   createdAt,
@@ -1517,6 +1518,7 @@ export const documents = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     title: text("title").notNull(),
     description: text("description"),
+    accessContext: jsonb("access_context").$type<import("@/lib/auth/document-policy").DocumentAccessContext | null>(),
     category: text("category").default("general").notNull(),
     /** 'uploading' | 'active' | 'archived' */
     status: text("status").default("uploading").notNull(),
@@ -1534,6 +1536,7 @@ export const documents = pgTable(
     index("documents_creator_idx").on(table.createdByUserId, table.updatedAt),
     check("documents_title_check", sql`length(btrim(${table.title})) between 1 and 180`),
     check("documents_category_check", sql`length(btrim(${table.category})) between 1 and 80`),
+    check("documents_access_context_check", sql`${table.accessContext} is null or (jsonb_typeof(${table.accessContext}) = 'object' and ${table.accessContext}->>'kind' in ('owner', 'private', 'classes', 'planning', 'payroll', 'settlements'))`),
     check("documents_status_check", sql`${table.status} in ('uploading', 'active', 'archived')`),
     check(
       "documents_archive_check",
@@ -1722,3 +1725,33 @@ export const documentUploadIntents = pgTable(
     ),
   ],
 );
+
+/** Explicit Owner approval of one sanitized immutable output for one recipient. */
+export const documentPublications = pgTable("document_publications", {
+  documentId: uuid("document_id").notNull().references(() => documents.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  versionId: uuid("version_id").notNull(),
+  title: text("title").notNull(),
+  individualId: uuid("individual_id").references(() => individuals.id),
+  employeeId: uuid("employee_id").references(() => employees.id),
+  agencyId: uuid("agency_id").references(() => agencies.id),
+  scopeDate: date("scope_date"),
+  requiredCapabilities: text("required_capabilities").array().notNull(),
+  sanitizedPathname: text("sanitized_pathname").notNull().unique(),
+  sanitizedByteSize: bigint("sanitized_byte_size", { mode: "number" }).notNull(),
+  sanitizedSha256: text("sanitized_sha256").notNull(),
+  sanitizerVersion: integer("sanitizer_version").notNull(),
+  approvedByUserId: uuid("approved_by_user_id").notNull().references(() => users.id),
+  approvedAt: timestamp("approved_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.documentId, table.userId] }),
+  foreignKey({ columns: [table.documentId, table.versionId], foreignColumns: [documentVersions.documentId, documentVersions.id] }),
+  index("document_publications_user_idx").on(table.userId, table.documentId),
+  check("document_publications_title_check", sql`length(btrim(${table.title})) between 1 and 180`),
+  check("document_publications_categories_check", sql`cardinality(${table.requiredCapabilities}) > 0`),
+  check("document_publications_sanitized_byte_size_check", sql`${table.sanitizedByteSize} > 0 and ${table.sanitizedByteSize} <= 104857600`),
+  check("document_publications_sanitized_sha256_check", sql`${table.sanitizedSha256} ~ '^[0-9a-f]{64}$'`),
+  check("document_publications_sanitizer_version_check", sql`${table.sanitizerVersion} = 1`),
+  check("document_publications_subject_check", sql`num_nonnulls(${table.individualId}, ${table.employeeId}) = 1`),
+  check("document_publications_date_check", sql`(${table.agencyId} is null and ${table.scopeDate} is null) or (${table.agencyId} is not null and ${table.scopeDate} is not null)`),
+]);

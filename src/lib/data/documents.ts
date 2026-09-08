@@ -1,4 +1,6 @@
 import type { PgLikePool } from "@/lib/import/commit";
+import type { AccessScope } from "@/lib/auth/access";
+import { documentSourceWhere, type DocumentAccessContext } from "@/lib/auth/document-policy";
 
 export const DOCUMENT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -27,6 +29,7 @@ export interface DocumentVersionRecord {
 }
 
 export interface DocumentRecord {
+  accessContext: DocumentAccessContext | null;
   id: string;
   title: string;
   description: string | null;
@@ -45,6 +48,7 @@ export interface DocumentRecord {
 }
 
 interface DocumentRow {
+  access_context: DocumentAccessContext | null;
   id: string;
   title: string;
   description: string | null;
@@ -63,7 +67,7 @@ interface DocumentRow {
 }
 
 const DOCUMENT_SELECT = `
-  SELECT d.id, d.title, d.description, d.category, d.status,
+  SELECT d.id, d.title, d.description, d.category, d.status, d.access_context,
          d.original_version_id, d.current_version_id,
          current_version.version_number AS current_version_number,
          current_blob.filename AS current_filename,
@@ -79,6 +83,7 @@ const DOCUMENT_SELECT = `
 
 function toDocument(row: DocumentRow): DocumentRecord {
   return {
+    accessContext: row.access_context ?? null,
     id: row.id,
     title: row.title,
     description: row.description,
@@ -100,9 +105,12 @@ function toDocument(row: DocumentRow): DocumentRecord {
 export async function listDocuments(
   pool: PgLikePool,
   filters: { status?: DocumentStatus | null; query?: string | null; limit?: number } = {},
+  scope?: AccessScope,
 ): Promise<DocumentRecord[]> {
   const params: unknown[] = [];
   const where: string[] = [];
+  // Callers must provide effective access; missing scope never means all files.
+  where.push(scope ? documentSourceWhere(scope, params) : "FALSE");
   if (filters.status) {
     params.push(filters.status);
     where.push(`d.status = $${params.length}`);

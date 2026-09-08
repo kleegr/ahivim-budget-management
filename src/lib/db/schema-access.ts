@@ -53,6 +53,7 @@ export const users = pgTable(
     /** Business-facing preset identity; nullable for pre-preset viewer accounts. */
     accountPreset: text("account_preset"),
     isActive: boolean("is_active").default(true).notNull(),
+    sessionVersion: integer("session_version").default(0).notNull(),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     /** Access scope (mirror of drizzle/0014_user_access_scope.sql). 'full' | 'scoped'. */
     accessScope: text("access_scope").default("full").notNull(),
@@ -90,6 +91,7 @@ export const users = pgTable(
   },
   (table) => [
     uniqueIndex("users_email_key").on(table.email),
+    check("users_session_version_nonnegative", sql`${table.sessionVersion} >= 0`),
     check(
       "users_account_preset_check",
       sql`${table.accountPreset} is null or ${table.accountPreset} in (

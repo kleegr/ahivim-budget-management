@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
-import { resolveAccessScope, canViewEmployee, hasDirectEmployeeAccess, isPlanningOnlyAccess } from "@/lib/auth/access";
-import { planningEmployeeProfile } from "@/lib/auth/employee-planning-access";
+import { resolveAccessScope, canViewEmployee } from "@/lib/auth/access";
+import { employeeRecordForAccess } from "@/lib/auth/person-record-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import {
   getEmployee,
@@ -27,15 +27,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!canViewEmployee(scope, id)) return jsonError("Not found", 404);
     const record = await getEmployee(pool, id);
     if (!record) return jsonError("Not found", 404);
-    if (isPlanningOnlyAccess(scope)) {
-      return NextResponse.json({ ok: true, data: planningEmployeeProfile(record) });
-    }
-    if (scope.canSeeEmployeeDeals && hasDirectEmployeeAccess(scope, id)) {
-      return NextResponse.json({ ok: true, data: record });
-    }
-    const visible = { ...record };
-    Reflect.deleteProperty(visible, "payoutCutPercent");
-    return NextResponse.json({ ok: true, data: visible });
+    return NextResponse.json({ ok: true, data: employeeRecordForAccess(scope, record) });
   } catch (error) {
     return jsonError(redactError(error), 500);
   }

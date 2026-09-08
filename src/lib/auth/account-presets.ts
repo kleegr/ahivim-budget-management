@@ -98,7 +98,7 @@ export const ACCOUNT_PRESETS: readonly AccountPresetDefinition[] = [
   {
     id: "individual_parent",
     label: "Individual or parent",
-    description: "A portal limited to one directly linked individual.",
+    description: "A portal limited to the individuals directly linked to this account.",
     role: "viewer",
     access: PORTAL_ONLY_ACCESS,
     binding: {

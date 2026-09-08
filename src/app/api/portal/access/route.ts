@@ -13,7 +13,9 @@ export async function GET(request: NextRequest) {
     if (!authorized) return jsonError("Authentication required", 401);
     const month = request.nextUrl.searchParams.get("month");
     const data = await getPortalHomeReadModel(authorized.pool, authorized.access, month);
-    return NextResponse.json({ ok: true, data });
+    return NextResponse.json({ ok: true, data }, {
+      headers: { "Cache-Control": "private, no-store", "Vary": "Cookie" },
+    });
   } catch (error) {
     return jsonError(redactError(error, "Could not load portal access."), 500);
   }

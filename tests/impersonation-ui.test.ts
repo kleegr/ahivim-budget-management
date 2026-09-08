@@ -27,7 +27,7 @@ describe("owner view-as interface", () => {
     expect(bar).toContain("Viewing as");
     expect(bar).toContain("- {accountLabel}");
     expect(bar).toContain("flex h-11 items-center");
-    expect(bar).toContain("Return to owner portal");
+    expect(bar).toContain("Return to your portal");
     expect(bar).toContain('action="/api/auth/impersonation/stop"');
   });
 

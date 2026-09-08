@@ -36,6 +36,8 @@ export interface ProvisionUserInput {
   password: string;
   individualId?: string;
   relationship?: string;
+  /** Each direct relationship is validated and committed with the account. */
+  individuals?: unknown;
   employeeId?: string;
   agencyId?: string;
   internalAccess?: unknown;
@@ -136,18 +138,31 @@ export async function provisionUser(
     );
   }
 
-  let individualId: string | null = null;
-  let relationship: IndividualRelationship | null = null;
+  const individualBindings: { individualId: string; relationship: IndividualRelationship }[] = [];
   let employeeId: string | null = null;
   let agencyId: string | null = null;
 
   if (preset.binding.kind === "individual") {
-    individualId = input.individualId?.trim() ?? "";
-    if (!UUID.test(individualId)) return fail("validation", "Choose an individual for this portal.");
-    if (!INDIVIDUAL_RELATIONSHIPS.includes(input.relationship as IndividualRelationship)) {
-      return fail("validation", "Choose how this account is related to the individual.");
+    if (input.individuals !== undefined && (input.individualId !== undefined || input.relationship !== undefined)) {
+      return fail("validation", "Submit one list of individual relationships.");
     }
-    relationship = input.relationship as IndividualRelationship;
+    const requested = input.individuals ?? [{ individualId: input.individualId, relationship: input.relationship }];
+    if (!Array.isArray(requested) || requested.length === 0 || requested.length > 50) {
+      return fail("validation", "Choose between 1 and 50 directly linked individuals.");
+    }
+    for (const binding of requested) {
+      if (!binding || typeof binding !== "object" || Array.isArray(binding)
+        || typeof binding.individualId !== "string" || !UUID.test(binding.individualId)) {
+        return fail("validation", "Choose an individual for each portal relationship.");
+      }
+      if (!INDIVIDUAL_RELATIONSHIPS.includes(binding.relationship as IndividualRelationship)) {
+        return fail("validation", "Choose how this account is related to each individual.");
+      }
+      if (individualBindings.some((existing) => existing.individualId === binding.individualId)) {
+        return fail("validation", "Each individual may be linked only once.");
+      }
+      individualBindings.push({ individualId: binding.individualId, relationship: binding.relationship });
+    }
   } else if (preset.binding.kind === "employee") {
     employeeId = input.employeeId?.trim() ?? "";
     if (!UUID.test(employeeId)) return fail("validation", "Choose an employee for this portal.");
@@ -194,32 +209,34 @@ export async function provisionUser(
         ));
         break;
       case "individual": {
-        const portalRole = relationship === "self" ? "individual" : "parent";
-        abortOnFailure(await setGlobalPortalRoleAssignmentQuery(
-          client,
-          { userId, role: portalRole, isActive: true },
-          actorId,
-          reason,
-        ));
-        const capabilityGrants = [
-          ...new Set([
-            ...preset.binding.defaultCapabilityGrants,
-            ...(requestedGrants ?? []),
-          ]),
-        ].filter((capability) => !capabilityDenials.includes(capability));
-        abortOnFailure(await setIndividualPortalAssignmentQuery(
-          client,
-          {
-            userId,
-            individualId: individualId!,
-            relationship: relationship!,
-            isActive: true,
-            capabilityGrants,
-            capabilityDenials,
-          },
-          actorId,
-          reason,
-        ));
+        for (const { individualId, relationship } of individualBindings) {
+          const portalRole = relationship === "self" ? "individual" : "parent";
+          abortOnFailure(await setGlobalPortalRoleAssignmentQuery(
+            client,
+            { userId, role: portalRole, isActive: true },
+            actorId,
+            reason,
+          ));
+          const capabilityGrants = [
+            ...new Set([
+              ...preset.binding.defaultCapabilityGrants,
+              ...(requestedGrants ?? []),
+            ]),
+          ].filter((capability) => !capabilityDenials.includes(capability));
+          abortOnFailure(await setIndividualPortalAssignmentQuery(
+            client,
+            {
+              userId,
+              individualId,
+              relationship,
+              isActive: true,
+              capabilityGrants,
+              capabilityDenials,
+            },
+            actorId,
+            reason,
+          ));
+        }
         break;
       }
       case "employee":

@@ -18,6 +18,8 @@ import type { PgLikePool } from "../../src/lib/import/commit";
 import { runMigrations } from "../../src/lib/db/migrate";
 import { hashPassword } from "../../src/lib/auth/crypto";
 import { provisionUser, type ProvisionUserInput } from "../../src/lib/auth/provision-user";
+import { getSettlementLedgerFreshness } from "../../src/lib/manage/settlement-freshness";
+import { refreshSettlementObligations } from "../../src/lib/manage/settlements";
 import { seedReleaseAcceptanceData } from "./release-data";
 import { seedClassDocumentAcceptanceData } from "./class-document-data";
 import { seedMoneyOperationsAcceptanceData } from "./money-operations-data";
@@ -162,6 +164,20 @@ async function main(): Promise<void> {
       actorId,
     );
 
+    // Class and money fixtures change financial sources after the release
+    // fixture's initial refresh. Certify the final seed through the real
+    // workflow, retaining any source-review holds on unresolved plans.
+    const finalRefresh = await refreshSettlementObligations(
+      pool as unknown as PgLikePool,
+      {},
+      actorId,
+    );
+    if (!finalRefresh.ok) {
+      throw new Error(`Could not refresh the final E2E ledger: ${finalRefresh.message}`);
+    }
+    const freshness = await getSettlementLedgerFreshness(pool as unknown as PgLikePool);
+    if (freshness.dirty) throw new Error("The final E2E ledger still requires a source refresh.");
+
     const { rows } = await pool.query<{ c: string }>(
       "SELECT count(*)::text AS c FROM users",
     );
@@ -172,7 +188,8 @@ async function main(): Promise<void> {
         `sessions=${releaseData.sessions}; obligations=${releaseData.obligations}; ` +
         `class-invoices=3; money-obligation=${moneyData.obligationId}; ` +
         `money-reserve=${moneyData.reserveObligationId}; ` +
-        `class-receipt=${moneyData.classReceiptId}`,
+        `class-receipt=${moneyData.classReceiptId}; ` +
+        `ledger-fresh=true; source-reviews=${freshness.sourceReviewCount ?? 0}`,
     );
   } finally {
     await pool.end();

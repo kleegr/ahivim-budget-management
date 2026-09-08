@@ -1608,6 +1608,7 @@ export default function PdfEditorWorkspace({
           filename: sourceFile.name,
           byteSize: sourceFile.size,
           category: "general",
+          source: initialSourcePath,
         }),
       });
       const documentId = creation.document.id;

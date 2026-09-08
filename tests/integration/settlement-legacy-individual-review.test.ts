@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PgLikePool } from "@/lib/import/commit";
 import { getPersonSettlementBalance, getSettlementDashboard, getSettlementSummary } from "@/lib/data/settlements";
+import { settlementCurrentAmountSql } from "@/lib/data/settlement-eligibility";
 import {
   applySettlementCredit, correctSettlementEvent, recordObligationPayment,
   refreshSettlementObligations, refundSettlementCredit, reverseSettlementEvent, settleObligations,
@@ -184,6 +185,14 @@ suite("Legacy individual settlement source review (real PostgreSQL)", () => {
     await certifySyntheticSources();
     const before = await facts("settlement_obligations");
     expect(before).toHaveLength(80);
+    // Keep this small ledger below PostgreSQL's default JIT trigger even on
+    // local builds without LLVM. The old per-row ancestry plan exceeded 500k
+    // and repeatedly compiled during otherwise fast reads and money actions.
+    const explanation = await pool.query<{ "QUERY PLAN": Array<{ Plan: { "Total Cost": number } }> }>(
+      `EXPLAIN (FORMAT JSON) SELECT o.id, ${settlementCurrentAmountSql("o")} AS eligible
+         FROM settlement_obligations o`,
+    );
+    expect(explanation.rows[0]["QUERY PLAN"][0].Plan["Total Cost"]).toBeLessThan(100_000);
     const preRefresh = await getSettlementDashboard(pool);
     expect(preRefresh.rows.filter((row) => row.reviewRequired)).toHaveLength(61);
     expect(preRefresh.summary.reservesToSetAside).toBe("1902.3446");

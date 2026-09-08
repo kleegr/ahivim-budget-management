@@ -21,6 +21,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string; versionId: string }> },
 ) {
   const { id, versionId } = await params;
+  if (request.nextUrl.searchParams.has("source") && request.nextUrl.searchParams.get("source") !== "1") {
+    return jsonError("That document representation was not found.", 404);
+  }
   const representation = request.nextUrl.searchParams.get("source") === "1" ? "source" : "output";
   try {
     // The retained source is the editable, pre-flattened PDF. In particular,
@@ -28,17 +31,20 @@ export async function GET(
     // so read-only library access must never be enough to retrieve it.
     const found = await accessibleDocument(id, representation === "source" ? "edit" : "view");
     if ("error" in found) return found.error;
+    if (!found.canEdit && versionId !== (found.publishedVersionId ?? found.document.currentVersionId)) {
+      return jsonError("That document version was not found.", 404);
+    }
     if (!hasDocumentStorage()) {
       return jsonError("Private document storage is not configured. Ask an administrator to connect document storage.", 503);
     }
-    const file = await getDocumentVersionFile(found.access.pool, id, versionId, representation);
+    const file = found.publishedVersionId ? found.publishedFile : await getDocumentVersionFile(found.access.pool, id, versionId, representation);
     if (!file) return jsonError("That document version was not found.", 404);
     const blob = await readPrivateDocumentBlob(file.pathname, request.headers.get("if-none-match"));
     if (!blob) return jsonError("That document file was not found.", 404);
     if (blob.statusCode === 304) {
       return new Response(null, {
         status: 304,
-        headers: { etag: blob.blob.etag, "cache-control": "private, no-cache, max-age=0" },
+        headers: { etag: blob.blob.etag, "cache-control": "private, no-store, max-age=0" },
       });
     }
     if (blob.statusCode !== 200 || !blob.stream) return jsonError("That document file was not found.", 404);
@@ -55,7 +61,7 @@ export async function GET(
       headers: {
         "content-type": "application/pdf",
         "content-length": String(file.byteSize),
-        "content-disposition": contentDisposition(file.filename, download),
+        "content-disposition": contentDisposition(found.publishedVersionId ? "document.pdf" : file.filename, download),
         "cache-control": "private, no-store, max-age=0",
         "cross-origin-resource-policy": "same-origin",
         "x-content-type-options": "nosniff",

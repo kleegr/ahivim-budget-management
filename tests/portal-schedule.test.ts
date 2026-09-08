@@ -43,6 +43,16 @@ function session(overrides: Partial<CalendarSession> = {}): CalendarSession {
 describe("portal-safe upcoming schedules", () => {
   beforeEach(() => mocks.listSessions.mockReset());
 
+  it("never falls back to the unfiltered schedule for an invalid subject ID", async () => {
+    for (const invalid of ["", "all", "00000000-0000-0000-0000-not-a-person"]) {
+      await expect(individualPortalUpcomingSchedule(pool, invalid, "2026-06-01"))
+        .resolves.toMatchObject({ status: "unavailable", items: [] });
+      await expect(employeePortalUpcomingSchedule(pool, invalid, "2026-06-01"))
+        .resolves.toMatchObject({ status: "unavailable", items: [] });
+    }
+    expect(mocks.listSessions).not.toHaveBeenCalled();
+  });
+
   it("shows a parent only the linked person's service facts without employee identity", async () => {
     mocks.listSessions.mockResolvedValue([session()]);
 

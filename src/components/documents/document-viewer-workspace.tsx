@@ -115,8 +115,8 @@ export default function DocumentViewerWorkspace({ documentId }: { documentId: st
           <iframe title={`${detail.document.title} PDF`} src={fileUrl} className="h-[75vh] w-full bg-white" />
         </section>
         <aside className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-4">
-          <div className="flex items-center gap-2"><FileText className="h-4 w-4 text-[var(--color-primary)]" aria-hidden /><h2 className="font-semibold">Version history</h2></div>
-          <p className="mt-1 text-xs text-[var(--color-ink-faint)]">Earlier versions remain available to view or download. This account cannot restore or change them.</p>
+          <div className="flex items-center gap-2"><FileText className="h-4 w-4 text-[var(--color-primary)]" aria-hidden /><h2 className="font-semibold">Approved PDF</h2></div>
+          <p className="mt-1 text-xs text-[var(--color-ink-faint)]">This is the saved output available to your account.</p>
           <ul className="mt-3 divide-y divide-[var(--color-rule)]">
             {detail.versions.map((version) => {
               const versionUrl = `/api/documents/${detail.document.id}/versions/${version.id}/file`;

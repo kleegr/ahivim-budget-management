@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { cacheControlDirectives } from "./support/cache-control";
 import type { PortalAccessContext, PortalCapability } from "@/lib/auth/portal-access";
 import { getPortalIndividualStatement } from "@/lib/data/portal-individual-statement";
 import {
@@ -192,7 +193,9 @@ describe("individual portal statement download route", () => {
     const csv = await response.text();
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const cacheDirectives = cacheControlDirectives(response.headers.get("cache-control"));
+    expect(cacheDirectives).toEqual(expect.arrayContaining(["private", "no-store"]));
+    expect(cacheDirectives).not.toContain("public");
     expect(response.headers.get("content-disposition")).toContain("attachment");
     expect(mocks.resolvePortalAccess).toHaveBeenCalled();
     expect(csv).toContain("Billed");

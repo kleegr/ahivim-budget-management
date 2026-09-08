@@ -12,6 +12,7 @@ import {
 import { BUDGET_STATUS_PRESENT, type BudgetLineStatus } from "@/lib/business/budget-status";
 import { isUuid, listPrograms } from "@/lib/data/app-queries";
 import { getIndividual } from "@/lib/manage/individuals";
+import { individualRecordForAccess } from "@/lib/auth/person-record-access";
 import { listAuthorizationsForIndividual } from "@/lib/manage/authorizations";
 import { listStrategies } from "@/lib/manage/calculation-strategies";
 import { listAssignments, type AssignmentRecord } from "@/lib/manage/assignments";
@@ -390,7 +391,7 @@ export default async function IndividualDetailPage({
       allowedHours.map((evaluation) => [evaluation.assignmentId, evaluation]),
     );
     return {
-      individual, budget, operationalBudget, activity: visibleActivity, settlement, masserStatement,
+      individual: individualRecordForAccess(scope, individual), budget, operationalBudget, activity: visibleActivity, settlement, masserStatement,
       profileContext,
       strategy,
       otherPlans,

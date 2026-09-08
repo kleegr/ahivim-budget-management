@@ -85,6 +85,7 @@ export async function POST(request: NextRequest) {
         password: String(body.password ?? ""),
         individualId: typeof body.individualId === "string" ? body.individualId : undefined,
         relationship: typeof body.relationship === "string" ? body.relationship : undefined,
+        individuals: body.individuals,
         employeeId: typeof body.employeeId === "string" ? body.employeeId : undefined,
         agencyId: typeof body.agencyId === "string" ? body.agencyId : undefined,
         internalAccess: body.internalAccess,
