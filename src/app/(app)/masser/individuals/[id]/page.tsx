@@ -73,7 +73,12 @@ export default async function IndividualMasserStatementPage({
               <Notice tone="warning" title="Source review required" action={canManageFinancialPlans ? (
                 <ButtonLink href={`/individuals/${statement.individualId}?view=financial`} variant="secondary">Review Financial Setup</ButtonLink>
               ) : undefined}>
-                {statement.reviewRequiredPlans.toLocaleString()} {statement.reviewRequiredPlans === 1 ? "plan has" : "plans have"} balances on hold. Those balances are excluded from remaining reserve and available credit. Approved monthly amounts and recorded cash history remain visible. Ask an owner or manager to review the source and monthly or full-period amount basis.
+                {statement.reviewRequiredPlans.toLocaleString()} {statement.reviewRequiredPlans === 1 ? "plan has" : "plans have"} balances on hold. Those balances are excluded from remaining reserve and available credit. Review the original meaning of historical balances. New put-away items use the approved monthly final; recorded cash history remains visible.
+              </Notice>
+            ) : null}
+            {(statement.historicalReviewRequiredPlans ?? 0) > 0 ? (
+              <Notice tone="warning" title="Historical balances remain on hold">
+                Older balances are excluded from this month&apos;s remaining reserve and credit. Their records are preserved for source review; an approved monthly item can still be recorded.
               </Notice>
             ) : null}
             {!statement.setupHistoryAvailable ? (

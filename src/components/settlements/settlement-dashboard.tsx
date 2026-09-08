@@ -497,7 +497,7 @@ function SummaryBand({
     { queue: "open" as const, label: "Open work", ...metric(activeRows, needsAction.toLocaleString(), `${data.summary.partialCount} partially completed`), icon: <CreditCard className="h-4 w-4" aria-hidden /> },
     { queue: "payable" as const, label: "Agency pays", ...metric(activeRows.filter((row) => row.direction === "payable"), formatMoney(data.summary.agencyOwes), "Employee payments"), icon: <ArrowUpRight className="h-4 w-4" aria-hidden /> },
     { queue: "receivable" as const, label: "Agency receives", ...metric(activeRows.filter((row) => row.direction === "receivable"), formatMoney(data.summary.employeesOwe), "Employee give-backs"), icon: <ArrowDownLeft className="h-4 w-4" aria-hidden /> },
-    { queue: "reserve" as const, label: "Set aside", ...metric(activeRows.filter((row) => row.direction === "reserve"), formatMoney(data.summary.reservesToSetAside), "Individual annual reserves"), icon: <PiggyBank className="h-4 w-4" aria-hidden /> },
+    { queue: "reserve" as const, label: "Set aside", ...metric(activeRows.filter((row) => row.direction === "reserve"), formatMoney(data.summary.reservesToSetAside), "Individual put-away amounts"), icon: <PiggyBank className="h-4 w-4" aria-hidden /> },
     { queue: "credit" as const, label: "Credits", ...metric(activeRows.filter((row) => row.state === "credit" || row.reviewRequired), formatMoney(data.summary.credits), `${actionableCredits} ready to apply`), icon: <BadgeCheck className="h-4 w-4" aria-hidden /> },
   ];
 

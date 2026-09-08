@@ -124,7 +124,7 @@ suite("Legacy individual settlement source review (real PostgreSQL)", () => {
     }
   });
 
-  it("holds unknown monthly-versus-period basis without overwriting existing finals or creating converted balances", async () => {
+  it("preserves unknown historical basis while creating distinct approved monthly balances", async () => {
     const renewalDate = `${Number(settlementApplicationDate().slice(0, 4)) + 1}-01-01`;
     const source = unwrap(await createStrategy(pool, { individualId }, ACTOR));
     unwrap(await updateStrategy(pool, { id: source.id, afterAll: "100.1234", monthDivisor: "12", renewalDate }, ACTOR));
@@ -154,19 +154,23 @@ suite("Legacy individual settlement source review (real PostgreSQL)", () => {
     const priorSetup = (await pool.query(`SELECT to_jsonb(s)::text AS fact FROM calculation_strategies s ORDER BY id`)).rows;
     for (let run = 0; run < 2; run++) {
       const preRefresh = await getSettlementDashboard(pool);
-      expect(preRefresh.rows.every((row) => row.reviewRequired)).toBe(true);
-      expect(preRefresh.summary).toMatchObject({ reservesToSetAside: "0.0000", credits: "0.0000", appliedTotal: "20.0000" });
+      expect(preRefresh.rows.filter((row) => [root, child, oldKey].includes(row.id)).every((row) => row.reviewRequired)).toBe(true);
+      expect(preRefresh.summary).toMatchObject({ reservesToSetAside: run === 0 ? "0.0000" : "170.1234", credits: "0.0000", appliedTotal: "20.0000" });
       expect(await recordObligationPayment(pool, { obligationId: child, amount: "1", occurredOn: settlementApplicationDate(), operationKey: randomUUID() }, ACTOR))
         .toMatchObject({ ok: false, message: expect.stringContaining("source review") });
       expect(await correctSettlementEvent(pool, paid, { amount: "15", occurredOn: settlementApplicationDate(), reason: "Synthetic correction", operationKey: randomUUID() }, ACTOR))
         .toMatchObject({ ok: false, message: expect.stringContaining("source review") });
       expect(unwrap(await refreshSettlementObligations(pool, {}, ACTOR))).toMatchObject({
-        created: 0, updated: 0, adjusted: 0, voided: 0, amountBasisReviewCount: 4, reviewRequiredCount: 4,
+        created: run === 0 ? 2 : 0, updated: 0, adjusted: 0, voided: 0, amountBasisReviewCount: 3, reviewRequiredCount: 3,
       });
-      expect(await facts("settlement_obligations")).toEqual(before);
+      expect((await facts("settlement_obligations")).filter((row) => before.some((old) => old.id === row.id))).toEqual(before);
+      const monthly = (await getSettlementDashboard(pool)).rows.filter((row) => row.calculation.amountBasis === "monthly");
+      expect(monthly).toHaveLength(2);
+      expect(monthly.every((row) => !row.reviewRequired)).toBe(true);
+      expect(monthly.map((row) => row.originalAmount).sort()).toEqual(["100.1234", "70.0000"]);
       expect(await facts("settlement_events")).toEqual(cash);
       expect((await pool.query(`SELECT to_jsonb(s)::text AS fact FROM calculation_strategies s ORDER BY id`)).rows).toEqual(priorSetup);
-      expect((await getSettlementDashboard(pool)).freshness.sourceReviewSummary).toContain("owner must confirm whether Financial Setup balances represent a month or the full period");
+      expect((await getSettlementDashboard(pool)).freshness.sourceReviewSummary).toContain("Historical Financial Setup balances need confirmation of their original meaning");
     }
   });
 

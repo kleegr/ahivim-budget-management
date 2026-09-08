@@ -8,7 +8,7 @@ import {
 } from "@/lib/business/settlement-ledger";
 
 describe("individual settlement targets", () => {
-  it("annualizes the approved monthly final without double-counting its calculation components", () => {
+  it("uses the approved monthly final once without annualizing or adding calculation components", () => {
     const targets = individualSettlementTargets({
       lines: [{ programLabel: "Com Hab", hours: "120", internalRate: "21" }],
       monthDivisor: "12",
@@ -23,7 +23,7 @@ describe("individual settlement targets", () => {
       expect.objectContaining({
         kind: "individual_masser",
         direction: "reserve",
-        amount: "9000.0000",
+        amount: "750.0000",
         monthlyAmount: "750.0000",
       }),
     ]);
@@ -41,14 +41,14 @@ describe("individual settlement targets", () => {
     })).toEqual([]);
   });
 
-  it("uses the setup divisor for a non-12-month approved final", () => {
+  it("keeps the monthly final unchanged for a non-12-month calculation divisor", () => {
     expect(individualSettlementTargets({
       lines: [],
       monthDivisor: "7.5",
       afterAll: "800",
     })).toEqual([
       expect.objectContaining({
-        amount: "6000.0000",
+        amount: "800.0000",
         monthlyAmount: "800.0000",
       }),
     ]);

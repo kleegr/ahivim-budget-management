@@ -43,6 +43,15 @@ describe("Masser source review and check-count display", () => {
     expect(html).toContain("Money calculations need refresh"); expect(html).toContain("Refresh needed");
     expect(html).not.toContain("Record set-aside"); expect(html).not.toContain(">Ready<");
   });
+  it("keeps the selected monthly item ready while disclosing separate historical holds", () => {
+    const value = data();
+    Object.assign(value.individualSetAsides[0]!, { actionablePlans: 1, reviewRequiredPlans: 0,
+      historicalReviewRequiredPlans: 1, remainingSetAside: "70.0000" });
+    const html = render(value);
+    expect(html).toContain(">Ready<"); expect(html).toContain("Record set-aside");
+    expect(html).toContain("Historical balances remain on hold"); expect(html).toContain("Review historical holds");
+    expect(html).not.toContain("Source review required");
+  });
   it("does not expose financial setup editing or record actions to a read-only viewer", () => {
     const html = render(data(), { manager: false });
     expect(html).toContain("Source review required");

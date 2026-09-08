@@ -24,23 +24,22 @@ function rounded(value: Decimal): Decimal {
 }
 
 /**
- * Turn the entered approved monthly final into one annual reserve target.
+ * The Owner-approved final is one monthly put-away amount.
  * The cuts and adjustments explain how the final was reached; they are not
  * separate obligations and must not be added to the approved final again.
  */
 export function individualSettlementTargets(input: StrategyInput): IndividualSettlementTarget[] {
   const result = computeStrategy(input);
-  const divisor = dec(result.monthDivisor);
   if (!result.afterAll || !dec(result.afterAll).abs().greaterThan(0)) return [];
 
   const monthly = dec(result.afterAll).abs();
   return [{
     kind: "individual_masser",
     direction: "reserve",
-    amount: toMoney(rounded(monthly.times(divisor))),
+    amount: toMoney(monthly),
     monthlyAmount: toMoney(monthly),
-    label: "Approved final reserve",
-    formula: `approved monthly final x ${result.monthDivisor}`,
+    label: "Approved monthly put-away",
+    formula: "Approved monthly final; cuts and adjustments are already included",
   }];
 }
 

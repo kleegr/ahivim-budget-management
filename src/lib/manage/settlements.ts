@@ -773,6 +773,9 @@ async function individualCandidates(
   let individualPlans = 0;
   const protectedStrategyIds: string[] = [];
   const amountBasisSourceKeys: string[] = [];
+  const applicationDate = asOf ?? settlementApplicationDate();
+  const monthStart = `${applicationDate.slice(0, 7)}-01`;
+  const monthEnd = new Date(Date.UTC(Number(applicationDate.slice(0, 4)), Number(applicationDate.slice(5, 7)), 1)).toISOString().slice(0, 10);
   for (const row of rows) {
     if (!row.periodStart || !row.periodEnd || row.afterAll === null) {
       protectedStrategyIds.push(row.id);
@@ -791,15 +794,10 @@ async function individualCandidates(
       },
     );
     for (const target of targets) {
-      const sourceKey = stableKey(["individual", row.id, row.periodStart, row.periodEnd, target.kind]);
-      // The approved monthly final is known; its conversion into a stored
-      // multi-month balance is not an approved agreement. Retain the unknown
-      // basis for review instead of overwriting a monthly snapshot or creating
-      // a period obligation. Zero and a divisor of one need no conversion.
-      if (!dec(target.amount).isZero() && !dec(row.monthDivisor).equals(1)) {
-        amountBasisSourceKeys.push(sourceKey);
-        continue;
-      }
+      // New monthly keys never adopt or rewrite ambiguous historical period
+      // balances. Refresh creates only this month, without inferred backfill.
+      if (!row.active || row.periodStart > applicationDate || row.periodEnd <= applicationDate) continue;
+      const sourceKey = stableKey(["individual_monthly", row.id, monthStart, monthEnd, target.kind]);
       candidates.push({
         sourceKey,
         kind: target.kind,
@@ -807,8 +805,8 @@ async function individualCandidates(
         individualId: row.individualId,
         calculationStrategyId: row.id,
         amount: target.amount,
-        periodBegin: row.periodStart,
-        periodEnd: row.periodEnd,
+        periodBegin: monthStart,
+        periodEnd: monthEnd,
         metadata: {
           flow: "individual_plan",
           individualName: row.individualName,
@@ -818,7 +816,11 @@ async function individualCandidates(
           targetLabel: target.label,
           formula: target.formula,
           monthlyAmount: target.monthlyAmount,
-          monthDivisor: row.monthDivisor,
+          amountBasis: "monthly",
+          monthDivisor: "1",
+          calculationMonthDivisor: row.monthDivisor,
+          planPeriodStart: row.periodStart,
+          planPeriodEnd: row.periodEnd,
           yearlyGross: row.yearlyGross,
           plannedHours: row.analytics?.plannedHours ?? null,
           actualHours: row.analytics?.actualHours ?? null,
@@ -1368,6 +1370,10 @@ export async function refreshSettlementObligations(
       phase = "reconcile-obligations";
       for (const root of roots) {
         if (heldSourceKeys.has(root.source_key)) continue;
+        if (root.individual_id && metadataRecord(root.calculation_metadata).amountBasis !== "monthly") {
+          refreshResult.preservedHistorical++;
+          continue;
+        }
         if (candidateKeys.has(root.source_key) || employee.protectedSourceKeys.has(root.source_key)) continue;
         if (root.transaction_ids.some((id) => employee.protectedTransactionIds.has(id))) continue;
         if (root.individual_id && shouldPreserveEndedIndividualPeriod(root.period_end, applicationDate)) {
@@ -1405,7 +1411,7 @@ export async function refreshSettlementObligations(
             summary: reviewCount > 0
               ? [
                 legacySourceKeys.length > 0 ? "Legacy individual cuts and give-back balances need source review." : null,
-                amountBasisKeys.size > 0 ? "The owner must confirm whether Financial Setup balances represent a month or the full period. Approved monthly finals remain unchanged; converted period balances are on hold." : null,
+                amountBasisKeys.size > 0 ? "Historical Financial Setup balances need confirmation of their original meaning. New put-away items use the approved monthly final; historical balances remain on hold." : null,
                 "Some source records need review. Affected balances are on hold; other balances are available.",
               ].filter(Boolean).join(" ")
               : null,
