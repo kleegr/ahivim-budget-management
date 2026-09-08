@@ -540,7 +540,7 @@ export default function CollectionsWorkspace({
                             <div className="flex justify-end gap-1">
                               {canManage && !data.ledgerDirty && row.actionablePlans > 0 && Number(row.remainingSetAside) > 0 ? <Link className="btn btn-sm btn-secondary whitespace-nowrap" href={`/settlements?individualId=${row.individualId}&queue=reserve`}>Record set-aside</Link> : null}
                               {row.reviewRequiredPlans > 0 && canManageFinancialPlans ? <Link className="btn btn-sm btn-secondary whitespace-nowrap" href={`/individuals/${row.individualId}?view=financial`}>Review Financial Setup</Link> : null}
-                              <Link className="btn btn-sm btn-ghost whitespace-nowrap" href={`/masser/individuals/${row.individualId}?month=${data.month}`}>View statement</Link>
+                              <a className="btn btn-sm btn-ghost whitespace-nowrap" href={`/masser/individuals/${row.individualId}?month=${data.month}`}>View statement</a>
                             </div>
                           </td>
                         </tr>

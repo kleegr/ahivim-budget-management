@@ -39,7 +39,7 @@ const proxyServer = {
   env: { WS_PROXY_PORT: String(WS_PROXY_PORT) },
 } as const;
 const appServer = {
-  command: "node --import tsx tests/e2e/seed.ts && npm run build && npm run start",
+  command: "node --import tsx tests/e2e/seed.ts && npm run build && node --import tsx --import ./tests/e2e/source-fetch-preload.mjs node_modules/next/dist/bin/next start",
   url: BASE_URL,
   reuseExistingServer: false,
   timeout: 300_000,
@@ -50,6 +50,7 @@ const appServer = {
     TEST_DATABASE_URL: TEST_DB_URL,
     ...(useWsProxy ? { NEON_WS_PROXY: `127.0.0.1:${WS_PROXY_PORT}` } : {}),
     AUTH_SECRET: "test-e2e-secret-0123456789",
+    AHIVIM_E2E_SOURCE_PRELOAD: "ALLOW_SYNTHETIC_SHEET_READ",
     PORT: "3000",
   },
 } as const;
