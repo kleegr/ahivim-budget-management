@@ -1,5 +1,6 @@
 import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { recordChange } from "./audit";
+import { acquireSettlementSourceLock } from "./settlement-freshness";
 import { ok, fail, type Result } from "./errors";
 import { toMoney, toHours, tryDec } from "@/lib/money";
 import {
@@ -283,6 +284,9 @@ export async function updateBudgetPeriodRenewal(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // Source writers acquire this lock before touching payroll. Take it before
+    // the period row lock so the usage guard sees their committed rows.
+    await acquireSettlementSourceLock(client);
     const locked = await client.query<{ id: string }>(
       `SELECT id FROM budget_periods WHERE id = $1 AND archived_at IS NULL FOR UPDATE`,
       [id],

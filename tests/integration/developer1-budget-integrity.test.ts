@@ -166,6 +166,57 @@ suite("Developer 1 budget and Financial Setup integrity (PostgreSQL)", () => {
     });
   });
 
+  it("waits for a concurrent payroll import before checking renewal history and locks sources before the period", async () => {
+    const budget = await manualBudget();
+    await pool.query("UPDATE programs SET consumption_source = 'payroll' WHERE id = $1", [budget.programId]);
+    const beforePeriod = await getBudgetPeriod(pool, budget.budgetPeriodId);
+    const writer = await pool.connect();
+    const renewalClient = await pool.connect();
+    const renewalPid = (await renewalClient.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+    let renewal: ReturnType<typeof updateBudgetPeriodRenewal> | undefined;
+    try {
+      await writer.query("BEGIN");
+      // The real database source trigger takes the same advisory lock as an
+      // import. This uncommitted January usage is invisible to other readers.
+      await writer.query(
+        `INSERT INTO payroll_transactions
+           (individual_id, program_id, period_begin, imported_hours, imported_amount, transaction_fingerprint)
+         VALUES ($1, $2, '2026-01-15', 2, 200, $3)`,
+        [budget.individualId, budget.programId, randomUUID()],
+      );
+      renewal = updateBudgetPeriodRenewal({
+        query: pool.query.bind(pool), connect: async () => renewalClient,
+      }, budget.budgetPeriodId, "2027-02-01", ACTOR, "Concurrent authorization correction");
+
+      await expect.poll(async () => (await pool.query<{ waiting: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM pg_locks
+                        WHERE pid = $1 AND locktype = 'advisory' AND NOT granted) AS waiting`,
+        [renewalPid],
+      )).rows[0]!.waiting, { timeout: 5_000 }).toBe(true);
+      // A renewal waiting for sources must not hold the budget row first.
+      await expect(pool.query(
+        "SELECT id FROM budget_periods WHERE id = $1 FOR UPDATE NOWAIT", [budget.budgetPeriodId],
+      )).resolves.toMatchObject({ rowCount: 1 });
+      await writer.query("COMMIT");
+
+      expect(await renewal).toMatchObject({
+        ok: false, code: "conflict", message: expect.stringContaining("exclude recorded payroll usage"),
+      });
+      expect(await getBudgetPeriod(pool, budget.budgetPeriodId)).toEqual(beforePeriod);
+      expect((await listProgramBudgets(pool, { individualId: budget.individualId }))[0]).toMatchObject({
+        consumedHours: "2.0000", consumedDollars: "200.0000", remainingDollars: "800.0000",
+      });
+      expect((await pool.query(
+        "SELECT id FROM audit_logs WHERE action = 'budget_period_renewal_updated' AND entity_id = $1", [budget.budgetPeriodId],
+      )).rows).toHaveLength(0);
+    } finally {
+      await writer.query("ROLLBACK");
+      writer.release();
+      if (renewal) await renewal;
+      else renewalClient.release();
+    }
+  });
+
   it("stores sub-one-percent cuts, a seven-month basis, and an explicit approved zero without inventing a date", async () => {
     const person = unwrap(await createIndividual(pool, { displayName: "Financial setup example" }, ACTOR));
     const strategy = unwrap(await createStrategy(pool, { individualId: person.id }, ACTOR));
