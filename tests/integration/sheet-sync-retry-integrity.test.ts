@@ -143,6 +143,22 @@ suite("Sheet retry and malformed snapshot integrity (PostgreSQL)", () => {
     await expectMatched(sessionId, "3");
   });
 
+  it.each(["malformed", "transport"])("retains matching retry dates through an intervening %s failure", async (failure) => {
+    const { rows, sessionId } = await preparePendingMatch();
+    const csv = source(rows);
+    const failed = failure === "malformed"
+      ? await sync(csv.slice(0, -1))
+      : await runSheetSync(pool, { trigger: "manual", userId: null, config,
+          fetcher: async () => { throw new Error("synthetic source transport outage"); } });
+    expect(failed.status).toBe("failed");
+    const retried = await sync(csv);
+    expect(retried).toMatchObject({ status: "success", added: 0 });
+    expect(retried.reconciliation?.scheduleMatching).toMatchObject({
+      status: "checked", from: "2023-06-10", to: "2023-06-10", matched: 1,
+    });
+    await expectMatched(sessionId, "2");
+  });
+
   it("fails a truncated source before changing transaction or conflict evidence", async () => {
     const csv = source([
       transaction("TRUNCATED-A", "06/10/2023"), transaction("TRUNCATED-B", "07/10/2023"),
