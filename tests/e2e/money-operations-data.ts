@@ -1,5 +1,6 @@
 import type { PgLikePool } from "../../src/lib/import/commit";
 import { dec } from "../../src/lib/money";
+import { createStrategy, setStrategyStatus, updateStrategy } from "../../src/lib/manage/calculation-strategies";
 import {
   createClassInvoiceDraft,
   issueClassInvoice,
@@ -66,13 +67,27 @@ export async function seedMoneyOperationsAcceptanceData(
              'Disposable append-only individual reserve release acceptance')`,
     [MONEY_RESERVE_INDIVIDUAL_ID, MONEY_RESERVE_INDIVIDUAL_NAME],
   );
+  const reserveSource = unwrap(await createStrategy(pool, {
+    individualId: MONEY_RESERVE_INDIVIDUAL_ID,
+    label: "Approved August single-month reserve",
+  }, actorId));
+  unwrap(await updateStrategy(pool, {
+    id: reserveSource.id,
+    afterAll: MONEY_RESERVE_ORIGINAL_AMOUNT,
+    monthDivisor: "1",
+    renewalDate: "2026-09-01",
+    account: "E2E Put-away",
+  }, actorId, "Explicit single-month approved final for disposable money acceptance"));
+  // Archive through the supported workflow, retaining the approved source
+  // revision while keeping this August fixture outside September plan totals.
+  unwrap(await setStrategyStatus(pool, { id: reserveSource.id, status: "archived" }, actorId));
   await pool.query(
     `INSERT INTO settlement_obligations
        (id, source_key, kind, direction, individual_id, original_amount,
-        period_begin, period_end, calculation_metadata, created_by_user_id)
+        period_begin, period_end, calculation_metadata, created_by_user_id, calculation_strategy_id)
       VALUES ($1, 'e2e:money-workflow:individual-reserve', 'individual_masser',
               'reserve', $2, $3, $4::date, $5::date,
-              $6::jsonb, $7)`,
+              $6::jsonb, $7, $8)`,
     [
       MONEY_RESERVE_OBLIGATION_ID,
       MONEY_RESERVE_INDIVIDUAL_ID,
@@ -83,8 +98,11 @@ export async function seedMoneyOperationsAcceptanceData(
         flow: "e2e_money_acceptance",
         source: "disposable_e2e_seed",
         account: "E2E Put-away",
+        monthlyAmount: dec(MONEY_RESERVE_ORIGINAL_AMOUNT).toFixed(4),
+        monthDivisor: "1",
       }),
       actorId,
+      reserveSource.id,
     ],
   );
   // Masser intentionally carries outstanding employee_giveback balances across

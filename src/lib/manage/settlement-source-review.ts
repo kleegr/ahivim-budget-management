@@ -1,4 +1,36 @@
 import type { PgLikeClient } from "@/lib/import/commit";
+import { settlementIndividualSourceReviewSql, settlementLegacyIndividualKindSql } from "@/lib/data/settlement-eligibility";
+
+/** Include legacy source keys that do not match the currently generated target key. */
+export async function amountBasisReviewSourceKeys(
+  client: PgLikeClient,
+  individualId?: string | null,
+): Promise<string[]> {
+  const { rows } = await client.query<{ source_key: string }>(
+    `SELECT o.source_key FROM settlement_obligations o
+      WHERE o.status = 'active' AND o.kind ~ '^individual_masser(_correction)*$'
+        AND ${settlementIndividualSourceReviewSql("o")}
+        AND ($1::uuid IS NULL OR o.individual_id = $1)
+      ORDER BY o.source_key`,
+    [individualId ?? null],
+  );
+  return rows.map((row) => row.source_key);
+}
+
+/** Preserve legacy cuts/give-back facts pending evidence, including ended periods. */
+export async function legacyIndividualReviewSourceKeys(
+  client: PgLikeClient,
+  individualId?: string | null,
+): Promise<string[]> {
+  const { rows } = await client.query<{ source_key: string }>(
+    `SELECT o.source_key FROM settlement_obligations o
+      WHERE o.status = 'active' AND ${settlementLegacyIndividualKindSql("o")}
+        AND ($1::uuid IS NULL OR o.individual_id = $1)
+      ORDER BY o.source_key`,
+    [individualId ?? null],
+  );
+  return rows.map((row) => row.source_key);
+}
 
 /** Resolve review holds without changing immutable obligations or their source links. */
 export async function settlementReviewHolds(
