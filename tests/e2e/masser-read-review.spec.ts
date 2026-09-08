@@ -100,7 +100,7 @@ test.describe.serial("Masser retained source-review balances across actual route
       const reportRow = main.getByRole("row").filter({ hasText: "Linked Individual" });
       await expect(reportRow).toContainText(MONTHLY_BALANCE_STATUS);
       await expect(reportRow).toContainText("$260.00");
-      await expect(main.getByRole("columnheader", { name: "Historical plans on hold", exact: true })).toBeVisible();
+      await expect(main.getByRole("button", { name: "Historical plans on hold", exact: true })).toBeVisible();
       await expect(reportRow.getByRole("link", { name: "View statement", exact: true })).toHaveAttribute("href", STATEMENT);
       for (const format of ["csv", "xlsx"] as const) {
         const responsePromise = page.waitForResponse(response => new URL(response.url()).pathname === "/api/grid/export"
