@@ -23,7 +23,7 @@ async function signIn(page: Page, account: RepresentativeAccount) {
   await page.waitForURL(url => url.pathname === account.expectedPath);
 }
 
-async function verifyInvalidActionBoundary(page: Page, allowed: boolean) {
+async function verifyInvalidActionBoundary(page: Page, allowed: boolean, signedOut = false) {
   // An unsupported action stops at route validation, before the financial
   // service or a source read. Use the browser's real same-origin session.
   const requestPromise = page.waitForRequest(request => new URL(request.url()).pathname === ENDPOINT
@@ -37,9 +37,12 @@ async function verifyInvalidActionBoundary(page: Page, allowed: boolean) {
   const request = await requestPromise;
   expect(await request.headerValue("origin")).toBe(new URL(BASE_URL).origin);
   expect(request.postDataJSON()).toEqual({ action: INVALID_ACTION });
-  expect(result.status).toBe(allowed ? 400 : 403);
+  // Anonymous requests stop at authentication middleware; signed-in users
+  // without authority reach the route's separate authorization denial.
+  expect(result.status).toBe(signedOut ? 401 : allowed ? 400 : 403);
   // Exact minimal payload also excludes financial values, source IDs and PII.
-  expect(result.body).toEqual({ ok: false, error: allowed ? "Choose accept or undo." : ACCESS_ERROR });
+  expect(result.body).toEqual({ ok: false,
+    error: signedOut ? "Authentication required" : allowed ? "Choose accept or undo." : ACCESS_ERROR });
   expect(result.contentType).toContain("application/json");
   expect(result.disposition).toBeNull();
 }
@@ -115,7 +118,7 @@ test.describe("Source base correction real-session access boundary", () => {
   test("signed-out desktop and phone sessions receive no source-base data or action access", async ({ browser }) => {
     for (const viewport of VIEWPORTS) await test.step(viewport.name, () => withDirectContext(browser, viewport, async page => {
       await page.goto("/signin");
-      await verifyInvalidActionBoundary(page, false);
+      await verifyInvalidActionBoundary(page, false, true);
       await verifyDeniedPage(page, true);
     }));
   });
