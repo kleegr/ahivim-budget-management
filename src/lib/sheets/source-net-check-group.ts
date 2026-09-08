@@ -13,6 +13,18 @@ function compatibleCheck(left: Record<string, unknown>, right: Record<string, un
     && ["checkDate", "periodBegin", "periodEnd"].some(field => text(left[field]) && text(left[field]) === text(right[field]));
 }
 
+/** Only source spellings with a real calendar date can prove non-membership. */
+function usableRawDate(value: unknown): string {
+  const raw = text(value);
+  const parts = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
+  const iso = parts
+    ? `${parts[3]!.length === 2 ? `20${parts[3]}` : parts[3]}-${parts[1]!.padStart(2, "0")}-${parts[2]!.padStart(2, "0")}`
+    : raw;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "";
+  const date = new Date(`${iso}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === iso ? iso : "";
+}
+
 /** Resolve fresh source spellings exactly as import does; suggestions never join a check. */
 export function sourceNetCheckGroup(
   rows: readonly ParsedAhivimRow[], target: Record<string, unknown>, employeeId: string | null,
@@ -50,9 +62,18 @@ export function sourceNetCheckGroup(
       // excluded just because the source spelling is not approved yet.
       return matchedId === null && identities.some(member => compatibleCheck(row.parsed!, member));
     }
-    // Invalid dates or other malformed fields must not hide a possible sibling.
-    return identities.some(member => !text(row.raw.checkNumber) || !text(member.checkNumber)
-      || text(row.raw.checkNumber) === text(member.checkNumber));
+    // Unreadable dates cannot exclude a possible sibling. Usable raw dates can
+    // still prove an otherwise malformed row belongs to a different check.
+    return identities.some(member => {
+      const a = text(row.raw.checkNumber), b = text(member.checkNumber);
+      if (a && b && a !== b) return false;
+      const fields = a && b ? ["checkDate"] : ["checkDate", "periodBegin", "periodEnd"];
+      return fields.every(field => {
+        const incoming = usableRawDate(row.raw[field as keyof typeof row.raw]);
+        const recorded = usableRawDate(member[field]);
+        return !incoming || !recorded || incoming === recorded;
+      });
+    });
   });
   return { rowNumbers, unresolved };
 }

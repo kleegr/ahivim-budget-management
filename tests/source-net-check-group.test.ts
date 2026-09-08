@@ -104,6 +104,34 @@ describe("Canonical employee identity for current source NET checks", () => {
       .toEqual({ rowNumbers: new Set([4]), unresolved: false });
   });
 
+  for (const [label, aliases] of [["unknown", []], ["ambiguous", [alias(), alias("other")]]] as const) {
+    it(`excludes a malformed ${label} employee row when usable dates prove its unnumbered check unrelated`, () => {
+      expect(group([row(4), row(5, { employee: aliasName, checkNumber: null,
+        checkDate: "09/21/2026", periodBegin: "2026-09-01", periodEnd: "09-15-26" }, true)], [...aliases]))
+        .toEqual({ rowNumbers: new Set([4]), unresolved: false });
+    });
+  }
+
+  it("uses a known conflicting period date even when the malformed row's check date is unavailable", () => {
+    expect(group([row(4), row(5, { employee: aliasName, checkNumber: null,
+      checkDate: null, periodBegin: "09/01/2026", periodEnd: null }, true)]))
+      .toEqual({ rowNumbers: new Set([4]), unresolved: false });
+  });
+
+  for (const date of [null, "08/21/26", "unreadable date", "2026-02-30", "02/30/2026"] as const) {
+    it(`retains a malformed possible sibling with compatible or unusable raw date ${String(date)}`, () => {
+      expect(group([row(4), row(5, { employee: aliasName, checkNumber: null,
+        checkDate: date, periodBegin: null, periodEnd: null }, true)]))
+        .toEqual({ rowNumbers: new Set([4]), unresolved: true });
+    });
+  }
+
+  it("uses check date for numbered malformed rows without inventing a stricter same-check period rule", () => {
+    expect(group([row(4), row(5, { employee: aliasName, checkDate: "09/21/2026" }, true)]).unresolved).toBe(false);
+    expect(group([row(4), row(5, { employee: aliasName, checkDate: "08/21/2026",
+      periodBegin: "09/01/2026", periodEnd: "09/15/2026" }, true)]).unresolved).toBe(true);
+  });
+
   it("rechecks unresolved siblings after transitive partial-date expansion regardless of row order", () => {
     expect(group([
       row(7, { employee: aliasName, checkNumber: "LINKED-CHECK", checkDate: null }),
