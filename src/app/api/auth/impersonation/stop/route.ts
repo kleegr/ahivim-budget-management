@@ -34,7 +34,8 @@ export async function POST(request: NextRequest) {
 
   const pool = getPool();
   const owner = await findUserById(pool, impersonation.ownerUserId).catch(() => null);
-  if (!owner || !owner.isActive || owner.role !== "admin") {
+  if (!owner || !owner.isActive || owner.role !== "admin"
+    || (owner.sessionVersion ?? 0) !== (impersonation.ownerSessionVersion ?? 0)) {
     await clearAuthenticationCookies();
     return failedReturn(
       request,

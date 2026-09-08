@@ -8,15 +8,11 @@ import {
   type PortalCapability,
 } from "@/lib/auth/portal-access";
 import { recordChange } from "./audit";
+import { mergePortalPolicyInput, type PortalPolicyInput, type StoredPortalPolicy } from "@/lib/auth/portal-policy-input";
 import { fail, ok, type Result } from "./errors";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const INDIVIDUAL_RELATIONSHIPS: IndividualRelationship[] = ["self", "parent", "guardian", "representative"];
-
-interface PortalPolicyInput {
-  capabilityGrants?: string[];
-  capabilityDenials?: string[];
-}
 
 function validatePolicy(
   role: GlobalPortalRole,
@@ -280,7 +276,14 @@ export async function setIndividualPortalAssignmentQuery(
   if (!UUID.test(input.userId) || !UUID.test(input.individualId)) return fail("validation", "Choose a valid user and individual.");
   if (!INDIVIDUAL_RELATIONSHIPS.includes(input.relationship)) return fail("validation", "Choose a valid relationship.");
   const role: GlobalPortalRole = input.relationship === "self" ? "individual" : "parent";
-  const configured = validatePolicy(role, input);
+  const current = await queryable.query<StoredPortalPolicy>(
+    `SELECT capability_grants, capability_denials FROM user_individual_relationships
+      WHERE user_id = $1 AND individual_id = $2 AND relationship_type = $3 FOR UPDATE`,
+    [input.userId, input.individualId, input.relationship],
+  );
+  const policy = mergePortalPolicyInput(input, current.rows[0]);
+  if (!policy) return fail("validation", "Choose valid portal visibility settings.");
+  const configured = validatePolicy(role, policy);
   if (!configured.ok) return configured;
   const related = await queryable.query(
     `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND is_active = true) AS user_exists,
@@ -346,7 +349,14 @@ export async function setEmployeePortalAssignmentQuery(
   reason?: string | null,
 ): Promise<Result<{ userId: string; employeeId: string }>> {
   if (!UUID.test(input.userId) || !UUID.test(input.employeeId)) return fail("validation", "Choose a valid user and employee.");
-  const configured = validatePolicy("employee", input);
+  const current = await queryable.query<StoredPortalPolicy>(
+    `SELECT capability_grants, capability_denials FROM user_employee_relationships
+      WHERE user_id = $1 AND employee_id = $2 AND relationship_type = 'self' FOR UPDATE`,
+    [input.userId, input.employeeId],
+  );
+  const policy = mergePortalPolicyInput(input, current.rows[0]);
+  if (!policy) return fail("validation", "Choose valid portal visibility settings.");
+  const configured = validatePolicy("employee", policy);
   if (!configured.ok) return configured;
   const related = await queryable.query(
     `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND is_active = true) AS user_exists,

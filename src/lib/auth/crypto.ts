@@ -107,6 +107,8 @@ export function sessionKey(): Buffer {
 
 export interface SessionPayload {
   userId: string;
+  /** Missing on pre-versioning cookies, which belong to generation zero. */
+  sessionVersion?: number;
   role: string;
   displayName: string;
   /** Present only while this effective user is being viewed by an owner. */
@@ -118,6 +120,7 @@ export interface SessionPayload {
 /** Separately signed proof that an administrator started a view-as session. */
 export interface ImpersonationPayload {
   ownerUserId: string;
+  ownerSessionVersion?: number;
   targetUserId: string;
   /** Returning must never extend the owner's original signed-in session. */
   ownerSessionExpiresAt: number;
@@ -145,6 +148,9 @@ export function readSession(token: string | undefined | null): SessionPayload | 
     const payload = JSON.parse(Buffer.from(body, "base64url").toString()) as SessionPayload;
     if (typeof payload.exp !== "number" || payload.exp < Date.now()) return null;
     if (!payload.userId || !payload.role) return null;
+    if (payload.sessionVersion !== undefined && (
+      !Number.isSafeInteger(payload.sessionVersion) || payload.sessionVersion < 0
+    )) return null;
     if (
       payload.impersonatorUserId !== undefined
       && (
@@ -198,6 +204,9 @@ export function readImpersonation(
       || typeof payload.exp !== "number"
       || payload.exp < Date.now()
       || payload.ownerSessionExpiresAt < payload.exp
+      || (payload.ownerSessionVersion !== undefined && (
+        !Number.isSafeInteger(payload.ownerSessionVersion) || payload.ownerSessionVersion < 0
+      ))
     ) return null;
     return payload;
   } catch {

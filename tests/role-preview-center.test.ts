@@ -17,6 +17,7 @@ import {
 function account(patch: Partial<UserWithAccess> = {}): UserWithAccess {
   return {
     id: "user-1",
+    sessionVersion: 0,
     email: "user@example.test",
     displayName: "Test User",
     passwordHash: "not-returned-to-ui",

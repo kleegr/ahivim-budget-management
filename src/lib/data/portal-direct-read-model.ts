@@ -25,6 +25,7 @@ import {
   type PortalPayrollCheckSummary,
   directEmployeeIds,
   directIndividualIds,
+  directPayrollCheckVisibilitySql,
   dollarUsage,
   effectivePortalHoursCte,
   employeeGiveBackActivity,
@@ -387,6 +388,7 @@ export async function directEmployeeSummaries(
              ${dealJoin}
             WHERE c.employee_id = ANY($1::uuid[])
               AND c.verification_status = 'verified'
+              AND ${directPayrollCheckVisibilitySql("c")}
               AND canonical_service_date(c.period_begin, c.check_date, c.period_end) IS NOT NULL
               AND date_trunc('month', canonical_service_date(
                     c.period_begin, c.check_date, c.period_end

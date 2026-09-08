@@ -30,7 +30,7 @@ describe("document version file route", () => {
         ? { error: new Response("Not found", { status: 404 }) }
         : {
             access: { pool, user: { id: "00000000-0000-4000-8000-000000000003" } },
-            document: { id: DOCUMENT_ID },
+            document: { id: DOCUMENT_ID, currentVersionId: VERSION_ID }, canEdit: false, publishedVersionId: null,
           }
     ));
     mocks.getDocumentVersionFile.mockResolvedValue({
@@ -76,7 +76,7 @@ describe("document version file route", () => {
   it("serves the source representation to an editor for editable reopen", async () => {
     mocks.accessibleDocument.mockResolvedValueOnce({
       access: { pool, user: { id: "00000000-0000-4000-8000-000000000003" } },
-      document: { id: DOCUMENT_ID },
+      document: { id: DOCUMENT_ID, currentVersionId: VERSION_ID }, canEdit: true, publishedVersionId: null,
     });
     const response = await GET(
       new NextRequest(`http://localhost/api/documents/${DOCUMENT_ID}/versions/${VERSION_ID}/file?source=1`),

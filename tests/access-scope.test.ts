@@ -180,6 +180,8 @@ describe("transaction access scope", () => {
       if (sql.includes("FROM users")) {
         return {
           rows: [{
+            role: "viewer",
+            is_active: true,
             access_scope: "scoped",
             see_all_individuals: false,
             see_all_employees: false,

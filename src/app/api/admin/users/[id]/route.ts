@@ -97,7 +97,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (typeof body.role === "string" && !isRole(body.role)) {
       return jsonError("Role must be viewer, manager or admin.", 400);
     }
-    const requestedRole = typeof body.role === "string" && isRole(body.role)
+    let requestedRole = typeof body.role === "string" && isRole(body.role)
       ? body.role
       : target.role;
     const presetSubmitted = "preset" in body;
@@ -106,6 +106,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
     const requestedPreset = presetSubmitted ? body.preset as AccountPresetId : undefined;
     const requestedPresetDefinition = requestedPreset ? getAccountPreset(requestedPreset) : null;
+    if (requestedPresetDefinition && body.role === undefined) requestedRole = requestedPresetDefinition.role;
     if (
       requestedPresetDefinition
       && requestedPresetDefinition.binding.kind !== "none"
@@ -118,12 +119,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
     const accessSubmitted = ACCESS_KEYS.some((key) => key in body);
     let access: UserAccessConfig | undefined;
-    if (typeof body.role === "string" || accessSubmitted) {
+    if (typeof body.role === "string" || accessSubmitted || presetSubmitted) {
       if (requestedRole === "viewer") {
         // A viewer request must explicitly include accessScope="scoped". Any
         // omitted or stale full-scope manager payload is reduced to the locked
         // viewer defaults by the server parser.
-        access = userAccessConfigFromInput(body, requestedRole);
+        const current = body.role === undefined && !presetSubmitted && accessSubmitted
+          ? await getUserAccessConfig(pool, id)
+          : null;
+        const defaults = presetSubmitted ? requestedPresetDefinition?.access : current;
+        access = userAccessConfigFromInput({ ...(defaults ?? {}), ...body }, requestedRole);
       } else if (accessSubmitted) {
         const current = await getUserAccessConfig(pool, id);
         const mergedInput: Record<string, unknown> = {
@@ -149,7 +154,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       || hasPassword
     ) {
       const outcome = await updateManagedUser(pool, id, {
-        role: typeof body.role === "string" || accessSubmitted ? requestedRole : undefined,
+        role: typeof body.role === "string" || presetSubmitted ? requestedRole : undefined,
         accountPreset: requestedPreset,
         access,
         isActive: typeof body.isActive === "boolean" ? body.isActive : undefined,

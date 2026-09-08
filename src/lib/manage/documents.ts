@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { DocumentAccessContext } from "@/lib/auth/document-policy";
 import {
   DOCUMENT_UUID,
   getDocument,
@@ -184,6 +185,7 @@ export async function createDocument(
   pool: PgLikePool,
   input: CreateDocumentInput,
   actorId: string,
+  accessContext: DocumentAccessContext = { kind: "owner" },
 ): Promise<Result<CreateDocumentResult>> {
   const title = validateTitle(input.title);
   const category = validateCategory(input.category);
@@ -199,10 +201,10 @@ export async function createDocument(
     await client.query("BEGIN");
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO documents
-         (title, description, category, created_by_user_id, updated_by_user_id)
-       VALUES ($1, $2, $3, $4, $4)
+         (title, description, category, created_by_user_id, updated_by_user_id, access_context)
+       VALUES ($1, $2, $3, $4, $4, $5::jsonb)
        RETURNING id`,
-      [title, cleanText(input.description, MAX_DESCRIPTION), category, actorId],
+      [title, cleanText(input.description, MAX_DESCRIPTION), category, actorId, JSON.stringify(accessContext)],
     );
     const id = rows[0]!.id;
     const upload = await insertUploadIntent(client, {
@@ -218,7 +220,7 @@ export async function createDocument(
       action: "document_created",
       entityType: "document",
       entityId: id,
-      next: { title, category, status: "uploading" },
+      next: { title, category, status: "uploading", accessContext },
       extra: { filename, byteSize },
     });
     await client.query("COMMIT");

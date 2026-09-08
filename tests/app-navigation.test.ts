@@ -5,9 +5,30 @@ import {
   getVisibleAdminDestinations,
   getVisibleWorkspaces,
   shouldTrackNavigation,
+  workspaceIsActive,
 } from "@/lib/nav/app-navigation";
 
 describe("role-specific workspaces", () => {
+  it("shows approved outputs in the portal only after current resource access resolves", () => {
+    const access = {
+      role: "viewer", accessResolved: true, canUsePortal: true,
+      canSeeTransactions: false, canSeeSettlements: false,
+      canSeeBudgets: false, canPlan: false, canViewDocuments: false,
+      canViewApprovedDocuments: true,
+    };
+    const workspaces = getVisibleWorkspaces(access);
+    expect(workspaces.map((workspace) => workspace.id)).toEqual(["portal"]);
+    expect(workspaces[0].destinations).toContainEqual(expect.objectContaining({
+      label: "Approved documents", href: "/documents",
+    }));
+    expect(workspaceIsActive("/documents", workspaces[0])).toBe(true);
+    expect(getVisibleAdminDestinations(access).some((item) => item.href === "/documents")).toBe(false);
+    expect(getCommandDestinations({ ...access, canViewApprovedDocuments: false })
+      .some((item) => item.href === "/documents")).toBe(false);
+    expect(getCommandDestinations({ ...access, accessResolved: false })
+      .some((item) => item.href === "/documents")).toBe(false);
+  });
+
   it("tracks real route changes without flashing progress for the active page", () => {
     expect(shouldTrackNavigation("/dashboard", "/individuals")).toBe(true);
     expect(shouldTrackNavigation("/dashboard", "/dashboard")).toBe(false);

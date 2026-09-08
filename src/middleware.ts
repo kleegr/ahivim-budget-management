@@ -49,13 +49,13 @@ export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (PUBLIC_OCR_ASSETS.has(pathname)) return NextResponse.next();
-  if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
+  if (PUBLIC_PATHS.has(pathname) || pathname === "/api/auth/login" || pathname === "/api/auth/logout") return privateResponse(NextResponse.next());
   if (PUBLIC_API_PATHS.has(pathname)) return NextResponse.next();
 
-  if (request.cookies.has("ahivim_session")) return NextResponse.next();
+  if (request.cookies.has("ahivim_session")) return privateResponse(NextResponse.next());
 
   if (pathname.startsWith("/api/")) {
-    return NextResponse.json({ ok: false, error: "Authentication required" }, { status: 401 });
+    return privateResponse(NextResponse.json({ ok: false, error: "Authentication required" }, { status: 401 }));
   }
 
   const signin = request.nextUrl.clone();
@@ -65,7 +65,13 @@ export function middleware(request: NextRequest) {
   if (pathname !== "/" && !pathname.startsWith("/_next")) {
     signin.searchParams.set("next", pathname);
   }
-  return NextResponse.redirect(signin);
+  return privateResponse(NextResponse.redirect(signin));
+}
+
+/** Identity changes must never reuse an earlier user's HTML, RSC or API body. */
+function privateResponse(response: NextResponse): NextResponse {
+  response.headers.set("Cache-Control", "private, no-store, max-age=0");
+  return response;
 }
 
 export const config = {

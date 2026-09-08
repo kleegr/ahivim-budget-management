@@ -13,7 +13,7 @@ export async function GET(
 ) {
   const { id } = await params;
   try {
-    const found = await accessibleDocument(id);
+    const found = await accessibleDocument(id, "edit");
     if ("error" in found) return found.error;
     return NextResponse.json({
       ok: true,

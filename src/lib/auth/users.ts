@@ -44,6 +44,7 @@ function storedAccountPreset(value: unknown): AccountPresetId | null {
 
 export interface UserRecord {
   id: string;
+  sessionVersion: number;
   email: string;
   displayName: string;
   passwordHash: string;
@@ -56,6 +57,7 @@ export interface UserRecord {
 
 interface UserRow {
   id: string;
+  session_version?: number;
   email: string;
   display_name: string;
   password_hash: string;
@@ -66,13 +68,14 @@ interface UserRow {
   created_at: string;
 }
 
-const SELECT_USER = `SELECT id, email, display_name, password_hash, role, account_preset, is_active,
+const SELECT_USER = `SELECT id, session_version, email, display_name, password_hash, role, account_preset, is_active,
                             last_login_at::text AS last_login_at, created_at::text AS created_at
                      FROM users`;
 
 function toUser(row: UserRow): UserRecord {
   return {
     id: row.id,
+    sessionVersion: row.session_version ?? 0,
     email: row.email,
     displayName: row.display_name,
     passwordHash: row.password_hash,
@@ -256,17 +259,27 @@ export async function changePassword(
   if (await verifyPassword(newPassword, user.passwordHash)) return { ok: false, reason: "reused" };
 
   const passwordHash = await hashPassword(newPassword);
-  await pool.query(`UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, [
-    passwordHash,
-    userId,
-  ]);
-  await writeAudit(pool, {
-    userId,
-    action: "password_changed",
-    entityType: "user",
-    entityId: userId,
-  });
-  return { ok: true };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(
+      `UPDATE users SET password_hash = $1, session_version = session_version + 1, updated_at = now()
+        WHERE id = $2 AND password_hash = $3 AND is_active = true`,
+      [passwordHash, userId, user.passwordHash],
+    );
+    if (!result.rowCount) {
+      await client.query("ROLLBACK");
+      return { ok: false, reason: "incorrect_current" };
+    }
+    await writeAuditQuery(client, { userId, action: "password_changed", entityType: "user", entityId: userId });
+    await client.query("COMMIT");
+    return { ok: true };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export type CreateUserOutcome =
@@ -411,7 +424,7 @@ export async function setUserActive(
   actorId: string | null,
 ): Promise<boolean> {
   const { rowCount } = await pool.query(
-    `UPDATE users SET is_active = $1, updated_at = now() WHERE id = $2`,
+    `UPDATE users SET is_active = $1, session_version = session_version + CASE WHEN $1 = false THEN 1 ELSE 0 END, updated_at = now() WHERE id = $2`,
     [isActive, userId],
   );
   if (!rowCount) return false;
@@ -500,9 +513,9 @@ export function userAccessConfigFromInput(
   // omitted new switch as the legacy combined permission.
   const canSeeCheckGross = flag("canSeeCheckGross", canSeeCheckNet);
   const requestedCanPlan = flag("canPlan");
-  const canManagePlanning = flag("canManagePlanning", requestedCanPlan);
+  const canManagePlanning = input.canPlan !== false && flag("canManagePlanning", requestedCanPlan);
   const canPlan = requestedCanPlan || canManagePlanning;
-  const canEditDocuments = flag("canEditDocuments");
+  const canEditDocuments = input.canViewDocuments !== false && flag("canEditDocuments");
   const canViewDocuments = flag("canViewDocuments", canEditDocuments) || canEditDocuments;
 
   return {
@@ -743,10 +756,10 @@ export async function getUserAccessConfig(
     canSeeTransactions: u.can_see_transactions !== false,
     canManageSettlements:
       u.can_see_settlements === true && u.can_manage_settlements === true,
-    canPlan: u.can_plan === true || u.can_manage_planning === true,
-    canManagePlanning: u.can_manage_planning === true,
-    canViewDocuments: u.can_view_documents === true || u.can_edit_documents === true,
-    canEditDocuments: u.can_edit_documents === true,
+    canPlan: u.can_plan === true,
+    canManagePlanning: u.can_plan === true && u.can_manage_planning === true,
+    canViewDocuments: u.can_view_documents === true,
+    canEditDocuments: u.can_view_documents === true && u.can_edit_documents === true,
     ...storedVisibility(u),
     individualIds,
     employeeIds,
@@ -781,9 +794,9 @@ async function writeUserAccessConfigQuery(
   const canManageSettlements = canSeeSettlements && config.canManageSettlements === true;
   const canManageClassInvoices =
     canSeeClassFinancials && config.canManageClassInvoices === true;
-  const canManagePlanning = config.canManagePlanning === true;
+  const canManagePlanning = config.canPlan !== false && config.canManagePlanning === true;
   const canPlan = config.canPlan === true || canManagePlanning;
-  const canEditDocuments = config.canEditDocuments === true;
+  const canEditDocuments = config.canViewDocuments !== false && config.canEditDocuments === true;
   const canViewDocuments = config.canViewDocuments === true || canEditDocuments;
 
   const { rowCount } = await queryable.query(
@@ -951,7 +964,7 @@ export async function updateManagedUser(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const changesAuthority = input.role !== undefined || input.isActive !== undefined;
+    const changesAuthority = input.role !== undefined || input.accountPreset !== undefined || input.isActive !== undefined;
     if (changesAuthority) {
       // Serialize the last-administrator check with all competing user writes.
       await client.query("LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE");
@@ -971,7 +984,8 @@ export async function updateManagedUser(
     const previousRole = isRole(target.rows[0].role) ? target.rows[0].role : "viewer";
     const previousAccountPreset = storedAccountPreset(target.rows[0].account_preset);
     const previousActive = target.rows[0].is_active;
-    const nextRole = input.role ?? previousRole;
+    const selectedPreset = input.accountPreset ? getAccountPreset(input.accountPreset) : null;
+    const nextRole = input.role ?? selectedPreset?.role ?? previousRole;
     const nextActive = input.isActive ?? previousActive;
     const roleChanged = nextRole !== previousRole;
     const nextAccountPreset = input.accountPreset
@@ -987,6 +1001,32 @@ export async function updateManagedUser(
       );
     }
     const changesIdentity = nextAccountPreset !== previousAccountPreset;
+
+    // An explicit workspace change replaces previous portal authority. Keep
+    // the historical bindings, but none may survive a switch to Custom Access
+    // or another internal workspace and silently widen its effective access.
+    const nextPreset = nextAccountPreset ? getAccountPreset(nextAccountPreset) : null;
+    if ((input.accountPreset !== undefined || roleChanged)
+      && (nextPreset?.binding.kind === "none" || nextPreset?.binding.kind === "owner")) {
+      const removed: Record<string, unknown[]> = {};
+      for (const table of ["user_portal_roles", "user_agency_access", "user_individual_relationships", "user_employee_relationships"] as const) {
+        const filter = `user_id = $1 AND is_active = true${table === "user_portal_roles" ? " AND portal_role <> 'owner'" : ""}`;
+        const previous = await client.query(`SELECT * FROM ${table} WHERE ${filter} FOR UPDATE`, [userId]);
+        if (!previous.rows.length) continue;
+        await client.query(
+          `UPDATE ${table} SET is_active = false, updated_by_user_id = $2, updated_at = now()
+            WHERE ${filter}`,
+          [userId, actorId],
+        );
+        removed[table] = previous.rows;
+      }
+      if (Object.keys(removed).length) {
+        await writeAuditQuery(client, {
+          userId: actorId, action: "user_portal_access_replaced", entityType: "user", entityId: userId,
+          metadata: { previous: removed, accountPreset: nextAccountPreset },
+        });
+      }
+    }
 
     if (previousRole === "admin" && previousActive && (nextRole !== "admin" || !nextActive)) {
       const remaining = await client.query<{ active_admin_count: number | string }>(
@@ -1014,9 +1054,9 @@ export async function updateManagedUser(
       : null;
 
     let normalizedAccess: UserAccessConfig | undefined;
-    if (input.role !== undefined || input.access !== undefined) {
+    if (input.role !== undefined || input.accountPreset !== undefined || input.access !== undefined) {
       normalizedAccess = nextRole === "viewer"
-        ? normalizeAccessConfigForRole(input.access, nextRole)
+        ? normalizeAccessConfigForRole(input.access ?? selectedPreset?.access, nextRole)
         : input.access
           ? normalizeAccessConfigForRole(input.access, nextRole)
           : undefined;
@@ -1025,7 +1065,9 @@ export async function updateManagedUser(
     if (changesAuthority || changesIdentity) {
       const updated = await client.query(
         `UPDATE users
-            SET role = $2, is_active = $3, account_preset = $4, updated_at = now()
+            SET role = $2, is_active = $3, account_preset = $4,
+                session_version = session_version + CASE WHEN is_active AND $3 = false THEN 1 ELSE 0 END,
+                updated_at = now()
           WHERE id = $1`,
         [userId, nextRole, nextActive, nextAccountPreset],
       );
@@ -1037,7 +1079,7 @@ export async function updateManagedUser(
     }
     if (passwordHash) {
       const passwordUpdated = await client.query(
-        `UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1`,
+        `UPDATE users SET password_hash = $2, session_version = session_version + 1, updated_at = now() WHERE id = $1`,
         [userId, passwordHash],
       );
       if (!passwordUpdated.rowCount) throw new Error("User disappeared while its password was being updated.");
@@ -1057,7 +1099,7 @@ export async function updateManagedUser(
       ));
     }
 
-    if (input.role !== undefined) {
+    if (input.role !== undefined || roleChanged) {
       await writeAuditQuery(client, {
         userId: actorId,
         action: "user_role_changed",
@@ -1219,7 +1261,7 @@ export async function setUserPassword(
   const user = await findUserById(pool, userId);
   if (!user) return { ok: false, reason: "not_found" };
   const passwordHash = await hashPassword(newPassword);
-  await pool.query(`UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, [
+  await pool.query(`UPDATE users SET password_hash = $1, session_version = session_version + 1, updated_at = now() WHERE id = $2`, [
     passwordHash,
     userId,
   ]);

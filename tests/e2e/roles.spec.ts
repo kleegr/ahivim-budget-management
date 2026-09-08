@@ -149,7 +149,7 @@ test("owner can preview a real portal account and return to the owner session", 
   ).toContainText("Viewing as E2E Parent");
   await expect(page.getByRole("link", { name: /^Home$/ })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Return to owner portal" }).click();
+  await page.getByRole("button", { name: "Return to your portal" }).click();
   await page.waitForURL((url) => url.pathname === "/dashboard");
   await expect(page.getByText("Viewing as E2E Parent")).toHaveCount(0);
   await expect(page.locator("#main").getByRole("heading", { level: 1 }).first()).toBeVisible();

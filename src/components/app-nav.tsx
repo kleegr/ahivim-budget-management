@@ -252,6 +252,7 @@ export default function AppNav({
   canSeeClassFinancials = false,
   canSeeEmployees = false,
   canViewDocuments = false,
+  canViewApprovedDocuments = false,
   canUsePortal = false,
   canManageAgencies = false,
 }: {
@@ -265,6 +266,7 @@ export default function AppNav({
   canSeeClassFinancials?: boolean;
   canSeeEmployees?: boolean;
   canViewDocuments?: boolean;
+  canViewApprovedDocuments?: boolean;
   canUsePortal?: boolean;
   canManageAgencies?: boolean;
 }) {
@@ -278,8 +280,8 @@ export default function AppNav({
   const drawerRef = useRef<HTMLElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const access = useMemo<NavigationAccess>(
-    () => ({ role: user.role, accountPreset: user.accountPreset, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canViewDocuments, canUsePortal, canManageAgencies }),
-    [user.role, user.accountPreset, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canViewDocuments, canUsePortal, canManageAgencies],
+    () => ({ role: user.role, accountPreset: user.accountPreset, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canViewDocuments, canViewApprovedDocuments, canUsePortal, canManageAgencies }),
+    [user.role, user.accountPreset, accessResolved, canSeeTransactions, canSeeSettlements, canSeeBudgets, canPlan, canSeeClassFinancials, canSeeEmployees, canViewDocuments, canViewApprovedDocuments, canUsePortal, canManageAgencies],
   );
 
   const closeDrawer = useCallback(() => setOpen(false), []);

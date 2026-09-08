@@ -201,7 +201,7 @@ describe("new user access defaults", () => {
     });
   });
 
-  it("makes Planning manage and document edit grants read through", () => {
+  it("lets an explicit read denial suppress the dependent write grant", () => {
     expect(userAccessConfigFromInput({
       accessScope: "scoped",
       canPlan: false,
@@ -209,10 +209,10 @@ describe("new user access defaults", () => {
       canViewDocuments: false,
       canEditDocuments: true,
     }, "viewer")).toMatchObject({
-      canPlan: true,
-      canManagePlanning: true,
-      canViewDocuments: true,
-      canEditDocuments: true,
+      canPlan: false,
+      canManagePlanning: false,
+      canViewDocuments: false,
+      canEditDocuments: false,
     });
   });
 
