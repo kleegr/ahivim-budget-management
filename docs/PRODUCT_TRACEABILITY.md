@@ -2,7 +2,7 @@
 
 This is the implementation and release contract for the Ahivim agency
 operating system. It maps the owner's stated business rules, roles, and daily
-workflows to the current shared code tree as of 2026-09-01.
+workflows to the current shared code tree, with release evidence through 2026-09-08.
 
 A page existing is not proof that a workflow is complete. Code status and
 production acceptance are deliberately separate.
@@ -77,11 +77,15 @@ independent session secrets. Production synthetic financial tests remain
 prohibited. These controls do not mark an entire business workflow
 `PRODUCTION VERIFIED` before its remaining acceptance evidence is complete.
 
-### 2026-09-07 - Developer 2 access release in preparation
+### 2026-09-08 - Developer 2 access release and bounded production acceptance
 
-The permissions work continues from accepted Developer 1 main
-`aea9488d345d88383db2dc99b7d1f39d25bdf2e4`. Its implementation status is
-`IMPLEMENTED`; deployment and direct production role acceptance remain open.
+PR #38 is merged at `af09541e6d9ce2395b597273e9e63fa3689c6a07`.
+Production acceptance was performed against the combined release
+`f902f35d7248a9cf2c924617edcca223e648eae4`. The release gate passed
+1,928 tests and 50 browser cases; 10 historical private-workbook tests remained
+skipped and are not counted as passing evidence. Developer 1 independently
+verified that all 74 pre-existing table contents and the original 46 migration
+checksums were unchanged, with all 48 migrations applied.
 
 - Document list, metadata, source, version, file, draft, editor, upload, and
   generated-source entry points enforce current record and category access.
@@ -100,20 +104,76 @@ The permissions work continues from accepted Developer 1 main
   authorizations cannot be changed by planning-only users. Direct employee and
   agency checks require complete, attributable source sets; related people and
   mixed checks do not widen a portal's scope.
-- The 13-preset route/action/field contract is recorded in
-  `tests/e2e/access-contract.ts`. Direct browser sessions cover role transitions,
-  account revocation, multiple-person parent access, and impersonation. Focused
-  regressions exercise actual handlers and PostgreSQL with leakage sentinels.
-- Migrations `0046` and `0047` were rehearsed together with Developer 1's
-  `0044`/`0045`, from the 44-migration baseline on disposable local PostgreSQL
-  and an isolated Neon copy. All 72 existing business-table contents were
-  preserved. The expected settlement refresh marker changed once; migration
-  replay applied nothing. The preview database, private Blob store, and session
-  signing secret are isolated from production.
 
-Independent reviews covered the authentication, portal, document, sanitizer,
-and navigation changes. Release gates and production evidence will be added
-after verification; this entry is not a production acceptance claim.
+The 13-preset route/action/field contract remains in
+`tests/e2e/access-contract.ts`. All 13 account presets were provisioned through
+normal application controls and signed in directly in production. On that tested
+release, server-boundary checks and desktop/390-pixel phone reviews completed
+for all 13. Owner Users and Settings were checked in both viewports, Office
+Manager's dashboard fully loaded in both, and Agency Collector's desktop
+portal fully rendered before its review was recorded.
+
+Owner used Settings to Sign In As Budget Planner. The target session received
+`403` for administration and the same 27 safe employee projections as direct
+Budget Planner sign-in. The persistent Return button on the phone restored
+Owner administration (`200`) and returned to the dashboard. All 12 temporary
+non-Owner acceptance accounts were subsequently disabled through normal UI
+controls and confirmed inactive through the server. The same previously
+legitimate Parent session then received `401` for its portal. The two real
+active users were untouched. The temporary Owner is retained for Developer 1's
+final financial acceptance; its later disable/cleanup remains pending.
+
+A directly signed-in Parent opened both legitimately bound real profiles and
+received their HTML and CSV statements; an unrelated individual's CSV returned
+`404`. Independent inspection of the actual browser download confirmed the
+`Month`, `Billed`, and `Set aside` aggregate-only structure, 12 monthly rows and
+one total, with no employee identities, payroll/check details, gross, net, or
+tax fields. Private evidence retains the download hash and audit without
+committing personal records or financial amounts.
+
+The isolated live preview completed normal Class Billing upload, annotation,
+sanitized version save and reopen, Owner approval of the exact version and
+recipient scope, and a read-only Parent download. Independent parsing and
+rendering of the downloaded PDF confirmed the visible test content and absence
+of hidden metadata, attachments, source objects, and the source sentinel in
+both raw bytes and decoded streams. Owner revocation then denied detail and
+file access using the same previously legitimate Parent session and removed
+Approved documents navigation. The preview database, private Blob store, and
+session secret were isolated from production; the publication was revoked and
+its two non-Owner test accounts were disabled.
+
+At that acceptance, production had no verified employee checks or give-back
+records, so those positive paths are evidenced only in isolated tests. The
+Employee evidence field `directActivityCount: null` was unmeasured; it is not
+proof of zero activity or of a successful positive-history workflow. Production
+also had no approved document publications or issued invoices; document
+publication and invoice positive paths remain isolated-only evidence. Independent
+reviews covered authentication, portal, document, sanitizer, and navigation changes.
+The initially observed approximately 59-second Owner dashboard load and the
+migration-session-lock startup and budget-query performance follow-ups are
+separately owned by Developer 1, who subsequently merged PR #40 at `87538c1`.
+This record attests to the tested `f902f35` release, not the later revision.
+These access results do not mark those follow-ups, the entire operating system,
+or its remaining business workflows `PRODUCTION VERIFIED`.
+
+#### PR #42 account-action feedback - production pending
+
+The account-action UI fix at local commit `74e51e1` is included in PR #42's
+tested remote head `eb71e4458864a33458e1478d76b991764a3322b5`. Remote gate
+`34191815114` passed 1,986 tests across 285 files, 54 browser cases, lint,
+types, the zero-finding dependency audit, and build. Ten private-workbook tests
+in two files remained skipped. Regressions verify that a successful mutation
+updates the UI and retains its credential result even when the subsequent list
+reload fails or stalls; explicit retry reloads the list without repeating the
+mutation.
+
+On isolated deployment `dpl_aEvMVAffwz3wmddhJKsxAonbJtti`, normal Owner login
+and account enable/disable each passed on desktop and a 390-pixel phone viewport.
+Observed updates took 383-809 ms without a full-page reload, responses remained
+private/no-store, and the temporary account was disabled at the end. This is
+bounded automated and isolated-preview evidence. Production release is held
+for Developer 1's PR #41 and financial acceptance; neither that acceptance nor
+final release completion is claimed here.
 
 ### 2026-09-07 - Developer 1 financial release in preparation
 
@@ -160,12 +220,14 @@ accepted cron requests, including recovered database connection retries. Those
 HTTP responses do not establish which scheduled runs imported data: configuration
 and database run history still required authenticated inspection. Production
 sign-in, a fresh verified recovery point, and merge/deployment were completed
-in the September 8 entry above; direct role acceptance remains open.
+in the September 8 entry above. Bounded direct-role access acceptance is now
+recorded in Developer 2's entry; financial workflow acceptance remains with
+Developer 1.
 
-### 2026-09-01 - current release, agencies, and schedule matching
+### 2026-09-01 - historical release, agencies, and schedule matching
 
 - Production commit `2801cf164af974fc78b8f94dd085ecafab54e3ea`
-  deployed successfully through deployment `8dSn6Jz1m2iHy153rgsKtfFgarAP` and is
+  deployed successfully through deployment `8dSn6Jz1m2iHy153rgsKtfFgarAP` and was
   assigned to `https://ahivim-budget-management.vercel.app`.
 - The database, schema, environment, and XLSX health endpoints returned HTTP
   200. The database reported all migrations applied and 73 public tables; the
@@ -180,13 +242,15 @@ in the September 8 entry above; direct role acceptance remains open.
   directory and recorded-match review: the pages rendered without alerts or
   horizontal body overflow. Recent Vercel requests for the tested application
   routes returned HTTP 200 with no runtime error messages.
-- This proves the current release and these owner views, not every role. Direct
+- This proved that release and these owner views, not every role. At that date, direct
   login, mutation, privacy-payload, and full desktop/mobile acceptance for each
-  preset remain open.
+  preset remained open.
 - No parent/individual schedule privacy acceptance is claimed for this deployed
-  commit: it still returned assigned employee names. The current post-release
+  commit: it still returned assigned employee names. The subsequent
   hardening removes employee identity from the parent schedule projection and
-  awaits deployment, direct-login payload inspection, and mobile acceptance.
+  awaited deployment, direct-login payload inspection, and mobile acceptance.
+  The bounded September 8 Developer 2 entry supersedes those access gates;
+  positive workflow cases outside that evidence remain open.
 
 ### 2026-09-01 - owner desktop and source reconciliation
 
@@ -206,10 +270,11 @@ in the September 8 entry above; direct role acceptance remains open.
 - The Masser owner view, exact repair links, read-only Sheet refresh, Owner to
   Owner Sign In As and return, and production health endpoints passed desktop
   acceptance. Private document storage is configured.
-- This is partial production evidence, not role completion. Direct-login
+- This was partial production evidence, not role completion. At that date, direct-login
   acceptance for every preset, mobile acceptance, mutating Masser/classes/
   document cases, read-only Google source transport, and the licensed source-text
-  PDF decision remain open.
+  PDF decision remained open. The September 8 Developer 2 entry records the
+  later bounded role-access acceptance; the other workflow requirements remain.
 
 ## Canonical Business Truths
 
@@ -225,12 +290,14 @@ in the September 8 entry above; direct role acceptance remains open.
 
 ## Role And Portal Matrix
 
-Every row below is implemented in code unless marked `PARTIAL`, but every
-role still needs direct signed-in production acceptance.
+Every row below is implemented in code unless marked `PARTIAL`. All 13 presets
+passed the bounded direct-login, server-scope, and desktop/phone acceptance on
+tested release `f902f35`, as recorded above. Remaining representative daily
+workflow and financial reconciliation requirements are listed separately.
 
 | Preset/profile | Status | Home, work, and hard privacy boundary |
 | --- | --- | --- |
-| Owner | IMPLEMENTED | Whole-agency home, named multi-person activity cohorts, all reports, all people, all money, all settings, user administration, Sign In As, and exact drilldowns. Saved cohorts retain dates, people, employee, and payroll-period filters and are owner-only at the API boundary. Full role-by-role production acceptance remains open. |
+| Owner | IMPLEMENTED | Whole-agency home, named multi-person activity cohorts, all reports, all people, all money, all settings, user administration, Sign In As, and exact drilldowns. Saved cohorts retain dates, people, employee, and payroll-period filters and are owner-only at the API boundary. Bounded role-access acceptance passed; representative financial workflow acceptance remains with Developer 1. |
 | Office Manager | IMPLEMENTED | Everyday internal work, reports, budgets, and financials, without user-account administration. |
 | Budget Planner | IMPLEMENTED | Full-roster budget coverage, assignments, employee availability, calendar, and hours-only direct-pay target progress. May create, revise, or cancel active non-Classes hour authorizations. Cannot receive rates, dollars, transactions, payroll, taxes, employee deals, Masser, or manual financial adjustments. Planner mutation payloads and responses are server allowlisted/scrubbed. |
 | Staffing Manager | IMPLEMENTED | Finance-free employee directory/detail, weekly availability, time off, assignments, and schedule. Employee APIs expose only identity/status fields; no budgets, rates, notes, external payroll references, checks, taxes, transactions, deals, or settlements. |
@@ -242,6 +309,7 @@ role still needs direct signed-in production acceptance.
 | Agency Scheduler | IMPLEMENTED | Agency-scoped assignments and schedule using hours only. No money. |
 | Agency Staffing Manager | IMPLEMENTED | Agency-scoped employee roster, assignments, availability, and schedule using hours only. No money. |
 | Agency Collector | IMPLEMENTED | Read-only agency financial, direct-check, agency-paid, and settlement views according to explicit grants/denials. It is separate from the internal Money Collector and cannot use global Masser or budget planning. |
+| Custom Access | IMPLEMENTED | Starts with no access or portal binding. Only Owner-selected internal workspaces, actions, and directly scoped records are available; omitted permissions remain denied. The no-access preset was included in the 13-role production acceptance. |
 
 Evidence for role definitions and provisioning lives in
 `src/lib/auth/account-presets.ts`, `src/lib/auth/access-presets.ts`,
@@ -265,16 +333,16 @@ role-specific read models and API tests.
 | Financial Setup | IMPLEMENTED | Owner/manager configures program lines, yearly/monthly values, sequential cuts, adjustments, and the approved final amount, visually separate from Masser. | Reconcile spreadsheet examples and retain owner/manager-only access. |
 | Settlement Ledger | IMPLEMENTED | Auditable obligations, payments, multi-select completion, partials, extras/credits, corrections, and reversals for both payment directions. | Production-reconcile ledger freshness and correction chains after every deal/rule type. |
 | Employees | IMPLEMENTED | Financial roles see activity, people served, programs, transactions, arrangements, and checks; planning roles receive the separate finance-free directory/detail and availability/assignment workflow. | Verify both variants with representative accounts and inspect server responses for forbidden fields. |
-| Agencies | IMPLEMENTED | Owner-only directory and individual agency profiles show selected-month rosters and responsibility, managed and billing-only membership counts, budget hours, schedules, actual recorded totals, and permitted financial summaries from the canonical portal-safe read model. Directory reads stay aggregate-only; a detail route is restricted to the selected agency at the database boundary. | Owner desktop and narrow-mobile layouts passed on the current release. Reconcile roster dates, responsibility counts, hours, and actual totals for every agency, then accept each agency-facing preset. |
+| Agencies | IMPLEMENTED | Owner-only directory and individual agency profiles show selected-month rosters and responsibility, managed and billing-only membership counts, budget hours, schedules, actual recorded totals, and permitted financial summaries from the canonical portal-safe read model. Directory reads stay aggregate-only; a detail route is restricted to the selected agency at the database boundary. | Owner layouts and bounded direct-login access for agency-facing presets passed on the recorded tested releases. Reconcile roster dates, responsibility counts, hours, and actual totals for every agency beyond that access evidence. |
 | Reports | IMPLEMENTED | Decision-oriented reports for canonical budget use, exceptions/renewals, actual versus scheduled, program totals, funder/base/spread, employee pay, reconciliation gaps, group activity, setup audit, aliases, and audit history. Actuals come from transactions; program totals separate credited individual hours from physical employee hours. User-entered CSV text is neutralized across shared, report, and portal exports while typed negative numbers remain numeric. | Reconcile filters/totals/exports in production and repair legacy group links where exact physical-hour deduplication is required. |
 | Programs | IMPLEMENTED | Reusable global programs support authorization basis, service category, group rules, payment recipient, consumption source, rate scope, renewal policy, standard rates, and individual overrides. A guided form asks the four everyday questions first, keeps rare rules collapsed, derives a short code when omitted, and atomically creates the catalog entry, operating rules, and optional starting rate. | Production-test the common create-program path with a new administrator and reconcile the first assigned authorization. |
 | Classes | IMPLEMENTED | Per-individual annual dollar allowance; editable monthly invoice draft; default 22 non-Saturday service dates; atomic issue/void; budget consumption/reversal; cover-sheet attestation; and saved output. | Obtain stakeholder approval for exact branding/signature treatment and visually compare supplied examples. |
-| Documents and current PDF editor | IMPLEMENTED | Private PDF library, access-gated streaming, upload, search, archive, immutable save/restore history, drafts, forms, signatures, drawing, page operations, native/OCR text inspection, cover-and-replacement text, imported fonts, and export. Saved versions reopen the retained source PDF and restore editable overlays, forms, page order/rotation, images, fonts, and export mode instead of reopening only a flattened copy; bounded embedded assets retain editable portability. Structured saves validate every page, overlay, form value, asset, ID, size, and reference before storage access while retaining pre-manifest legacy drafts. Missing Blob configuration fails before reserving unusable records. | Verify production Blob upload/edit/save/reopen/second-save/restore/archive and font embedding end to end. |
-| User and agency provisioning | IMPLEMENTED | Simple role/profile chooser, generated temporary password, atomic user plus individual/employee/agency binding, preset access, agency roster dates/responsibility, and agency/per-member capability overrides. Office Manager and custom staff profiles remain available for internal exceptions. | Create every listed preset/profile once in production; verify rollback on invalid bindings and direct login after provisioning. |
-| Sign In As | IMPLEMENTED | An admin can start a server-authorized session as another active user from user administration, sees a persistent banner, can explicitly return, and cannot chain previews. Central audit records retain the owner as the actor and the previewed account as the target; failed start/stop transitions fail closed and remain visible. Evidence: `src/app/api/auth/impersonation/*`, `src/lib/auth/audit-attribution.ts`, `src/components/auth/impersonation-bar.tsx`. | Production-test cookie/security behavior and every preset. Final role acceptance must also include a direct login, not only impersonation. |
-| Portal statements, trends, and schedules | IMPLEMENTED | Individual/parent portal supports selected-month detail, a twelve-month default trend (bounded to 24), capability-gated categories, printable statement, and CSV download without employee/check/tax/gross/net leakage. The working-tree individual/parent schedule projection returns only date, time, duration, program, and group facts; it omits employee identity, internal IDs, and group peers. Employee views receive only their assigned participants. Evidence: `src/lib/data/portal-schedule.ts`, `tests/portal-schedule.test.ts`, `tests/portal-schedule-ui.test.ts`. | Deploy the privacy hardening, then inspect a direct-login parent response and DOM. Verify empty months, renewal boundaries, downloads, print layout, upcoming/full schedule, mobile layout, and category denials. |
+| Documents and current PDF editor | IMPLEMENTED | Private PDF library, access-gated streaming, upload, search, archive, immutable save/restore history, drafts, forms, signatures, drawing, page operations, native/OCR text inspection, cover-and-replacement text, imported fonts, and export. Saved versions reopen the retained source PDF and restore editable overlays, forms, page order/rotation, images, fonts, and export mode instead of reopening only a flattened copy; bounded embedded assets retain editable portability. Structured saves validate every page, overlay, form value, asset, ID, size, and reference before storage access while retaining pre-manifest legacy drafts. Missing Blob configuration fails before reserving unusable records. | Isolated live upload/edit/sanitized-save/reopen/approval/download and same-session revocation passed. With no production publications, positive production document workflows, second-save/restore/archive, and font embedding still require representative acceptance. |
+| User and agency provisioning | IMPLEMENTED | Simple role/profile chooser, generated temporary password, atomic user plus individual/employee/agency binding, preset access, agency roster dates/responsibility, and agency/per-member capability overrides. Office Manager and custom staff profiles remain available for internal exceptions. | All 13 presets were provisioned through normal UI and signed in directly on tested production release f902f35. Invalid-binding rollback and further role-transition cases beyond the recorded production evidence remain acceptance requirements; no unobserved production mutation is claimed. |
+| Sign In As | IMPLEMENTED | An admin can start a server-authorized session as another active user from user administration, sees a persistent banner, can explicitly return, and cannot chain previews. Central audit records retain the owner as the actor and the previewed account as the target; failed start/stop transitions fail closed and remain visible. Evidence: `src/app/api/auth/impersonation/*`, `src/lib/auth/audit-attribution.ts`, `src/components/auth/impersonation-bar.tsx`. | Owner-to-Budget-Planner Sign In As, server restrictions, mobile return, and direct login for every preset passed on f902f35. Other target transitions and failed start/stop recovery retain their regression and representative acceptance requirements. |
+| Portal statements, trends, and schedules | IMPLEMENTED | Individual/parent portal supports selected-month detail, a twelve-month default trend (bounded to 24), capability-gated categories, printable statement, and CSV download without employee/check/tax/gross/net leakage. The deployed individual/parent schedule projection returns only date, time, duration, program, and group facts; it omits employee identity, internal IDs, and group peers. Employee views receive only their assigned participants. Evidence: `src/lib/data/portal-schedule.ts`, `tests/portal-schedule.test.ts`, `tests/portal-schedule-ui.test.ts`. | Privacy hardening, direct Parent response/DOM and mobile inspection, both bound profiles, HTML/CSV, an actual downloaded-byte audit, and foreign-record denial passed on f902f35. Empty months, renewal boundaries, full print layout, and schedule/category cases beyond the recorded evidence remain to be verified. |
 | Imports, reconciliation, and matching | IMPLEMENTED | Upload/stage/review/commit, duplicate recognition, correction routes, alias decisions, person merges, and payroll-check review exist; actual transaction visibility does not depend on creating a deal for each import. Workbook parsing is field-aware, including recovery of numeric payroll amounts that Excel tagged as date cells. A successful Sheet commit optionally links only unambiguous one-person, non-group, same-employee, same-program, exact-date, exact-hours daily records; optional matching failure cannot turn the committed import into a failed sync and remains retryable from the next refresh. The supplied payroll workbook parses 5,307 valid rows with zero invalid rows and restores 26 previously blank net-pay values. | Commit the original workbooks in production, verify exact auto-match and ambiguous/group review cases, confirm unmatched/invalid rows lead to the exact repair screen, and reconcile post-commit totals and repeated check-number identities. |
-| Actionable errors and first-click UX | IMPLEMENTED | Global route-progress feedback covers internal links and native forms; shared mutation controls disable and acknowledge submits while retaining entered work and visible failures; every client component that writes through `fetch` is audited for busy and error paths; server-load failures provide a plain-language retry; and high-use import, transaction, group, collection, financial, schedule-conflict, and role-denial states link to the exact next record or repair screen. A denied redirect now explains that access was blocked after the role-specific home reload, and budget-status failures remain visible without discarding the edit. Evidence: `src/components/app-nav.tsx`, `src/components/auth/access-notice.tsx`, `src/components/manage/client.tsx`, `src/components/ui.tsx`, `tests/workflow-clarity.test.ts`, `tests/transaction-cross-drills.test.ts`, `tests/collections-deep-links.test.ts`. | Complete signed-in first-click and mobile acceptance for every preset in production. |
+| Actionable errors and first-click UX | IMPLEMENTED | Global route-progress feedback covers internal links and native forms; shared mutation controls disable and acknowledge submits while retaining entered work and visible failures; every client component that writes through `fetch` is audited for busy and error paths; server-load failures provide a plain-language retry; and high-use import, transaction, group, collection, financial, schedule-conflict, and role-denial states link to the exact next record or repair screen. A denied redirect now explains that access was blocked after the role-specific home reload, and budget-status failures remain visible without discarding the edit. Evidence: `src/components/app-nav.tsx`, `src/components/auth/access-notice.tsx`, `src/components/manage/client.tsx`, `src/components/ui.tsx`, `tests/workflow-clarity.test.ts`, `tests/transaction-cross-drills.test.ts`, `tests/collections-deep-links.test.ts`. | Bounded signed-in navigation and desktop/phone access acceptance passed for all 13 presets on f902f35. Error recovery, positive mutations, and first-click behavior beyond that scope remain open; dashboard/startup/query performance belongs to Developer 1. |
 | Google Sheet read-only refresh | IMPLEMENTED | The button runs only the inbound sync, commits valid transaction evidence to Neon, preserves source values for audit, refreshes visible results, and links directly to Schedule matching when optional matching needs review. Paid, review, and correction decisions remain in Neon; the code contains no Sheet mutation module or write OAuth scope. | Configure Viewer-only production access and verify a full unfiltered authoritative-source read, idempotent retry, failure recovery, and zero outbound mutation requests. Any transport copy also requires a verified full digest and fail-closed mismatch alert. |
 | Adobe-class source-text PDF editing | EXTERNAL BLOCKER | The current editor is an overlay/form/document editor, not arbitrary reflow of existing source text in proprietary embedded fonts. | Choose and license a commercial source-text PDF SDK, integrate it, and verify embedded-font fidelity on the supplied PDFs; otherwise narrow the product promise to the implemented overlay editor. |
 
@@ -285,22 +353,24 @@ role-specific read models and API tests.
 | Google Sheet read-only transport | Viewer-only service-account access plus production proof of a full unfiltered authoritative-source read. Any transport copy requires complete digest verification and a fail-closed mismatch alert. |
 | Adobe-equivalent source-text editing | Licensed SDK/product decision; the current overlay editor cannot truthfully be called Adobe-equivalent. |
 | Legacy unlinked group history | Repair or backfill session links before historical physical employee hours can be exactly deduplicated. |
-| Production document storage | Private Blob is configured. Complete upload/edit/save/reopen/second-save/restore/archive access-control acceptance. |
+| Production document storage | Private Blob is configured; isolated live upload/edit/save/reopen/approved-download/revocation passed. Positive production document workflows and the remaining second-save/restore/archive cases are not established by that isolated evidence. |
 | Class PDF identity | Owner approval of exact logo, brand marks, signatures, and final rendered examples. |
 | Historical approved set-asides | Saved setup revisions provide as-of values from August 2026 forward. Earlier months without trustworthy snapshots remain disclosed and excluded until source history is supplied. |
-| Dedicated test database | Configure `TEST_DATABASE_URL` and run the 31 database integration files that are intentionally skipped without it. |
+| Dedicated test database | The release gate ran with a dedicated PostgreSQL database: 1,928 tests passed, alongside 50 browser cases. Ten historical private-workbook tests remained skipped; supplying and replaying those fixtures remains a separate evidence requirement. |
 
 ## Remaining Delivery Order
 
-1. Retain production commit
-   `2801cf164af974fc78b8f94dd085ecafab54e3ea` as the current acceptance
-   baseline. Its 39 migrations, schema, database, environment, and XLSX health
-   checks passed on 2026-09-01.
-2. Complete signed-in first-click, error-recovery, direct-login, Sign In As,
-   desktop, and mobile acceptance for every preset in production.
-3. Configure `TEST_DATABASE_URL` and run the 31 intentionally skipped database
-   integration files; retain the passing unit, typecheck, build, and zero-warning
-   lint evidence from the current production baseline and each later hardening release.
+1. Retain tested production commit
+   `f902f35d7248a9cf2c924617edcca223e648eae4` and its 48-migration
+   September 8 access evidence. Developer 1's later PR #40 (`87538c1`) and any
+   later release require their own acceptance record; this is not a claim that
+   `f902f35` is the current production revision.
+2. Preserve completed 13-preset direct-login, desktop/phone, server-scope, and
+   Owner-to-Budget-Planner Sign In As/return evidence. Complete first-click,
+   error-recovery, and positive workflow cases beyond that bounded acceptance.
+3. Retain the dedicated-PostgreSQL release gate: 1,928 passing tests, 50 browser
+   cases, and its lint/type/build evidence. The 10 historical private-workbook
+   skips are not passes; replay them when their required fixtures are supplied.
 4. Reconcile representative production truth end to end: one normal and one
    group transaction, a renewal boundary, billing without budget, direct and
    agency-routed pay, Masser credit/correction, class invoice, manual income,
@@ -309,13 +379,20 @@ role-specific read models and API tests.
    idempotent inbound import and confirm that no mutation request is made. Private
    Blob is configured but still needs its complete production document
    round trip. Repair legacy group links needed for exact history.
-6. Create every listed preset/profile account and execute the role acceptance matrix below on
-   desktop and mobile. Store screenshots/exports, inspected API payloads,
-   account used, date, and pass/fail result.
+6. Preserve the recorded normal-UI provisioning and direct-login evidence for
+   all 13 presets. The 12 temporary non-Owners are disabled; Developer 1 owns
+   final acceptance and later cleanup of the retained temporary Owner. Execute
+   the remaining daily-workflow cases below with representative records and
+   retain private screenshots/exports, inspected API payloads, date, and result.
 7. Obtain class PDF visual approval and make the explicit Adobe SDK versus
    overlay-only product decision.
 
 ## Role-By-Role Production Acceptance
+
+Provisioning, direct login, desktop/phone views, and bounded server access passed
+for all 13 presets on `f902f35`. This matrix retains the broader daily-workflow
+requirements; an empty response or an unmeasured count does not prove a positive
+workflow. In particular, Employee `directActivityCount: null` was not measured.
 
 | Role/account | Daily workflow that must pass | Privacy and authority proof |
 | --- | --- | --- |
@@ -331,6 +408,7 @@ role-specific read models and API tests.
 | Agency Scheduler | Assign and schedule the agency's in-scope roster and inspect hours. | No money, budgets beyond allowed hour coverage, transactions, or out-of-agency people. |
 | Agency Staffing Manager | Review agency employees, availability, assignments, and schedule. | No money and no employees outside the dated agency roster. |
 | Agency Collector | Review only granted agency direct-check, agency-paid, set-aside, and settlement details. | Read-only; no budget planning, internal global Masser, deal editing, or denied financial category. |
+| Custom Access | Directly sign in with the no-access preset; verify only explicitly granted workspaces and records after any later tailored configuration. | No implicit portal binding or inherited authority; every ungranted route, action, record, and financial category remains denied. |
 
 For every external or restricted account, use the real preset provisioning flow
 and a direct login. Sign In As is an additional owner preview and debugging tool,

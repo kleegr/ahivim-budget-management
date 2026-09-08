@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { CalendarClock, Check, Copy, Eye, EyeOff, GraduationCap, LogIn, Plus, UsersRound, WalletCards, X } from "lucide-react";
 import {
@@ -733,19 +732,26 @@ export default function UserAccessAdmin({
   employees: Option[];
   agencies: Option[];
 }) {
-  const router = useRouter();
-  const users = initialUsers;
+  const [users, setUsers] = useState(initialUsers);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [refreshing, startRefresh] = useTransition();
-  const actionBusy = busy || refreshing;
+  const [refreshing, setRefreshing] = useState(false);
+  const [listNeedsRefresh, setListNeedsRefresh] = useState(false);
+  const actionBusy = busy || refreshing || listNeedsRefresh;
+  const listRequest = useRef(0);
+  const listController = useRef<AbortController | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [impersonatingId, setImpersonatingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!busy && !refreshing) setBusyAction(null);
   }, [busy, refreshing]);
+
+  useEffect(() => () => {
+    listRequest.current += 1;
+    listController.current?.abort();
+  }, []);
 
   // Add-user form.
   const [addOpen, setAddOpen] = useState(false);
@@ -775,6 +781,39 @@ export default function UserAccessAdmin({
   // rather than silently overwriting the user's real access with blank defaults.
   const [editLoadFailed, setEditLoadFailed] = useState(false);
 
+  async function refreshUsers(changeSaved = false) {
+    const request = ++listRequest.current;
+    listController.current?.abort();
+    const controller = new AbortController();
+    listController.current = controller;
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    setRefreshing(true);
+    setError(null);
+    try {
+      // Reconcile the actual account list without waiting for programs, audit,
+      // or any other Settings RSC data. Never repeat a committed mutation.
+      const response = await fetch("/api/admin/users", { cache: "no-store", signal: controller.signal });
+      const data = await response.json() as { ok?: boolean; users?: UserRow[] };
+      if (!response.ok || !data.ok || !Array.isArray(data.users)
+        || data.users.some((user) => !user || typeof user.id !== "string" || typeof user.email !== "string"
+          || typeof user.displayName !== "string" || typeof user.role !== "string" || typeof user.isActive !== "boolean")) {
+        throw new Error("User list unavailable.");
+      }
+      if (request !== listRequest.current) return;
+      setUsers(data.users);
+      setListNeedsRefresh(false);
+    } catch {
+      if (request !== listRequest.current) return;
+      setListNeedsRefresh(true);
+      setError(changeSaved
+        ? "The change was saved, but the account list could not be reloaded. Reload accounts before making another change."
+        : "The account list could not be reloaded. Reload accounts before making another change.");
+    } finally {
+      clearTimeout(timeout);
+      if (request === listRequest.current) setRefreshing(false);
+    }
+  }
+
   async function patch(
     id: string,
     body: Record<string, unknown>,
@@ -795,7 +834,7 @@ export default function UserAccessAdmin({
       if (!res.ok || !data.ok) setError(data.error ?? "That change was rejected.");
       else {
         setNotice(okMsg);
-        startRefresh(() => router.refresh());
+        await refreshUsers(true);
       }
       return res.ok && data.ok === true;
     } catch {
@@ -1029,7 +1068,7 @@ export default function UserAccessAdmin({
         setCopiedCredential(false);
         setForm({ email: "", displayName: "" });
         setAddOpen(false);
-        startRefresh(() => router.refresh());
+        await refreshUsers(true);
       }
     } catch {
       setError("Could not reach the server.");
@@ -1081,6 +1120,11 @@ export default function UserAccessAdmin({
 
       {error ? (
         <p role="alert" className="mx-5 mt-3 rounded border border-[var(--color-danger)] bg-[#fdf2f5] px-3 py-2 text-sm text-[var(--color-danger)]">{error}</p>
+      ) : null}
+      {listNeedsRefresh ? (
+        <button type="button" className="btn btn-sm btn-secondary mx-5 mt-3" disabled={busy || refreshing} onClick={() => void refreshUsers()}>
+          {refreshing ? "Reloading accounts…" : "Reload accounts"}
+        </button>
       ) : null}
       {notice ? (
         <p role="status" className="mx-5 mt-3 rounded border border-[var(--color-primary)] bg-[var(--color-primary-soft)] px-3 py-2 text-sm text-[var(--color-primary)]">{notice}</p>
