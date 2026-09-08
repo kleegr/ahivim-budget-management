@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { closeTestPool, hasTestDatabase, resetSchema, testPool } from "../support/database";
+import { cacheControlDirectives } from "../support/cache-control";
 import { canAccessPortalAgencySubject, resolvePortalAccess } from "@/lib/auth/portal-access";
 import type { PortalHomeReadModel } from "@/lib/data/portal-read-model";
 
@@ -99,7 +100,9 @@ async function portal(userId: string, month = MONTH, extraQuery = "") {
   const response = await accessGet(new NextRequest(`http://localhost/api/portal/access?month=${month}${extraQuery}`));
   const body = await response.json();
   expect(response.status, JSON.stringify(body)).toBe(200);
-  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  const cacheDirectives = cacheControlDirectives(response.headers.get("cache-control"));
+  expect(cacheDirectives).toEqual(expect.arrayContaining(["private", "no-store"]));
+  expect(cacheDirectives).not.toContain("public");
   return body.data as PortalHomeReadModel;
 }
 
@@ -312,7 +315,9 @@ suite("Developer 2 portal privacy through handlers and PostgreSQL", () => {
     for (const format of ["html", "csv"]) {
       const response = await statementGet(new NextRequest(`http://localhost/api/portal/individual-statements?individualId=${f.personA}&month=${MONTH}&format=${format}`));
       expect(response.status).toBe(200);
-      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      const cacheDirectives = cacheControlDirectives(response.headers.get("cache-control"));
+      expect(cacheDirectives).toEqual(expect.arrayContaining(["private", "no-store"]));
+      expect(cacheDirectives).not.toContain("public");
       const content = await response.text();
       expect(content).toContain("Linked Person A");
       expect(content).not.toMatch(/PRIVATE EMPLOYEE|PRIVATE CHECK|Other Agency Person|600\.00|900\.00/);

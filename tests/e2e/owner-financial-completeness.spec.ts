@@ -2,6 +2,7 @@ import { expect, test, type Download, type Page } from "@playwright/test";
 import ExcelJS from "exceljs";
 import { Pool } from "pg";
 import { agencyDate } from "../../src/lib/business/agency-time";
+import { cacheControlDirectives } from "../support/cache-control";
 import {
   ADMIN_EMAIL,
   ADMIN_PASSWORD,
@@ -115,7 +116,9 @@ async function verifyIncompleteReport(page: Page, pool: Pool): Promise<void> {
     // the actual clicked download below as the exported content evidence.
     const response = await page.request.get(download.url());
     expect(response.status()).toBe(200);
-    expect(response.headers()["cache-control"]).toBe("private, no-store");
+    const cacheDirectives = cacheControlDirectives(response.headers()["cache-control"]);
+    expect(cacheDirectives).toEqual(expect.arrayContaining(["private", "no-store"]));
+    expect(cacheDirectives).not.toContain("public");
     expect(download.suggestedFilename()).toBe(`agency-financials-${MONTH}.${format}`);
     const bytes = await downloadBytes(download);
     if (format === "csv") {

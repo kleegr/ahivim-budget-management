@@ -19,6 +19,9 @@ import { resolveAccessScope } from "@/lib/auth/access";
 import { ACCOUNT_PRESETS } from "@/lib/auth/account-presets";
 import { signSession } from "@/lib/auth/crypto";
 import { resolvePortalAccess } from "@/lib/auth/portal-access";
+import { GET as individualProfile } from "@/app/api/individuals/[id]/route";
+import { GET as portalHome } from "@/app/api/portal/access/route";
+import { GET as individualStatement } from "@/app/api/portal/individual-statements/route";
 
 const suite = hasTestDatabase ? describe : describe.skip;
 const PASSWORD = "isolated role test password";
@@ -104,6 +107,44 @@ suite("account lifecycle authorization through real handlers and PostgreSQL", ()
     expect(await resolveAccessScope(testPool(), { id, role: "admin" })).toMatchObject({ role: "viewer", full: false, canSeeMoney: false });
     await updateManagedUser(testPool(), id, { isActive: false }, actor.id);
     expect(await resolveAccessScope(testPool(), { id, role: "admin" })).toMatchObject({ full: false, canSeeMoney: false });
+  });
+
+  it("serves both directly bound parent profiles through portal handlers and removes them for the same session after a downgrade", async () => {
+    const actor = await owner();
+    const people = (await testPool().query<{ id: string; display_name: string }>(
+      "INSERT INTO individuals (normalized_name, display_name) VALUES ('first bound', 'First bound'), ('second bound', 'Second bound'), ('unrelated', 'Unrelated private') RETURNING id, display_name",
+    )).rows;
+    const bound = people.filter((person) => person.display_name !== "Unrelated private");
+    const unrelated = people.find((person) => person.display_name === "Unrelated private")!;
+    const id = await provision("individual_parent", { individuals: bound.map((person) => ({ individualId: person.id, relationship: "parent" })) });
+    await signIn(id);
+    const parentCookie = cookieValues.get(SESSION_COOKIE)!;
+    // Portal relationships never grant the internal profile/workspace API.
+    for (const person of people) {
+      expect((await individualProfile(new NextRequest(`http://localhost/api/individuals/${person.id}`), { params: Promise.resolve({ id: person.id }) })).status).toBe(404);
+    }
+    const readPortal = () => portalHome(new NextRequest("http://localhost/api/portal/access?month=2026-09"));
+    const statement = (individualId: string) => individualStatement(new NextRequest(`http://localhost/api/portal/individual-statements?individualId=${individualId}&month=2026-09&scope=month`));
+    const before = await readPortal();
+    expect(before.status).toBe(200);
+    const beforeBody = await before.json();
+    expect(beforeBody.data.individuals.map((person: { id: string }) => person.id).sort()).toEqual(bound.map((person) => person.id).sort());
+    expect(JSON.stringify(beforeBody)).not.toContain(unrelated.display_name);
+    for (const person of bound) {
+      const response = await statement(person.id);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain(person.display_name);
+    }
+    expect((await statement(unrelated.id)).status).toBe(404);
+    await signIn(actor.id);
+    expect((await editAccount(request(`/api/admin/users/${id}`, { preset: "custom_access" }, "PATCH"), { params: Promise.resolve({ id }) })).status).toBe(200);
+    cookieValues.clear();
+    cookieValues.set(SESSION_COOKIE, parentCookie);
+    expect((await currentUser())?.id).toBe(id);
+    const after = await readPortal();
+    expect(after.status).toBe(200);
+    expect((await after.json()).data).toMatchObject({ individuals: [], employees: [], agencies: [], globalRoles: [] });
+    for (const person of bound) expect((await statement(person.id)).status).toBe(404);
   });
 
   it.each(["individual_parent", "employee", "agency"])("replaces previous portal authority when switching %s to Custom Access", async (preset) => {
