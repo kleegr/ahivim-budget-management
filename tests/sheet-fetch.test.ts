@@ -99,7 +99,7 @@ describe("authenticated Google Sheet reads", () => {
     );
     expect(readUrl.searchParams.get("majorDimension")).toBe("ROWS");
     expect(readUrl.searchParams.get("valueRenderOption")).toBe("UNFORMATTED_VALUE");
-    expect(readUrl.searchParams.get("dateTimeRenderOption")).toBe("FORMATTED_STRING");
+    expect(readUrl.searchParams.get("dateTimeRenderOption")).toBe("SERIAL_NUMBER");
     expect(request.mock.calls[1]?.[1]).toMatchObject({
       method: "GET",
       cache: "no-store",
