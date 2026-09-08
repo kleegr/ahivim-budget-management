@@ -175,7 +175,7 @@ export default function SourceBaseRecoveryPanel({ review }: { review: SourceBase
       <p className="mt-1 text-sm text-[var(--color-ink-soft)]">Compare historical calculations with the original and current source. Saving records the previous amounts and a reason so the correction can be reversed.</p>
     </header>
     <div className="space-y-4 p-5">
-      {!review.sourceHash ? <p role="alert" className="text-sm">The current source could not be verified. {review.reviewReason ?? "Corrections are unavailable; reload this review when the source is available."}</p> : null}
+      {!review.sourceHash && (review.candidates.length > 0 || review.history.length > 0 || review.reviewReason) ? <p role="alert" className="text-sm">The current source could not be verified. {review.reviewReason ?? "Corrections are unavailable; reload this review when the source is available."}</p> : null}
       <p className="text-sm"><strong>{eligible.length.toLocaleString()}</strong> eligible · <strong>{(review.candidates.length - eligible.length).toLocaleString()}</strong> need further review</p>
       <p className="text-sm text-[var(--color-ink-soft)]">Paid activity and financial history that needs review remain on hold. Approving a source rate is a separate decision.</p>
       {notice ? <p role={notice.error ? "alert" : "status"} className="text-sm">{notice.text}</p> : null}

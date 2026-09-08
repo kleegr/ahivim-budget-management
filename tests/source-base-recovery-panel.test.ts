@@ -89,6 +89,24 @@ describe("Employee base correction review", () => {
     expect(html).toMatch(/disabled=""[^>]*>Review 0 selected corrections/);
   });
 
+  it("does not invent a source failure when an empty review needs no Sheet read", () => {
+    const html = renderToStaticMarkup(React.createElement(Panel, { review: review({
+      candidates: [], history: [], sourceHash: null, reviewReason: null,
+    }) }));
+    expect(html).not.toContain('role="alert"');
+    expect(html).not.toContain("The current source could not be verified");
+    expect(html).not.toContain("Review reversal");
+    expect(html).not.toContain("Save corrections");
+  });
+
+  it("keeps an explicit failure visible even when no rows could be loaded", () => {
+    const html = renderToStaticMarkup(React.createElement(Panel, { review: review({
+      candidates: [], history: [], sourceHash: null, reviewReason: "The source review could not be loaded.",
+    }) }));
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("The source review could not be loaded.");
+  });
+
   it("keeps Paid activity and source failures visible with correction controls disabled", () => {
     const paid = candidate({ paid: true, eligible: false, reviewReason: "Paid activity needs payment history review." });
     const html = renderToStaticMarkup(React.createElement(Panel, { review: review({ candidates: [paid], sourceHash: null }) }));
@@ -131,5 +149,10 @@ describe("Employee base correction review", () => {
     expect(html).toMatch(/disabled=""[^>]*>Review reversal/);
     expect(html.match(/>Review reversal<\/button>/g)).toHaveLength(1);
     expect(html).toContain("Reversed");
+    const unavailable = renderToStaticMarkup(React.createElement(Panel, { review: review({
+      candidates: [], history: [{ ...entry, canUndo: true, undoReviewReason: null }], sourceHash: null,
+    }) }));
+    expect(unavailable).toContain("The current source could not be verified");
+    expect(unavailable).toMatch(/disabled=""[^>]*>Review reversal/);
   });
 });

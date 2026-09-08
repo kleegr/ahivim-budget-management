@@ -202,6 +202,7 @@ export async function listSourceBaseRecoveryReview(pool: PgLikePool, options: {f
   const rows = await loadRows(pool);
   const audits = (await pool.query<Audit>(`SELECT id,entity_id,action,created_at::text,reason,metadata FROM audit_logs
     WHERE action IN ($1,$2) ORDER BY created_at DESC,id`,[BATCH_ACCEPT,BATCH_REVERSE])).rows;
+  if (!rows.length && !audits.length) return {sourceHash:null,reviewReason:null,candidates:[],history:[]};
   const accepted = audits.filter(audit => audit.action === BATCH_ACCEPT);
   const historyIds = accepted.flatMap(audit => (audit.metadata.items as Item[] ?? []).map(item => item.transactionId));
   const historyRows = historyIds.length ? await loadRows(pool,[...new Set(historyIds)]) : [];

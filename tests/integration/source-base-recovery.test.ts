@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PgLikePool } from "@/lib/import/commit";
 import { DEFAULT_SYNC_CONFIG } from "@/lib/sheets/config";
 import { sheetValuesToCsv } from "@/lib/sheets/fetch";
@@ -69,6 +69,27 @@ suite("Audited repair of historical agency base projections", () => {
       (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM audit_logs t) AS audit,
       (SELECT jsonb_agg(to_jsonb(t)) FROM settlement_ledger_state t) AS freshness`)).rows[0];
   }
+
+  it("returns an empty review without fetching the source or inventing a source warning",async () => {
+    const {pool} = await setup();
+    await pool.query("UPDATE payroll_transactions SET internal_amount_mismatch=false");
+    const fetcher = vi.fn(async () => {throw new Error("An empty review must not contact the source");});
+    expect(await loadReview(pool,{fetcher})).toEqual({sourceHash:null,reviewReason:null,candidates:[],history:[]});
+    expect(fetcher).not.toHaveBeenCalled();
+  },40_000);
+
+  it("still verifies the current source for saved history when no mismatch candidates remain",async () => {
+    const {pool,action,csv,sourceHash} = await setup();
+    await pool.query("UPDATE payroll_transactions SET internal_amount_mismatch=false WHERE is_paid");
+    expect(await action()).toMatchObject({ok:true});
+    const fetcher = vi.fn(async () => csv);
+    expect(await loadReview(pool,{fetcher})).toMatchObject({sourceHash,reviewReason:null,candidates:[],history:[{canUndo:true}]});
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const unavailable = vi.fn(async () => {throw new Error("Synthetic source unavailable");});
+    expect(await loadReview(pool,{fetcher:unavailable})).toMatchObject({sourceHash:null,candidates:[],
+      reviewReason:expect.stringContaining("could not be verified"),history:[{canUndo:false,undoReviewReason:expect.stringContaining("could not be verified")}]});
+    expect(unavailable).toHaveBeenCalledTimes(1);
+  },40_000);
 
   it("previews two exact eligible rows and a Paid hold, accepts atomically, retries and undoes the complete four-field batch",async () => {
     const {pool,action,ids,csv} = await setup();
