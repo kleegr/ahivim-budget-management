@@ -14,7 +14,7 @@ import {
 const MONTH = "2026-09";
 const STATEMENT = `/masser/individuals/${LINKED_INDIVIDUAL_ID}?month=${MONTH}`;
 const REPORT = `/reports/individual-put-away?month=${MONTH}&individual=Linked%20Individual`;
-const REVIEW_STATUS = "Source review required; held balances excluded";
+const MONTHLY_BALANCE_STATUS = "Verified balance";
 
 async function signIn(page: Page, email = ADMIN_EMAIL, password = ADMIN_PASSWORD) {
   await page.goto("/signin");
@@ -54,7 +54,7 @@ test.describe.serial("Masser retained source-review balances across actual route
   }
 
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-    test(`owner keeps held balances out of actions, statements and exports at ${viewport.width}px`, async ({ page }) => {
+    test(`owner can use monthly balances while historical holds stay disclosed at ${viewport.width}px`, async ({ page }) => {
       await page.setViewportSize(viewport);
       const runtimeErrors: string[] = [];
       page.on("pageerror", error => runtimeErrors.push(error.message));
@@ -73,32 +73,34 @@ test.describe.serial("Masser retained source-review balances across actual route
       const main = page.locator("#main");
       const row = main.getByRole("row").filter({ hasText: "Linked Individual" });
       await expect(row).toContainText("$260.00");
-      await expect(row).toContainText("Held balances excluded");
-      await expect(row.getByRole("cell").nth(3)).toContainText("Unavailable");
-      await expect(row.getByRole("cell").nth(3)).not.toContainText("$0.00");
-      await expect(row.getByText("Ready", { exact: true })).toHaveCount(0);
-      await expect(row.getByRole("link", { name: "Record set-aside", exact: true })).toHaveCount(0);
-      await expect(row.getByRole("link", { name: "Source review required", exact: true }))
+      // Owner confirmed After All is monthly: the unchanged 175 + 85 setup
+      // yields $260 for September, independently of the retained $2,100 hold.
+      await expect(row).toContainText("Historical balances remain on hold; excluded from this month.");
+      await expect(row.getByRole("cell").nth(3)).toHaveText("$260.00");
+      await expect(row.getByText("Ready", { exact: true })).toBeVisible();
+      await expect(row.getByRole("link", { name: "Record set-aside", exact: true }))
+        .toHaveAttribute("href", `/settlements?individualId=${LINKED_INDIVIDUAL_ID}&queue=reserve`);
+      await expect(row.getByRole("link", { name: "Review historical holds", exact: true }))
         .toHaveAttribute("href", `/settlements?individualId=${LINKED_INDIVIDUAL_ID}`);
-      await expect(row.getByRole("link", { name: "Review Financial Setup", exact: true }))
-        .toHaveAttribute("href", `/individuals/${LINKED_INDIVIDUAL_ID}?view=financial`);
+      await expect(row.getByRole("link", { name: "Source review required", exact: true })).toHaveCount(0);
       const statementLink = row.getByRole("link", { name: "View statement", exact: true });
       await expect(statementLink).toHaveAttribute("href", STATEMENT);
       await page.screenshot({ path: test.info().outputPath("masser-held-overview.png"), fullPage: true });
       await statementLink.click();
       await expect(page).toHaveURL(new URL(STATEMENT, page.url()).href);
       await expect(main.getByRole("heading", { level: 1, name: "Linked Individual", exact: true })).toBeVisible();
-      await expect(main.getByText("Source review required", { exact: true })).toBeVisible();
+      await expect(main.getByText("Historical balances remain on hold", { exact: true })).toBeVisible();
       await expect(main.getByText("Approved monthly plan", { exact: true }).locator("..")).toContainText("$260.00");
-      await expect(main.getByText("Remaining in plan period", { exact: true }).locator("..")).toContainText("Unavailable");
+      await expect(main.getByText("Remaining in plan period", { exact: true }).locator("..")).toContainText("$260.00");
       await expect(main.getByText("Recorded over plan period", { exact: true }).locator("..")).toContainText("$0.00");
-      await expect(main.getByText("Credit", { exact: true }).locator("..")).toContainText("Unavailable");
+      await expect(main.getByText("Credit", { exact: true }).locator("..")).toContainText("$0.00");
       await page.screenshot({ path: test.info().outputPath("masser-held-statement.png"), fullPage: true });
 
       expect((await page.goto(REPORT))?.status()).toBe(200);
       const reportRow = main.getByRole("row").filter({ hasText: "Linked Individual" });
-      await expect(reportRow).toContainText(REVIEW_STATUS);
+      await expect(reportRow).toContainText(MONTHLY_BALANCE_STATUS);
       await expect(reportRow).toContainText("$260.00");
+      await expect(main.getByRole("columnheader", { name: "Historical plans on hold", exact: true })).toBeVisible();
       await expect(reportRow.getByRole("link", { name: "View statement", exact: true })).toHaveAttribute("href", STATEMENT);
       for (const format of ["csv", "xlsx"] as const) {
         const responsePromise = page.waitForResponse(response => new URL(response.url()).pathname === "/api/grid/export"
@@ -112,9 +114,9 @@ test.describe.serial("Masser retained source-review balances across actual route
         const bytes = await downloadBytes(download);
         if (format === "csv") {
           const csv = bytes.toString("utf8");
-          expect(csv).toContain("Plans on source review,Balance review");
+          expect(csv).toContain("Plans on source review,Historical plans on hold,Balance review");
           expect(csv).toContain("Linked Individual,260.00,");
-          expect(csv).toContain(`,1,${REVIEW_STATUS},`);
+          expect(csv).toContain(`,0,1,${MONTHLY_BALANCE_STATUS},`);
           expect(csv).toContain(LINKED_INDIVIDUAL_ID);
           expect(csv).not.toContain("No source holds");
         } else {
@@ -126,15 +128,18 @@ test.describe.serial("Masser retained source-review balances across actual route
           expect(rows).toHaveLength(1);
           const value = (header: string) => rows[0]!.getCell(headers.indexOf(header)).value;
           expect(value("Approved monthly plan")).toBe(260);
-          expect(value("Verified remaining reserve subtotal")).toBeNull();
-          expect(value("Plans on source review")).toBe(1);
-          expect(value("Balance review")).toBe(REVIEW_STATUS);
+          expect(value("Verified remaining reserve subtotal")).toBe(260);
+          expect(value("Plans on source review")).toBe(0);
+          expect(value("Historical plans on hold")).toBe(1);
+          expect(value("Balance review")).toBe(MONTHLY_BALANCE_STATUS);
           expect(value("Source statement")).toBe(LINKED_INDIVIDUAL_ID);
         }
       }
       await page.goto(`${REPORT}&status=complete`);
       await expect(main.getByText("No individual put-away records match this month and filter.", { exact: true })).toBeVisible();
       await expect(main.getByRole("row").filter({ hasText: "Linked Individual" })).toHaveCount(0);
+      await page.goto(`${REPORT}&status=review-required`);
+      await expect(main.getByRole("row").filter({ hasText: "Linked Individual" })).toContainText("$260.00");
       expect(await immutableFacts()).toEqual(before);
       expect(runtimeErrors).toEqual([]);
     });
@@ -162,7 +167,8 @@ test.describe.serial("Masser retained source-review balances across actual route
     expect(html).not.toContain("Agency result");
     await expect(main.getByRole("link", { name: /Agency financials/i })).toHaveCount(0);
     await page.goto(STATEMENT);
-    await expect(main.getByText("Source review required", { exact: true })).toBeVisible();
+    await expect(main.getByText("Historical balances remain on hold", { exact: true })).toBeVisible();
+    await expect(main.getByText("Remaining in plan period", { exact: true }).locator("..")).toContainText("$260.00");
     await expect(main.getByRole("link", { name: "Review Financial Setup", exact: true })).toHaveCount(0);
     // A streamed page can send its shell with 200 before notFound() resolves.
     // Check the actual denial and payload as well as the non-streaming API.

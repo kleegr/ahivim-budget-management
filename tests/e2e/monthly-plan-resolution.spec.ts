@@ -41,7 +41,7 @@ test("Owner saves a missing renewal and records one monthly put-away while histo
     await expect(person).toContainText("Ready");
     await expect(person).toContainText("Historical");
     await person.getByRole("link", { name: "Record set-aside", exact: true }).click();
-    const item = page.getByRole("row").filter({ hasText: name }).filter({ hasText: "Approved monthly put-away" });
+    const item = page.getByRole("row").filter({ hasText: name }).filter({ hasText: "Approved final reserve" });
     await expect(item).toContainText("$100.00");
     await item.getByRole("button", { name: "Record amount", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: `Record amount - ${name}` });
