@@ -240,7 +240,12 @@ export async function listCurrentProgramBudgets(
     : "";
 
   const { rows } = await pool.query<ProgramBudgetRow>(
-    `WITH current_authorizations AS (
+    // The balance view aggregates shared payroll and event history. Evaluate it
+    // once: inlining it here can repeat those aggregates for every pair of
+    // current and explicit authorizations, even when their final join is unique.
+    `WITH explicit_balances AS MATERIALIZED (
+       SELECT * FROM program_budget_balances
+     ), current_authorizations AS (
        SELECT * FROM effective_budget_authorizations_at($1::date)
      )
      SELECT effective.authorization_id,
@@ -294,7 +299,7 @@ export async function listCurrentProgramBudgets(
        FROM current_authorizations effective
        JOIN individuals individual ON individual.id = effective.individual_id
        JOIN programs program ON program.id = effective.program_id
-       LEFT JOIN program_budget_balances explicit_balance
+       LEFT JOIN explicit_balances explicit_balance
          ON explicit_balance.authorization_id = effective.authorization_id
         AND explicit_balance.budget_period_id = effective.period_id
        LEFT JOIN LATERAL (

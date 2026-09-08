@@ -22,7 +22,8 @@ import { migrationChecksumMatches } from "./migration-checksum";
  *      migration is already recorded. When the schema is current (the normal
  *      case) we return immediately: no lock, no work, ~1 cheap query.
  *   2. Behind path (only right after a deploy that ships a new migration) — take
- *      a NON-blocking `pg_try_advisory_lock`. If another instance already holds
+ *      a NON-blocking `pg_try_advisory_xact_lock` inside the migration transaction.
+ *      If another instance already holds
  *      it, a startup contender polls the migration ledger for a bounded period.
  *      It may continue only after the exact shipped schema is recorded; otherwise
  *      startup fails closed instead of serving code against an older schema.
@@ -340,7 +341,7 @@ async function applyPendingMigrations(): Promise<MigrateOutcome> {
   }
 
   // Only a successfully read, confirmed-behind ledger may enter the mutating
-  // runner. The runner owns the advisory-lock connection, so checking and
+  // runner. The runner owns the advisory-lock transaction, so checking and
   // applying migrations remain serialized without a nested lock.
   return runPendingMigrationsWithRetry();
 }

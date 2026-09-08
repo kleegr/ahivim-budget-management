@@ -14,8 +14,9 @@ const resolve = (pool: MaybePool): PgLikePool => pool ?? (getPool() as unknown a
 /**
  * A small, explicit migration runner.
  *
- * Each file runs once, inside its own transaction, and is recorded in
- * `_ahivim_migrations`. Re-running is safe: applied migrations are skipped.
+ * The entire pending run and its ledger records commit in one transaction.
+ * Its advisory lock is transaction-scoped, so transaction poolers keep the
+ * protected work on one backend. Re-running skips applied migrations.
  * A checksum is stored so an edited-after-the-fact migration is detected
  * rather than silently ignored.
  */
@@ -83,19 +84,23 @@ export async function runMigrations(
 ): Promise<MigrationRunResult> {
   const pool = resolve(explicitPool);
   const client = await pool.connect();
-  let lockAcquired = false;
+  let transactionOpen = false;
+  let discardConnection = false;
 
   try {
+    // BEGIN must precede the lock and every ledger read. A session lock held
+    // across autocommit statements can move between PgBouncer backends.
+    await client.query("BEGIN");
+    transactionOpen = true;
     if (options.waitForLock === false) {
       const { rows } = await client.query<{ got: boolean }>(
-        `SELECT pg_try_advisory_lock($1) AS got`,
+        `SELECT pg_try_advisory_xact_lock($1) AS got`,
         [MIGRATION_ADVISORY_LOCK],
       );
       if (rows[0]?.got !== true) throw new MigrationLockUnavailableError();
     } else {
-      await client.query(`SELECT pg_advisory_lock($1)`, [MIGRATION_ADVISORY_LOCK]);
+      await client.query(`SELECT pg_advisory_xact_lock($1)`, [MIGRATION_ADVISORY_LOCK]);
     }
-    lockAcquired = true;
 
     const { rows: ledgerRows } = await client.query<{ exists: boolean }>(
       `SELECT EXISTS (
@@ -137,18 +142,15 @@ export async function runMigrations(
 
       const statements = splitStatements(migration.sql);
       try {
-        await client.query("BEGIN");
         for (const statement of statements) await client.query(statement);
         await client.query(
           `INSERT INTO ${LEDGER_TABLE} (name, checksum) VALUES ($1, $2)`,
           [migration.name, checksum],
         );
-        await client.query("COMMIT");
         outcomes.push({ name: migration.name, status: "applied", statements: statements.length });
       } catch (error) {
-        await client.query("ROLLBACK").catch(() => undefined);
         throw new Error(
-          `Migration ${migration.name} failed and was rolled back: ${
+          `Migration ${migration.name} failed; the pending run was rolled back: ${
             error instanceof Error ? error.message : "unknown error"
           }`,
           { cause: error },
@@ -156,17 +158,28 @@ export async function runMigrations(
       }
     }
 
+    await client.query("COMMIT");
+    transactionOpen = false;
     return {
       ledgerExistedBefore: existedBefore,
       outcomes,
       applied: outcomes.filter((outcome) => outcome.status === "applied").length,
       skipped: outcomes.filter((outcome) => outcome.status === "skipped").length,
     };
-  } finally {
-    if (lockAcquired) {
-      await client.query(`SELECT pg_advisory_unlock($1)`, [MIGRATION_ADVISORY_LOCK]).catch(() => undefined);
+  } catch (error) {
+    if (transactionOpen) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Never return a connection with an uncertain transaction to the pool.
+        discardConnection = true;
+      }
+    } else {
+      discardConnection = true;
     }
-    client.release();
+    throw error;
+  } finally {
+    client.release(discardConnection);
   }
 }
 
