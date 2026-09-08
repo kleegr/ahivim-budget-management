@@ -98,6 +98,7 @@ const SETTLEMENT_COLUMNS: ColumnDef<SettlementRow>[] = [
     kind: "badge",
     width: 104,
     accessor: (row) => row.state,
+    exportAccessor: (row) => row.reviewRequired ? "Source review required" : row.state,
     badgeLabels: { open: "Open", partial: "Partial", settled: "Settled", credit: "Credit", void: "Void" },
   },
   { key: "lastAction", label: "Last action", kind: "date", width: 128, accessor: (row) => row.lastActionAt?.slice(0, 10) ?? null },

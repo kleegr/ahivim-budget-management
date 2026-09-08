@@ -59,7 +59,9 @@ describe("settlement balances on source review", () => {
     expect(html).not.toContain("$80.00");
     expect(html).not.toContain(">Record amount</button>");
     const columns = captured.columns;
-    expect(exportRows(columns, [held])[0]).toMatchObject({ original: "100.0000", applied: "20.0000", balance: null });
+    expect(exportRows(columns, [held])[0]).toMatchObject({ original: "100.0000", applied: "20.0000", balance: null,
+      state: "Source review required" });
+    expect(columns.find((column) => column.key === "state")!.accessor(held)).toBe("partial");
     expect(held.balance).toBe("80.0000");
   });
 
@@ -85,7 +87,7 @@ describe("settlement balances on source review", () => {
     expect(metric(mixed, "Set aside")).toContain("$0.00");
     expect(metric(mixed, "Set aside")).toContain("Verified subtotal");
     const columns = captured.columns;
-    expect(exportRows(columns, [settled])[0]!.balance).toBe("0.0000");
+    expect(exportRows(columns, [settled])[0]).toMatchObject({ balance: "0.0000", state: "settled" });
   });
 
   it("excludes held credits from ready-to-apply counts and labels mixed credit totals", () => {
