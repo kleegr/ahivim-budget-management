@@ -478,8 +478,8 @@ export default function CalculationsGrid({
       editable({ key: "notes", label: "Notes", kind: "text", accessor: (r) => r.notes ?? null, patch: (v) => ({ notes: v || null }) }),
       editable({ key: "renewalDate", label: "Renewal date", kind: "date", frozen: true, accessor: (r) => r.renewalDate, patch: (v) => ({ renewalDate: v || null }) }),
       editable({ key: "monthDivisor", label: "Monthly divisor", kind: "int", accessor: (r) => r.monthDivisor, patch: (v) => ({ monthDivisor: v }) }),
-      editable({ key: "cut1Percent", label: "First cut %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut1Percent), patch: (v) => ({ cut1Percent: v }) }),
-      editable({ key: "cut2Percent", label: "Second cut %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut2Percent), patch: (v) => ({ cut2Percent: v }) }),
+      editable({ key: "cut1Percent", label: "First cut %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut1Percent), patch: (v) => ({ cut1Percent: v ? `${v}%` : v }) }),
+      editable({ key: "cut2Percent", label: "Second cut %", kind: "percent", exportType: "text", accessor: (r) => pctDisplay(r.cut2Percent), patch: (v) => ({ cut2Percent: v ? `${v}%` : v }) }),
       editable({ key: "clockAdjustment", label: "Clock", kind: "money", accessor: (r) => r.clockAdjustment, patch: (v) => ({ clockAdjustment: v }) }),
       editable({ key: "otherAdjustment", label: "Other adj.", kind: "money", accessor: (r) => r.otherAdjustment, patch: (v) => ({ otherAdjustment: v }) }),
     ];

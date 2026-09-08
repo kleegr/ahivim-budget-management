@@ -239,6 +239,29 @@ export async function createProgramBudgetEvent(
       await client.query("ROLLBACK");
       return fail("not_found", "That active program budget no longer exists.");
     }
+    const normalized = normalizedEventValues(input, account.required_auth_type);
+    if (!normalized.ok) {
+      await client.query("ROLLBACK");
+      return normalized;
+    }
+    const tx = clientPool(client);
+    // The period lock serializes posts to this budget. Resolve a retry before
+    // testing today's balance/status: its amount is already in the balance,
+    // and closing a period must not turn a successful post into an error.
+    const existing = await client.query<{ id: string }>(
+      `SELECT id FROM program_budget_events
+        WHERE source_type = $1 AND source_id = $2 AND event_type = $3`,
+      [normalized.data.sourceType, normalized.data.sourceId, eventType],
+    );
+    if (existing.rows[0]) {
+      const event = await getProgramBudgetEvent(tx, existing.rows[0].id);
+      if (!event || !eventMatches(event, input, normalized.data)) {
+        await client.query("ROLLBACK");
+        return fail("conflict", "That source ID is already attached to a different budget event.");
+      }
+      await client.query("COMMIT");
+      return ok(event);
+    }
     if (account.period_status !== "active") {
       await client.query("ROLLBACK");
       return fail("conflict", "That budget period is closed.");
@@ -255,13 +278,6 @@ export async function createProgramBudgetEvent(
       await client.query("ROLLBACK");
       return fail("conflict", "This program consumes its budget from payroll. Use an adjustment to correct its balance.");
     }
-    const normalized = normalizedEventValues(input, account.required_auth_type);
-    if (!normalized.ok) {
-      await client.query("ROLLBACK");
-      return normalized;
-    }
-
-    const tx = clientPool(client);
     const budget = await getProgramBudget(tx, input.budgetPeriodId, input.programId);
     if (!budget) throw new Error("Program budget balance could not be read.");
     const projectedHours = dec(budget.consumedHours).plus(normalized.data.hours);

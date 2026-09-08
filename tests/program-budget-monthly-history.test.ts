@@ -105,7 +105,7 @@ describe("canonical program budget monthly history", () => {
 
     const sql = query.mock.calls[0]![0] as string;
     expect(sql).toContain("canonical_service_date");
-    expect(sql).toContain("account.rate_scope = 'per_group'");
+    expect(sql).toContain("canonical_budget_transaction_hours(");
     expect(sql).toContain("scheduled_session.status = 'pending'");
     expect(sql).toContain("scheduled_session.matched_transaction_id IS NULL");
     expect(rows[1]).toMatchObject({

@@ -12,7 +12,7 @@ import {
 import { calculateForecast, type ForecastResult } from "@/lib/business/forecast";
 import { resolveEffectiveRate } from "@/lib/business/rate-resolver";
 import { isActiveOverAuthorization } from "@/lib/business/budget-board-status";
-import { budgetRateDate, currentBudgetPeriod, programBudgetPeriod, isCalendarYearProgram, effectiveBilledHours } from "@/lib/business/calculation-strategy";
+import { budgetRateDate, currentBudgetPeriod, programBudgetPeriod, isCalendarYearProgram } from "@/lib/business/calculation-strategy";
 import { individualScopeClause, transactionScopeClause, type AccessScope } from "@/lib/auth/access";
 import {
   type BudgetLineStatus,
@@ -124,7 +124,7 @@ async function effectiveRateSchedulesByProgram(pool: PgLikePool): Promise<Effect
             to_char(effective_to, 'YYYY-MM-DD') AS effective_to,
             internal_rate::text AS internal_rate,
             agency_rate::text AS agency_rate
-       FROM program_rate_schedules`,
+       FROM program_rate_schedules WHERE archived_at IS NULL`,
   );
   const rates = new Map<string, EffectiveProgramRate[]>();
   for (const row of rows) {
@@ -644,7 +644,22 @@ export async function listIndividualBudgetBoard(
        FROM individuals i
        LEFT JOIN effective_lines el ON el.individual_id = i.id
        LEFT JOIN LATERAL (
-         SELECT COALESCE(sum(t.imported_hours), 0) AS hrs,
+         SELECT schedule.internal_rate
+           FROM program_rate_schedules schedule
+          WHERE schedule.program_id = el.program_id
+            AND schedule.archived_at IS NULL
+            AND schedule.effective_from <= el.period_end - 1
+            AND (schedule.effective_to IS NULL OR schedule.effective_to >= el.period_end - 1)
+          ORDER BY schedule.effective_from DESC, schedule.id DESC
+          LIMIT 1
+       ) budget_rate ON true
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(sum(canonical_budget_transaction_hours(t,
+                  CASE WHEN el.rate_override IS NOT NULL
+                         AND (el.rate_override_effective_from IS NULL
+                           OR el.rate_override_effective_from <= el.period_end - 1)
+                       THEN el.rate_override ELSE budget_rate.internal_rate END
+                )), 0) AS hrs,
                 COALESCE(sum(COALESCE(
                   t.calculated_internal_amount,
                   t.spreadsheet_internal_amount,
@@ -671,8 +686,6 @@ export async function listIndividualBudgetBoard(
       ORDER BY i.display_name, el.strategy_created_at, el.line_id`,
     params,
   );
-
-  const ratesByProgram = await effectiveRateSchedulesByProgram(pool);
 
   type Acc = {
     id: string;
@@ -750,14 +763,7 @@ export async function listIndividualBudgetBoard(
       let elapsedPct: number | null = null;
       for (const a of acc.auths) {
         const auth = dec(a.authorized);
-        const budgetRate = resolvePeriodBudgetRate(
-          ratesByProgram,
-          a.programId,
-          a.periodEnd,
-          a.rateOverride,
-          a.rateOverrideEffectiveFrom,
-        ).internalRate;
-        const billed = dec(effectiveBilledHours(a.programCode, a.rawBilledHours, a.billedInternal, budgetRate));
+        const billed = dec(a.rawBilledHours);
         const remaining = auth.minus(billed);
         totalAuth = totalAuth.plus(auth);
         totalBilled = totalBilled.plus(billed);
@@ -1109,11 +1115,13 @@ export async function getIndividualBudgetView(
   // Keep every effective-dated row. Each program resolves its rate against its
   // own current budget period below (calendar-year programs differ here).
   const rateRows = (
-    await pool.query<{ program_id: string; internal_rate: string; agency_rate: string | null; effective_from: string; effective_to: string | null }>(
-      `SELECT program_id, internal_rate::text AS internal_rate, agency_rate::text AS agency_rate,
+    await pool.query<{ program_id: string; program_code: string; internal_rate: string; agency_rate: string | null; effective_from: string; effective_to: string | null }>(
+      `SELECT program_id, program.code AS program_code, internal_rate::text AS internal_rate, agency_rate::text AS agency_rate,
               to_char(effective_from, 'YYYY-MM-DD') AS effective_from,
               to_char(effective_to, 'YYYY-MM-DD') AS effective_to
-         FROM program_rate_schedules`,
+         FROM program_rate_schedules schedule
+         JOIN programs program ON program.id = schedule.program_id
+        WHERE schedule.archived_at IS NULL`,
     )
   ).rows;
   const ratesByProgram: EffectiveRatesByProgram = new Map();
@@ -1133,7 +1141,18 @@ export async function getIndividualBudgetView(
   // always use the calendar year (Jan 1 → Jan 1), so their used/left never mixes
   // with the person's own renewal. When the individual has no renewal window at
   // all, only the calendar-year programs still resolve (the rest are excluded).
-  const billedParams: unknown[] = [individualId, period.start, period.end, today];
+  const authByProgram = new Map(authRows.map((r) => [r.program_id, r]));
+  const programCodes = new Map(rateRows.map((r) => [r.program_id, r.program_code]));
+  for (const authorization of authRows) programCodes.set(authorization.program_id, authorization.program_code);
+  const budgetRates = Object.fromEntries([...programCodes].map(([id, code]) => {
+    const authorization = authByProgram.get(id);
+    const linePeriod = programBudgetPeriod(code, renewalDate, active, today);
+    return [id, resolvePeriodBudgetRate(
+      ratesByProgram, id, linePeriod.end,
+      authorization?.rate_override ?? null, authorization?.rate_override_effective_from ?? null,
+    ).internalRate];
+  }));
+  const billedParams: unknown[] = [individualId, period.start, period.end, today, JSON.stringify(budgetRates)];
   const billedScope = scope
     ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", billedParams)
     : "";
@@ -1141,7 +1160,8 @@ export async function getIndividualBudgetView(
     await pool.query<{ program_id: string; program_name: string; program_code: string; hours: string; agency: string; internal: string; cnt: number }>(
       `WITH scoped AS (
          SELECT t.program_id, p.name AS program_name, p.code AS program_code,
-                t.imported_hours, t.imported_amount,
+                canonical_budget_transaction_hours(t, ($5::jsonb ->> t.program_id::text)::numeric) AS imported_hours,
+                t.imported_amount,
                 canonical_service_date(t.period_begin, t.check_date, t.period_end) AS service_date,
                 COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
                          t.internal_rate_applied * t.imported_hours, 0) AS internal_amt,
@@ -1169,7 +1189,6 @@ export async function getIndividualBudgetView(
   ).rows;
 
   const billedByProgram = new Map(billedRows.map((r) => [r.program_id, r]));
-  const authByProgram = new Map(authRows.map((r) => [r.program_id, r]));
   const allProgramIds = new Set<string>([...authByProgram.keys(), ...billedByProgram.keys()]);
 
   const dayMs = 24 * 60 * 60 * 1000;
@@ -1186,8 +1205,7 @@ export async function getIndividualBudgetView(
     const code = a?.program_code ?? b?.program_code ?? "";
     const lp = programBudgetPeriod(code, renewalDate, active, today);
     // The plan's own per-hour rate (override if set, else the program default).
-    // Needed here (not just for display) because group-session "used" hours are
-    // backed out of the money at this rate.
+    // This is the same rate passed into the canonical transaction-hours query.
     const resolvedRate = resolvePeriodBudgetRate(
       ratesByProgram,
       pid,
@@ -1197,10 +1215,7 @@ export async function getIndividualBudgetView(
     );
     const perHour = resolvedRate.internalRate;
     const authorized = dec(a?.authorized_hours ?? 0);
-    // Group-session programs (Day Hab / Supplemental) bill a combined rate, so the
-    // raw hours aren't this person's real hours — back them out of the internal
-    // money at the budget rate. Every other program uses its real clock hours.
-    const used = dec(effectiveBilledHours(code, b?.hours ?? 0, b?.internal ?? 0, perHour));
+    const used = dec(b?.hours ?? 0);
     const remaining = authorized.minus(used);
     const status = budgetLineStatus(authorized, used);
     const usagePercent = authorized.greaterThan(0) ? used.dividedBy(authorized).toNumber() : null;
@@ -1449,7 +1464,7 @@ export async function getIndividualPeriodActivity(
   const internalExpr =
     "COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount, t.internal_rate_applied * t.imported_hours, 0)";
   const scopedTransaction = () => {
-    const params: unknown[] = [individualId, start, end, calendarStart, calendarEnd];
+    const params: unknown[] = [individualId, start, end, calendarStart, calendarEnd, JSON.stringify(Object.fromEntries(groupRateByProgram))];
     const clause = scope
       ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
       : "";
@@ -1467,8 +1482,8 @@ export async function getIndividualPeriodActivity(
 
   // Budget (internal) per-hour rate for each GROUP-session program for this
   // individual — override from the plan if set, else the program's latest default.
-  // Group hours are backed out of the money at this rate, exactly like the budget
-  // board, so the two never disagree.
+  // Confirmed links use credited hours. Legacy rows use this rate for the same
+  // amount-based fallback as the budget board.
   const groupRateRes = await pool.query<{
     program_id: string;
     program_code: string;
@@ -1495,7 +1510,7 @@ export async function getIndividualPeriodActivity(
           ORDER BY strategy.created_at, line.id
           LIMIT 1
        ) plan ON true
-      WHERE p.code IN ('DAY_HAB','SUPP_GROUP_DAY_HAB')`,
+      WHERE p.rate_scope = 'per_group'`,
     [individualId],
   );
   const ratesByProgram = await effectiveRateSchedulesByProgram(pool);
@@ -1514,6 +1529,7 @@ export async function getIndividualPeriodActivity(
       row.rate_override_effective_from,
     ).internalRate] as const;
   }));
+  const hoursExpr = "canonical_budget_transaction_hours(t, ($6::jsonb ->> t.program_id::text)::numeric)";
 
   // Program x month. Each program is restricted to its own budget year: the
   // individual's renewal year for most services, January-January for the two
@@ -1527,7 +1543,7 @@ export async function getIndividualPeriodActivity(
             t.program_id,
             COALESCE(p.name, t.program_raw, 'Unknown') AS program_name,
             COALESCE(p.code, '')                       AS program_code,
-            sum(t.imported_hours)::text  AS hours,
+            sum(${hoursExpr})::text      AS hours,
             sum(t.imported_amount)::text AS agency,
             sum(${internalExpr})::text   AS internal
        FROM payroll_transactions t
@@ -1546,7 +1562,7 @@ export async function getIndividualPeriodActivity(
     `SELECT t.program_id AS id,
             COALESCE(p.name, t.program_raw, 'Unknown') AS name,
             COALESCE(p.code, '')                       AS code,
-            sum(t.imported_hours)::text  AS hours,
+            sum(${hoursExpr})::text      AS hours,
             sum(t.imported_amount)::text AS agency,
             sum(${internalExpr})::text   AS internal
        FROM payroll_transactions t
@@ -1569,7 +1585,7 @@ export async function getIndividualPeriodActivity(
             t.program_id AS prog_id,
             COALESCE(p.code, '')                       AS program_code,
             COALESCE(p.name, t.program_raw, 'Unknown') AS program_name,
-            t.imported_hours::text  AS hours,
+            (${hoursExpr})::text    AS hours,
             t.imported_amount::text AS agency,
             (${internalExpr})::text AS internal
        FROM payroll_transactions t
@@ -1595,9 +1611,8 @@ export async function getIndividualPeriodActivity(
       id: r.id,
       periodBegin: r.period_begin,
       programName: r.program_name,
-      // Group-session rows show hours backed out of the money, not the raw
-      // combined-session hours, so an employee's line matches billed-by-month.
-      hours: effectiveBilledHours(r.program_code, r.hours, r.internal, groupRateByProgram.get(r.prog_id ?? "")),
+      // The same canonical credit is used by the per-program/month totals.
+      hours: dec(r.hours).toString(),
       agency: r.agency,
       internal: r.internal,
     });
@@ -1615,14 +1630,13 @@ export async function getIndividualPeriodActivity(
     })
     .sort((x, y) => dec(y.hours).minus(dec(x.hours)).toNumber());
 
-  // Group-session programs (Day Hab / Supplemental) bill a combined rate, so their
-  // real hours are the money at the budget rate, not the raw session hours.
+  // Normalize numeric text without changing the canonical source credit.
   const programsBilled = progRes.rows
     .map((r) => ({
       id: r.id,
       name: r.name,
       code: r.code,
-      hours: effectiveBilledHours(r.code, r.hours, r.internal, groupRateByProgram.get(r.id ?? "")),
+      hours: dec(r.hours).toString(),
       agency: r.agency,
       internal: r.internal,
     }))
@@ -1634,7 +1648,7 @@ export async function getIndividualPeriodActivity(
       programId: r.program_id,
       programName: r.program_name,
       programCode: r.program_code,
-      hours: effectiveBilledHours(r.program_code, r.hours, r.internal, groupRateByProgram.get(r.program_id ?? "")),
+      hours: dec(r.hours).toString(),
       agency: r.agency,
       internal: r.internal,
     }));

@@ -300,6 +300,43 @@ export async function updateBudgetPeriodRenewal(
       await client.query("ROLLBACK");
       return fail("conflict", "Only an active budget period can change its renewal.");
     }
+    if (dates.startDate > before.endDate || dates.endDate < before.startDate) {
+      await client.query("ROLLBACK");
+      return fail("conflict", "A renewal needs a new budget period. Add a new program budget with the approved dates and amounts to preserve this period's history.");
+    }
+    const outsideEvents = await client.query(
+      `SELECT id FROM program_budget_events
+        WHERE budget_period_id = $1
+          AND service_date NOT BETWEEN $2::date AND $3::date
+        LIMIT 1`,
+      [id, dates.startDate, dates.endDate],
+    );
+    if (outsideEvents.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail("conflict", "These dates would exclude recorded budget events. Keep their original period and add a new program budget for the renewal.");
+    }
+    const outsidePayroll = await client.query(
+      `SELECT payroll.id
+         FROM budget_authorizations budget_auth
+         JOIN programs program ON program.id = budget_auth.program_id
+         JOIN payroll_transactions payroll
+           ON payroll.individual_id = budget_auth.individual_id
+          AND payroll.program_id = budget_auth.program_id
+        WHERE budget_auth.budget_period_id = $1
+          AND budget_auth.status = 'active'
+          AND budget_auth.archived_at IS NULL
+          AND program.consumption_source IN ('payroll', 'mixed')
+          AND canonical_service_date(payroll.period_begin, payroll.check_date, payroll.period_end)
+              BETWEEN $2::date AND $3::date
+          AND canonical_service_date(payroll.period_begin, payroll.check_date, payroll.period_end)
+              NOT BETWEEN $4::date AND $5::date
+        LIMIT 1`,
+      [id, before.startDate, before.endDate, dates.startDate, dates.endDate],
+    );
+    if (outsidePayroll.rows[0]) {
+      await client.query("ROLLBACK");
+      return fail("conflict", "These dates would exclude recorded payroll usage. Keep its original period and add a new program budget for the renewal.");
+    }
 
     const programs = await client.query<{ has_classes: boolean }>(
       `SELECT COALESCE(bool_or(program.code = 'CLASSES'), false) AS has_classes

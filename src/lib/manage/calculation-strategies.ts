@@ -8,7 +8,6 @@ import {
   budgetRateDate,
   computeStrategy,
   currentBudgetPeriod,
-  effectiveBilledHours,
   programBudgetPeriod,
   type StrategyResult,
 } from "@/lib/business/calculation-strategy";
@@ -128,7 +127,7 @@ export async function listProgramRates(pool: PgLikePool, asOf?: string | null): 
   const { rows: schedules } = await pool.query<RateScheduleRow>(
     `SELECT program_id, internal_rate::text, to_char(effective_from,'YYYY-MM-DD') AS effective_from,
             to_char(effective_to,'YYYY-MM-DD') AS effective_to
-       FROM program_rate_schedules`,
+       FROM program_rate_schedules WHERE archived_at IS NULL`,
   );
   return rows.map((r) => ({
     id: r.id,
@@ -228,7 +227,7 @@ export async function listStrategies(
   const { rows: schedules } = await pool.query<RateScheduleRow>(
     `SELECT program_id, internal_rate::text, to_char(effective_from,'YYYY-MM-DD') AS effective_from,
             to_char(effective_to,'YYYY-MM-DD') AS effective_to
-       FROM program_rate_schedules`,
+       FROM program_rate_schedules WHERE archived_at IS NULL`,
   );
   const programs = await listProgramRates(pool);
   const programCodes = new Map(programs.map((program) => [program.id, program.code]));
@@ -364,7 +363,9 @@ async function attachStrategyAnalytics(
               AS w(strategy_id, individual_id, start_date, end_date)
      )
      SELECT w.strategy_id, t.individual_id, t.program_id, pr.code AS program_code,
-             COALESCE(sum(t.imported_hours),0)::text AS hours,
+             COALESCE(sum(canonical_budget_transaction_hours(
+               t, ($6::jsonb -> w.strategy_id::text ->> t.program_id::text)::numeric
+             )),0)::text AS hours,
              COALESCE(sum(COALESCE(t.calculated_internal_amount, t.spreadsheet_internal_amount,
                       t.internal_rate_applied * t.imported_hours, 0)),0)::text AS internal,
              count(*)::text AS observations
@@ -390,7 +391,7 @@ async function attachStrategyAnalytics(
                   ) < w.end_date))
         )
       GROUP BY w.strategy_id, t.individual_id, t.program_id, pr.code`,
-    [strategyIds, windowIndividualIds, windowStarts, windowEnds, asOf],
+    [strategyIds, windowIndividualIds, windowStarts, windowEnds, asOf, JSON.stringify(Object.fromEntries(rateByStrategy))],
   );
 
   // Pending schedule is scoped to the same strategy period. Previously every
@@ -445,8 +446,7 @@ async function attachStrategyAnalytics(
       planned = planned.plus(dec(row.hours[pid] ?? 0));
       const b = billedMap.get(key(row.id, pid));
       if (b) {
-        const budgetRate = rateByStrategy.get(row.id)?.[pid] ?? null;
-        actualH = actualH.plus(effectiveBilledHours(b.code, b.hours, b.internal, budgetRate));
+        actualH = actualH.plus(dec(b.hours));
         actualI = actualI.plus(dec(b.internal));
         observations += Number(b.observations);
       }
@@ -559,7 +559,7 @@ export async function explainStrategy(pool: PgLikePool, id: string): Promise<Str
   const { rows: schedules } = await pool.query<RateScheduleRow>(
     `SELECT program_id, internal_rate::text, to_char(effective_from,'YYYY-MM-DD') AS effective_from,
             to_char(effective_to,'YYYY-MM-DD') AS effective_to
-       FROM program_rate_schedules`,
+       FROM program_rate_schedules WHERE archived_at IS NULL`,
   );
   return computeStrategy({
     lines: lines.map((l) => {
@@ -616,9 +616,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function toFractionStr(value: unknown): string {
   if (value === null || value === undefined || value === "") return "0";
+  const explicitPercent = typeof value === "string" && value.trim().endsWith("%");
   const raw = typeof value === "string" ? value.replace("%", "") : value;
   const d = dec(raw as string | number);
-  const fraction = d.abs().greaterThan(1) ? d.dividedBy(100) : d;
+  const fraction = explicitPercent || d.abs().greaterThan(1) ? d.dividedBy(100) : d;
   if (fraction.lessThan(0) || fraction.greaterThan(1)) {
     throw new RangeError("Cut percentages must be between 0% and 100%.");
   }

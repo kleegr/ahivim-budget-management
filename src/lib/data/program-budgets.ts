@@ -301,6 +301,7 @@ export async function listCurrentProgramBudgets(
          SELECT schedule_rate.agency_rate
            FROM program_rate_schedules schedule_rate
           WHERE schedule_rate.program_id = effective.program_id
+            AND schedule_rate.archived_at IS NULL
             AND schedule_rate.effective_from <= effective.end_date
             AND (schedule_rate.effective_to IS NULL OR schedule_rate.effective_to >= effective.end_date)
           ORDER BY schedule_rate.effective_from DESC, schedule_rate.id DESC
@@ -474,18 +475,9 @@ export async function listProgramBudgetMonthlyHistory(
        SELECT date_trunc('month', canonical_service_date(
                 payroll_row.period_begin, payroll_row.check_date, payroll_row.period_end
               ))::date AS month_start,
-              COALESCE(sum(
-                CASE
-                  WHEN account.rate_scope = 'per_group' AND COALESCE(account.internal_rate, 0) > 0
-                    THEN COALESCE(
-                           payroll_row.calculated_internal_amount,
-                           payroll_row.spreadsheet_internal_amount,
-                           payroll_row.internal_rate_applied * payroll_row.imported_hours,
-                           0
-                         ) / account.internal_rate
-                  ELSE COALESCE(payroll_row.imported_hours, 0)
-                END
-              ), 0) AS used_hours
+              COALESCE(sum(canonical_budget_transaction_hours(
+                payroll_row, account.internal_rate
+              )), 0) AS used_hours
          FROM account
          JOIN payroll_transactions payroll_row
            ON account.consumption_source IN ('payroll', 'mixed')
