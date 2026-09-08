@@ -135,6 +135,13 @@ export function parseCsv(text: string): string[][] {
     }
   }
 
+  // A truncated quoted record can swallow otherwise valid subsequent rows.
+  // Reject the snapshot before any sync reconciliation can mistake those rows
+  // for missing source records or commit a partially decoded transaction.
+  if (inQuotes) {
+    throw new Error("The Google Sheet CSV contains an unterminated quoted field. Nothing was imported; retry after the source export is complete.");
+  }
+
   // Flush a final record that was not newline-terminated.
   if (sawAnyChar || field.length > 0 || row.length > 0) {
     row.push(field);

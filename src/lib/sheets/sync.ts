@@ -2077,6 +2077,14 @@ export async function runSheetSync(
     let scheduleMatching = noScheduleMatchingNeeded();
     const starts: string[] = [];
     const ends: string[] = [];
+    // A changed snapshot must not discard the last run's unfinished matching
+    // work. Carry its dates into this attempt even when the source change adds
+    // no transactions (for example, a Paid evidence edit or a held conflict).
+    const pendingMatch = priorSync?.scheduleMatching;
+    if (pendingMatch?.status === "needs_review" && pendingMatch.from && pendingMatch.to) {
+      starts.push(pendingMatch.from);
+      ends.push(pendingMatch.to);
+    }
     for (const staged of staging.rows) {
       if (!staged.fingerprint || !newTxnByFingerprint.has(staged.fingerprint)) continue;
       const parsed = parsedByRow.get(staged.sourceRowNumber)?.parsed;
