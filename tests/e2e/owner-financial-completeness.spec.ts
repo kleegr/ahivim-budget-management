@@ -49,19 +49,19 @@ async function verifyIncompleteReport(page: Page): Promise<void> {
   await expect(main.getByText("Actual income", { exact: true }).locator("..")).toContainText("$500.00");
   const reviewLink = main.getByRole("link", { name: "1 direct-pay transactions need check expense review for this month", exact: true });
   await expect(reviewLink).toHaveAttribute("href", SOURCE_PATH);
+  await page.screenshot({ path: test.info().outputPath("owner-incomplete-report.png"), fullPage: true });
 
   for (const format of ["csv", "xlsx"] as const) {
-    const responsePromise = page.waitForResponse((response) => {
-      const url = new URL(response.url());
-      return url.pathname === "/api/agency-financials/export"
-        && url.searchParams.get("format") === format;
-    });
     const downloadPromise = page.waitForEvent("download");
     await main.getByRole("link", { name: format === "csv" ? "CSV" : "Excel", exact: true }).click();
-    const response = await responsePromise;
+    const download = await downloadPromise;
+    expect(download.url()).toBe(new URL(`/api/agency-financials/export?format=${format}&month=${MONTH}`, page.url()).href);
+    // Browser-managed anchor downloads do not reliably emit page response
+    // events. Check headers with the same authenticated session, then parse
+    // the actual clicked download below as the exported content evidence.
+    const response = await page.request.get(download.url());
     expect(response.status()).toBe(200);
     expect(response.headers()["cache-control"]).toBe("private, no-store");
-    const download = await downloadPromise;
     expect(download.suggestedFilename()).toBe(`agency-financials-${MONTH}.${format}`);
     const bytes = await downloadBytes(download);
     if (format === "csv") {
