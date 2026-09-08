@@ -36,7 +36,7 @@ import { dec, formatMoney } from "@/lib/money";
 
 type View = "items" | "history";
 type QueueFilter = SettlementQueueFilter;
-type Notice = { tone: "success" | "error"; message: string };
+type Notice = { tone: "success" | "warning" | "error"; message: string };
 
 interface RefreshResult {
   created: number;
@@ -51,6 +51,7 @@ interface RefreshResult {
   skippedInconsistentCheck: number;
   skippedMissingBase: number;
   skippedUnknownRecipient: number;
+  reviewRequiredCount?: number;
 }
 
 interface ApiPayload<T> {
@@ -925,17 +926,18 @@ export default function SettlementDashboard({
         : {};
       const result = await postJson<RefreshResult>("/api/settlements/refresh", refreshScope);
       const changed = result.created + result.updated + result.adjusted + result.voided;
-      const blocked = result.skippedNoDeal
+      const skipped = result.skippedNoDeal
         + result.skippedMissingCheckIdentity
         + result.skippedMissingNet
         + result.skippedInconsistentNet
         + result.skippedInconsistentCheck
         + result.skippedMissingBase
         + result.skippedUnknownRecipient;
+      const blocked = Math.max(result.reviewRequiredCount ?? 0, skipped);
       setNotice({
-        tone: "success",
+        tone: blocked > 0 ? "warning" : "success",
         message: blocked > 0
-          ? `Balances updated. ${blocked} source row${blocked === 1 ? " was" : "s were"} left unchanged.`
+          ? `Refresh finished. ${blocked} financial item${blocked === 1 ? " still needs" : "s still need"} review. Affected balances remain on hold.`
           : changed > 0
           ? `Payment items refreshed: ${result.created} new, ${result.updated} updated, ${result.adjusted} adjusted, ${result.voided} voided.`
           : "Payment items are up to date.",
@@ -985,7 +987,7 @@ export default function SettlementDashboard({
       ) : null}
 
       {notice ? (
-        <p role={notice.tone === "error" ? "alert" : "status"} className={`rounded border px-3 py-2 text-sm ${notice.tone === "error" ? "border-[var(--color-danger)] bg-[var(--color-danger-soft)] text-[var(--color-danger)]" : "border-[var(--color-success)] bg-[var(--color-success-soft)] text-[var(--color-success)]"}`}>
+        <p role={notice.tone === "error" ? "alert" : "status"} className={`rounded border px-3 py-2 text-sm ${notice.tone === "error" ? "border-[var(--color-danger)] bg-[var(--color-danger-soft)] text-[var(--color-danger)]" : notice.tone === "warning" ? "border-[var(--color-rule-strong)] bg-[var(--color-warn-soft)] text-[var(--color-ink)]" : "border-[var(--color-success)] bg-[var(--color-success-soft)] text-[var(--color-success)]"}`}>
           {notice.message}
         </p>
       ) : null}

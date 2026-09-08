@@ -167,7 +167,10 @@ test("Owner Home, Masser, and Agency Financials reconcile to the same seeded fac
   const individualRow = main.getByRole("row").filter({ hasText: "Linked Individual" });
   await expect(individualRow).toContainText("2 approved setups");
   await expect(individualRow).toContainText("$260.00");
-  await expect(individualRow).toContainText("Ready");
+  // The approved monthly finals do not authorize converting divisor-12 plans
+  // into period balances. Keep those totals while requiring basis review.
+  await expect(individualRow.getByText("Ledger not ready", { exact: true })).toBeVisible();
+  await expect(individualRow.getByRole("link", { name: "Record set-aside" })).toHaveCount(0);
 
   main = await openReady(page, "/reports/agency-financials?month=2026-09", /^Agency financials$/i);
   await expectMetric(main, "Actual income", "$500.00");

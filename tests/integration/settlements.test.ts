@@ -219,7 +219,9 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
   it("nets append-only corrections into the current individual reserve balance", async () => {
     const individual = unwrap(await createIndividual(pool, { displayName: "Corrected Reserve Person" }, ACTOR));
     const strategy = unwrap(await createStrategy(pool, { individualId: individual.id }, ACTOR));
-    unwrap(await updateStrategy(pool, { id: strategy.id, afterAll: "80" }, ACTOR));
+    // This correction fixture has an explicit single-month basis; conversion
+    // approval is covered separately by the amount-basis review regressions.
+    unwrap(await updateStrategy(pool, { id: strategy.id, afterAll: "800", monthDivisor: "1" }, ACTOR));
     await backdateStrategy(strategy.id);
     const roots = await pool.query<{ id: string; source_key: string }>(
       `INSERT INTO settlement_obligations
@@ -228,7 +230,7 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
        VALUES
          ('corrected-reserve-root', 'individual_masser', 'reserve', $1, $2,
           1000, '2026-01-01', '2027-01-01',
-          '{"flow":"individual_plan","monthlyAmount":"100"}'::jsonb, $3),
+          '{"flow":"individual_plan","monthlyAmount":"1000","monthDivisor":"1"}'::jsonb, $3),
          ('retired-cut-root', 'individual_cut_1', 'reserve', $1, $2,
           300, '2026-01-01', '2027-01-01',
           '{"flow":"individual_plan","monthlyAmount":"30"}'::jsonb, $3)
@@ -247,7 +249,7 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
           200, '2026-01-01', '2027-01-01',
           jsonb_build_object(
             'flow', 'individual_plan',
-            'monthlyAmount', '80',
+            'monthlyAmount', '800',
             'adjustmentForObligationId', $3::text,
             'recalculatedOriginalAmount', '800.0000',
             'recalculatedDirection', 'reserve'
@@ -276,13 +278,19 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
       payable: "0.0000",
       receivable: "0.0000",
       reserve: "400.0000",
-      credit: "100.0000",
+      // A historical cut reversal preserves cash history but cannot authorize
+      // an available credit while that legacy explanation balance needs review.
+      credit: "0.0000",
       openItems: 1,
     });
 
+    const reviewed = await getSettlementDashboard(pool);
+    expect(reviewed.rows.find((row) => row.id === retiredRoot.id)?.reviewRequired).toBe(true);
+    expect(reviewed.rows.find((row) => row.id === reserveRoot.id)?.reviewRequired).toBe(false);
+
     const collections = await getCollectionsWorkspace(pool, fullAccess(ACTOR, "admin"), "2026-08");
     expect(collections.individualSetAsides.find((row) => row.individualId === individual.id)).toMatchObject({
-      approvedMonthlyPlan: "80.0000",
+      approvedMonthlyPlan: "800.0000",
       setAsideThisMonth: "500.0000",
       remainingSetAside: "400.0000",
       activePlans: 1,

@@ -23,7 +23,8 @@ import {
 } from "@/lib/manage/settlement-freshness";
 import { redactError } from "@/lib/http";
 import { dec, toMoney } from "@/lib/money";
-import { settlementReviewHolds } from "@/lib/manage/settlement-source-review";
+import { amountBasisReviewSourceKeys, legacyIndividualReviewSourceKeys, settlementReviewHolds } from "@/lib/manage/settlement-source-review";
+import { settlementSourceReviewSql } from "@/lib/data/settlement-eligibility";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -206,6 +207,7 @@ export interface RefreshSettlementsResult {
   individualPlans: number;
   preservedHistorical: number;
   reviewRequiredCount?: number;
+  amountBasisReviewCount?: number;
 }
 
 export function settlementRefreshBlockingIssueMessage(
@@ -760,7 +762,7 @@ async function individualCandidates(
   pool: PgLikePool,
   individualId?: string | null,
   asOf?: string,
-): Promise<{ candidates: ObligationCandidate[]; individualPlans: number; protectedStrategyIds: string[] }> {
+): Promise<{ candidates: ObligationCandidate[]; individualPlans: number; protectedStrategyIds: string[]; amountBasisSourceKeys: string[] }> {
   const { rows } = await listStrategies(pool, {
     individualId: individualId ?? undefined,
     includeArchived: false,
@@ -770,6 +772,7 @@ async function individualCandidates(
   const candidates: ObligationCandidate[] = [];
   let individualPlans = 0;
   const protectedStrategyIds: string[] = [];
+  const amountBasisSourceKeys: string[] = [];
   for (const row of rows) {
     if (!row.periodStart || !row.periodEnd || row.afterAll === null) {
       protectedStrategyIds.push(row.id);
@@ -788,8 +791,17 @@ async function individualCandidates(
       },
     );
     for (const target of targets) {
+      const sourceKey = stableKey(["individual", row.id, row.periodStart, row.periodEnd, target.kind]);
+      // The approved monthly final is known; its conversion into a stored
+      // multi-month balance is not an approved agreement. Retain the unknown
+      // basis for review instead of overwriting a monthly snapshot or creating
+      // a period obligation. Zero and a divisor of one need no conversion.
+      if (!dec(target.amount).isZero() && !dec(row.monthDivisor).equals(1)) {
+        amountBasisSourceKeys.push(sourceKey);
+        continue;
+      }
       candidates.push({
-        sourceKey: stableKey(["individual", row.id, row.periodStart, row.periodEnd, target.kind]),
+        sourceKey,
         kind: target.kind,
         direction: target.direction,
         individualId: row.individualId,
@@ -818,7 +830,7 @@ async function individualCandidates(
       });
     }
   }
-  return { candidates, individualPlans, protectedStrategyIds };
+  return { candidates, individualPlans, protectedStrategyIds, amountBasisSourceKeys };
 }
 
 async function attachTransactions(
@@ -1285,8 +1297,17 @@ export async function refreshSettlementObligations(
         : await loadDetachedUnverifiedCheckSourceKeys(client, refreshInput.employeeId);
       phase = "read-individual-plans";
       const individual = refreshInput.employeeId && !refreshInput.individualId
-        ? { candidates: [], individualPlans: 0, protectedStrategyIds: [] }
+        ? { candidates: [], individualPlans: 0, protectedStrategyIds: [], amountBasisSourceKeys: [] }
         : await individualCandidates(readPool, refreshInput.individualId, applicationDate);
+      const legacySourceKeys = refreshInput.employeeId && !refreshInput.individualId
+        ? []
+        : await legacyIndividualReviewSourceKeys(client, refreshInput.individualId);
+      const amountBasisKeys = new Set([
+        ...individual.amountBasisSourceKeys,
+        ...(refreshInput.employeeId && !refreshInput.individualId
+          ? []
+          : await amountBasisReviewSourceKeys(client, refreshInput.individualId)),
+      ]);
       phase = "build-candidates";
       const employee = employeeCandidates(employeeRows);
       const refreshResult: RefreshSettlementsResult = {
@@ -1305,6 +1326,7 @@ export async function refreshSettlementObligations(
         employeeChecks: employee.employeeChecks,
         individualPlans: individual.individualPlans,
         preservedHistorical: 0,
+        amountBasisReviewCount: amountBasisKeys.size,
       };
       const fullRefresh = !refreshInput.employeeId && !refreshInput.individualId;
       // Existing zero-value roots are handled by the bulk reconciliation pass.
@@ -1323,12 +1345,13 @@ export async function refreshSettlementObligations(
         employee.protectedTransactionIds.add(transactionId);
       }
       for (const sourceKey of detachedCheckSourceKeys) employee.protectedSourceKeys.add(sourceKey);
-      const reviewCount = employee.protectedTransactionIds.size + individual.protectedStrategyIds.length + detachedCheckSourceKeys.length;
+      const reviewCount = employee.protectedTransactionIds.size + individual.protectedStrategyIds.length
+        + detachedCheckSourceKeys.length + legacySourceKeys.length + amountBasisKeys.size;
       refreshResult.reviewRequiredCount = reviewCount;
       const reviewHolds = await settlementReviewHolds(client, {
         transactionIds: [...employee.protectedTransactionIds],
         strategyIds: individual.protectedStrategyIds,
-        sourceKeys: [...employee.protectedSourceKeys],
+        sourceKeys: [...employee.protectedSourceKeys, ...legacySourceKeys, ...amountBasisKeys],
       });
       const heldSourceKeys = new Set(reviewHolds.map((row) => row.source_key));
       phase = "write-obligations";
@@ -1380,7 +1403,11 @@ export async function refreshSettlementObligations(
             blockedObligationIds: reviewHolds.map((row) => row.id),
             count: reviewCount,
             summary: reviewCount > 0
-              ? "Some source records need review. Affected balances are on hold; other balances are available."
+              ? [
+                legacySourceKeys.length > 0 ? "Legacy individual cuts and give-back balances need source review." : null,
+                amountBasisKeys.size > 0 ? "The owner must confirm whether Financial Setup balances represent a month or the full period. Approved monthly finals remain unchanged; converted period balances are on hold." : null,
+                "Some source records need review. Affected balances are on hold; other balances are available.",
+              ].filter(Boolean).join(" ")
               : null,
           });
         }
@@ -1431,7 +1458,7 @@ async function lockObligations(client: PgLikeClient, ids: string[]): Promise<Loc
   const { rows } = await client.query<Omit<LockedObligation, "applied_amount">>(
     `SELECT o.id, o.employee_id, o.individual_id, o.direction,
             o.original_amount::text, o.status,
-            COALESCE(o.id = ANY((SELECT blocked_obligation_ids FROM "settlement_ledger_state" WHERE singleton = true)::uuid[]), true) AS review_required
+            ${settlementSourceReviewSql("o")} AS review_required
        FROM settlement_obligations o
       WHERE o.id = ANY($1::uuid[])
       ORDER BY o.id
@@ -1971,7 +1998,7 @@ export async function correctSettlementEvent(
               e.event_type, e.amount::text,
               to_char(e.occurred_on, 'YYYY-MM-DD') AS occurred_on,
               e.reference, e.note, o.status AS obligation_status,
-              COALESCE(o.id = ANY((SELECT blocked_obligation_ids FROM "settlement_ledger_state" WHERE singleton = true)::uuid[]), true) AS review_required
+              ${settlementSourceReviewSql("o")} AS review_required
          FROM settlement_events e
          JOIN settlement_obligations o ON o.id = e.settlement_obligation_id
         WHERE e.id = $1
@@ -2101,9 +2128,10 @@ export async function reverseSettlementEvent(
       `SELECT e.id, e.settlement_obligation_id, e.settlement_batch_id,
               b.action AS batch_action, e.employee_id, e.individual_id,
               e.amount::text, to_char(e.occurred_on, 'YYYY-MM-DD') AS occurred_on,
-              COALESCE(e.settlement_obligation_id = ANY((SELECT blocked_obligation_ids FROM "settlement_ledger_state" WHERE singleton = true)::uuid[]), true) AS review_required
+              ${settlementSourceReviewSql("review_obligation")} AS review_required
          FROM settlement_events e
          LEFT JOIN settlement_batches b ON b.id = e.settlement_batch_id
+         LEFT JOIN settlement_obligations review_obligation ON review_obligation.id = e.settlement_obligation_id
         WHERE e.id = $1 AND e.event_type <> 'reversal'
         FOR UPDATE OF e`,
       [eventId],
@@ -2115,11 +2143,12 @@ export async function reverseSettlementEvent(
         `SELECT e.id, e.settlement_obligation_id, e.settlement_batch_id,
                 'apply_credit'::text AS batch_action, e.employee_id, e.individual_id,
                 e.amount::text, to_char(e.occurred_on, 'YYYY-MM-DD') AS occurred_on,
-                COALESCE(e.settlement_obligation_id = ANY((SELECT blocked_obligation_ids FROM "settlement_ledger_state" WHERE singleton = true)::uuid[]), true) AS review_required
+                ${settlementSourceReviewSql("review_obligation")} AS review_required
            FROM settlement_events e
+           LEFT JOIN settlement_obligations review_obligation ON review_obligation.id = e.settlement_obligation_id
           WHERE e.settlement_batch_id = $1 AND e.event_type = 'credit'
           ORDER BY e.id
-          FOR UPDATE`,
+          FOR UPDATE OF e`,
         [row.settlement_batch_id],
       )
       : { rows: [row] };

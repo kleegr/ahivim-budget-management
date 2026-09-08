@@ -315,7 +315,8 @@ suite("Developer 1 settlement integrity regressions (real PostgreSQL)", () => {
   it("holds unknown active Financial Setup without manufacturing dates or a zero correction", async () => {
     const individual = unwrap(await createIndividual(pool, { displayName: "Synthetic Financial Setup Person" }, ACTOR));
     const strategy = unwrap(await createStrategy(pool, { individualId: individual.id }, ACTOR));
-    unwrap(await updateStrategy(pool, { id: strategy.id, afterAll: "40", renewalDate: "2026-08-01" }, ACTOR));
+    // A single-month basis is explicit so this case isolates missing dates.
+    unwrap(await updateStrategy(pool, { id: strategy.id, afterAll: "40", monthDivisor: "1", renewalDate: "2026-08-01" }, ACTOR));
     unwrap(await refreshSettlementObligations(pool, {}, ACTOR));
     const obligation = (await getSettlementDashboard(pool)).rows[0];
     unwrap(await recordObligationPayment(pool, {
