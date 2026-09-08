@@ -5,6 +5,7 @@ import {
   type GoogleSheetsReadCredentials,
 } from "./google-auth";
 import { parseSheetCsv } from "./parse-csv";
+import { csvFromValues, needsNumericSourceRecovery, restoreSheetDateColumns } from "./numeric-source";
 
 /**
  * SERVER-SIDE SHEET FETCH
@@ -40,18 +41,9 @@ export interface SheetFetchOptions {
   request?: typeof fetch;
 }
 
-function csvCell(value: unknown): string {
-  const text = typeof value === "string"
-    ? value
-    : typeof value === "number" || typeof value === "boolean"
-      ? String(value)
-      : "";
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
 /** Preserve every returned row, including interior blank rows, as RFC 4180 CSV. */
 export function sheetValuesToCsv(values: readonly (readonly unknown[])[]): string {
-  return values.map((row) => row.map(csvCell).join(",")).join("\n");
+  return csvFromValues(values);
 }
 
 async function fetchAuthenticatedSheetCsv(
@@ -72,7 +64,7 @@ async function fetchAuthenticatedSheetCsv(
   const query = new URLSearchParams({
     majorDimension: "ROWS",
     valueRenderOption: "UNFORMATTED_VALUE",
-    dateTimeRenderOption: "FORMATTED_STRING",
+    dateTimeRenderOption: "SERIAL_NUMBER",
   });
   const url =
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(cfg.sheetId)}` +
@@ -110,7 +102,7 @@ async function fetchAuthenticatedSheetCsv(
   if (!Array.isArray(body.values) || !body.values.every(Array.isArray)) {
     throw new SheetFetchError("The private Google Sheet returned no usable rows.");
   }
-  const csv = sheetValuesToCsv(body.values);
+  const csv = sheetValuesToCsv(restoreSheetDateColumns(body.values));
   if (!csv.trim()) {
     throw new SheetFetchError("The private Google Sheet returned an empty response.");
   }
@@ -162,7 +154,25 @@ async function fetchPublicAuthoritativeSheetCsv(
       "The authoritative Google Sheet export did not contain the expected A:S transaction structure.",
     );
   }
-  return body;
+  if (!needsNumericSourceRecovery(parsed)) return body;
+  const numericUrl = new URL(url);
+  numericUrl.searchParams.set("format", "xlsx");
+  try {
+    const numericResponse = await request(numericUrl.toString(), {
+      method: "GET", redirect: "follow", signal: AbortSignal.timeout(45_000),
+      cache: "no-store", credentials: "omit",
+      headers: { Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+    });
+    if (!numericResponse.ok) throw new Error("Numeric source unavailable");
+    const bytes = Buffer.from(await numericResponse.arrayBuffer());
+    if (bytes.length === 0 || bytes.length > 10_000_000) throw new Error("Numeric source size invalid");
+    const { recoverNumericSourceCsv } = await import("./numeric-source");
+    return await recoverNumericSourceCsv(body, bytes, cfg.sheetName);
+  } catch {
+    throw new SheetFetchError(
+      "The Sheet contains date-formatted money. Its numeric source could not be verified or changed between reads. Nothing was imported; retry the sync.",
+    );
+  }
 }
 
 export async function fetchSheetCsv(
