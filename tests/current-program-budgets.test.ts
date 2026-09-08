@@ -76,7 +76,10 @@ describe("shared current program budgets", () => {
     expect(sql).toContain("effective_budget_authorizations_at($1::date)");
     expect(sql).toContain("effective_billed_hours(");
     expect(sql).not.toContain("payroll_usage.hours");
-    expect(sql).toContain("LEFT JOIN program_budget_balances explicit_balance");
+    expect(sql).toMatch(/explicit_balances AS MATERIALIZED\s*\(\s*SELECT \* FROM program_budget_balances\s*\)/);
+    expect(sql).toContain("LEFT JOIN explicit_balances explicit_balance");
+    expect(sql).toContain("explicit_balance.authorization_id = effective.authorization_id");
+    expect(sql).toContain("explicit_balance.budget_period_id = effective.period_id");
     expect(sql).toContain("canonical_service_date");
     expect(sql).toContain("effective.source_candidate_count");
     expect(sql).toContain("CASE WHEN explicit_balance.authorization_id IS NOT NULL\n                 THEN explicit_balance.renewal_date");

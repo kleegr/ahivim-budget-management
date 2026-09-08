@@ -53,7 +53,10 @@ describe("canonical service-date read models", () => {
 
     const utilization = sql.find((query) => query.includes("AS scheduled_hours"));
     expect(utilization).toContain("effective_budget_authorizations_at($1::date)");
-    expect(utilization).toContain("LEFT JOIN program_budget_balances explicit_balance");
+    expect(utilization).toMatch(/explicit_balances AS MATERIALIZED\s*\(\s*SELECT \* FROM program_budget_balances\s*\)/);
+    expect(utilization).toContain("LEFT JOIN explicit_balances explicit_balance");
+    expect(utilization).toContain("explicit_balance.authorization_id = effective.authorization_id");
+    expect(utilization).toContain("explicit_balance.budget_period_id = effective.period_id");
     expect(utilization).toContain(
       "scheduled_session.session_date BETWEEN effective.start_date AND effective.end_date",
     );
