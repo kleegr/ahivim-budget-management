@@ -62,7 +62,7 @@ function VisibilityFields({
   const capability = (self: PortalCapability, agency: PortalCapability) => mode === "agency" ? agency : self;
   return (
     <fieldset className="space-y-3 border-t border-[var(--color-rule)] pt-3">
-      <legend className="text-sm font-semibold">Financial visibility</legend>
+      <legend className="text-sm font-semibold">Portal visibility</legend>
       <div className="grid gap-3 sm:grid-cols-2">
         {mode !== "employee" && agencyAdministrator ? <SelectField label="Dollar budgets" name="dollarBudgets" defaultValue={policyValue(capability("dollar_budgets.self.read", "dollar_budgets.agency.read"), grants, denials)} options={VISIBILITY_OPTIONS} /> : null}
         {mode !== "employee" && agencyFinancial ? <SelectField label="Billed totals" name="billedTotals" defaultValue={policyValue(capability("financials.self.billed_totals.read", "financials.agency.billed_totals.read"), grants, denials)} options={VISIBILITY_OPTIONS} /> : null}
@@ -73,7 +73,13 @@ function VisibilityFields({
         {mode === "employee" ? <SelectField label="Check net" name="checkNet" defaultValue={policyValue("employee_checks.self.net.read", grants, denials)} options={VISIBILITY_OPTIONS} /> : null}
         {mode === "employee" ? <SelectField label="Tax withheld" name="checkTax" defaultValue={policyValue("employee_checks.self.tax.read", grants, denials)} options={VISIBILITY_OPTIONS} /> : null}
         {mode === "employee" ? <SelectField label="Give-back" name="giveBack" defaultValue={policyValue("employee_giveback.self.read", grants, denials)} options={VISIBILITY_OPTIONS} /> : null}
+        <SelectField label="Approved documents" name="approvedDocuments" defaultValue={policyValue("documents.self.read", grants, denials)} options={[
+          { value: "default", label: "Role default (hidden)" },
+          { value: "show", label: "Show" },
+          { value: "hide", label: "Hide" },
+        ]} />
       </div>
+      <p className="text-xs text-[var(--color-ink-faint)]">Only documents explicitly approved for this account can appear. Their person, agency, and category permissions still apply.</p>
     </fieldset>
   );
 }
@@ -349,8 +355,6 @@ export default async function AgencySettingsPage({
                             individualId: entry.individualId,
                             relationship: entry.relationship,
                             isActive: !entry.isActive,
-                            capabilityGrants: entry.capabilityGrants,
-                            capabilityDenials: entry.capabilityDenials,
                           }}
                           confirm={entry.isActive ? "Disable this direct portal relationship?" : undefined}
                         />
@@ -423,8 +427,6 @@ export default async function AgencySettingsPage({
                             userId: entry.userId,
                             employeeId: entry.employeeId,
                             isActive: !entry.isActive,
-                            capabilityGrants: entry.capabilityGrants,
-                            capabilityDenials: entry.capabilityDenials,
                           }}
                           confirm={entry.isActive ? "Disable this employee portal relationship?" : undefined}
                         />
@@ -515,8 +517,7 @@ export default async function AgencySettingsPage({
                           </Td>
                           <Td>
                             <div className="flex flex-wrap gap-2">
-                              {entry.role === "agency" || entry.role === "collector" ? (
-                                <CreateButton
+                              <CreateButton
                                   label="Edit"
                                   title={`Edit ${entry.role.replaceAll("_", " ")} visibility`}
                                   endpoint={`/api/agencies/${agency.id}/access`}
@@ -531,8 +532,7 @@ export default async function AgencySettingsPage({
                                       denials={entry.capabilityDenials}
                                     />
                                   )}
-                                />
-                              ) : null}
+                              />
                               <ActionButton
                                 label={entry.isActive ? "Disable" : "Restore"}
                                 endpoint={`/api/agencies/${agency.id}/access`}
@@ -541,8 +541,6 @@ export default async function AgencySettingsPage({
                                   userId: entry.userId,
                                   role: entry.role,
                                   isActive: !entry.isActive,
-                                  capabilityGrants: entry.capabilityGrants,
-                                  capabilityDenials: entry.capabilityDenials,
                                 }}
                                 confirm={entry.isActive ? "Disable this agency role?" : undefined}
                               />

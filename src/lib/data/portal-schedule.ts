@@ -73,6 +73,10 @@ async function upcomingSchedule(
   from = agencyDate(),
 ): Promise<PortalUpcomingSchedule> {
   const through = addDays(from, UPCOMING_SCHEDULE_DAYS);
+  const personId = audience === "individual" ? filter.individualId : filter.employeeId;
+  if (!personId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(personId)) {
+    return { status: "unavailable", from, through, items: [] };
+  }
   try {
     const sessions = await listSessions(pool, {
       from,

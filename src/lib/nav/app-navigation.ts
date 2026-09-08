@@ -1,6 +1,6 @@
 import type { AccountPresetId } from "@/lib/auth/account-presets";
 
-export type NavigationGate = "resolved" | "manager" | "owner" | "activity-transactions" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents" | "portal" | "agencies";
+export type NavigationGate = "resolved" | "manager" | "owner" | "activity-transactions" | "transactions" | "settlements" | "budgets" | "planning" | "employees" | "classes" | "documents" | "approved-documents" | "portal" | "agencies";
 
 export interface NavigationAccess {
   role: string;
@@ -13,6 +13,8 @@ export interface NavigationAccess {
   canSeeEmployees?: boolean;
   /** Read access. Legacy callers may still supply edit-only access. */
   canViewDocuments?: boolean;
+  /** At least one approved output is readable under the user's current scope. */
+  canViewApprovedDocuments?: boolean;
   canEditDocuments?: boolean;
   canUsePortal?: boolean;
   canManageAgencies?: boolean;
@@ -69,7 +71,7 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
     id: "portal",
     label: "My portal",
     hint: "Your profiles, organizations, and approved information",
-    activePrefixes: ["/portal"],
+    activePrefixes: ["/portal", "/documents"],
     destinations: [
       {
         id: "portal-home",
@@ -78,6 +80,14 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         hint: "Your profiles, organizations, and approved information",
         keywords: "parent guardian employee agency portal organization access",
         gate: "portal",
+      },
+      {
+        id: "approved-documents",
+        label: "Approved documents",
+        href: "/documents",
+        hint: "Documents approved for you",
+        keywords: "approved documents pdf download",
+        gate: "approved-documents",
       },
     ],
   },
@@ -389,6 +399,7 @@ function allowed(gate: NavigationGate | undefined, access: NavigationAccess): bo
   if (gate === "planning") return access.canPlan;
   if (gate === "classes") return access.canSeeClassFinancials ?? false;
   if (gate === "documents") return hasDocumentAccess(access);
+  if (gate === "approved-documents") return access.canViewApprovedDocuments === true;
   if (gate === "portal") return access.role === "viewer" && (access.canUsePortal ?? false);
   if (gate === "agencies") return access.canManageAgencies ?? false;
   if (gate === "employees") {

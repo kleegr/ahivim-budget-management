@@ -48,7 +48,7 @@ describe("document storage configuration boundary", () => {
     vi.clearAllMocks();
     vi.stubEnv("BLOB_READ_WRITE_TOKEN", "");
     mocks.apiDocumentEditorUser.mockResolvedValue(access);
-    mocks.accessibleDocument.mockResolvedValue({ access, document: { id: DOCUMENT_ID } });
+    mocks.accessibleDocument.mockResolvedValue({ access, document: { id: DOCUMENT_ID, currentVersionId: VERSION_ID }, canEdit: true, publishedVersionId: null });
   });
 
   afterEach(() => {

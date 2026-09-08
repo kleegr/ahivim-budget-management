@@ -488,27 +488,35 @@ effective_hours AS (
 )`;
 }
 
-// Whole-check amounts are agency-safe only with one employee agency or a
-// complete set of linked service rows that all resolve to the requesting agency.
-export function agencyPayrollCheckVisibilitySql(checkAlias: string, agencyIdSql: string): string {
-  const checkServiceDate = `canonical_service_date(
-    ${checkAlias}.period_begin, ${checkAlias}.check_date, ${checkAlias}.period_end
+// A verified check is direct pay only when every known service row belongs to
+// its employee and is explicitly routed to the employee. Missing or mixed
+// sources cannot establish that a whole-check amount is safe to disclose.
+export function directPayrollCheckVisibilitySql(checkAlias: string): string {
+  return `(
+    SELECT count(*) > 0 AND bool_and(COALESCE(
+      source_transaction.employee_id IS NOT DISTINCT FROM ${checkAlias}.employee_id
+      AND effective_payment_recipient(
+        source_transaction.payment_recipient, source_program.payment_recipient
+      ) = 'employee'
+    , false))
+      FROM payroll_transactions source_transaction
+      LEFT JOIN programs source_program ON source_program.id = source_transaction.program_id
+     WHERE source_transaction.payroll_check_id = ${checkAlias}.id
   )`;
+}
+
+// Whole-check amounts require a complete set of direct service rows that all
+// resolve uniquely to the requesting agency. Employment alone is not evidence
+// of who owns a check's source activity.
+export function agencyPayrollCheckVisibilitySql(checkAlias: string, agencyIdSql: string): string {
   const sourceServiceDate = `canonical_service_date(
     source_transaction.period_begin,
     source_transaction.check_date,
     source_transaction.period_end
   )`;
   return `(
-    (
-      SELECT count(DISTINCT candidate_membership.agency_id)
-        FROM agency_employees candidate_membership
-       WHERE candidate_membership.employee_id = ${checkAlias}.employee_id
-         AND candidate_membership.is_active = true
-         AND ${checkServiceDate} BETWEEN candidate_membership.effective_from
-             AND COALESCE(candidate_membership.effective_to, 'infinity'::date)
-    ) = 1
-    OR (
+    ${directPayrollCheckVisibilitySql(checkAlias)}
+    AND (
       SELECT count(*) > 0
          AND bool_and(
            attribution.agency_count = 1
@@ -534,46 +542,55 @@ export function agencyPayrollCheckVisibilitySql(checkAlias: string, agencyIdSql:
   )`;
 }
 
-// Give-back obligations are whole-check balances. When an employee belongs to
-// multiple agencies, every source transaction must resolve to one agency and it
-// must be the agency requesting the balance.
+// Give-back obligations are whole-check balances. Every source transaction
+// must exist, belong to this employee and resolve to the requesting agency.
 export function agencyGiveBackVisibilitySql(obligationAlias: string, agencyIdSql: string): string {
-  const obligationServiceDate = `canonical_service_date(
-    ${obligationAlias}.period_begin, ${obligationAlias}.check_date, ${obligationAlias}.period_end
-  )`;
   const sourceServiceDate = `canonical_service_date(
     source_transaction.period_begin,
     source_transaction.check_date,
     source_transaction.period_end
   )`;
   return `(
-    (
-      SELECT count(DISTINCT candidate_membership.agency_id)
-        FROM agency_employees candidate_membership
-       WHERE candidate_membership.employee_id = ${obligationAlias}.employee_id
-         AND candidate_membership.is_active = true
-         AND ${obligationServiceDate} BETWEEN candidate_membership.effective_from
-             AND COALESCE(candidate_membership.effective_to, 'infinity'::date)
-    ) = 1
-    OR (
       SELECT count(*) > 0
          AND bool_and(
            attribution.agency_count = 1
            AND attribution.requested_agency_count = 1
+           AND attribution.is_direct_source
          )
         FROM LATERAL (
           SELECT source_id.value,
                  source_transaction.id,
+                 COALESCE(
+                   source_transaction.employee_id = ${obligationAlias}.employee_id
+                   AND effective_payment_recipient(
+                     source_transaction.payment_recipient, source_program.payment_recipient
+                   ) = 'employee', false
+                 ) AS is_direct_source,
                  count(DISTINCT source_agency.agency_id) AS agency_count,
                  count(DISTINCT source_agency.agency_id) FILTER (
                    WHERE source_agency.agency_id = ${agencyIdSql}
                  ) AS requested_agency_count
-            FROM jsonb_array_elements_text(
-              CASE
-                WHEN jsonb_typeof(${obligationAlias}.calculation_metadata->'sourceTransactionIds') = 'array'
-                  THEN ${obligationAlias}.calculation_metadata->'sourceTransactionIds'
-                ELSE '[]'::jsonb
-              END
+            FROM (
+              SELECT value FROM jsonb_array_elements_text(
+                CASE
+                  WHEN jsonb_typeof(${obligationAlias}.calculation_metadata->'sourceTransactionIds') = 'array'
+                    THEN ${obligationAlias}.calculation_metadata->'sourceTransactionIds'
+                  ELSE '[]'::jsonb
+                END
+              )
+              UNION
+              SELECT link.payroll_transaction_id::text
+                FROM settlement_obligation_transactions link
+               WHERE link.settlement_obligation_id = ${obligationAlias}.id
+              UNION
+              SELECT check_source.id::text
+                FROM payroll_transactions check_source
+               WHERE check_source.payroll_check_id = CASE
+                 WHEN (${obligationAlias}.calculation_metadata->>'payrollCheckId')
+                      ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                   THEN (${obligationAlias}.calculation_metadata->>'payrollCheckId')::uuid
+                 ELSE NULL
+               END
             ) source_id(value)
             LEFT JOIN payroll_transactions source_transaction
               ON source_transaction.id = CASE
@@ -581,15 +598,15 @@ export function agencyGiveBackVisibilitySql(obligationAlias: string, agencyIdSql
                   THEN source_id.value::uuid
                 ELSE NULL
               END
+            LEFT JOIN programs source_program ON source_program.id = source_transaction.program_id
             LEFT JOIN agency_individuals source_agency
               ON source_agency.individual_id = source_transaction.individual_id
              AND source_agency.is_active = true
              AND source_agency.bills_services = true
              AND ${sourceServiceDate} BETWEEN source_agency.effective_from
                  AND COALESCE(source_agency.effective_to, 'infinity'::date)
-           GROUP BY source_id.value, source_transaction.id
+           GROUP BY source_id.value, source_transaction.id, source_program.payment_recipient
         ) attribution
-    )
   )`;
 }
 

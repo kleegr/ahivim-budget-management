@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { apiUser } from "@/lib/auth/session";
-import { hasDirectEmployeeAccess, isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
-import { planningEmployeeProfile } from "@/lib/auth/employee-planning-access";
+import { resolveAccessScope } from "@/lib/auth/access";
+import { employeeRecordForAccess } from "@/lib/auth/person-record-access";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { listEmployeesManaged, createEmployee, type EmployeeInput } from "@/lib/manage/employees";
 
@@ -23,17 +23,9 @@ export async function GET(request: NextRequest) {
     const pool = getPool();
     const scope = await resolveAccessScope(pool, user);
     const data = await listEmployeesManaged(pool, { status, search, includeArchived, scope });
-    if (isPlanningOnlyAccess(scope)) {
-      return NextResponse.json({ ok: true, data: data.map(planningEmployeeProfile) });
-    }
     return NextResponse.json({
       ok: true,
-      data: data.map((employee) => {
-        if (scope.canSeeEmployeeDeals && hasDirectEmployeeAccess(scope, employee.id)) return employee;
-        const visible = { ...employee };
-        Reflect.deleteProperty(visible, "payoutCutPercent");
-        return visible;
-      }),
+      data: data.map((employee) => employeeRecordForAccess(scope, employee)),
     });
   } catch (error) {
     return jsonError(redactError(error), 500);

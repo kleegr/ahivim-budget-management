@@ -77,6 +77,44 @@ independent session secrets. Production synthetic financial tests remain
 prohibited. These controls do not mark an entire business workflow
 `PRODUCTION VERIFIED` before its remaining acceptance evidence is complete.
 
+### 2026-09-07 - Developer 2 access release in preparation
+
+The permissions work continues from accepted Developer 1 main
+`aea9488d345d88383db2dc99b7d1f39d25bdf2e4`. Its implementation status is
+`IMPLEMENTED`; deployment and direct production role acceptance remain open.
+
+- Document list, metadata, source, version, file, draft, editor, upload, and
+  generated-source entry points enforce current record and category access.
+  Existing unclassified documents remain preserved and Owner-only. Owner
+  classification and explicit recipient approval use the existing library.
+- External publication stores a separate immutable PDF reconstructed on the
+  server from validated opaque pixels. Source files, hidden text, metadata,
+  attachments, originals, and editor history are never delivered through the
+  approved-output routes. Current category denials and exact person/dated
+  agency scope are checked again when listing or downloading an output.
+- Account transitions replace previous portal authority atomically; partial
+  permission edits preserve omitted controls. Disable and password reset revoke
+  existing sessions. Sign In As uses the target's current permissions, retains
+  the Owner audit actor, prevents chaining, and offers Return to your portal.
+- Planner/person responses use restricted field shapes. Inactive or archived
+  authorizations cannot be changed by planning-only users. Direct employee and
+  agency checks require complete, attributable source sets; related people and
+  mixed checks do not widen a portal's scope.
+- The 13-preset route/action/field contract is recorded in
+  `tests/e2e/access-contract.ts`. Direct browser sessions cover role transitions,
+  account revocation, multiple-person parent access, and impersonation. Focused
+  regressions exercise actual handlers and PostgreSQL with leakage sentinels.
+- Migrations `0046` and `0047` were rehearsed together with Developer 1's
+  `0044`/`0045`, from the 44-migration baseline on disposable local PostgreSQL
+  and an isolated Neon copy. All 72 existing business-table contents were
+  preserved. The expected settlement refresh marker changed once; migration
+  replay applied nothing. The preview database, private Blob store, and session
+  signing secret are isolated from production.
+
+Independent reviews covered the authentication, portal, document, sanitizer,
+and navigation changes. Release gates and production evidence will be added
+after verification; this entry is not a production acceptance claim.
+
 ### 2026-09-07 - Developer 1 financial release in preparation
 
 The Developer 1 assignment continues from PR #33, commit

@@ -50,6 +50,7 @@ export type IndividualRelationship = "self" | "parent" | "guardian" | "represent
 export type EmployeeRelationship = "self";
 
 const INDIVIDUAL_SELF_CAPABILITIES = new Set<PortalCapability>([
+  "documents.self.read",
   "people.self.read",
   "schedules.self.read",
   "hours_budgets.self.read",
@@ -61,6 +62,7 @@ const INDIVIDUAL_SELF_CAPABILITIES = new Set<PortalCapability>([
 ]);
 
 const EMPLOYEE_SELF_CAPABILITIES = new Set<PortalCapability>([
+  "documents.self.read",
   "people.self.read",
   "schedules.self.read",
   "employee_pay.self.read",
@@ -71,6 +73,7 @@ const EMPLOYEE_SELF_CAPABILITIES = new Set<PortalCapability>([
 ]);
 
 const AGENCY_READ_CAPABILITIES = new Set<PortalCapability>([
+  "documents.self.read",
   "agencies.read",
   "people.agency.read",
   "hours_budgets.agency.read",
@@ -238,13 +241,15 @@ function allowedForAgencyRole(role: AgencyPortalRole): ReadonlySet<PortalCapabil
   if (role === "collector") {
     return new Set<PortalCapability>([
       ...ROLE_CAPABILITIES.collector,
+      "documents.self.read",
       "financials.agency.billed_totals.read",
     ]);
   }
   // Staffing and scheduler roles are categorically hours-only. Their schedule
   // writes are checked again against the agency roster at every endpoint. A
-  // per-account override may narrow them, but can never add money access.
-  return new Set(ROLE_CAPABILITIES[role]);
+  // per-account override may permit approved, scoped documents, but can never
+  // add money access. Publication reads also require every content category.
+  return new Set<PortalCapability>([...ROLE_CAPABILITIES[role], "documents.self.read"]);
 }
 
 export function agencyIdsWithPortalCapability(
@@ -410,7 +415,7 @@ export function portalEmployeeCapabilities(
   if (isPortalOwner(context)) return portalCapabilities(context);
   const roles = context.globalRoles.filter((assignment) => assignment.role === "employee");
   const links = context.employeeLinks.filter((link) => link.employeeId === employeeId);
-  return links.length > 0 ? effectiveCapabilities(roles, links) : [];
+  return roles.length > 0 && links.length > 0 ? effectiveCapabilities(roles, links) : [];
 }
 
 export function hasPortalIndividualCapability(
@@ -438,6 +443,38 @@ export function canAccessPortalAgency(
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Exact agency membership; never infer a person from their related employee. */
+export async function canAccessPortalAgencySubject(
+  pool: PgLikePool,
+  context: PortalAccessContext,
+  agencyId: string,
+  subject: { individualId?: string; employeeId?: string },
+  onDate?: string,
+): Promise<boolean> {
+  if (!UUID.test(agencyId) || !hasPortalCapability(context, "people.agency.read", agencyId)) return false;
+  if (Boolean(subject.individualId) === Boolean(subject.employeeId)) return false;
+  const personId = subject.individualId ?? subject.employeeId!;
+  if (!UUID.test(personId)) return false;
+  if (onDate !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(onDate)) return false;
+    const date = new Date(`${onDate}T00:00:00Z`);
+    if (Number.isNaN(date.valueOf()) || date.toISOString().slice(0, 10) !== onDate) return false;
+  }
+  const table = subject.individualId ? "agency_individuals" : "agency_employees";
+  const column = subject.individualId ? "individual_id" : "employee_id";
+  const { rows } = await pool.query<{ allowed: boolean }>(
+    `SELECT true AS allowed
+       FROM ${table}
+      WHERE agency_id = $1 AND ${column} = $2
+        AND is_active = true
+        AND COALESCE($3::date, (now() AT TIME ZONE 'America/New_York')::date)
+            BETWEEN effective_from AND COALESCE(effective_to, 'infinity'::date)
+      LIMIT 1`,
+    [agencyId, personId, onDate ?? null],
+  );
+  return rows[0]?.allowed === true;
+}
 
 export async function canAccessPortalIndividual(
   pool: PgLikePool,

@@ -3,6 +3,7 @@ import {
   canAccessPortalIndividual,
   hasPortalCapability,
   hasPortalIndividualCapability,
+  hasPortalEmployeeCapability,
   portalCapabilityAllowedForRole,
   resolvePortalAccess,
   type PortalAccessContext,
@@ -128,6 +129,12 @@ describe("portal authorization context", () => {
 
     expect(hasPortalIndividualCapability(linkOnly, INDIVIDUAL, "people.self.read")).toBe(false);
     expect(hasPortalIndividualCapability(linkOnly, INDIVIDUAL, "financials.self.billed_totals.read")).toBe(false);
+    linkOnly.employeeLinks = [{
+      employeeId: OTHER_INDIVIDUAL, relationship: "self",
+      grants: ["people.self.read", "employee_checks.self.net.read"], denials: [],
+    }];
+    expect(hasPortalEmployeeCapability(linkOnly, OTHER_INDIVIDUAL, "people.self.read")).toBe(false);
+    expect(hasPortalEmployeeCapability(linkOnly, OTHER_INDIVIDUAL, "employee_checks.self.net.read")).toBe(false);
   });
 
   it("separates settlement read and manage capabilities", () => {

@@ -112,6 +112,7 @@ export async function agencyMemberSummaries(
                        AND obligation.status = 'active'
                        AND obligation.direction = 'receivable'
                        AND obligation.kind LIKE 'employee_giveback%'
+                       AND ${agencyGiveBackVisibilitySql("obligation", "membership.agency_id")}
                        AND canonical_service_date(
                              obligation.period_begin, obligation.check_date, obligation.period_end
                            ) BETWEEN membership.effective_from

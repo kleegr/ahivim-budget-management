@@ -7,6 +7,8 @@ import {
 } from "@/lib/documents/document-storage";
 import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
 import type { PgLikePool } from "@/lib/import/commit";
+import { getDocument } from "@/lib/data/documents";
+import { canAccessDocumentSource } from "@/lib/auth/document-policy";
 import {
   authorizeDocumentUploadToken,
   completeDocumentUpload,
@@ -44,6 +46,8 @@ export async function POST(request: NextRequest) {
           actorId: access.user.id,
         });
         if (!authorization.ok) throw new Error(authorization.message);
+        const document = await getDocument(access.pool, authorization.data.intent.documentId);
+        if (access.external || !document || !canAccessDocumentSource(access.scope, document)) throw new Error("That document was not found.");
         return {
           allowedContentTypes: ["application/pdf"],
           maximumSizeInBytes: authorization.data.intent.expectedByteSize,

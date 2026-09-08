@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { accessibleDocument } from "@/lib/document-route-helpers";
-import { getDocumentDraft, listDocumentVersions } from "@/lib/data/documents";
+import { getDocumentDraft, getDocumentVersion, listDocumentVersions } from "@/lib/data/documents";
+import { safeDocumentVersion } from "@/lib/auth/document-publications";
 import { jsonError, readJson, redactError, resultResponse, sameOriginOrFail } from "@/lib/http";
 import { updateDocumentMetadata } from "@/lib/manage/documents";
 
@@ -15,11 +16,24 @@ export async function GET(
   try {
     const found = await accessibleDocument(id);
     if ("error" in found) return found.error;
-    const [versions, draft] = await Promise.all([
-      listDocumentVersions(found.access.pool, id),
-      getDocumentDraft(found.access.pool, id, found.access.user.id),
-    ]);
-    return NextResponse.json({ ok: true, data: { document: found.document, versions, draft } });
+    if (found.canEdit) {
+      const [versions, draft] = await Promise.all([
+        listDocumentVersions(found.access.pool, id),
+        getDocumentDraft(found.access.pool, id, found.access.user.id),
+      ]);
+      return NextResponse.json({ ok: true, data: { document: found.document, versions, draft, canEdit: true } });
+    }
+    if (found.publishedVersionId) return NextResponse.json({ ok: true, data: {
+      document: found.document, versions: [{ id: found.publishedVersionId, documentId: id, versionNumber: 1,
+        versionKind: "saved", filename: "document.pdf", byteSize: found.document.currentByteSize,
+        pageCount: null, createdAt: found.document.createdAt }], draft: null, canEdit: false,
+    } });
+    const versionId = found.publishedVersionId ?? found.document.currentVersionId;
+    const version = versionId ? await getDocumentVersion(found.access.pool, id, versionId) : null;
+    return NextResponse.json({ ok: true, data: {
+      document: { ...found.document, originalVersionId: null, accessContext: null },
+      versions: version ? [safeDocumentVersion(version, Boolean(found.publishedVersionId))] : [], draft: null, canEdit: false,
+    } });
   } catch (error) {
     return jsonError(redactError(error, "Could not load that document."), 500);
   }

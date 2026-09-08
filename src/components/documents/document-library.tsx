@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import DocumentAccessEditor from "./document-access-editor";
 
 const MAX_PDF_BYTES = 100 * 1024 * 1024;
 
@@ -84,7 +85,7 @@ function formatDate(value: string): string {
   }).format(new Date(value));
 }
 
-export default function DocumentLibrary({ canEdit }: { canEdit: boolean }) {
+export default function DocumentLibrary({ canEdit, isOwner = false }: { canEdit: boolean; isOwner?: boolean }) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const loadSequenceRef = useRef(0);
@@ -98,6 +99,7 @@ export default function DocumentLibrary({ canEdit }: { canEdit: boolean }) {
   const [loadFailed, setLoadFailed] = useState(false);
   const [menuId, setMenuId] = useState<string | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [accessDocumentId, setAccessDocumentId] = useState<string | null>(null);
 
   const loadDocuments = useCallback(async () => {
     const sequence = ++loadSequenceRef.current;
@@ -234,7 +236,7 @@ export default function DocumentLibrary({ canEdit }: { canEdit: boolean }) {
           <h1 className="display mt-1 text-2xl text-[var(--color-ink)] sm:text-3xl">Document library</h1>
           <p className="mt-2 text-sm text-[var(--color-ink-soft)]">{canEdit
             ? "PDF originals, edited versions, and recoverable history."
-            : "View saved PDFs, download copies, and browse recoverable history."}</p>
+            : "View and download the saved PDFs approved for your account."}</p>
         </div>
         {canEdit ? <>
           <button type="button" className="btn btn-primary" disabled={uploading} aria-busy={uploading} onClick={() => fileInputRef.current?.click()}>
@@ -253,6 +255,8 @@ export default function DocumentLibrary({ canEdit }: { canEdit: boolean }) {
           />
         </> : <span className="badge bg-[var(--color-surface-muted)] text-[var(--color-ink-soft)]">View only</span>}
       </header>
+      {isOwner && accessDocumentId ? <DocumentAccessEditor key={accessDocumentId} documentId={accessDocumentId} onClose={() => setAccessDocumentId(null)} onUpdated={() => void loadDocuments()} /> : null}
+      {isOwner && documents.length > 0 ? <label className="block text-sm">Classify or share a document<select className="input ml-2 max-w-full" value={accessDocumentId ?? ""} onChange={(event) => setAccessDocumentId(event.target.value || null)}><option value="">Choose a document…</option>{documents.map((document) => <option key={document.id} value={document.id}>{document.title}</option>)}</select></label> : null}
 
       {error ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--color-danger)] bg-[var(--color-danger-soft)] px-4 py-3 text-sm text-[var(--color-danger)]" role="alert">

@@ -1,4 +1,4 @@
-import { del, get, head } from "@vercel/blob";
+import { del, get, head, put } from "@vercel/blob";
 
 const DEFAULT_MAX_PDF_BYTES = 100 * 1024 * 1024;
 const ABSOLUTE_MAX_PDF_BYTES = 500 * 1024 * 1024;
@@ -43,4 +43,30 @@ export async function readPrivateDocumentBlob(pathname: string, ifNoneMatch?: st
 
 export async function deletePrivateDocumentBlob(pathname: string): Promise<void> {
   await del(pathname);
+}
+
+/** Server-created immutable publication artifact, never a client upload path. */
+export async function writePrivateDocumentPublication(pathname: string, bytes: Uint8Array): Promise<void> {
+  if (!/^documents\/[0-9a-f-]{36}\/publications\/[0-9a-f-]{36}\.pdf$/i.test(pathname)) throw new Error("Invalid publication path.");
+  await put(pathname, Buffer.from(bytes), {
+    access: "private", contentType: "application/pdf", addRandomSuffix: false, allowOverwrite: false,
+  });
+}
+
+export async function readDocumentBytesForPublication(pathname: string): Promise<Uint8Array> {
+  const blob = await readPrivateDocumentBlob(pathname);
+  if (!blob || blob.statusCode !== 200 || !blob.stream) throw new Error("The saved PDF could not be read.");
+  const reader = blob.stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > 100 * 1024 * 1024) { await reader.cancel(); throw new Error("This PDF is too large to approve. Split it into smaller documents."); }
+      chunks.push(next.value);
+    }
+    return Buffer.concat(chunks);
+  } finally { reader.releaseLock(); }
 }

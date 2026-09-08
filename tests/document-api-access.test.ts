@@ -82,8 +82,6 @@ describe("document API authorization boundary", () => {
   it("uses view access for reads and edit access for every mutation", async () => {
     const readCalls = [
       () => getDocument(request(`/api/documents/${ID}`), params),
-      () => getDraft(request(`/api/documents/${ID}/draft`), params),
-      () => listVersions(request(`/api/documents/${ID}/versions`), params),
     ];
     for (const invoke of readCalls) {
       mocks.accessibleDocument.mockClear();
@@ -95,6 +93,8 @@ describe("document API authorization boundary", () => {
     expect(mocks.accessibleDocument).toHaveBeenCalledWith(ID, "view");
 
     const writeCalls = [
+      () => getDraft(request(`/api/documents/${ID}/draft`), params),
+      () => listVersions(request(`/api/documents/${ID}/versions`), params),
       () => updateDocument(request(`/api/documents/${ID}`, "PATCH"), params),
       () => reserveVersion(request(`/api/documents/${ID}/uploads`, "POST"), params),
       () => saveDraft(request(`/api/documents/${ID}/draft`, "PUT"), params),

@@ -3,6 +3,10 @@ import { NextRequest } from "next/server";
 import { middleware } from "@/middleware";
 
 describe("middleware public path allowlist", () => {
+  it.each(["/home", "/settings", "/api/admin/users", "/api/auth/impersonation/start", "/api/auth/impersonation/stop", "/signin", "/api/auth/login", "/api/auth/logout"])("prevents caching identity-dependent pages and APIs: %s", (pathname) => {
+    const response = middleware(new NextRequest(`http://localhost${pathname}`, { headers: { cookie: "ahivim_session=signed-cookie" } }));
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+  });
   it.each([
     "/api/health/db",
     "/api/health/env",

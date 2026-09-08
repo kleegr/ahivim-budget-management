@@ -754,6 +754,7 @@ export default function UserAccessAdmin({
   const [addAccess, setAddAccess] = useState<AccessState>(() => accessFromPreset(BUDGET_PLANNER_ACCESS));
   const [addIndividualId, setAddIndividualId] = useState("");
   const [addRelationship, setAddRelationship] = useState("parent");
+  const [additionalIndividuals, setAdditionalIndividuals] = useState<{ individualId: string; relationship: string }[]>([]);
   const [addEmployeeId, setAddEmployeeId] = useState("");
   const [addAgencyId, setAddAgencyId] = useState("");
   const [addCapabilityGrants, setAddCapabilityGrants] = useState<Set<PortalCapability>>(() => new Set());
@@ -813,6 +814,7 @@ export default function UserAccessAdmin({
     }
     setEditingId(u.id);
     if (u.portalManaged) {
+      setEditProfile("custom_access");
       accessLoadRequest.current += 1;
       setNewPassword("");
       setEditAccess(null);
@@ -837,6 +839,7 @@ export default function UserAccessAdmin({
     setAddAccess(accessFromPreset(BUDGET_PLANNER_ACCESS));
     setAddIndividualId("");
     setAddRelationship("parent");
+    setAdditionalIndividuals([]);
     setAddEmployeeId("");
     setAddAgencyId("");
     setAddCapabilityGrants(new Set());
@@ -846,6 +849,7 @@ export default function UserAccessAdmin({
   }
 
   function chooseAddProfile(id: AccountProfileId) {
+    setAdditionalIndividuals([]);
     setAddProfile(id);
     setAddIndividualId("");
     setAddEmployeeId("");
@@ -992,7 +996,10 @@ export default function UserAccessAdmin({
       const preset = getAccountPreset(addProfile)!;
       const body: Record<string, unknown> = { ...form, password, preset: addProfile };
       if (preset.binding.kind === "individual") {
-        Object.assign(body, { individualId: addIndividualId, relationship: addRelationship });
+        Object.assign(body, { individuals: [
+          { individualId: addIndividualId, relationship: addRelationship },
+          ...additionalIndividuals,
+        ] });
       } else if (preset.binding.kind === "employee") {
         Object.assign(body, { employeeId: addEmployeeId });
       } else if (preset.binding.kind === "agency") {
@@ -1148,6 +1155,7 @@ export default function UserAccessAdmin({
           </div>
           <p className="mt-2 text-sm text-[var(--color-ink-soft)]">{accountProfile(addProfile).description}</p>
           {addBinding === "individual" ? (
+            <>
             <div className="mt-3 grid max-w-2xl gap-3 sm:grid-cols-2">
               <label className="block text-sm">
                 <span className="text-xs font-medium">Individual</span>
@@ -1166,6 +1174,28 @@ export default function UserAccessAdmin({
                 </select>
               </label>
             </div>
+            {additionalIndividuals.map((binding, index) => (
+              <div key={index} className="mt-3 flex max-w-2xl flex-wrap items-end gap-3">
+                <label className="block min-w-48 flex-1 text-sm">
+                  <span className="text-xs font-medium">Additional individual</span>
+                  <select required value={binding.individualId} onChange={(event) => setAdditionalIndividuals((current) => current.map((value, i) => i === index ? { ...value, individualId: event.target.value } : value))} className="input mt-1 w-full text-sm">
+                    <option value="">Choose an individual</option>
+                    {individuals.filter((individual) => individual.id === binding.individualId || (individual.id !== addIndividualId && !additionalIndividuals.some((value) => value.individualId === individual.id)))
+                      .map((individual) => <option key={individual.id} value={individual.id}>{individual.name}</option>)}
+                  </select>
+                </label>
+                <label className="block min-w-40 flex-1 text-sm">
+                  <span className="text-xs font-medium">Relationship</span>
+                  <select value={binding.relationship} onChange={(event) => setAdditionalIndividuals((current) => current.map((value, i) => i === index ? { ...value, relationship: event.target.value } : value))} className="input mt-1 w-full text-sm">
+                    <option value="parent">Parent</option><option value="guardian">Guardian</option><option value="representative">Representative</option><option value="self">The individual</option>
+                  </select>
+                </label>
+                <button type="button" className="btn btn-sm" onClick={() => setAdditionalIndividuals((current) => current.filter((_, i) => i !== index))}>Remove</button>
+              </div>
+            ))}
+            <button type="button" className="btn btn-sm mt-3" disabled={additionalIndividuals.length >= 49} onClick={() => setAdditionalIndividuals((current) => [...current, { individualId: "", relationship: "parent" }])}>Link another individual</button>
+            <p className="mt-2 text-xs text-[var(--color-ink-soft)]">The selected categories apply to each person listed. You can adjust each relationship in Portal administration after creation.</p>
+            </>
           ) : null}
           {addBinding === "employee" ? (
             <label className="mt-3 block max-w-md text-sm">
@@ -1294,6 +1324,20 @@ export default function UserAccessAdmin({
                         </p>
                         <Link href="/settings/agencies" className="btn btn-sm btn-secondary mt-3">Manage portal connections</Link>
                       </div>
+                      <details className="max-w-lg rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-3">
+                        <summary className="cursor-pointer text-sm font-medium">Switch to an internal workspace</summary>
+                        <p className="mt-2 text-sm text-[var(--color-ink-soft)]">This replaces all current portal connections with the selected workspace. Connection history is preserved. Custom access starts with no access.</p>
+                        <label className="mt-3 block text-sm">
+                          <span className="text-xs font-medium">New workspace</span>
+                          <select value={editProfile} onChange={(event) => setEditProfile(event.target.value as AccountProfileId)} className="input mt-1 w-full text-sm">
+                            {ACCOUNT_PROFILES.filter((profile) => !isExternalPortalPreset(profile.id))
+                              .map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
+                          </select>
+                        </label>
+                        <button type="button" disabled={actionBusy} className="btn btn-primary btn-sm mt-3" onClick={async () => {
+                          if (await patch(u.id, { preset: editProfile }, "Workspace changed. Previous portal connections are now inactive.")) setEditingId(null);
+                        }}>Replace portal access</button>
+                      </details>
                       <div className="max-w-lg rounded border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-3">
                         <div className="flex items-end gap-2">
                           <div className="min-w-0 flex-1">

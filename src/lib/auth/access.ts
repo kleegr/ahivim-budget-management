@@ -154,12 +154,9 @@ export async function resolveAccessScope(
   pool: PgLikePool,
   user: { id: string; role: string },
 ): Promise<AccessScope> {
-  // Only the restricted VIEWER role is ever scoped. It is view-only by default,
-  // but an administrator can grant narrow operational actions such as recording
-  // payments. Admins and managers always retain full access.
-  if (user.role !== "viewer") return fullAccess(user.id, user.role);
-
   const { rows } = await pool.query<{
+    role: string;
+    is_active: boolean;
     access_scope: string;
     see_all_individuals: boolean;
     see_all_employees: boolean;
@@ -183,7 +180,7 @@ export async function resolveAccessScope(
     can_view_documents: boolean;
     can_edit_documents: boolean;
   }>(
-    `SELECT access_scope, see_all_individuals, see_all_employees, can_see_transactions, can_see_money,
+    `SELECT role, is_active, access_scope, see_all_individuals, see_all_employees, can_see_transactions, can_see_money,
             can_see_hours, can_see_billed_amounts, can_see_employee_amounts,
             can_see_agency_spread, can_see_check_gross, can_see_check_net, can_see_taxes,
             can_see_budgets, can_see_employee_deals, can_see_settlements, can_manage_settlements,
@@ -196,10 +193,10 @@ export async function resolveAccessScope(
   const u = rows[0];
   // The account was present when the session was checked, but it may have been
   // removed or deactivated before this query. Fail closed during that race.
-  if (!u) {
+  if (!u || !u.is_active || !["admin", "manager", "viewer"].includes(u.role)) {
     return {
       userId: user.id,
-      role: user.role,
+      role: "viewer",
       full: false,
       canSeeTransactions: false,
       canSeeMoney: false,
@@ -229,6 +226,11 @@ export async function resolveAccessScope(
     };
   }
 
+  // Authority is always resolved from the current account, including the
+  // short race between session validation and this data-access query.
+  user = { id: user.id, role: u.role };
+  if (u.role === "admin" || u.role === "manager") return fullAccess(user.id, u.role);
+
   const canSeeMoney = u.can_see_money !== false;
   const canSeeHours = u.can_see_hours !== false;
   const visibility: VisibilityPermissions = {
@@ -249,12 +251,10 @@ export async function resolveAccessScope(
       && u.can_see_class_financials === true
       && u.can_manage_class_invoices === true,
   };
-  const canManagePlanning = u.can_manage_planning === true;
-  // A write grant always reads through even if a legacy/manual row is
-  // temporarily inconsistent with the database constraint.
-  const canPlan = u.can_plan === true || canManagePlanning;
-  const canEditDocuments = u.can_edit_documents === true;
-  const canViewDocuments = u.can_view_documents === true || canEditDocuments;
+  const canPlan = u.can_plan === true;
+  const canManagePlanning = canPlan && u.can_manage_planning === true;
+  const canViewDocuments = u.can_view_documents === true;
+  const canEditDocuments = canViewDocuments && u.can_edit_documents === true;
   const canManageSettlements = visibility.canSeeSettlements && u.can_manage_settlements === true;
 
   if (u.access_scope !== "scoped") {

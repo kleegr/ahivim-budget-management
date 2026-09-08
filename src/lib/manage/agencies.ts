@@ -7,6 +7,7 @@ import {
   type PortalCapability,
 } from "@/lib/auth/portal-access";
 import { recordChange } from "./audit";
+import { mergePortalPolicyInput, type PortalPolicyInput } from "@/lib/auth/portal-policy-input";
 import { fail, ok, type Result } from "./errors";
 
 export const AGENCY_STATUSES = ["active", "inactive", "archived"] as const;
@@ -273,12 +274,10 @@ function capabilityPolicy(
   });
 }
 
-export interface AgencyUserAccessInput {
+export interface AgencyUserAccessInput extends PortalPolicyInput {
   userId: string;
   role: AgencyPortalRole;
   isActive?: boolean;
-  capabilityGrants?: string[];
-  capabilityDenials?: string[];
 }
 
 export interface AgencyUserAccessRecord {
@@ -364,10 +363,12 @@ export async function setAgencyUserAccessQuery(
   ]);
   if (!agency.rows[0]) return fail("not_found", "That agency no longer exists.");
   if (!user.rows[0]) return fail("not_found", "That active user no longer exists.");
+  const policy = mergePortalPolicyInput(input, current.rows[0]);
+  if (!policy) return fail("validation", "Choose valid portal visibility settings.");
   const configuredPolicy = capabilityPolicy(
     input.role,
-    input.capabilityGrants ?? current.rows[0]?.capability_grants,
-    input.capabilityDenials ?? current.rows[0]?.capability_denials,
+    policy.capabilityGrants,
+    policy.capabilityDenials,
   );
   if (!configuredPolicy.ok) return configuredPolicy;
   const isActive = input.isActive ?? true;

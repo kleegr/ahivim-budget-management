@@ -6,6 +6,8 @@ import { agencyIdsWithPlanningAccess, hasPortalCapability, resolvePortalAccess }
 import ImpersonationBar from "@/components/auth/impersonation-bar";
 import { resolveAccountProfile } from "@/lib/auth/account-label";
 import AccessNotice from "@/components/auth/access-notice";
+import { isExternalDocumentUser } from "@/lib/auth/document-access";
+import { hasReadableDocumentPublication } from "@/lib/auth/document-publications";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +30,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   let canSeeClassFinancials = false;
   let canSeeEmployees = false;
   let canViewDocuments = false;
+  let canViewApprovedDocuments = false;
   let canUsePortal = false;
   let canManageAgencies = false;
   let accountLabel = resolveAccountProfile(user.role, null, null, user.accountPreset).label;
@@ -39,6 +42,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     const internalPlanning = canAccessPlanning(scope);
     const agencyPlanning = !internalPlanning
       && agencyIdsWithPlanningAccess(portal).length > 0;
+    const externalDocuments = isExternalDocumentUser(scope, portal);
+    const approvedDocuments = externalDocuments && await hasReadableDocumentPublication({
+      user, scope, portal, pool, external: true,
+    });
     return {
       canSeeTransactions: scope.canSeeTransactions,
       canSeeSettlements: scope.canSeeSettlements,
@@ -49,7 +56,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         internalPlanning
         || (!isPlanningOnlyAccess(scope)
           && (scope.full || scope.allEmployees || scope.employeeIds.length > 0)),
-      canViewDocuments: scope.canViewDocuments,
+      canViewDocuments: !externalDocuments && scope.canViewDocuments,
+      canViewApprovedDocuments: approvedDocuments,
       canUsePortal:
         portal.globalRoles.length > 0
         || portal.agencyAccess.length > 0
@@ -68,6 +76,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     canSeeClassFinancials = access.data.canSeeClassFinancials;
     canSeeEmployees = access.data.canSeeEmployees;
     canViewDocuments = access.data.canViewDocuments;
+    canViewApprovedDocuments = access.data.canViewApprovedDocuments;
     canUsePortal = access.data.canUsePortal;
     canManageAgencies = access.data.canManageAgencies;
     accountLabel = access.data.accountLabel;
@@ -88,6 +97,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           canSeeClassFinancials={canSeeClassFinancials}
           canSeeEmployees={canSeeEmployees}
           canViewDocuments={canViewDocuments}
+          canViewApprovedDocuments={canViewApprovedDocuments}
           canUsePortal={canUsePortal}
           canManageAgencies={canManageAgencies}
         />
