@@ -1,4 +1,5 @@
 import type { PgLikePool } from "@/lib/import/commit";
+import { settlementCurrentAmountSql } from "@/lib/data/settlement-eligibility";
 import { toMoney } from "@/lib/money";
 import {
   AGENCY_PORTAL_HOURS_SCOPE,
@@ -482,6 +483,7 @@ export async function agencyMemberSummaries(
                   obligation.employee_id AS person_id,
                   COALESCE(sum(obligation.original_amount) FILTER (
                     WHERE obligation.status = 'active'
+                      AND ${settlementCurrentAmountSql("obligation")}
                       AND canonical_service_date(
                             obligation.period_begin, obligation.check_date, obligation.period_end
                           ) IS NOT NULL
@@ -492,7 +494,7 @@ export async function agencyMemberSummaries(
                   COALESCE(sum(events.applied_month), 0)::text AS collected_this_month,
                   COALESCE(sum(GREATEST(
                     obligation.original_amount - COALESCE(events.applied, 0), 0
-                  )) FILTER (WHERE obligation.status = 'active'), 0)::text AS remaining
+                  )) FILTER (WHERE obligation.status = 'active' AND ${settlementCurrentAmountSql("obligation")}), 0)::text AS remaining
              FROM settlement_obligations obligation
              JOIN agency_employees membership
                ON membership.employee_id = obligation.employee_id

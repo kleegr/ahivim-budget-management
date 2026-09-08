@@ -225,7 +225,9 @@ suite("settlement migrations from a populated 0016 database (real PostgreSQL)", 
     // it once when payroll-check facts become authoritative. Migration 0043's
     // two normalization statements each invalidate settlement derivations so
     // every upgraded database requires a refresh under the verified-check rule.
-    expect(state.rows[0]).toMatchObject({ source_version: "4", refreshed_version: "0" });
+    // Migration 0045 invalidates it once more so source-review holds must be
+    // certified by the new application before existing obligations can be used.
+    expect(state.rows[0]).toMatchObject({ source_version: "5", refreshed_version: "0" });
   }, 60_000);
 
   it("invalidates freshness for every mutable settlement source family", async () => {

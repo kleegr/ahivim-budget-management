@@ -2,6 +2,7 @@ import { settlementBalance, settlementState, type SettlementDirection, type Sett
 import type { PgLikePool } from "@/lib/import/commit";
 import { dec, toMoney, withholdingFromGrossAndNet } from "@/lib/money";
 import type { AccessScope } from "@/lib/auth/access";
+import { settlementCurrentAmountSql } from "@/lib/data/settlement-eligibility";
 import { calculatePeriodElapsed, classifyUtilization } from "@/lib/business/utilization";
 import {
   getSettlementLedgerFreshness,
@@ -33,10 +34,12 @@ export interface SettlementRow {
   calculation: Record<string, unknown>;
   voidReason: string | null;
   createdAt: string;
+  reviewRequired?: boolean;
 }
 
 export interface SettlementEventRow {
   id: string;
+  reviewRequired?: boolean;
   obligationId: string | null;
   obligationLabel: string | null;
   checkNumber: string | null;
@@ -135,6 +138,7 @@ interface ObligationRow {
   event_count: string;
   last_action_at: string | null;
   created_at: string;
+  review_required?: boolean;
 }
 
 const KIND_LABELS: Record<string, string> = {
@@ -336,19 +340,20 @@ export function settlementHistoryScopeWhere(
 
 type SettlementSummaryInput = Pick<
   SettlementRow,
-  "state" | "direction" | "balance" | "originalAmount" | "appliedAmount"
+  "state" | "direction" | "balance" | "originalAmount" | "appliedAmount" | "reviewRequired"
 >;
 
 export function summarizeSettlementRows(rows: readonly SettlementSummaryInput[]): SettlementSummary {
-  const active = rows.filter((row) => row.state !== "void");
+  const eligible = rows.filter((row) => !row.reviewRequired);
+  const active = eligible.filter((row) => row.state !== "void");
   const positive = (direction: SettlementDirection) => active
     .filter((row) => row.direction === direction && dec(row.balance).greaterThan(0))
     .reduce((sum, row) => sum.plus(row.balance), dec(0));
   return {
-    openCount: rows.filter((row) => row.state === "open").length,
-    partialCount: rows.filter((row) => row.state === "partial").length,
-    settledCount: rows.filter((row) => row.state === "settled").length,
-    creditCount: rows.filter((row) => row.state === "credit").length,
+    openCount: eligible.filter((row) => row.state === "open").length,
+    partialCount: eligible.filter((row) => row.state === "partial").length,
+    settledCount: eligible.filter((row) => row.state === "settled").length,
+    creditCount: eligible.filter((row) => row.state === "credit").length,
     voidCount: rows.filter((row) => row.state === "void").length,
     agencyOwes: toMoney(positive("payable")),
     employeesOwe: toMoney(positive("receivable")),
@@ -357,7 +362,7 @@ export function summarizeSettlementRows(rows: readonly SettlementSummaryInput[])
       .filter((row) => dec(row.balance).isNegative())
       .reduce((sum, row) => sum.plus(dec(row.balance).abs()), dec(0))),
     originalTotal: toMoney(active.reduce((sum, row) => sum.plus(row.originalAmount), dec(0))),
-    appliedTotal: toMoney(active.reduce((sum, row) => sum.plus(row.appliedAmount), dec(0))),
+    appliedTotal: toMoney(rows.filter((row) => row.state !== "void").reduce((sum, row) => sum.plus(row.appliedAmount), dec(0))),
   };
 }
 
@@ -368,11 +373,13 @@ export async function getSettlementSummary(pool: Queryable): Promise<SettlementS
     original_amount: string;
     applied_amount: string;
     status: "active" | "void";
+    review_required: boolean;
   }>(
     `SELECT o.direction,
             o.original_amount::text,
             COALESCE(sum(e.amount), 0)::text AS applied_amount,
-            o.status
+            o.status,
+            (o.status = 'active' AND NOT ${settlementCurrentAmountSql("o")}) AS review_required
        FROM settlement_obligations o
        LEFT JOIN settlement_events e ON e.settlement_obligation_id = o.id
       GROUP BY o.id, o.direction, o.original_amount, o.status`,
@@ -380,6 +387,7 @@ export async function getSettlementSummary(pool: Queryable): Promise<SettlementS
 
   return summarizeSettlementRows(rows.map((row) => ({
     direction: row.direction,
+    reviewRequired: row.review_required,
     originalAmount: toMoney(row.original_amount),
     appliedAmount: toMoney(row.applied_amount),
     balance: settlementBalance(
@@ -411,7 +419,8 @@ export async function getSettlementDashboard(pool: Queryable, scope?: AccessScop
               o.calculation_metadata, o.status, o.void_reason,
               COALESCE(tx.transaction_count, 0)::text AS transaction_count,
               COALESCE(ev.event_count, 0)::text AS event_count,
-              ev.last_action_at::text, o.created_at::text
+              ev.last_action_at::text, o.created_at::text,
+              (o.status = 'active' AND NOT ${settlementCurrentAmountSql("o")}) AS review_required
          FROM settlement_obligations o
          LEFT JOIN employees e ON e.id = o.employee_id
          LEFT JOIN individuals i ON i.id = o.individual_id
@@ -744,6 +753,7 @@ export async function getSettlementDashboard(pool: Queryable, scope?: AccessScop
       ),
       voidReason: row.void_reason,
       createdAt: row.created_at,
+      reviewRequired: row.review_required ?? false,
     };
   });
 
@@ -753,8 +763,11 @@ export async function getSettlementDashboard(pool: Queryable, scope?: AccessScop
 
   const summary = summarizeSettlementRows(rows);
 
+  const heldIds = new Set(allRows.filter((row) => row.reviewRequired).map((row) => row.id));
+
   const allEvents: SettlementEventRow[] = eventResult.rows.map((row) => ({
     id: row.id,
+    reviewRequired: heldIds.has(row.settlement_obligation_id ?? "") || heldIds.has(row.paired_obligation_id ?? ""),
     obligationId: row.settlement_obligation_id,
     obligationLabel: row.obligation_kind ? kindLabel(row.obligation_kind) : null,
     checkNumber: row.check_number,
@@ -815,7 +828,13 @@ export async function getSettlementDashboard(pool: Queryable, scope?: AccessScop
     summary,
     missingDeals,
     checkIssues,
-    freshness,
+    freshness: scope && !scope.full ? {
+      ...freshness,
+      sourceReviewCount: rows.filter((row) => row.reviewRequired).length + missingDeals.length + checkIssues.length,
+      sourceReviewSummary: rows.some((row) => row.reviewRequired) || missingDeals.length || checkIssues.length
+        ? "Some source records need review. Affected balances are on hold; other balances are available."
+        : null,
+    } : freshness,
   };
 }
 
@@ -855,6 +874,7 @@ export async function getPersonSettlementBalance(
          ) latest ON true
         WHERE root.${column} = $1
           AND root.status = 'active'
+          AND ${settlementCurrentAmountSql("root")}
           AND NOT (root.calculation_metadata ? 'adjustmentForObligationId')
      )
      SELECT roots.current_direction,

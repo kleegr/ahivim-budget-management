@@ -11,6 +11,8 @@ export interface SettlementLedgerFreshness {
   lastRefreshedAt: string | null;
   refreshedForDate: string | null;
   lastRefreshError: string | null;
+  sourceReviewCount?: number;
+  sourceReviewSummary?: string | null;
 }
 
 interface FreshnessRow {
@@ -20,6 +22,8 @@ interface FreshnessRow {
   last_refreshed_at: string | null;
   refreshed_for_date: string | null;
   last_refresh_error: string | null;
+  source_review_count?: number;
+  source_review_summary?: string | null;
 }
 
 type Queryable = Pick<PgLikePool, "query"> | Pick<PgLikeClient, "query">;
@@ -45,6 +49,8 @@ function mapFreshness(row: FreshnessRow, applicationDate: string): SettlementLed
     lastRefreshedAt: row.last_refreshed_at,
     refreshedForDate: row.refreshed_for_date,
     lastRefreshError: row.last_refresh_error,
+    sourceReviewCount: row.source_review_count ?? 0,
+    sourceReviewSummary: row.source_review_summary ?? null,
   };
 }
 
@@ -56,7 +62,7 @@ async function selectFreshness(
     `SELECT source_version::text, refreshed_version::text,
             dirty_since::text, last_refreshed_at::text,
             to_char(refreshed_for_date, 'YYYY-MM-DD') AS refreshed_for_date,
-            last_refresh_error
+            last_refresh_error, source_review_count, source_review_summary
        FROM settlement_ledger_state
       WHERE singleton = true`,
   );
@@ -100,6 +106,9 @@ export async function markSettlementRefreshComplete(
   client: PgLikeClient,
   fullRefresh: boolean,
   applicationDate: string,
+  review: { blockedObligationIds: string[]; count: number; summary: string | null } = {
+    blockedObligationIds: [], count: 0, summary: null,
+  },
 ): Promise<void> {
   if (!fullRefresh) return;
   await client.query(
@@ -109,9 +118,12 @@ export async function markSettlementRefreshComplete(
             last_refreshed_at = now(),
             refreshed_for_date = $1::date,
             last_refresh_error = NULL,
+            blocked_obligation_ids = $2::uuid[],
+            source_review_count = $3,
+            source_review_summary = $4,
             updated_at = now()
       WHERE singleton = true`,
-    [applicationDate],
+    [applicationDate, review.blockedObligationIds, review.count, review.summary],
   );
 }
 

@@ -1,6 +1,7 @@
 import type { PgLikePool } from "@/lib/import/commit";
 import { settlementState, type SettlementDirection, type SettlementState } from "@/lib/business/settlement-ledger";
 import { dec, toMoney, withholdingFromGrossAndNet } from "@/lib/money";
+import { settlementCurrentAmountSql } from "@/lib/data/settlement-eligibility";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -302,6 +303,7 @@ export async function getEmployeeMoneyProfile(
            ) latest ON true
           WHERE root.employee_id = $1
             AND root.status = 'active'
+            AND ${settlementCurrentAmountSql("root")}
             AND NOT (root.calculation_metadata ? 'adjustmentForObligationId')
             AND COALESCE(root.calculation_metadata->>'flow', '') IN ('direct_employee', 'agency_routed')
        )

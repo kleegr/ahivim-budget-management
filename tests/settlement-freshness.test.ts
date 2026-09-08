@@ -53,6 +53,6 @@ describe("settlement clock freshness", () => {
     await markSettlementRefreshComplete(client, true, "2026-08-24");
     expect(query).toHaveBeenCalledOnce();
     expect(calls[0]?.sql).toContain("refreshed_for_date = $1::date");
-    expect(calls[0]?.params).toEqual(["2026-08-24"]);
+    expect(calls[0]?.params).toEqual(["2026-08-24", [], 0, null]);
   });
 });

@@ -23,6 +23,7 @@ import {
 } from "@/lib/manage/settlement-freshness";
 import { redactError } from "@/lib/http";
 import { dec, toMoney } from "@/lib/money";
+import { settlementReviewHolds } from "@/lib/manage/settlement-source-review";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -204,6 +205,7 @@ export interface RefreshSettlementsResult {
   employeeChecks: number;
   individualPlans: number;
   preservedHistorical: number;
+  reviewRequiredCount?: number;
 }
 
 export function settlementRefreshBlockingIssueMessage(
@@ -405,6 +407,49 @@ async function loadUnknownRecipientTransactionIds(
     params,
   );
   return rows.map((row) => row.id);
+}
+
+async function loadUnverifiedCheckTransactionIds(
+  client: Pick<PgLikePool, "query">,
+  employeeId?: string | null,
+): Promise<string[]> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT t.id FROM payroll_transactions t
+       LEFT JOIN programs p ON p.id = t.program_id
+       LEFT JOIN employee_payroll_checks pc
+         ON pc.id = t.payroll_check_id AND pc.employee_id = t.employee_id
+      WHERE t.employee_id IS NOT NULL
+        AND ($1::uuid IS NULL OR t.employee_id = $1)
+        AND effective_payment_recipient(t.payment_recipient, p.payment_recipient) = 'employee'
+        AND (pc.id IS NULL OR pc.verification_status <> 'verified')`,
+    [employeeId ?? null],
+  );
+  return rows.map((row) => row.id);
+}
+
+async function loadDetachedUnverifiedCheckSourceKeys(
+  client: Pick<PgLikePool, "query">,
+  employeeId?: string | null,
+): Promise<string[]> {
+  const { rows } = await client.query<{ source_key: string }>(
+    `SELECT review_root.source_key FROM settlement_obligations review_root
+       LEFT JOIN employee_payroll_checks review_check
+         ON review_check.id::text = review_root.calculation_metadata->>'payrollCheckId'
+        AND review_check.employee_id = review_root.employee_id
+      WHERE review_root.status = 'active'
+        AND review_root.calculation_metadata->>'flow' = 'direct_employee'
+        AND NOT (review_root.calculation_metadata ? 'adjustmentForObligationId')
+        AND NULLIF(review_root.calculation_metadata->>'payrollCheckId', '') IS NOT NULL
+        AND ($1::uuid IS NULL OR review_root.employee_id = $1)
+        AND (review_check.id IS NULL OR review_check.verification_status = 'unverified')
+        AND NOT EXISTS (
+          SELECT 1 FROM payroll_transactions linked
+           WHERE linked.payroll_check_id = review_check.id
+             AND linked.employee_id = review_root.employee_id
+        )`,
+    [employeeId ?? null],
+  );
+  return rows.map((row) => row.source_key);
 }
 
 export function resolveNumberedDirectCheckDates(rows: readonly Pick<
@@ -715,7 +760,7 @@ async function individualCandidates(
   pool: PgLikePool,
   individualId?: string | null,
   asOf?: string,
-): Promise<{ candidates: ObligationCandidate[]; individualPlans: number }> {
+): Promise<{ candidates: ObligationCandidate[]; individualPlans: number; protectedStrategyIds: string[] }> {
   const { rows } = await listStrategies(pool, {
     individualId: individualId ?? undefined,
     includeArchived: false,
@@ -724,8 +769,12 @@ async function individualCandidates(
   });
   const candidates: ObligationCandidate[] = [];
   let individualPlans = 0;
+  const protectedStrategyIds: string[] = [];
   for (const row of rows) {
-    if (!row.periodStart || !row.periodEnd) continue;
+    if (!row.periodStart || !row.periodEnd || row.afterAll === null) {
+      protectedStrategyIds.push(row.id);
+      continue;
+    }
     individualPlans++;
     const targets = individualSettlementTargets(
       {
@@ -769,7 +818,7 @@ async function individualCandidates(
       });
     }
   }
-  return { candidates, individualPlans };
+  return { candidates, individualPlans, protectedStrategyIds };
 }
 
 async function attachTransactions(
@@ -1228,9 +1277,15 @@ export async function refreshSettlementObligations(
       const unknownRecipientTransactionIds = refreshInput.individualId && !refreshInput.employeeId
         ? []
         : await loadUnknownRecipientTransactionIds(client, refreshInput.employeeId);
+      const unverifiedCheckTransactionIds = refreshInput.individualId && !refreshInput.employeeId
+        ? []
+        : await loadUnverifiedCheckTransactionIds(client, refreshInput.employeeId);
+      const detachedCheckSourceKeys = refreshInput.individualId && !refreshInput.employeeId
+        ? []
+        : await loadDetachedUnverifiedCheckSourceKeys(client, refreshInput.employeeId);
       phase = "read-individual-plans";
       const individual = refreshInput.employeeId && !refreshInput.individualId
-        ? { candidates: [], individualPlans: 0 }
+        ? { candidates: [], individualPlans: 0, protectedStrategyIds: [] }
         : await individualCandidates(readPool, refreshInput.individualId, applicationDate);
       phase = "build-candidates";
       const employee = employeeCandidates(employeeRows);
@@ -1264,21 +1319,32 @@ export async function refreshSettlementObligations(
       ));
       phase = "match-existing-sources";
       await adoptMergedEmployeeSourceKeys(client, candidates);
+      for (const transactionId of [...unknownRecipientTransactionIds, ...unverifiedCheckTransactionIds]) {
+        employee.protectedTransactionIds.add(transactionId);
+      }
+      for (const sourceKey of detachedCheckSourceKeys) employee.protectedSourceKeys.add(sourceKey);
+      const reviewCount = employee.protectedTransactionIds.size + individual.protectedStrategyIds.length + detachedCheckSourceKeys.length;
+      refreshResult.reviewRequiredCount = reviewCount;
+      const reviewHolds = await settlementReviewHolds(client, {
+        transactionIds: [...employee.protectedTransactionIds],
+        strategyIds: individual.protectedStrategyIds,
+        sourceKeys: [...employee.protectedSourceKeys],
+      });
+      const heldSourceKeys = new Set(reviewHolds.map((row) => row.source_key));
       phase = "write-obligations";
       for (const candidate of candidates) {
+        if (heldSourceKeys.has(candidate.sourceKey)) continue;
         const outcome = await ensureObligation(client, candidate, actorId);
         refreshResult[outcome]++;
       }
       const candidateKeys = new Set(candidates.map((candidate) => candidate.sourceKey));
-      for (const transactionId of unknownRecipientTransactionIds) {
-        employee.protectedTransactionIds.add(transactionId);
-      }
       const includeEmployees = !(refreshInput.individualId && !refreshInput.employeeId);
       const includeIndividuals = !(refreshInput.employeeId && !refreshInput.individualId);
       phase = "read-reconciliation-roots";
       const roots = await loadReconciliationRoots(client, refreshInput, includeEmployees, includeIndividuals);
       phase = "reconcile-obligations";
       for (const root of roots) {
+        if (heldSourceKeys.has(root.source_key)) continue;
         if (candidateKeys.has(root.source_key) || employee.protectedSourceKeys.has(root.source_key)) continue;
         if (root.transaction_ids.some((id) => employee.protectedTransactionIds.has(id))) continue;
         if (root.individual_id && shouldPreserveEndedIndividualPeriod(root.period_end, applicationDate)) {
@@ -1305,10 +1371,18 @@ export async function refreshSettlementObligations(
       if (fullRefresh) {
         phase = "certify-ledger";
         const blockingIssue = settlementRefreshBlockingIssueMessage(refreshResult);
-        if (blockingIssue) {
+        if (blockingIssue && reviewCount === 0) {
+          // Fail closed if a future source check reports an issue without
+          // identifying the provenance whose old obligations must be held.
           await markSettlementRefreshBlocked(client, blockingIssue);
         } else {
-          await markSettlementRefreshComplete(client, true, applicationDate);
+          await markSettlementRefreshComplete(client, true, applicationDate, {
+            blockedObligationIds: reviewHolds.map((row) => row.id),
+            count: reviewCount,
+            summary: reviewCount > 0
+              ? "Some source records need review. Affected balances are on hold; other balances are available."
+              : null,
+          });
         }
       }
       phase = "commit";
@@ -1338,6 +1412,10 @@ function staleSettlementLedger() {
   );
 }
 
+function unresolvedSettlementSource() {
+  return fail("conflict", "This balance has unresolved payroll, deal, or Financial Setup information. Resolve its source review and refresh before recording activity.");
+}
+
 interface LockedObligation {
   id: string;
   employee_id: string | null;
@@ -1346,12 +1424,14 @@ interface LockedObligation {
   original_amount: string;
   applied_amount: string;
   status: "active" | "void";
+  review_required?: boolean;
 }
 
 async function lockObligations(client: PgLikeClient, ids: string[]): Promise<LockedObligation[]> {
   const { rows } = await client.query<Omit<LockedObligation, "applied_amount">>(
     `SELECT o.id, o.employee_id, o.individual_id, o.direction,
-            o.original_amount::text, o.status
+            o.original_amount::text, o.status,
+            COALESCE(o.id = ANY((SELECT blocked_obligation_ids FROM "settlement_ledger_state" WHERE singleton = true)::uuid[]), true) AS review_required
        FROM settlement_obligations o
       WHERE o.id = ANY($1::uuid[])
       ORDER BY o.id
@@ -1465,6 +1545,7 @@ export async function settleObligations(
     if (replayAfterLock.state === "replay") return ok(replayAfterLock.result!);
     if (replayAfterLock.state === "conflict") return fail("conflict", "That operation key was already used for a different settlement.");
     if (obligations.length !== ids.length) return fail("not_found", "One of those settlement items no longer exists.");
+    if (obligations.some((row) => row.review_required)) return unresolvedSettlementSource();
     const actionable = obligations.filter(
       (row) => row.status === "active" && dec(row.original_amount).minus(row.applied_amount).greaterThan(0),
     );
@@ -1564,6 +1645,7 @@ export async function recordObligationPayment(
     if (replayAfterLock.state === "conflict") return fail("conflict", "That operation key was already used for a different payment.");
     const row = obligations[0];
     if (!row) return fail("not_found", "That settlement item no longer exists.");
+    if (row.review_required) return unresolvedSettlementSource();
     if (row.status !== "active") return fail("conflict", "That settlement item is void.");
     const batch = await createBatch(
       client,
@@ -1665,6 +1747,7 @@ export async function applySettlementCredit(
     const source = obligations.find((row) => row.id === input.sourceObligationId);
     const target = obligations.find((row) => row.id === input.targetObligationId);
     if (!source || !target) return fail("not_found", "That credit or balance no longer exists.");
+    if (source.review_required || target.review_required) return unresolvedSettlementSource();
     if (source.status !== "active" || target.status !== "active") {
       return fail("conflict", "That credit or balance is void. Refresh Settlements and try again.");
     }
@@ -1781,6 +1864,7 @@ export async function refundSettlementCredit(
     if (replayAfterLock.state === "conflict") return fail("conflict", "That operation key was already used for a different refund.");
     const row = obligations[0];
     if (!row) return fail("not_found", "That settlement credit no longer exists.");
+    if (row.review_required) return unresolvedSettlementSource();
     if (row.status !== "active") return fail("conflict", "That settlement credit is void.");
     const creditAvailable = dec(settlementBalance(row.original_amount, row.applied_amount)).negated();
     if (!creditAvailable.greaterThan(0)) return fail("conflict", "That item no longer has a credit balance.");
@@ -1881,11 +1965,13 @@ export async function correctSettlementEvent(
       reference: string | null;
       note: string | null;
       obligation_status: "active" | "void";
+      review_required?: boolean;
     }>(
       `SELECT e.id, e.settlement_obligation_id, e.employee_id, e.individual_id,
               e.event_type, e.amount::text,
               to_char(e.occurred_on, 'YYYY-MM-DD') AS occurred_on,
-              e.reference, e.note, o.status AS obligation_status
+              e.reference, e.note, o.status AS obligation_status,
+              COALESCE(o.id = ANY((SELECT blocked_obligation_ids FROM "settlement_ledger_state" WHERE singleton = true)::uuid[]), true) AS review_required
          FROM settlement_events e
          JOIN settlement_obligations o ON o.id = e.settlement_obligation_id
         WHERE e.id = $1
@@ -1898,14 +1984,18 @@ export async function correctSettlementEvent(
       return fail("validation", "Only payments and set-asides can be corrected. Reverse other entries instead.");
     }
     if (row.obligation_status !== "active") return fail("conflict", "That settlement item is void.");
+    // Another request may have committed while this request waited for the
+    // source lock. Resolve its successful replay before treating its reversal
+    // as a conflicting money action.
+    const replayAfterLock = await lookupBatch(client, input.operationKey, "correct_event", requestFingerprint, actorId);
+    if (replayAfterLock.state === "replay") return ok(replayAfterLock.result!);
+    if (replayAfterLock.state === "conflict") return fail("conflict", "That operation key was already used for a different correction.");
+    if (row.review_required) return unresolvedSettlementSource();
     const duplicate = await client.query<{ id: string }>(
       `SELECT id FROM settlement_events WHERE reversal_of_event_id = $1 LIMIT 1`,
       [eventId],
     );
     if (duplicate.rows[0]) return fail("conflict", "That event has already been reversed.");
-    const replayAfterLock = await lookupBatch(client, input.operationKey, "correct_event", requestFingerprint, actorId);
-    if (replayAfterLock.state === "replay") return ok(replayAfterLock.result!);
-    if (replayAfterLock.state === "conflict") return fail("conflict", "That operation key was already used for a different correction.");
     const batch = await createBatch(
       client,
       input.operationKey,
@@ -2006,10 +2096,12 @@ export async function reverseSettlementEvent(
       individual_id: string | null;
       amount: string;
       occurred_on: string;
+      review_required?: boolean;
     }>(
       `SELECT e.id, e.settlement_obligation_id, e.settlement_batch_id,
               b.action AS batch_action, e.employee_id, e.individual_id,
-              e.amount::text, to_char(e.occurred_on, 'YYYY-MM-DD') AS occurred_on
+              e.amount::text, to_char(e.occurred_on, 'YYYY-MM-DD') AS occurred_on,
+              COALESCE(e.settlement_obligation_id = ANY((SELECT blocked_obligation_ids FROM "settlement_ledger_state" WHERE singleton = true)::uuid[]), true) AS review_required
          FROM settlement_events e
          LEFT JOIN settlement_batches b ON b.id = e.settlement_batch_id
         WHERE e.id = $1 AND e.event_type <> 'reversal'
@@ -2022,7 +2114,8 @@ export async function reverseSettlementEvent(
       ? await client.query<typeof row>(
         `SELECT e.id, e.settlement_obligation_id, e.settlement_batch_id,
                 'apply_credit'::text AS batch_action, e.employee_id, e.individual_id,
-                e.amount::text, to_char(e.occurred_on, 'YYYY-MM-DD') AS occurred_on
+                e.amount::text, to_char(e.occurred_on, 'YYYY-MM-DD') AS occurred_on,
+                COALESCE(e.settlement_obligation_id = ANY((SELECT blocked_obligation_ids FROM "settlement_ledger_state" WHERE singleton = true)::uuid[]), true) AS review_required
            FROM settlement_events e
           WHERE e.settlement_batch_id = $1 AND e.event_type = 'credit'
           ORDER BY e.id
@@ -2031,14 +2124,15 @@ export async function reverseSettlementEvent(
       )
       : { rows: [row] };
     const sourceIds = sourceEvents.rows.map((event) => event.id);
+    const replayAfterLock = await lookupBatch(client, operationKey, "reverse_event", requestFingerprint, actorId);
+    if (replayAfterLock.state === "replay") return ok(replayAfterLock.result!);
+    if (replayAfterLock.state === "conflict") return fail("conflict", "That operation key was already used for a different reversal.");
+    if (sourceEvents.rows.some((event) => event.review_required)) return unresolvedSettlementSource();
     const duplicate = await client.query<{ id: string }>(
       `SELECT id FROM settlement_events WHERE reversal_of_event_id = ANY($1::uuid[]) LIMIT 1`,
       [sourceIds],
     );
     if (duplicate.rows[0]) return fail("conflict", "That event has already been reversed.");
-    const replayAfterLock = await lookupBatch(client, operationKey, "reverse_event", requestFingerprint, actorId);
-    if (replayAfterLock.state === "replay") return ok(replayAfterLock.result!);
-    if (replayAfterLock.state === "conflict") return fail("conflict", "That operation key was already used for a different reversal.");
     const batch = await createBatch(
       client,
       operationKey,

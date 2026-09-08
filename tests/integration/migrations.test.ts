@@ -116,6 +116,7 @@ suite("migration runner (real PostgreSQL)", () => {
     expect(rows[42].name).toBe("0042_permission_granularity.sql");
     expect(rows[43].name).toBe("0043_verified_payroll_check_invariant.sql");
     expect(rows[44].name).toBe("0044_confirmed_group_budget_hours.sql");
+    expect(rows[45].name).toBe("0045_settlement_source_review.sql");
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 

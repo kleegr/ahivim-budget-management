@@ -208,7 +208,7 @@ describe("settlement refresh certification", () => {
     );
   });
 
-  it("does not certify a full refresh that skips a direct check with no net pay", async () => {
+  it("records a source review while certifying that a full refresh processed the current version", async () => {
     const statements: string[] = [];
     const client = {
       query: vi.fn(async (sql: string) => {
@@ -259,7 +259,7 @@ describe("settlement refresh certification", () => {
     const result = await refreshSettlementObligations(pool, {}, null);
 
     expect(result).toMatchObject({ ok: true, data: { skippedMissingNet: 1 } });
-    expect(statements.filter((sql) => sql.includes("effective_payment_recipient("))).toHaveLength(2);
+    expect(statements.filter((sql) => sql.includes("effective_payment_recipient("))).toHaveLength(3);
     expect(statements.some((sql) => sql.includes("canonical_service_date("))).toBe(true);
     expect(statements.some((sql) => sql.includes("t.created_at::date"))).toBe(false);
     const employeeSource = statements.find((sql) => sql.includes("LEFT JOIN employee_payroll_checks pc"));
@@ -267,8 +267,9 @@ describe("settlement refresh certification", () => {
     expect(employeeSource).toContain("AND pc.id IS NOT NULL");
     expect(employeeSource).toContain("pc.employee_id = t.employee_id");
     expect(employeeSource).not.toContain("COALESCE(pc.actual_net, t.total_net_pay)");
-    expect(statements.some((sql) => sql.includes("WHEN source_version = refreshed_version"))).toBe(true);
-    expect(statements.some((sql) => sql.includes("SET refreshed_version = source_version"))).toBe(false);
+    expect(statements.some((sql) => sql.includes("WHEN source_version = refreshed_version"))).toBe(false);
+    expect(statements.some((sql) => sql.includes("SET refreshed_version = source_version"))).toBe(true);
+    expect(statements.some((sql) => sql.includes("blocked_obligation_ids = $2::uuid[]"))).toBe(true);
     expect(statements.at(-1)).toBe("COMMIT");
   });
 
@@ -371,8 +372,8 @@ describe("settlement refresh certification", () => {
       ok: true,
       data: { skippedNoDeal: 1, voided: 0, adjusted: 0 },
     });
-    expect(statements.some((sql) => sql.includes("WHEN source_version = refreshed_version"))).toBe(true);
-    expect(statements.some((sql) => sql.includes("SET refreshed_version = source_version"))).toBe(false);
+    expect(statements.some((sql) => sql.includes("WHEN source_version = refreshed_version"))).toBe(false);
+    expect(statements.some((sql) => sql.includes("SET refreshed_version = source_version"))).toBe(true);
     expect(statements.some((sql) => sql.includes("WHERE o.source_key = $1"))).toBe(false);
     expect(statements.at(-1)).toBe("COMMIT");
   });

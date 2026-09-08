@@ -637,8 +637,9 @@ suite("employee deals and settlement ledger (real PostgreSQL)", () => {
     }, ACTOR));
     unwrap(await refreshSettlementObligations(pool, { employeeId: employee.id }, ACTOR));
     expect((await getSettlementDashboard(pool)).rows.find((row) => row.id === verified.id)).toMatchObject({
-      state: "void",
-      balance: "0.0000",
+      state: "open",
+      balance: "70.0000",
+      reviewRequired: true,
     });
   });
 

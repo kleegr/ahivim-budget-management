@@ -48,6 +48,7 @@ describe("agency financial report read model", () => {
               id: "tx-direct", service_date: "2026-08-06", individual_id: "person-1", individual_name: "Person One",
               employee_id: "employee-1", employee_name: "Employee One", program_name: "Respite",
               payment_recipient: "employee", gross_amount: "1000", base_amount: "800",
+              payroll_check_id: "check-1", payroll_check_verified: true,
               person_share_percent: null, employee_deal_id: "deal-1", agency_cut_percent: "0.2",
             },
           ] };

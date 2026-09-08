@@ -1,4 +1,5 @@
 import type { PgLikePool } from "@/lib/import/commit";
+import { settlementCurrentAmountSql } from "@/lib/data/settlement-eligibility";
 import { toMoney } from "@/lib/money";
 import {
   hasPortalCapability,
@@ -320,6 +321,7 @@ export async function getPortalHomeReadModel(
                       ) events ON true
                      WHERE obligation.status = 'active'
                        AND obligation.direction = 'receivable' AND obligation.kind LIKE 'employee_giveback%'
+                       AND ${settlementCurrentAmountSql("obligation")}
                        AND EXISTS (
                          SELECT 1
                            FROM agency_employees membership

@@ -5,6 +5,8 @@ import type {
 } from "@/lib/data/agency-financial-report";
 import type { ManualIncomeSource } from "@/lib/manage/agency-financials";
 import type { ExportTable } from "./tabular";
+import { agencyFinancialResultIncomplete } from "@/lib/business/agency-financial-completeness";
+import { collectionsPayrollCheckFocusHref } from "@/lib/nav/collections-links";
 
 const MANUAL_SOURCE_LABEL: Record<ManualIncomeSource, string> = {
   class: "Class payment received",
@@ -17,6 +19,7 @@ const COVERAGE_LABEL: Record<keyof AgencyFinancialCoverage, string> = {
   transactionsMissingAmount: "Transactions missing amount",
   agencyTransactionsMissingBase: "Agency transactions missing employee base",
   agencyTransactionsMissingPayRule: "Agency transactions missing pay rule",
+  directTransactionsMissingVerifiedCheck: "Direct-pay transactions without verified check expenses in this month",
   directChecksMissingGross: "Direct checks missing gross",
   directChecksMissingWithholding: "Direct checks where gross-minus-net withholding is unavailable",
   directChecksGrossBelowNet: "Direct checks with gross below net",
@@ -51,6 +54,7 @@ function setAsideSourceLabel(report: AgencyFinancialReport["setAsides"][number])
 
 /** Convert the exact on-screen actual snapshot into the shared export shape. */
 export function agencyFinancialExportTables(report: AgencyFinancialReport): ExportTable[] {
+  const incomplete = agencyFinancialResultIncomplete(report.coverage);
   const countedClassReceipts = report.manualIncome.filter((row) => (
     row.sourceType === "class" && row.countedInIncome
   )).length;
@@ -67,8 +71,10 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
         { key: "month", header: "Month", type: "text" },
         { key: "periodStart", header: "Period start", type: "date" },
         { key: "periodEnd", header: "Period end", type: "date" },
+        { key: "resultStatus", header: "Result status", type: "text" },
       ],
-      rows: [{ month: report.month, periodStart: report.periodStart, periodEnd: report.periodEnd }],
+      rows: [{ month: report.month, periodStart: report.periodStart, periodEnd: report.periodEnd,
+        resultStatus: incomplete ? "Incomplete - missing actuals or expenses are excluded" : "No identified actuals coverage gaps" }],
     },
     {
       title: "Summary totals",
@@ -102,12 +108,18 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
         { section: "Expenses", metric: "Class receipt individual share", records: null, amount: report.totals.expenses.classIndividualShare },
         { section: "Expenses", metric: "Other recorded income individual share", records: null, amount: report.totals.expenses.manualIndividualShare },
         { section: "Expenses", metric: "Total expenses", records: null, amount: report.totals.expenses.total },
-        { section: "Result", metric: "Agency result", records: null, amount: report.totals.agencyResult },
+        { section: "Result", metric: incomplete ? "Agency result (incomplete)" : "Agency result", records: null, amount: report.totals.agencyResult },
       ],
     },
     {
       title: "Transaction actuals",
       columns: [
+        { key: "sourceId", header: "Transaction ID", type: "text" },
+        { key: "sourcePath", header: "Transaction source path", type: "text" },
+        { key: "checkVerified", header: "Payroll check verified", type: "text" },
+        { key: "checkExpenseIncluded", header: "Payroll check expenses in this month", type: "text" },
+        { key: "checkServiceDate", header: "Payroll check service date", type: "date" },
+        { key: "checkSourcePath", header: "Payroll check source path", type: "text" },
         { key: "serviceDate", header: "Date", type: "date" },
         { key: "sourceRef", header: "Source reference", type: "text" },
         { key: "individual", header: "Individual", type: "text" },
@@ -123,6 +135,14 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
         { key: "agencyShareOfBase", header: "Agency share of base", type: "money" },
       ],
       rows: report.transactions.map((row) => ({
+        sourceId: row.id,
+        sourcePath: `/transactions?transactionId=${row.id}`,
+        checkVerified: row.paymentRecipient === "employee" ? row.payrollCheckVerified ? "Yes" : "No - review required" : "Not applicable",
+        checkExpenseIncluded: row.paymentRecipient === "employee" ? row.payrollCheckExpenseIncluded ? "Yes" : "No - review required" : "Not applicable",
+        checkServiceDate: row.payrollCheckServiceDate,
+        checkSourcePath: row.payrollCheckId ? collectionsPayrollCheckFocusHref({
+          payrollCheckId: row.payrollCheckId, month: row.payrollCheckServiceDate?.slice(0, 7) ?? report.month,
+        }) : null,
         serviceDate: row.serviceDate,
         sourceRef: row.sourceRef,
         individual: row.individualName ?? "Unmatched",
@@ -142,6 +162,8 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
     {
       title: "Verified direct-pay checks",
       columns: [
+        { key: "sourceId", header: "Payroll check ID", type: "text" },
+        { key: "sourcePath", header: "Payroll check source path", type: "text" },
         { key: "serviceDate", header: "Date", type: "date" },
         { key: "employee", header: "Employee", type: "text" },
         { key: "checkNumber", header: "Check", type: "text" },
@@ -153,6 +175,8 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
         { key: "agencyReceives", header: "Agency receives", type: "money" },
       ],
       rows: report.directChecks.map((row) => ({
+        sourceId: row.id,
+        sourcePath: collectionsPayrollCheckFocusHref({ payrollCheckId: row.id, month: report.month }),
         serviceDate: row.serviceDate,
         employee: row.employeeName,
         checkNumber: row.checkNumber ?? "No number",
@@ -168,6 +192,8 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
     {
       title: "Approved monthly set-asides",
       columns: [
+        { key: "sourceId", header: "Financial setup ID", type: "text" },
+        { key: "revisionId", header: "Saved revision ID", type: "text" },
         { key: "individual", header: "Individual", type: "text" },
         { key: "setup", header: "Setup", type: "text" },
         { key: "cut1", header: "Cut 1", type: "percent" },
@@ -177,6 +203,8 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
         { key: "approvedFinal", header: "Approved final / month", type: "money" },
       ],
       rows: report.setAsides.map((row) => ({
+        sourceId: row.strategyId,
+        revisionId: row.revisionId,
         individual: row.individualName,
         setup: row.setupName,
         cut1: row.historyAvailable ? row.firstCutPercent : null,
@@ -190,6 +218,7 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
     {
       title: "Class invoice receivables",
       columns: [
+        { key: "sourceId", header: "Invoice ID", type: "text" },
         { key: "invoice", header: "Invoice", type: "text" },
         { key: "invoiceDate", header: "Date", type: "date" },
         { key: "individual", header: "Individual", type: "text" },
@@ -201,6 +230,7 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
         { key: "status", header: "Status", type: "text" },
       ],
       rows: report.classInvoices.map((row) => ({
+        sourceId: row.id,
         invoice: row.invoiceNumber,
         invoiceDate: row.invoiceDate,
         individual: row.individualName,
@@ -216,6 +246,8 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
     {
       title: "Recorded receipts and other income",
       columns: [
+        { key: "sourceId", header: "Receipt ID", type: "text" },
+        { key: "matchedSourceId", header: "Matched transaction ID", type: "text" },
         { key: "serviceDate", header: "Date", type: "date" },
         { key: "sourceType", header: "Type", type: "text" },
         { key: "individual", header: "Individual", type: "text" },
@@ -230,6 +262,8 @@ export function agencyFinancialExportTables(report: AgencyFinancialReport): Expo
         { key: "decisionReason", header: "Decision reason", type: "text" },
       ],
       rows: report.manualIncome.map((row) => ({
+        sourceId: row.id,
+        matchedSourceId: row.matchedIncomeSource?.sourceId ?? null,
         serviceDate: row.serviceDate,
         sourceType: MANUAL_SOURCE_LABEL[row.sourceType],
         individual: row.individualName ?? "General",
