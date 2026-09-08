@@ -5,7 +5,7 @@ import type { PdfFormValue } from "./pdf-forms";
 export const MAX_PDF_EDITOR_ASSET_BYTES = 900 * 1024;
 export const MAX_PDF_EDITOR_ASSET_TOTAL_BYTES = 1_200 * 1024;
 
-const MAX_PDF_EDITOR_PAGES = 10_000;
+export const MAX_PDF_EDITOR_PAGES = 10_000;
 const MAX_PDF_EDITOR_OVERLAYS = 5_000;
 const MAX_PDF_EDITOR_FORM_FIELDS = 5_000;
 const MAX_PDF_EDITOR_ASSETS = 1_000;

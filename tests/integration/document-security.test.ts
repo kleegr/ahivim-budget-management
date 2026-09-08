@@ -12,6 +12,8 @@ import { completeDocumentUpload, createDocument, createDocumentVersionUpload, fi
 import type { DocumentAccessContext } from "@/lib/auth/document-policy";
 import { createClassBudget, createClassInvoiceDraft } from "@/lib/manage/class-invoices";
 import { MIGRATIONS } from "@/lib/db/migrations.generated";
+import { prepareOriginalPdfUpload } from "@/lib/documents/pdf-document-upload";
+import { parsePdfEditorManifest } from "@/lib/documents/pdf-editor-persistence";
 
 const state = vi.hoisted(() => ({ pool: null as unknown as PgLikePool, user: null as AuthenticatedUser | null, files: new Map<string, Blob>() }));
 vi.mock("@/lib/db", () => ({ getPool: () => state.pool }));
@@ -27,7 +29,7 @@ vi.mock("@/lib/documents/document-storage", async (original) => ({
 import { GET as listing, POST as upload } from "@/app/api/documents/route";
 import { GET as detail, PATCH as metadata } from "@/app/api/documents/[id]/route";
 import { GET as drafts, PUT as saveDraft } from "@/app/api/documents/[id]/draft/route";
-import { GET as history } from "@/app/api/documents/[id]/versions/route";
+import { GET as history, POST as finalizeUpload } from "@/app/api/documents/[id]/versions/route";
 import { POST as reserveVersion } from "@/app/api/documents/[id]/uploads/route";
 import { GET as file } from "@/app/api/documents/[id]/versions/[versionId]/file/route";
 import { POST as restore } from "@/app/api/documents/[id]/versions/[versionId]/restore/route";
@@ -266,6 +268,33 @@ suite("document resource authorization (real PostgreSQL and route handlers)", ()
     expect((await upload(request("/api/documents", "POST", { title: "Forged source", filename: "x.pdf", byteSize: 17, source: `/api/classes/invoices/${randomUUID()}/pdf` }))).status).toBe(404);
     await pool.query(`UPDATE users SET can_see_class_financials = false, can_manage_class_invoices = false WHERE id = $1`, [classUser]);
     expect((await detail(request(), params(body.data.document.id))).status).toBe(404);
+  });
+
+  it.each([1, 3])("finalizes a real %i-page library upload using canonical source-page state", async (pageCount) => {
+    const source = await PDFDocument.create();
+    for (let page = 1; page <= pageCount; page += 1) source.addPage().drawText(`Synthetic source page ${page}`);
+    const bytes = await source.save();
+    const initialState = await prepareOriginalPdfUpload(bytes);
+    await login(classUser);
+    const registered = await upload(request("/api/documents", "POST", { title: "Library source", filename: "source.pdf", byteSize: bytes.length }));
+    expect(registered.status).toBe(201);
+    const { data: reservation } = await registered.json();
+    state.files.set(reservation.upload.pathname, new Blob([Uint8Array.from(bytes).buffer]));
+    unwrap(await completeDocumentUpload(pool, reservation.upload.intentId, { pathname: reservation.upload.pathname, etag: "source", contentType: "application/pdf", size: bytes.length }));
+    const body = { intentId: reservation.upload.intentId, idempotencyKey: randomUUID(), baseVersionId: null, exportMode: "source", changeSummary: "Original uploaded", ...initialState };
+    const invalid = { ...body, editorState: { ...initialState.editorState, pageOrder: [] } };
+    expect((await finalizeUpload(request("/api/documents", "POST", invalid), params(reservation.document.id))).status).toBe(400);
+    const response = await finalizeUpload(request("/api/documents", "POST", body), params(reservation.document.id));
+    expect(response.status).toBe(201);
+    const saved = (await response.json()).data;
+    expect(saved).toMatchObject({ exportMode: "source", pageCount, editorSchemaVersion: 2 });
+    expect(parsePdfEditorManifest(saved.editorState)?.pageOrder).toEqual(Array.from({ length: pageCount }, (_, index) => index + 1));
+    const reopened = await (await detail(request(), params(reservation.document.id))).json();
+    expect(reopened.data.document.status).toBe("active");
+    expect(reopened.data.versions[0].editorState).toEqual(initialState.editorState);
+    const retainedSource = await file(request("/api/documents?source=1"), vparams(reservation.document.id, saved.id));
+    expect(retainedSource.status).toBe(200);
+    expect((await PDFDocument.load(await retainedSource.arrayBuffer())).getPageCount()).toBe(pageCount);
   });
 
   it("inherits a real invoice's person/category for an editable creator-private save without trusting it as a sharing flag", async () => {

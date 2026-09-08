@@ -14,6 +14,7 @@ import {
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DocumentAccessEditor from "./document-access-editor";
+import { prepareOriginalPdfUpload } from "@/lib/documents/pdf-document-upload";
 
 const MAX_PDF_BYTES = 100 * 1024 * 1024;
 
@@ -150,7 +151,9 @@ export default function DocumentLibrary({ canEdit, isOwner = false }: { canEdit:
 
     setUploading(true);
     setUploadProgress(0);
+    let uploadReserved = false;
     try {
+      const initialState = await prepareOriginalPdfUpload(new Uint8Array(await file.arrayBuffer()));
       const reservation = await api<UploadReservation>("/api/documents", {
         method: "POST",
         body: JSON.stringify({
@@ -160,6 +163,7 @@ export default function DocumentLibrary({ canEdit, isOwner = false }: { canEdit:
           category: "general",
         }),
       });
+      uploadReserved = true;
       await upload(reservation.upload.pathname, file, {
         access: "private",
         handleUploadUrl: reservation.upload.handleUploadUrl,
@@ -172,15 +176,7 @@ export default function DocumentLibrary({ canEdit, isOwner = false }: { canEdit:
           idempotencyKey: crypto.randomUUID(),
           baseVersionId: null,
           exportMode: "source",
-          editorSchemaVersion: 1,
-          editorState: {
-            schemaVersion: 1,
-            overlays: [],
-            pageOrder: [],
-            pageRotations: {},
-            formValues: {},
-            exportMode: "standard",
-          },
+          ...initialState,
           changeSummary: "Original uploaded",
         });
       for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -199,7 +195,7 @@ export default function DocumentLibrary({ canEdit, isOwner = false }: { canEdit:
       router.push(`/documents/pdf-editor?document=${reservation.document.id}`);
     } catch (uploadError) {
       const message = uploadError instanceof Error ? uploadError.message : "The PDF could not be saved.";
-      setError(`${message} Any interrupted record is available under Incomplete.`);
+      setError(uploadReserved ? `${message} Any interrupted record is available under Incomplete.` : message);
       setUploading(false);
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = "";
