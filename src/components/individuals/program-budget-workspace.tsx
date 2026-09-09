@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AlertTriangle, CalendarDays, History, RefreshCcw } from "lucide-react";
+import OperationalFlags from "@/components/manage/operational-flags";
+import type { OperationalReview } from "@/lib/business/operational-responsibility";
 import { ActionButton, CreateButton, Field, TextAreaField } from "@/components/manage/client";
 import { ButtonLink, StatusBadge } from "@/components/ui";
 import { dec, formatHours, formatMoney } from "@/lib/money";
@@ -155,8 +157,8 @@ function HoursMetrics({ budget }: { budget: VisibleProgramBudget }) {
         <div><p className="text-xs text-[var(--color-ink-faint)]">Hours authorized</p><p className="tnum mt-1 text-lg font-semibold">{formatHours(budget.authorizedHours)}</p></div>
         <div><p className="text-xs text-[var(--color-ink-faint)]">{budget.isGroupService ? "Individual hours used" : "Hours used"}</p><p className="tnum mt-1 text-lg font-semibold">{formatHours(budget.consumedHours)}</p></div>
         <div><p className="text-xs text-[var(--color-ink-faint)]">Scheduled</p><p className="tnum mt-1 text-lg font-semibold">{formatHours(budget.scheduledHours)}</p></div>
-        <div><p className="text-xs text-[var(--color-ink-faint)]">Remaining now</p><p className={`tnum mt-1 text-lg font-semibold ${isOver ? "text-[var(--color-danger)]" : ""}`}>{formatHours(budget.remainingHours)}</p></div>
-        <div><p className="text-xs text-[var(--color-ink-faint)]">After schedule</p><p className={`tnum mt-1 text-lg font-semibold ${scheduleIsOver ? "text-[var(--color-danger)]" : ""}`}>{formatHours(budget.remainingAfterScheduledHours)}</p></div>
+        <div><p className="text-xs text-[var(--color-ink-faint)]">{budget.hasUndatedUsage ? "Remaining now (incomplete)" : "Remaining now"}</p><p className={`tnum mt-1 text-lg font-semibold ${isOver ? "text-[var(--color-danger)]" : ""}`}>{formatHours(budget.remainingHours)}</p></div>
+        <div><p className="text-xs text-[var(--color-ink-faint)]">{budget.hasUndatedUsage ? "After schedule (incomplete)" : "After schedule"}</p><p className={`tnum mt-1 text-lg font-semibold ${scheduleIsOver ? "text-[var(--color-danger)]" : ""}`}>{formatHours(budget.remainingAfterScheduledHours)}</p></div>
       </div>
       <UsageBar used={budget.consumedHours} authorized={budget.authorizedHours} unit="hours" />
       <p className="mt-2 text-xs text-[var(--color-ink-faint)]">Scheduled includes pending sessions in this authorization period that are not yet matched to a transaction.</p>
@@ -238,7 +240,7 @@ function DollarMetrics({ budget }: { budget: VisibleProgramBudget }) {
       <div className="grid gap-3 sm:grid-cols-3">
         <div><p className="text-xs text-[var(--color-ink-faint)]">Amount authorized</p><p className="tnum mt-1 text-lg font-semibold">{formatMoney(budget.authorizedDollars)}</p></div>
         <div><p className="text-xs text-[var(--color-ink-faint)]">Amount used</p><p className="tnum mt-1 text-lg font-semibold">{formatMoney(budget.consumedDollars)}</p></div>
-        <div><p className="text-xs text-[var(--color-ink-faint)]">Amount remaining</p><p className={`tnum mt-1 text-lg font-semibold ${isOver ? "text-[var(--color-danger)]" : ""}`}>{formatMoney(budget.remainingDollars)}</p></div>
+        <div><p className="text-xs text-[var(--color-ink-faint)]">{budget.hasUndatedUsage ? "Amount remaining (incomplete)" : "Amount remaining"}</p><p className={`tnum mt-1 text-lg font-semibold ${isOver ? "text-[var(--color-danger)]" : ""}`}>{formatMoney(budget.remainingDollars)}</p></div>
       </div>
       <UsageBar used={budget.consumedDollars} authorized={budget.authorizedDollars} unit="dollars" />
     </div>
@@ -445,6 +447,7 @@ function AuthorizationHistory({ budget }: { budget: VisibleProgramBudget }) {
 }
 
 export default function ProgramBudgetWorkspace({
+  operationalReview,
   individualId,
   budgets,
   programs,
@@ -453,6 +456,7 @@ export default function ProgramBudgetWorkspace({
   showInternalRate,
   showAgencyRate,
 }: {
+  operationalReview?: OperationalReview;
   individualId: string;
   budgets: VisibleProgramBudget[];
   programs: ProgramBudgetOption[];
@@ -462,7 +466,7 @@ export default function ProgramBudgetWorkspace({
   showAgencyRate: boolean;
 }) {
   return (
-    <section>
+    <section id="service-authorizations">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3 border-b border-[var(--color-rule)] pb-4">
         <div>
           <h2 className="text-base font-semibold text-[var(--color-ink)]">Service authorizations</h2>
@@ -501,8 +505,9 @@ export default function ProgramBudgetWorkspace({
               && (!hoursOnlyManagement || budget.requiredAuthType === "hours");
             const conversionPrograms = programs.filter((program) => program.id === budget.programId);
             return (
-              <article key={`${budget.budgetPeriodId}:${budget.programId}`} className="overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-surface)]">
+              <article id={`authorization-${budget.authorizationId}`} key={`${budget.budgetPeriodId}:${budget.programId}`} className="overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-surface)]">
                 <div className="px-4 py-4 sm:px-5">
+                  {operationalReview ? <OperationalFlags flags={operationalReview.flags.filter((flag) => flag.key.endsWith(budget.authorizationId))} /> : null}
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
@@ -521,8 +526,8 @@ export default function ProgramBudgetWorkspace({
                     </div>
                     <div className="flex items-center gap-2 text-[var(--color-ink-soft)]">
                       <RefreshCcw aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-ink-faint)]" />
-                      <span className={budget.renewalDate ? "" : "font-semibold text-[var(--color-danger)]"}>
-                        {budget.renewalDate ? `Renews ${dateLabel(budget.renewalDate)}` : "Renewal date missing"}
+                      <span className={(operationalReview ? operationalReview.flags.some((flag) => flag.key === `renewal-missing-${budget.authorizationId}`) : !budget.renewalDate && budget.renewalPolicy !== "calendar") ? "font-semibold text-[var(--color-danger)]" : ""}>
+                        {budget.renewalDate ? `Renews ${dateLabel(budget.renewalDate)}` : budget.renewalPolicy === "calendar" ? "Calendar renewal" : "Renewal date not set"}
                       </span>
                     </div>
                   </div>
@@ -612,6 +617,7 @@ export default function ProgramBudgetWorkspace({
                   {canManageAuthorization && budget.periodStatus === "active" && budget.programCode !== "CLASSES" ? (
                     <div className="mt-4 flex flex-wrap gap-2 border-t border-[var(--color-rule)] pt-3">
                       <CreateButton
+                        successMessage="Authorization saved. Budget and review state updated."
                         label="Revise"
                         title={`Revise authorization - ${budget.programName}`}
                         endpoint={`/api/authorizations/${budget.authorizationId}`}
@@ -627,6 +633,7 @@ export default function ProgramBudgetWorkspace({
                         )}
                       />
                       {budget.canManageRenewal ? <CreateButton
+                        successMessage="Renewal saved. Budget and review state updated."
                         label={budget.renewalDate ? "Change renewal" : "Set renewal"}
                         title={`${budget.renewalDate ? "Change" : "Set"} renewal - ${budget.programName}`}
                         endpoint={`/api/budget-periods/${budget.budgetPeriodId}`}

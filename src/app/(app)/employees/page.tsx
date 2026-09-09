@@ -1,8 +1,11 @@
+import { hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
+import { listEmployeeResponsibilities } from "@/lib/manage/operational-responsibility";
+import { reviewEmployeeSetup } from "@/lib/business/operational-review";
 import { requireUser } from "@/lib/auth/session";
 import { isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listEmployeeDirectory, listPlanningEmployeeDirectory } from "@/lib/data/employee-directory";
-import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
+import { Card, EmptyState, ErrorPanel, PageHeader, ButtonLink } from "@/components/ui";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
 import EmployeesList, { type EmployeeRow } from "@/components/employees/employees-list";
 import PlanningEmployeesList from "@/components/employees/planning-employees-list";
@@ -34,9 +37,12 @@ export default async function EmployeesPage() {
         planningRows: await listPlanningEmployeeDirectory(pool, scope),
       };
     }
+    const canManageResponsibility = hasPortalCapability(await resolvePortalAccess(pool, user), "agencies.manage");
+    const responsibilities = canManageResponsibility ? await listEmployeeResponsibilities(pool) : new Map();
+    const directory = await listEmployeeDirectory(pool, scope);
     return {
       planningOnly: false as const,
-      rows: await listEmployeeDirectory(pool, scope),
+      rows: directory.map((person) => ({ ...person, responsibility: responsibilities.get(person.id), operationalFlags: canManageResponsibility ? reviewEmployeeSetup(person) : undefined })),
       planningRows: [],
     };
   });
@@ -57,7 +63,7 @@ export default async function EmployeesPage() {
       />
 
       {!result.ok ? (
-        <ErrorPanel title="Could not load employees">{result.error}</ErrorPanel>
+        <ErrorPanel title="Could not load employees">{result.error} <ButtonLink href="/employees">Try again</ButtonLink></ErrorPanel>
       ) : result.data.planningOnly ? (
         result.data.planningRows.length === 0 ? (
           <Card>
@@ -78,6 +84,7 @@ export default async function EmployeesPage() {
         <EmployeesList
           rows={result.data.rows.map<EmployeeRow>((r) => ({
             id: r.id,
+            responsibility: r.responsibility, operationalFlags: r.operationalFlags,
             name: r.displayName,
             externalRef: r.externalRef,
             status: r.status,

@@ -13,7 +13,7 @@ describe("owner actual-money overview", () => {
     expect(page).toContain("financialMonth={financialMonth}");
     expect(dashboard).toContain("<Suspense fallback={<OwnerAttentionLoading />}");
     expect(dashboard).toContain("<Suspense fallback={<OwnerMoneyLoading month={financialMonth} />}");
-    expect(dashboard).toContain("async function OwnerAttentionData");
+    expect(dashboard).toContain("async function OwnerReviewData");
     expect(dashboard).toContain("async function OwnerActualMoneySection");
     expect(dashboard).toContain("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
     expect(dashboard).toContain("getAgencyFinancialReport(client, month)");
@@ -21,10 +21,11 @@ describe("owner actual-money overview", () => {
     expect(dashboard.match(/getSettlementDashboard\(client\)/g)).toHaveLength(1);
     expect(dashboard).toContain("getOwnerScheduleAttention(pool, today)");
     expect(dashboard).toContain('client.query("COMMIT")');
-    expect(dashboard).toContain("The rest of Home is still current.");
+    expect(dashboard).toContain("The review summary is incomplete.");
+    expect(dashboard).toContain("Actual income, expenses, and result are temporarily unavailable.");
     expect(dashboard).toContain('title="Home"');
-    expect(dashboard).toContain("Needs attention");
-    expect(dashboard).toContain("buildOwnerAttentionItems(");
+    expect(dashboard).toContain("Review summary");
+    expect(dashboard).toContain("getOperationalReviewSummary(pool, today)");
     expect(dashboard).toContain('eyebrow="Actual money"');
     expect(dashboard).toContain('title="Money"');
     expect(dashboard).toContain('eyebrow="Financial setup"');

@@ -172,6 +172,13 @@ async function createSchedule(page: Page, journey: Journey) {
   const dialog = page.getByRole("dialog", { name: "New service schedule" });
   await dialog.locator('input[type="date"]').nth(0).fill(journey.first);
   await dialog.locator('input[type="date"]').nth(1).fill(journey.last);
+  // Choose the service weekday explicitly: the database's UTC day can differ
+  // from the agency's current day used for the form's default selection.
+  const serviceDays = dialog.getByRole("group", { name: "Weekly service days" });
+  for (const selected of await serviceDays.getByRole("button", { pressed: true }).all()) {
+    await selected.click();
+  }
+  await serviceDays.getByRole("button").nth(new Date(`${journey.first}T00:00:00Z`).getUTCDay()).click();
   await dialog.locator('input[type="time"]').nth(0).fill("09:00");
   await dialog.locator('input[type="time"]').nth(1).fill("11:00");
   await expect(dialog.getByText("3 visits · 6 h per individual", { exact: true })).toBeVisible();

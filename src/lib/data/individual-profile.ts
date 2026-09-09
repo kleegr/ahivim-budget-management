@@ -1,3 +1,4 @@
+import { RESPONSIBILITY_LABELS, type OperationalReview } from "@/lib/business/operational-responsibility";
 import type { AccessScope } from "@/lib/auth/access";
 import { agencyDate } from "@/lib/business/agency-time";
 import { listSessions, type CalendarSession } from "@/lib/data/schedule-queries";
@@ -228,6 +229,7 @@ export interface IndividualProfileAction {
 
 /** Pick one useful next step instead of presenting a wall of competing actions. */
 export function individualProfileMainAction(input: {
+  operationalReview?: OperationalReview;
   individualId: string;
   status: string;
   canManage: boolean;
@@ -258,6 +260,11 @@ export function individualProfileMainAction(input: {
       tone: input.assignmentCount === 0 ? "warning" : "neutral",
     };
   }
+  if (input.operationalReview) {
+    const flag = input.operationalReview.flags[0];
+    if (flag) return { label: flag.action, detail: flag.message, href: flag.href, tone: "danger" };
+    if (!input.hasBudget) return { label: RESPONSIBILITY_LABELS[input.operationalReview.responsibility.budget], detail: "Budget responsibility can be changed on this profile.", href: `${profile}#responsibility`, tone: "neutral" };
+  }
   if (!input.hasBudget) {
     return {
       label: input.canManage ? "Set up budget" : "Budget needs setup",
@@ -266,7 +273,7 @@ export function individualProfileMainAction(input: {
       tone: "warning",
     };
   }
-  if (input.missingRenewal) {
+  if (input.missingRenewal && !input.operationalReview) {
     return {
       label: input.canManage ? "Add renewal date" : "Renewal date needed",
       detail: "At least one active authorization has no renewal date.",

@@ -1,5 +1,6 @@
 import { type NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import { apiUser } from "@/lib/auth/session";
 import { getPool } from "@/lib/db";
 import { jsonError, readJson, redactError, resultResponse, sameOriginOrFail } from "@/lib/http";
@@ -33,6 +34,9 @@ export async function POST(request: NextRequest) {
     );
     if (!result.ok) return resultResponse(result);
     const settlementRefresh = await refreshSettlementObligations(getPool(), {}, user.id);
+    revalidatePath(`/employees/${result.data.employeeId}`);
+    revalidatePath('/employees');
+    revalidatePath('/dashboard');
     return NextResponse.json({
       ok: true,
       data: result.data,

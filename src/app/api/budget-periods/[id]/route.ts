@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { revalidatePath } from "next/cache";
 import {
   canChangeHourBudgetPeriod,
   getHourAuthorizationOperator,
@@ -43,6 +44,11 @@ export async function PATCH(
       operator.user.id,
       reason,
     );
+    if (result.ok) {
+      revalidatePath(`/individuals/${result.data.individualId}`);
+      revalidatePath('/individuals');
+      revalidatePath('/dashboard');
+    }
     return resultResponse(result, 200);
   } catch (error) {
     return jsonError(redactError(error), 500);

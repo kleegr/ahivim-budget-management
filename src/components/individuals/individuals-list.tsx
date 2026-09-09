@@ -2,6 +2,10 @@
 
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { useDirectoryUrl } from "@/components/manage/directory-context";
+import OperationalFilters from "@/components/manage/operational-filters";
+import { RESPONSIBILITY_LABELS, responsibilityStates, matchesOperationalFilters, type OperationalReview } from "@/lib/business/operational-responsibility";
 import {
   ArrowDown,
   ArrowUp,
@@ -21,7 +25,6 @@ import {
   DEFAULT_HIDDEN_PORTFOLIO_COLUMNS,
   isDetailedPortfolioView,
   matchesSimplePortfolioView,
-  portfolioViewHref,
   type DetailedPortfolioView,
   type PortfolioView,
 } from "@/components/individuals/portfolio-view";
@@ -62,6 +65,7 @@ export type IndividualBudget = {
 };
 
 export type IndividualRow = {
+  operationalReview?: OperationalReview;
   id: string;
   name: string;
   preferredName: string | null;
@@ -171,6 +175,7 @@ function hasNoActivity(row: IndividualRow): boolean {
 
 function needsAttention(row: IndividualRow): boolean {
   if (row.status !== "active" || row.archived || !row.insightsVisible) return false;
+  if (row.operationalReview) return row.operationalReview.flags.length > 0;
   return isOver(row)
     || isBehind(row)
     || isRenewing(row)
@@ -250,9 +255,9 @@ function PaceBar({ budget }: { budget: IndividualBudget }) {
   );
 }
 
-function Renewal({ budget }: { budget: IndividualBudget }) {
+function Renewal({ budget, managed = true }: { budget: IndividualBudget; managed?: boolean }) {
   if (budget.missingRenewal) {
-    return <span className="font-semibold text-[var(--color-danger)]">Renewal missing</span>;
+    return <span className={managed ? "font-semibold text-[var(--color-danger)]" : "text-[var(--color-ink-faint)]"}>{managed ? "Renewal missing" : "Not set"}</span>;
   }
   if (budget.renews === null) return <span className="text-[var(--color-ink-faint)]">-</span>;
   const days = budget.daysToRenewal;
@@ -355,7 +360,7 @@ function HealthCell({ row }: { row: IndividualRow }) {
 
 function NextActionCell({ row }: { row: IndividualRow }) {
   const action = individualNextAction(row);
-  const href = individualNextActionHref(row, action.destination);
+  const href = action.href ?? individualNextActionHref(row, action.destination);
   const tone = action.tone === "danger"
     ? "text-[var(--color-danger)]"
     : action.tone === "warn"
@@ -375,6 +380,8 @@ function individualNextActionHref(
   destination: ReturnType<typeof individualNextAction>["destination"],
 ): string {
   const individualId = encodeURIComponent(row.id);
+  const explicit = individualNextAction(row).href;
+  if (explicit) return explicit;
   if (destination === "budget") return individualBudgetHref(row.id);
   if (destination === "schedule") {
     const date = row.nextScheduledService?.date;
@@ -429,20 +436,25 @@ export default function IndividualsList({
   initialFilter?: PortfolioView;
   canManage?: boolean;
 }) {
-  const [statusFilter, setStatusFilter] = useState<PeopleStatusFilter>("all");
-  const [programFilter, setProgramFilter] = useState("");
-  const [renewalFilter, setRenewalFilter] = useState<RenewalFilter>("all");
-  const [filter, setFilter] = useState<PortfolioFilter>(initialFilter);
-  const [scheduleIssueOnly, setScheduleIssueOnly] = useState(false);
+  const searchParams = useSearchParams();
+  const [management, setManagement] = useState(searchParams.get("management") ?? "all");
+  const [review, setReview] = useState(searchParams.get("review") ?? "all");
+  const hasOperationalReview = rows.some((row) => !!row.operationalReview);
+  const [statusFilter, setStatusFilter] = useState<PeopleStatusFilter>(() => STATUS_FILTER_VALUES.has(searchParams.get("status") as PeopleStatusFilter) ? searchParams.get("status") as PeopleStatusFilter : "all");
+  const [programFilter, setProgramFilter] = useState(searchParams.get("program") ?? "");
+  const [renewalFilter, setRenewalFilter] = useState<RenewalFilter>(() => RENEWAL_FILTER_VALUES.has(searchParams.get("renewal") as RenewalFilter) ? searchParams.get("renewal") as RenewalFilter : "all");
+  const [filter, setFilter] = useState<PortfolioFilter>(() => PORTFOLIO_FILTER_VALUES.has(searchParams.get("portfolio") as PortfolioFilter) ? searchParams.get("portfolio") as PortfolioFilter : initialFilter);
+  const [scheduleIssueOnly, setScheduleIssueOnly] = useState(searchParams.get("scheduleIssue") === "true");
   const [moreOpen, setMoreOpen] = useState(isDetailedPortfolioView(initialFilter));
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
 
   const chooseFilter = useCallback((next: PortfolioFilter) => {
     setFilter(next);
-    if (typeof window !== "undefined") window.history.replaceState(null, "", portfolioViewHref(next));
+
   }, []);
 
   const resetExternalFilters = useCallback(() => {
+    setManagement("all"); setReview("all");
     setStatusFilter("all");
     setProgramFilter("");
     setRenewalFilter("all");
@@ -491,9 +503,11 @@ export default function IndividualsList({
     renewal: renewalFilter,
     portfolio: filter,
     scheduleIssue: scheduleIssueOnly ? "true" : "false",
-  }), [filter, programFilter, renewalFilter, scheduleIssueOnly, statusFilter]);
+    management, review,
+  }), [filter, programFilter, renewalFilter, scheduleIssueOnly, statusFilter, management, review]);
 
   const applyExternalConfig = useCallback((config: Record<string, string>) => {
+    setManagement(config.management ?? "all"); setReview(config.review ?? "all");
     setStatusFilter(STATUS_FILTER_VALUES.has(config.status as PeopleStatusFilter)
       ? config.status as PeopleStatusFilter
       : "all");
@@ -509,12 +523,13 @@ export default function IndividualsList({
 
   const portfolioRows = useMemo(
     () => rows
+      .filter((row) => !hasOperationalReview || (row.operationalReview && matchesOperationalFilters(responsibilityStates(row.operationalReview.responsibility), row.operationalReview.flags, management, review)))
       .filter((row) => matchesPeopleStatus(row, statusFilter))
       .filter((row) => matchesProgram(row, programFilter))
       .filter((row) => matchesRenewal(row, renewalFilter))
       .filter((row) => matchesFilter(row, filter))
       .filter((row) => !scheduleIssueOnly || (row.insightsVisible && (row.budget?.hoursAfterScheduled ?? 0) < 0)),
-    [filter, programFilter, renewalFilter, rows, scheduleIssueOnly, statusFilter],
+    [filter, programFilter, renewalFilter, rows, scheduleIssueOnly, statusFilter, hasOperationalReview, management, review],
   );
   const canShowTransactionCounts = rows.some((row) => row.budget?.transactionCount !== null && row.budget?.transactionCount !== undefined);
   const canShowBilledAmounts = rows.some((row) => row.budget?.billedAmount !== null && row.budget?.billedAmount !== undefined);
@@ -528,6 +543,8 @@ export default function IndividualsList({
           <Link className="font-semibold text-[var(--color-primary)] underline-offset-2 hover:underline" href={`/individuals/${row.id}`}>
             {row.name}
           </Link>
+          {row.operationalReview ? <p className="mt-1 text-xs text-[var(--color-ink-soft)]">{RESPONSIBILITY_LABELS[row.operationalReview.responsibility.budget]}{Object.keys(row.operationalReview.responsibility.programs).length > 0 ? " · Program choices" : ""}</p> : null}
+          {row.operationalReview?.flags[0] ? <p className="mt-1 max-w-64 text-xs text-[var(--color-danger)]">⚑ {row.operationalReview.flags[0].message}</p> : null}
           {row.preferredName ? <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">Prefers {row.preferredName}</p> : null}
         </div>
       ),
@@ -555,7 +572,7 @@ export default function IndividualsList({
       key: "renews", label: "Renewal", kind: "date", width: 168,
       accessor: (row) => row.budget?.renews ?? null,
       sortAccessor: (row) => row.budget?.renews ?? "9999-12-31",
-      render: (row) => row.budget ? <Link href={individualBudgetHref(row.id)} className="block underline-offset-2 hover:underline"><Renewal budget={row.budget} /></Link> : <span className="text-[var(--color-ink-faint)]">-</span>,
+      render: (row) => row.budget ? <Link href={individualBudgetHref(row.id)} className="block underline-offset-2 hover:underline"><Renewal budget={row.budget} managed={!row.operationalReview || row.operationalReview.flags.some((flag) => flag.key.startsWith("renewal-missing"))} /></Link> : <span className="text-[var(--color-ink-faint)]">-</span>,
     },
     {
       key: "authorized", label: "Authorized", kind: "hours", align: "right", width: 110,
@@ -601,11 +618,13 @@ export default function IndividualsList({
     },
     {
       key: "billingWithoutBudget", label: "Billing without budget", kind: "badge", width: 155,
-      accessor: (row) => row.insightsVisible ? (hasBillingWithoutBudget(row) ? "Needs budget" : "No") : null,
+      accessor: (row) => row.insightsVisible ? (hasBillingWithoutBudget(row) ? row.operationalReview && row.operationalReview.responsibility.budget !== "managed" ? RESPONSIBILITY_LABELS[row.operationalReview.responsibility.budget] : "Needs budget" : "No") : null,
       render: (row) => !row.insightsVisible
         ? <span className="text-[var(--color-ink-faint)]">-</span>
         : hasBillingWithoutBudget(row)
-          ? <span className="badge bg-[var(--color-danger-soft)] text-[var(--color-danger)]">Needs budget</span>
+          ? row.operationalReview && row.operationalReview.responsibility.budget !== "managed"
+            ? <span className="text-[var(--color-ink-soft)]">{RESPONSIBILITY_LABELS[row.operationalReview.responsibility.budget]}</span>
+            : <span className="badge bg-[var(--color-danger-soft)] text-[var(--color-danger)]">Needs budget</span>
           : <span className="text-[var(--color-ink-faint)]">No</span>,
     },
     {
@@ -697,7 +716,8 @@ export default function IndividualsList({
     columns,
     gridKey: "individual-budget-portfolio",
     canManage,
-    initialSort: DEFAULT_SORT,
+    initialSort: (() => { try { const value = JSON.parse(searchParams.get("sort") ?? "null"); return Array.isArray(value) && value.every((entry) => typeof entry.key === "string" && ["asc", "desc"].includes(entry.dir)) ? value as SortState : DEFAULT_SORT; } catch { return DEFAULT_SORT; } })(),
+    initialSearch: searchParams.get("q") ?? "",
     initialHidden: [...DEFAULT_HIDDEN_PORTFOLIO_COLUMNS],
     searchKeys: ["name", "programs"],
     computeTotals,
@@ -707,6 +727,9 @@ export default function IndividualsList({
     serializeHidden: true,
   });
 
+  useDirectoryUrl("individuals", { ...externalConfig, q: grid.search, sort: JSON.stringify(grid.sort) });
+
+  const budgetTotalsIncomplete = grid.filtered.some((row) => row.insightsVisible && row.budget && (row.budget.hoursLeft === null || row.budget.hoursAfterScheduled === null || row.operationalReview?.flags.some((flag) => flag.key.startsWith("undated-"))));
   const filteredIds = useMemo(() => grid.filtered.map((row) => row.id), [grid.filtered]);
   const selectedRows = useMemo(
     () => grid.sorted.filter((row) => selectedIds.has(row.id)),
@@ -794,6 +817,7 @@ export default function IndividualsList({
             </button>
           ) : null}
         </div>
+        {budgetTotalsIncomplete ? <p role="status" className="px-4 pb-2 text-sm text-[var(--color-warn)]">Incomplete budget subtotal: some usage or remaining hours need source review.</p> : null}
         <dl className={`grid divide-x divide-[var(--color-rule)] ${hasPortfolioVisibility ? "grid-cols-2 lg:grid-cols-5" : "grid-cols-1"}`}>
           <SummaryMetric label="People" value={(grid.totals?.people ?? 0).toLocaleString()} />
           {hasPortfolioVisibility && grid.totals ? (
@@ -808,6 +832,7 @@ export default function IndividualsList({
       </section>
 
       <div className="space-y-3">
+        {hasOperationalReview ? <OperationalFilters management={management} review={review} onManagement={setManagement} onReview={setReview} label="Budget responsibility" /> : null}
         <Toolbar
           grid={grid}
           searchPlaceholder="Search individuals or programs…"
@@ -815,7 +840,7 @@ export default function IndividualsList({
           exportTitle="People and budgets"
           exportFilename="people-and-budgets"
           showColumnChooser={false}
-          hasExternalFilters={filter !== "all" || statusFilter !== "all" || programFilter !== "" || renewalFilter !== "all" || scheduleIssueOnly}
+          hasExternalFilters={management !== "all" || review !== "all" || filter !== "all" || statusFilter !== "all" || programFilter !== "" || renewalFilter !== "all" || scheduleIssueOnly}
           onResetFilters={resetExternalFilters}
           extraActions={selectedIds.size > 0 ? (
             <span role="status" aria-live="polite" className="text-xs font-medium text-[var(--color-primary)]">
@@ -824,7 +849,12 @@ export default function IndividualsList({
           ) : null}
         />
 
-        {hasPortfolioVisibility ? (
+        {hasPortfolioVisibility && hasOperationalReview ? (
+          <section aria-label="Portfolio review" className="flex flex-wrap items-center gap-3 rounded-md border border-[var(--color-rule)] px-3 py-2.5 text-sm">
+            <span>{counts.attention} active {counts.attention === 1 ? "person has" : "people have"} detected issues.</span>
+            <button type="button" className="btn btn-sm btn-secondary" onClick={() => { setReview("needs_review"); setManagement("all"); setStatusFilter("active"); }}>Review affected people</button>
+          </section>
+        ) : hasPortfolioVisibility ? (
           <section aria-label="Portfolio exceptions" className="rounded-md border border-[var(--color-rule)] bg-[var(--color-surface-muted)] px-3 py-2.5">
             <div className="flex flex-wrap items-center gap-2">
               <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">Needs attention</span>

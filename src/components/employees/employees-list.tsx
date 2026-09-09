@@ -2,6 +2,10 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { useDirectoryUrl } from "@/components/manage/directory-context";
+import OperationalFilters from "@/components/manage/operational-filters";
+import { RESPONSIBILITY_LABELS, matchesOperationalFilters, type EmployeeResponsibility, type OperationalFlag } from "@/lib/business/operational-responsibility";
 import {
   Activity,
   ArrowDown,
@@ -20,6 +24,8 @@ import type { EmployeeDealReadiness } from "@/lib/data/employee-directory";
 import { dec, formatHours } from "@/lib/money";
 
 export type EmployeeRow = {
+  responsibility?: EmployeeResponsibility;
+  operationalFlags?: OperationalFlag[];
   id: string;
   name: string;
   externalRef: string | null;
@@ -107,12 +113,19 @@ function SortHead({ column, children, align = "left", sort, onSort }: {
 }
 
 export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; canEdit: boolean }) {
-  const [q, setQ] = useState("");
-  const [showArchived, setShowArchived] = useState(false);
-  const [filter, setFilter] = useState<DirectoryFilter>("all");
-  const [sort, setSort] = useState<SortState>({ key: "activity", dir: "desc" });
+  const searchParams = useSearchParams();
+  const [management, setManagement] = useState(searchParams.get("management") ?? "all");
+  const [review, setReview] = useState(searchParams.get("review") ?? "all");
+  const [workflow, setWorkflow] = useState(searchParams.get("workflow") ?? "any");
+  const hasResponsibilities = rows.some((row) => !!row.responsibility);
+  const [q, setQ] = useState(searchParams.get("q") ?? "");
+  const [showArchived, setShowArchived] = useState(searchParams.get("archived") === "true");
+  const [filter, setFilter] = useState<DirectoryFilter>(() => ["all", "activity", "no_activity"].includes(searchParams.get("activity") ?? "") ? searchParams.get("activity") as DirectoryFilter : "all");
+  const [sort, setSort] = useState<SortState>(() => ({ key: ["name", "activity", "checks", "hours", "status"].includes(searchParams.get("sort") ?? "") ? searchParams.get("sort") as SortKey : "activity", dir: searchParams.get("dir") === "asc" ? "asc" : "desc" }));
 
-  const activeRows = useMemo(() => rows.filter((row) => !row.archived), [rows]);
+  useDirectoryUrl("employees", { management, review, workflow, q, archived: showArchived ? "true" : "", activity: filter, sort: sort.key, dir: sort.dir });
+
+  const activeRows = useMemo(() => rows.filter((row) => row.status === "active" && !row.archived), [rows]);
   const canSeeHours = rows.some((row) => row.billedHours !== null);
 
   const counts = useMemo(() => ({
@@ -142,6 +155,11 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
     const needle = q.trim().toLowerCase();
     let list = rows.filter((row) => (showArchived ? true : !row.archived));
     list = list.filter((row) => matchesFilter(row, filter));
+    if (hasResponsibilities) list = list.filter((row) => {
+      const value = row.responsibility;
+      const states = !value ? [] : workflow === "scheduling" ? [value.scheduling] : workflow === "money" ? [value.money] : [value.scheduling, value.money];
+      return matchesOperationalFilters(states, row.operationalFlags ?? [], management, review);
+    });
     if (needle) {
       list = list.filter((row) => [
         row.name,
@@ -174,11 +192,12 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
       return sort.dir === "asc" ? difference : -difference;
     };
     return list.slice().sort(compare);
-  }, [filter, q, rows, showArchived, sort]);
+  }, [filter, q, rows, showArchived, sort, hasResponsibilities, management, review, workflow]);
 
   const archivedCount = rows.filter((row) => row.archived).length;
-  const hasActiveFilters = q.trim().length > 0 || filter !== "all";
+  const hasActiveFilters = q.trim().length > 0 || filter !== "all" || management !== "all" || review !== "all" || workflow !== "any";
   const resetFilters = () => {
+    setManagement("all"); setReview("all"); setWorkflow("any");
     setQ("");
     setFilter("all");
   };
@@ -204,6 +223,7 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
       </section>
 
       <div className="space-y-3">
+        {hasResponsibilities ? <div className="flex flex-wrap items-end gap-3"><OperationalFilters management={management} review={review} onManagement={setManagement} onReview={setReview} /><label><span className="mb-1 block text-xs font-medium">Responsibility area</span><select className="select" value={workflow} onChange={(event) => setWorkflow(event.target.value)}><option value="any">Scheduling or money</option><option value="scheduling">Scheduling</option><option value="money">Money operations</option></select></label></div> : null}
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative w-72 max-w-full">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-ink-faint)]" aria-hidden />
@@ -285,6 +305,8 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
                   <Link className="font-semibold text-[var(--color-primary)] underline-offset-2 hover:underline" href={`/employees/${row.id}`}>
                     {row.name}
                   </Link>
+                  {row.responsibility ? <div className="mt-1 space-y-1 text-xs text-[var(--color-ink-soft)]"><p>Scheduling: {RESPONSIBILITY_LABELS[row.responsibility.scheduling]}</p><p>Money: {RESPONSIBILITY_LABELS[row.responsibility.money]}</p></div> : null}
+                  {row.operationalFlags?.map((flag) => <p key={flag.key} className="mt-1 max-w-72 text-xs"><Link href={flag.href} className="text-[var(--color-danger)] underline">⚑ {flag.message} {flag.action}</Link></p>)}
                   <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
                     {row.externalRef ? `Reference ${row.externalRef}` : "No payroll reference"}
                   </p>

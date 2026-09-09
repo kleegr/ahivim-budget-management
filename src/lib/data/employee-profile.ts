@@ -1,3 +1,4 @@
+import { getSettlementLedgerFreshness } from "@/lib/manage/settlement-freshness";
 import type { PgLikePool } from "@/lib/import/commit";
 import { settlementState, type SettlementDirection, type SettlementState } from "@/lib/business/settlement-ledger";
 import { dec, toMoney, withholdingFromGrossAndNet } from "@/lib/money";
@@ -180,6 +181,7 @@ export interface EmployeeMoneyEvent {
 }
 
 export interface EmployeeMoneyProfile {
+  coverage?: { heldSources: number; dirty: boolean };
   directPay: EmployeeMoneyFlowSummary;
   agencyRouted: EmployeeMoneyFlowSummary;
   roots: EmployeeMoneyRoot[];
@@ -254,7 +256,7 @@ export async function getEmployeeMoneyProfile(
   if (!UUID.test(employeeId)) {
     return { directPay: EMPTY_FLOW, agencyRouted: EMPTY_FLOW, roots: [], events: [] };
   }
-  const [rootResult, eventResult] = await Promise.all([
+  const [rootResult, eventResult, heldResult, freshness] = await Promise.all([
     pool.query<{
       id: string;
       flow: string;
@@ -350,6 +352,8 @@ export async function getEmployeeMoneyProfile(
         LIMIT 30`,
       [employeeId],
     ),
+    pool.query<{ count: number }>(`SELECT count(*)::int AS count FROM settlement_obligations held WHERE held.employee_id = $1 AND held.status = 'active' AND NOT ${settlementCurrentAmountSql("held")}`, [employeeId]),
+    getSettlementLedgerFreshness(pool),
   ]);
 
   const roots = rootResult.rows.map((row): EmployeeMoneyRoot => {
@@ -380,6 +384,7 @@ export async function getEmployeeMoneyProfile(
     reversed: row.reversed,
   }));
   return {
+    coverage: { heldSources: Number(heldResult.rows[0]?.count ?? 0), dirty: freshness.dirty },
     directPay: summarizeEmployeeMoneyRoots(roots, "direct_employee"),
     agencyRouted: summarizeEmployeeMoneyRoots(roots, "agency_routed"),
     roots,

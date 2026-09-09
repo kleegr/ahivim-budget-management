@@ -1,3 +1,4 @@
+import { RESPONSIBILITY_LABELS, type OperationalReview } from "@/lib/business/operational-responsibility";
 import { dec, formatHours } from "@/lib/money";
 
 export type PeopleStatusFilter = "active" | "inactive" | "discharged" | "archived" | "all";
@@ -16,6 +17,7 @@ type BudgetFacts = {
 };
 
 export type PeopleBudgetTableRow = {
+  operationalReview?: OperationalReview;
   id: string;
   status: string;
   archived: boolean;
@@ -30,6 +32,7 @@ export type PeopleBudgetTableRow = {
 };
 
 export type IndividualNextAction = {
+  href?: string;
   label: string;
   destination: "profile" | "budget" | "schedule" | "assignments";
   tone: "danger" | "warn" | "primary" | "muted";
@@ -113,6 +116,11 @@ export function individualNextAction(row: PeopleBudgetTableRow): IndividualNextA
   if (row.archived || row.status !== "active") {
     return { label: "Review inactive record", destination: "profile", tone: "muted" };
   }
+  if (row.operationalReview) {
+    const flag = row.operationalReview.flags[0];
+    if (flag) return { label: flag.action, href: flag.href, destination: "profile", tone: "danger" };
+    if (!row.hasCanonicalBudget) return { label: RESPONSIBILITY_LABELS[row.operationalReview.responsibility.budget], href: `/individuals/${row.id}#responsibility`, destination: "profile", tone: "muted" };
+  }
   if (!row.hasCanonicalBudget) {
     return row.hasBilling
       ? { label: "Create budget for billed work", destination: "budget", tone: "danger" }
@@ -123,10 +131,10 @@ export function individualNextAction(row: PeopleBudgetTableRow): IndividualNextA
   }
 
   const budget = row.budget;
-  if (budget.missingRenewal) {
+  if (budget.missingRenewal && !row.operationalReview) {
     return { label: "Add renewal date", destination: "budget", tone: "danger" };
   }
-  if (budget.expired) {
+  if (budget.expired && !row.operationalReview) {
     return { label: "Renew authorization", destination: "budget", tone: "danger" };
   }
   if (budget.hoursAfterScheduled !== null && budget.hoursAfterScheduled < 0) {

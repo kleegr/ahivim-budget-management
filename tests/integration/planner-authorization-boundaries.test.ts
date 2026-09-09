@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 import { fullAccess, type AccessScope } from "@/lib/auth/access";
 import { createAuthorization, createBudgetPeriod } from "@/lib/manage/authorizations";
 import { createIndividual } from "@/lib/manage/individuals";

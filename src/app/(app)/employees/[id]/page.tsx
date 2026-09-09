@@ -1,4 +1,12 @@
 import Link from "next/link";
+import SaveFeedback from "@/components/manage/save-feedback";
+import { DirectoryBackLink } from "@/components/manage/directory-context";
+import { hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
+import { listEmployeeResponsibilities } from "@/lib/manage/operational-responsibility";
+import { listEmployeeDirectory } from "@/lib/data/employee-directory";
+import { reviewEmployeeSetup } from "@/lib/business/operational-review";
+import { EmployeeResponsibilityEditor } from "@/components/manage/responsibility-editor";
+import OperationalFlags from "@/components/manage/operational-flags";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/session";
 import {
@@ -100,11 +108,16 @@ function MoneyTile({ label, value, sub, plain }: { label: string; value: string;
 function FlowSummary({
   flow,
   summary,
+  unavailable = false,
+  incomplete = false,
 }: {
   flow: "Direct-Pay" | "Agency-Routed";
   summary: EmployeeMoneyFlowSummary;
+  unavailable?: boolean;
+  incomplete?: boolean;
 }) {
   const direct = flow === "Direct-Pay";
+  const current = (value: string) => unavailable ? "Unavailable" : incomplete ? `${formatMoney(value)} subtotal` : formatMoney(value);
   return (
     <section className="rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface-muted)] px-4 py-4">
       <p className="eyebrow">{flow}</p>
@@ -117,9 +130,9 @@ function FlowSummary({
           : "The Employee base is routed through the Agency. This is money the Agency may owe the Employee; billed spread is not employee pay."}
       </p>
       <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-        <div><dt className="text-[var(--color-ink-faint)]">Calculated</dt><dd className="tnum mt-1 font-semibold">{formatMoney(summary.due)}</dd></div>
+        <div><dt className="text-[var(--color-ink-faint)]">Calculated</dt><dd className="tnum mt-1 font-semibold">{current(summary.due)}</dd></div>
         <div><dt className="text-[var(--color-ink-faint)]">Recorded payments</dt><dd className="tnum mt-1 font-semibold">{formatMoney(summary.paid)}</dd></div>
-        <div><dt className="text-[var(--color-ink-faint)]">Still open</dt><dd className="tnum mt-1 font-semibold">{formatMoney(summary.remaining)}</dd></div>
+        <div><dt className="text-[var(--color-ink-faint)]">Still open</dt><dd className="tnum mt-1 font-semibold">{current(summary.remaining)}</dd></div>
         <div><dt className="text-[var(--color-ink-faint)]">Credit / reversal</dt><dd className="tnum mt-1 font-semibold">{formatMoney(summary.credit)}</dd></div>
       </dl>
     </section>
@@ -248,7 +261,12 @@ export default async function EmployeeDetailPage({
     const allowedHoursByAssignment = new Map(
       allowedHours.map((evaluation) => [evaluation.assignmentId, evaluation]),
     );
+    const canManageResponsibility = hasPortalCapability(await resolvePortalAccess(pool, user), "agencies.manage");
+    const responsibility = canManageResponsibility ? (await listEmployeeResponsibilities(pool, id)).get(id) : undefined;
+    const directoryRecord = canManageResponsibility ? (await listEmployeeDirectory(pool, scope)).find((person) => person.id === id) : undefined;
+    const operationalFlags = directoryRecord ? reviewEmployeeSetup(directoryRecord) : [];
     return {
+      responsibility, operationalFlags,
       employee: employeeRecordForAccess(scope, employee),
       report,
       assignments: activeAssignments.map((assignment) => ({
@@ -279,14 +297,14 @@ export default async function EmployeeDetailPage({
     return (
       <>
         <PageHeader eyebrow="Employee" title="Employee" />
-        <ErrorPanel title="Could not load this employee">{result.error}</ErrorPanel>
+        <ErrorPanel title="Could not load this employee">{result.error} <ButtonLink href={`/employees/${id}`}>Try again</ButtonLink></ErrorPanel>
       </>
     );
   }
   if (!result.data) notFound();
 
   const {
-    employee, report, assignments, recent, payment, individualsServed,
+    employee, report, assignments, recent, payment, individualsServed, responsibility, operationalFlags,
     usageByProgram, monthly, schedule, withholding, gridRows, deals, money,
     planningSummary, checks, previewAccounts, planningOnly, canPlanProfile, canManagePlanningProfile,
     canSeeTransactions, canSeeHours, canSeeAssignmentHours, canSeeBilledAmounts,
@@ -354,7 +372,9 @@ export default async function EmployeeDetailPage({
           </>
         }
       />
+      <span id="employee-arrangements" className="scroll-mt-5" />
       <CreateButton
+        successMessage="Arrangement saved. Review state updated."
         label={currentDeal ? "Change deal" : "Set deal"}
         title={currentDeal ? "Change employee deal" : "Set employee deal"}
         endpoint="/api/employee-deals"
@@ -408,7 +428,10 @@ export default async function EmployeeDetailPage({
 
   return (
     <>
+      <DirectoryBackLink directory="employees" />
+      <SaveFeedback />
       <PageHeader eyebrow={planningOnly ? "Planning" : "Employee"} title={employee.displayName} action={headerActions} />
+      {responsibility ? <><EmployeeResponsibilityEditor id={id} value={responsibility} /><OperationalFlags flags={operationalFlags} /></> : null}
       <TabPanels
         initialId={initialView}
         paramKey="view"
@@ -623,7 +646,8 @@ export default async function EmployeeDetailPage({
                 ) : null}
                 {canSeeSettlements ? (
                   <Card title="Settlement balances" description="Calculated obligations and recorded settlement events, kept separate by money direction." action={<ButtonLink href={`/settlements?employeeId=${id}`} variant="secondary">Open payments →</ButtonLink>}>
-                    <div className="grid gap-4 p-5 xl:grid-cols-2"><FlowSummary flow="Direct-Pay" summary={money.directPay} /><FlowSummary flow="Agency-Routed" summary={money.agencyRouted} /></div>
+                    {money.coverage?.dirty || (money.coverage?.heldSources ?? 0) > 0 || operationalFlags.length > 0 ? <p role="status" className="px-5 pt-4 text-sm text-[var(--color-warn)]">{money.coverage?.dirty ? "Current balances are unavailable until the source refresh completes." : "These are incomplete eligible subtotals; held or unsupported sources are excluded."} <Link href={`/settlements?employeeId=${id}`} className="font-semibold underline">Review sources and refresh</Link></p> : null}
+                    <div className="grid gap-4 p-5 xl:grid-cols-2"><FlowSummary flow="Direct-Pay" summary={money.directPay} unavailable={money.coverage?.dirty} incomplete={(money.coverage?.heldSources ?? 0) > 0 || operationalFlags.length > 0} /><FlowSummary flow="Agency-Routed" summary={money.agencyRouted} unavailable={money.coverage?.dirty} incomplete={(money.coverage?.heldSources ?? 0) > 0 || operationalFlags.length > 0} /></div>
                   </Card>
                 ) : null}
                 {canSeeEmployeeDeals ? (

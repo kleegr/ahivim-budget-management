@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { revalidatePath } from "next/cache";
+vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 import {
   canManageHourAuthorizations,
   containsFinancialAuthorizationFields,
@@ -275,6 +277,8 @@ describe("budget planner authorization routes", () => {
       { params: Promise.resolve({ id: AUTHORIZATION_ID }) },
     );
     expect(revised.status).toBe(200);
+    expect(revalidatePath).toHaveBeenCalledWith(`/individuals/${INDIVIDUAL_ID}`);
+    expect(revalidatePath).toHaveBeenCalledWith('/individuals');
     expectNoFinancialConfiguration((await revised.json()).data);
     expect(mocks.reviseAuthorization).toHaveBeenCalledWith(
       expect.anything(),
