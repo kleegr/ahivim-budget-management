@@ -156,7 +156,7 @@ test('exact transaction selections preserve missing and zero money through rows,
       await testInfo.attach(`check-completeness.${format}`, { body: download.bytes, contentType: format === 'csv' ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     }
     // Follow the real link and then narrow the same check to the exact person.
-    await mixedRow.getByRole('link', { name: 'Review 2 services', exact: true }).click();
+    await mixedRow.getByRole('link', { name: 'Open 2 services', exact: true }).click();
     await expect(page).toHaveURL(url => url.searchParams.get('employeeId') === employee && url.searchParams.get('periodEndExact') === '2026-09-03' && !!url.searchParams.get('checkIdentity'));
     await expect(selectedRows).toHaveCount(2);
     const narrowed = new URL(page.url());

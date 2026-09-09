@@ -124,6 +124,7 @@ test("Calculations and the two detail profiles expose real linked plan, activity
   main = await openReady(page, `/individuals/${LINKED_INDIVIDUAL_ID}`, "Linked Individual");
   await expect(main.getByRole("tab", { name: "Programs & Monthly Plan", exact: true })).toHaveAttribute("aria-selected", "true");
   await main.getByRole("link", { name: "Show all programs", exact: true }).click();
+  await page.waitForURL(url => url.searchParams.get("programScope") === "all", { waitUntil: "load" });
   await expect(main.getByRole("region", { name: "Monthly actuals and remaining plan" }).first()).toBeVisible();
   await main.getByRole("tab", { name: "Overview", exact: true }).click();
   await expect(main.getByText(/Used\s+14\s+of\s+100\s+hours/)).toBeVisible();

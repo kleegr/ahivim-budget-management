@@ -35,7 +35,7 @@ test('Owner opens Transactions from Reports, pages a large result, and exports e
     const seedStart = performance.now();
     await pool.query('INSERT INTO individuals(id,display_name,normalized_name) VALUES($1,$2,$3)', [person, personName, `report-${person}`]);
     await pool.query('INSERT INTO employees(id,display_name,normalized_name) VALUES($1,$2,$3)', [employee, workerName, `report-${employee}`]);
-    await pool.query("INSERT INTO programs(id,code,name,service_category,payment_recipient,required_auth_type) VALUES($1,$2,$3,'direct_service','excellent_staffing','hours')", [program, `REPORT_${program.replaceAll('-', '')}`, `Report program ${tag}`]);
+    await pool.query("INSERT INTO programs(id,code,name,service_category,payment_recipient,required_auth_type) VALUES($1,$2,$3,'direct_service','agency','hours')", [program, `REPORT_${program.replaceAll('-', '')}`, `Report program ${tag}`]);
     await pool.query(`INSERT INTO payroll_transactions
       (id,individual_id,employee_id,program_id,check_number,check_date,period_begin,period_end,
        source_row_number,imported_hours,imported_rate,imported_amount,calculated_internal_amount,

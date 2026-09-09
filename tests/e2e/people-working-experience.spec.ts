@@ -59,7 +59,7 @@ test('People working flow retains bulk selection, shows separate program overrun
     expect((await pool.query("SELECT count(*)::int AS count FROM audit_logs WHERE action='operational_responsibility_changed' AND entity_id=ANY($1::uuid[])", [ids])).rows[0].count).toBe(2);
     await bulk.getByRole('button', { name: 'Close', exact: true }).click();
     await page.getByRole('link', { name: names[0], exact: true }).click();
-    await expect(page.getByRole('tab', { name: 'Programs & Monthly Plan', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('tab', { name: /^Programs & Monthly Plan(?: \d+)?$/ })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByText(`Over authorization: ${primary.name}: -20 hours remaining`, { exact: false })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Monthly actuals and remaining plan' })).toHaveCount(2);
     const monthlyDrill = page.getByRole('region', { name: 'Monthly actuals and remaining plan' }).first().getByRole('link', { name: /^Transactions/ }).first();
@@ -130,7 +130,9 @@ test('Saving one program choice preserves two sibling drafts through refresh and
     await expect(second).toHaveValue('undecided');
     await page.getByRole('button', { name: 'Load current choice and discard this draft' }).click();
     await expect(general).toHaveValue('undecided'); await expect(second).toHaveValue('undecided');
+    const finalSave = page.waitForResponse(response => response.url().endsWith(`/api/individuals/${id}/responsibility`) && response.request().method() === 'PATCH');
     await page.getByRole('button', { name: `Save ${programs[1].name} budget responsibility`, exact: true }).click();
+    expect((await finalSave).status()).toBe(200);
     const saved = (await pool.query('SELECT budget_responsibility,budget_responsibility_by_program FROM individuals WHERE id=$1', [id])).rows[0];
     expect(saved.budget_responsibility).toBe('undecided');
     expect(saved.budget_responsibility_by_program).toEqual({ [programs[0].id]: 'unmanaged', [programs[1].id]: 'undecided' });

@@ -119,14 +119,13 @@ async function createAuthorization(page: Page, journey: Journey) {
     const response = await route.fetch();
     savedJson = await response.json();
     await route.fulfill({ response, json: savedJson });
-  });
+  }, { times: 1 });
   const saved = page.waitForResponse((response) => response.url().endsWith("/api/program-budgets") && response.request().method() === "POST");
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   const response = await saved;
   expect(response.status()).toBe(201);
   expect(savedJson).toHaveProperty("data.authorizationId");
   expect(privateValues(savedJson)).toEqual([]);
-  await page.unroute("**/api/program-budgets");
   await expect(dialog).toHaveCount(0);
   await metric(page.locator("#main"), "Hours authorized", "12");
 }
