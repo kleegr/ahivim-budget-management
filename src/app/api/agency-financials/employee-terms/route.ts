@@ -26,18 +26,20 @@ export async function POST(request: NextRequest) {
         notes: body.notes ? String(body.notes) : null,
         reason: String(body.reason ?? ""),
       },
-      user.id,
+      user.actorId,
     );
     if (!result.ok) return resultResponse(result);
-    const refreshed = await refreshSettlementObligations(
-      getPool(),
-      { employeeId: result.data.employeeId },
-      user.id,
-    );
+    let settlementWarning: string | null = null;
+    try {
+      const refreshed = await refreshSettlementObligations(getPool(), { employeeId: result.data.employeeId }, user.actorId);
+      settlementWarning = refreshed.ok ? null : refreshed.message;
+    } catch (error) {
+      settlementWarning = redactError(error, "The balance refresh failed. Retry recalculation.");
+    }
     return NextResponse.json({
       ok: true,
       data: result.data,
-      settlementWarning: refreshed.ok ? null : refreshed.message,
+      settlementWarning,
     }, { status: 201 });
   } catch (error) {
     return jsonError(redactError(error, "The employee pay rule could not be saved."), 500);

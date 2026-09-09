@@ -13,6 +13,7 @@ export interface DocumentAccessContext {
   individualId?: string;
   employeeId?: string;
   sourceInvoiceId?: string;
+  sourceCoverVersion?: number;
   requiredCapabilities?: (keyof VisibilityPermissions)[];
 }
 

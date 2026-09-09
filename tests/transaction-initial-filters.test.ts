@@ -47,7 +47,7 @@ describe("transaction URL filters", () => {
     ] as GridTransaction[];
 
     expect(buildInitialFilters(rows, { individualId: [firstId, secondId] })).toEqual({
-      filters: { individual: { selected: ["Alex One", "Blair Two"] } },
+      filters: { individualId: { selected: [firstId, secondId] }, individual: { selected: ["Alex One", "Blair Two"] } },
       label: "2 people",
     });
   });
@@ -192,6 +192,7 @@ describe("transaction URL filters", () => {
       employeeId: base.employeeId,
       checkNumber: "CHK-100",
     }).filters).toEqual({
+      employeeId: { selected: [base.employeeId] },
       employee: { selected: ["Alex Worker", " Alex  Worker "] },
       checkNumber: { selected: [" CHK-100 ", "CHK-100"] },
     });

@@ -248,13 +248,19 @@ suite("Developer 1 budget and Financial Setup integrity (PostgreSQL)", () => {
     const person = unwrap(await createIndividual(pool, { displayName: "Group credit example" }, ACTOR));
     const partner = unwrap(await createIndividual(pool, { displayName: "Group partner example" }, ACTOR));
     const program = (await pool.query<{ id: string }>(`SELECT id FROM programs WHERE code = 'DAY_HAB'`)).rows[0]!.id;
+    // Non-self-hired programs use one shared service rate. Preserve the group
+    // credit example's $20 divisor through central configuration.
+    await pool.query(
+      `INSERT INTO program_rate_schedules (program_id, effective_from, internal_rate)
+       VALUES ($1, '2026-01-01', 20)`, [program],
+    );
     const budget = unwrap(await createProgramBudget(pool, {
       individualId: person.id, programId: program, renewalDate: "2027-01-01",
-      authorizedHours: "100", individualRateOverride: "20",
+      authorizedHours: "100",
     }, ACTOR));
     const strategy = unwrap(await createStrategy(pool, { individualId: person.id }, ACTOR));
     unwrap(await updateStrategy(pool, {
-      id: strategy.id, renewalDate: "2027-01-01", hours: { [program]: "100" }, rateOverrides: { [program]: "20" },
+      id: strategy.id, renewalDate: "2027-01-01", hours: { [program]: "100" },
     }, ACTOR));
 
     for (const [status, serviceDate] of [["confirmed", "2026-08-10"], ["needs_review", "2026-08-11"], ["confirmed", null]] as const) {

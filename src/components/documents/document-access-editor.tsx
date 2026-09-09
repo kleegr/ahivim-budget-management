@@ -1,4 +1,5 @@
 "use client";
+import SearchableSelect from "@/components/manage/searchable-select";
 
 import { useEffect, useState } from "react";
 import type { DocumentAccessContext } from "@/lib/auth/document-policy";
@@ -60,7 +61,7 @@ export default function DocumentAccessEditor({ documentId, onClose, onUpdated }:
     } catch (error) { setMessage(error instanceof Error ? error.message : "Could not save access."); }
     finally { setBusy(false); }
   }
-  const select = (label: string, value: string, onChange: (value: string) => void, options: Option[]) => <label className="block text-sm">{label}<select className="input mt-1 w-full" value={value} onChange={(event) => onChange(event.target.value)}><option value="">Choose…</option>{options.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></label>;
+  const select = (label: string, value: string, onChange: (value: string) => void, options: Option[]) => <label className="block text-sm">{label}<SearchableSelect label={label} selectLabel={label} value={value} onChange={onChange} options={options.map((option) => ({ value: option.id, label: option.name }))} /></label>;
 
   return <section aria-label="Document access" className="space-y-4 rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-5">
     <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-semibold">Document access</h2><button type="button" className="btn btn-secondary" onClick={onClose}>Close</button></div>

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { payrollCheckRowsHref } from "@/components/collections/collections-workspace";
+import { filterTransactionsBySelection } from "@/lib/transactions/initial-filters";
+import type { GridTransaction } from "@/lib/data/transactions-grid";
 import {
   collectionsFocusedPayrollCheckId,
   collectionsPayrollCheckFocusHref,
@@ -19,6 +22,16 @@ const fullAccess = {
 };
 
 describe("Collections deep links", () => {
+  it("keeps payroll source drilldowns on both exact period bounds including absent values", () => {
+    const check = { employeeId: EMPLOYEE_ID, checkNumber: "PAY 10", checkDate: "2026-08-15", periodBegin: "2026-08-01", periodEnd: "2026-08-14" };
+    const wanted = { ...check, id: "wanted", checkNumber: " PAY 10 " } as GridTransaction;
+    const rows = [wanted, { ...wanted, id: "other-period", periodEnd: "2026-08-13" }, { ...wanted, id: "other-employee", employeeId: "different" }];
+    const selection = Object.fromEntries(new URL(payrollCheckRowsHref(check), "http://localhost").searchParams);
+    expect(filterTransactionsBySelection(rows, selection).map((entry) => entry.id)).toEqual(["wanted"]);
+    const undated = { ...check, checkDate: null, periodBegin: null, periodEnd: null, checkNumber: null };
+    expect(Object.fromEntries(new URL(payrollCheckRowsHref(undated), "http://localhost").searchParams)).toMatchObject({ checkNumberExact: "", checkDateExact: "", periodBeginExact: "", periodEndExact: "" });
+  });
+
   it("opens one exact payroll check in the report month", () => {
     expect(collectionsPayrollCheckFocusHref({
       payrollCheckId: PAYROLL_CHECK_ID,

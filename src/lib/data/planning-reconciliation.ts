@@ -30,6 +30,10 @@ export interface PlanningMatchReview {
   groupCount: number;
   multipleCount: number;
   noCandidateCount: number;
+  page?: number;
+  pageSize?: number;
+  query?: string;
+  reason?: PlanningMatchReason | "all";
 }
 
 export function emptyPlanningMatchReview(): PlanningMatchReview {
@@ -59,9 +63,14 @@ export async function getPlanningMatchReview(
   asOf: string,
   scope: AccessScope,
   agencyIds: string[] = [],
-  limit = 200,
+  limit = 100,
+  options: { page?: number; query?: string; reason?: PlanningMatchReason | "all" } = {},
 ): Promise<PlanningMatchReview> {
   const [individualIds, employeeIds] = scopeArrays(scope);
+  const pageSize = Number.isFinite(limit) ? Math.min(Math.max(Math.trunc(limit), 1), 200) : 100;
+  const page = Number.isFinite(options.page) ? Math.max(1, Math.min(100_000, Math.trunc(options.page!))) : 1;
+  const query = (options.query ?? "").trim().slice(0, 160);
+  const reason = options.reason ?? "all";
   const scopedAgencyIds = agencyIds.length > 0 ? agencyIds : null;
   const { rows } = await pool.query<{
     id: string;
@@ -84,21 +93,18 @@ export async function getPlanningMatchReview(
     total_multiple_count: string;
     total_no_candidate_count: string;
   }>(
-    `SELECT session.id, session.session_date::text,
+    `WITH matches AS (SELECT session.id, session.session_date::text,
             session.employee_id, employee.display_name AS employee_name,
             session.program_id, program.code AS program_code, program.name AS program_name,
             participants.individual_ids, participants.individual_names,
             session.duration_hours::text, session.is_group, session.group_size,
             candidates.candidate_count, candidates.candidate_hours,
             candidates.pay_period_candidate_count,
-            count(*) OVER()::text AS total_count,
-            (count(*) FILTER (WHERE session.is_group) OVER())::text AS total_group_count,
-            (count(*) FILTER (
-              WHERE session.is_group = false AND candidates.candidate_count::int > 1
-            ) OVER())::text AS total_multiple_count,
-            (count(*) FILTER (
-              WHERE session.is_group = false AND candidates.candidate_count::int = 0
-            ) OVER())::text AS total_no_candidate_count
+            CASE WHEN session.is_group THEN 'group'
+                 WHEN candidates.candidate_count::int = 0 THEN 'none'
+                 WHEN candidates.candidate_count::int > 1 THEN 'multiple'
+                 WHEN candidates.pay_period_candidate_count::int > 0 THEN 'pay_period'
+                 ELSE 'possible' END AS reason
        FROM scheduled_sessions session
        LEFT JOIN employees employee ON employee.id = session.employee_id
        JOIN programs program ON program.id = session.program_id
@@ -181,9 +187,17 @@ export async function getPlanningMatchReview(
                   AND (membership.effective_to IS NULL OR membership.effective_to >= session.session_date)
              ))
         ))
-      ORDER BY session.session_date DESC, employee.display_name NULLS LAST, session.id
-      LIMIT $5`,
-    [asOf, employeeIds, individualIds, scopedAgencyIds, Math.min(Math.max(limit, 1), 500)],
+    ) SELECT matches.*,
+            count(*) OVER()::text AS total_count,
+            (count(*) FILTER (WHERE is_group) OVER())::text AS total_group_count,
+            (count(*) FILTER (WHERE reason = 'multiple') OVER())::text AS total_multiple_count,
+            (count(*) FILTER (WHERE reason = 'none') OVER())::text AS total_no_candidate_count
+        FROM matches
+       WHERE ($6::text = '' OR strpos(lower(concat_ws(' ', employee_name, program_name, program_code, array_to_string(individual_names, ' '))), lower($6::text)) > 0)
+         AND ($7::text = 'all' OR reason = $7::text)
+       ORDER BY session_date DESC, employee_name NULLS LAST, id
+       LIMIT $5 OFFSET $8`,
+    [asOf, employeeIds, individualIds, scopedAgencyIds, pageSize, query, reason, (page - 1) * pageSize],
   );
 
   const reviewRows = rows.map<PlanningMatchReviewRow>((row) => {
@@ -219,6 +233,7 @@ export async function getPlanningMatchReview(
 
   return {
     rows: reviewRows,
+    page, pageSize, query, reason,
     total: Number(rows[0]?.total_count ?? 0),
     groupCount: Number(rows[0]?.total_group_count ?? 0),
     multipleCount: Number(rows[0]?.total_multiple_count ?? 0),

@@ -24,7 +24,7 @@ function action(overrides: Partial<Parameters<typeof individualProfileMainAction
 
 describe("individual 360 profile", () => {
   it("uses the five plain profile tabs and real server-authorized portal preview", () => {
-    for (const label of ["Overview", "Budgets", "Activity & Schedule", "Money", "More"]) {
+    for (const label of ["Overview", "Programs & Monthly Plan", "Transactions & Schedule", "Money", "More"]) {
       expect(page).toContain(`label: "${label}"`);
     }
     expect(page).toContain('action="/api/auth/impersonation/start"');

@@ -1581,7 +1581,7 @@ export async function getIndividualPeriodActivity(
     `SELECT t.id::text AS id,
             t.employee_id AS emp_id,
             COALESCE(e.display_name, t.employee_raw, 'Unknown') AS emp_name,
-            to_char(t.period_begin, 'YYYY-MM-DD') AS period_begin,
+            to_char(canonical_service_date(t.period_begin, t.check_date, t.period_end), 'YYYY-MM-DD') AS period_begin,
             t.program_id AS prog_id,
             COALESCE(p.code, '')                       AS program_code,
             COALESCE(p.name, t.program_raw, 'Unknown') AS program_name,
@@ -1595,7 +1595,7 @@ export async function getIndividualPeriodActivity(
          ${transactionScope.periodClause}
          ${transactionScope.clause}
       ORDER BY COALESCE(e.display_name, t.employee_raw, 'Unknown'),
-               canonical_service_date(t.period_begin, t.check_date, t.period_end)`,
+               canonical_service_date(t.period_begin, t.check_date, t.period_end) DESC NULLS LAST, t.id`,
     transactionScope.params,
   );
 

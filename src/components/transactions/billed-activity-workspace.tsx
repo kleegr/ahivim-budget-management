@@ -8,16 +8,18 @@ import { dec, formatHours, formatMoney } from "@/lib/money";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 import type { ActivityReviewSummary } from "@/lib/data/activity-overview";
 import type { TransactionFieldVisibility } from "@/lib/auth/money-redaction";
-import type { ExportCell, ExportColumn } from "@/lib/export/tabular";
 import type { FilterState } from "@/components/data-grid/types";
 import PeriodControl, { type PeriodRange } from "@/components/period-control";
 import { Card, EmptyState, StatusBadge, Table, Td, Th, Tr } from "@/components/ui";
 import {
   groupChecks,
+  sumKnownAmounts,
+  type CheckMoneyField,
   type CheckRouting,
   type CheckSummary,
 } from "@/components/transactions/check-grouping";
 import SourcePaymentsView from "@/components/transactions/source-payments-view";
+import { buildCheckExport } from "./check-export";
 import { downloadTransactionSummary } from "@/components/transactions/summary-export";
 
 const TransactionsGrid = dynamic(() => import("@/components/transactions/transactions-grid"), {
@@ -50,6 +52,19 @@ const VERIFICATION_LABEL: Record<string, string> = {
   verified: "Verified",
   void: "Void",
 };
+
+function checkMoneyLabel(check: CheckSummary, field: CheckMoneyField): string {
+  const value = check[field];
+  if (value === null) return "Unavailable";
+  return `${formatMoney(value)}${check.completeness[field].missing > 0 ? " · incomplete subtotal" : ""}`;
+}
+
+function totalMoneyLabel(checks: CheckSummary[], field: CheckMoneyField | "verifiedCheckGross" | "verifiedCheckNet" | "withholding"): string {
+  const total = sumKnownAmounts(checks.map((check) => check[field]));
+  if (total.amount === null) return "Unavailable";
+  const incomplete = total.missing > 0 || checks.some((check) => field in check.completeness && check.completeness[field as CheckMoneyField].missing > 0);
+  return `${formatMoney(total.amount)}${incomplete ? " · incomplete subtotal" : ""}`;
+}
 
 function checkRowsHref(check: CheckSummary): string {
   const params = new URLSearchParams({ view: "rows" });
@@ -106,9 +121,9 @@ function ChecksView({
   }, [checks, deferredQuery, period]);
 
   const totals = useMemo(() => filtered.reduce((result, check) => ({
-    funderBilled: result.funderBilled.plus(check.funderBilled),
-    employeeBase: result.employeeBase.plus(check.employeeBase),
-    agencySpread: result.agencySpread.plus(check.agencySpread),
+    funderBilled: result.funderBilled.plus(check.funderBilled ?? 0),
+    employeeBase: result.employeeBase.plus(check.employeeBase ?? 0),
+    agencySpread: result.agencySpread.plus(check.agencySpread ?? 0),
     verifiedGross: result.verifiedGross.plus(check.verifiedCheckGross ?? 0),
     verifiedNet: result.verifiedNet.plus(check.verifiedCheckNet ?? 0),
     withholding: result.withholding.plus(check.withholding ?? 0),
@@ -137,56 +152,7 @@ function ChecksView({
   const exportView = async (format: "csv" | "xlsx") => {
     setExporting(format);
     setNotice(null);
-    const columns: ExportColumn[] = [
-      { key: "checkNumber", header: "Check #", type: "text" },
-      { key: "checkDate", header: "Check date", type: "date" },
-      { key: "employee", header: "Employee", type: "text" },
-      { key: "payTo", header: "Pay to", type: "text" },
-      { key: "routing", header: "Routing", type: "text" },
-      { key: "periodBegin", header: "Period begin", type: "date" },
-      { key: "periodEnd", header: "Period end", type: "date" },
-      { key: "individuals", header: "People served", type: "text" },
-      { key: "programs", header: "Programs", type: "text" },
-      { key: "services", header: "Recorded services", type: "int" },
-      ...(visibility.canSeeHours ? [{ key: "hours", header: "Hours", type: "hours" } as const] : []),
-      ...(visibility.canSeeBilledAmounts ? [{ key: "funderBilled", header: "Funder billed", type: "money" } as const] : []),
-      ...(visibility.canSeeEmployeeAmounts ? [{ key: "employeeBase", header: "Employee base", type: "money" } as const] : []),
-      ...(visibility.canSeeAgencySpread ? [{ key: "agencySpread", header: "Agency spread", type: "money" } as const] : []),
-      ...(visibility.canSeeCheckGross ? [
-        { key: "verifiedGross", header: "Verified check gross", type: "money" } as const,
-      ] : []),
-      ...(visibility.canSeeCheckNet ? [
-        { key: "verifiedNet", header: "Verified check net", type: "money" } as const,
-        { key: "sourceNet", header: "Source net", type: "money" } as const,
-      ] : []),
-      ...(visibility.canSeeCheckGross || visibility.canSeeCheckNet
-        ? [{ key: "verification", header: "Verification", type: "text" } as const]
-        : []),
-      ...(visibility.canSeeTaxes ? [{ key: "withholding", header: "Withholding", type: "money" } as const] : []),
-      { key: "review", header: "Review status", type: "text" },
-    ];
-    const exportRows: Record<string, ExportCell>[] = filtered.map((check) => ({
-      checkNumber: check.checkNumber,
-      checkDate: check.checkDate,
-      employee: check.employee,
-      payTo: check.payTo,
-      routing: check.routing === "direct" ? "Direct to employee" : check.routing === "agency" ? "Agency-routed" : "Routing review",
-      periodBegin: check.periodBegin,
-      periodEnd: check.periodEnd,
-      individuals: check.individuals.join(", "),
-      programs: check.programs.join(", "),
-      services: check.rows,
-      hours: check.hours,
-      funderBilled: check.funderBilled,
-      employeeBase: check.employeeBase,
-      agencySpread: check.agencySpread,
-      verifiedGross: check.verifiedCheckGross,
-      verifiedNet: check.verifiedCheckNet,
-      verification: check.verificationStatus === null ? "Not linked" : VERIFICATION_LABEL[check.verificationStatus] ?? check.verificationStatus,
-      sourceNet: check.netPay,
-      withholding: check.withholding,
-      review: check.needsReview ? check.reviewReasons.join("; ") : "Ready",
-    }));
+    const { columns, rows: exportRows } = buildCheckExport(filtered, visibility);
     try {
       await downloadTransactionSummary({
         format,
@@ -231,12 +197,12 @@ function ChecksView({
 
       <div className="grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule)] sm:grid-cols-3 lg:grid-cols-8 lg:divide-y-0">
         <SummaryMetric label="Checks" value={filtered.length.toLocaleString()} />
-        {visibility.canSeeBilledAmounts ? <SummaryMetric label="Funder billed" value={formatMoney(totals.funderBilled)} /> : null}
-        {visibility.canSeeEmployeeAmounts ? <SummaryMetric label="Employee base" value={formatMoney(totals.employeeBase)} /> : null}
-        {visibility.canSeeAgencySpread ? <SummaryMetric label="Agency spread" value={formatMoney(totals.agencySpread)} /> : null}
-        {visibility.canSeeCheckGross ? <SummaryMetric label="Verified gross" value={formatMoney(totals.verifiedGross)} /> : null}
-        {visibility.canSeeCheckNet ? <SummaryMetric label="Verified net" value={formatMoney(totals.verifiedNet)} /> : null}
-        {visibility.canSeeTaxes ? <SummaryMetric label="Withholding" value={formatMoney(totals.withholding)} /> : null}
+        {visibility.canSeeBilledAmounts ? <SummaryMetric label="Funder billed" value={totalMoneyLabel(filtered, "funderBilled")} /> : null}
+        {visibility.canSeeEmployeeAmounts ? <SummaryMetric label="Employee base" value={totalMoneyLabel(filtered, "employeeBase")} /> : null}
+        {visibility.canSeeAgencySpread ? <SummaryMetric label="Agency spread" value={totalMoneyLabel(filtered, "agencySpread")} /> : null}
+        {visibility.canSeeCheckGross ? <SummaryMetric label="Verified gross" value={totalMoneyLabel(filtered, "verifiedCheckGross")} /> : null}
+        {visibility.canSeeCheckNet ? <SummaryMetric label="Verified net" value={totalMoneyLabel(filtered, "verifiedCheckNet")} /> : null}
+        {visibility.canSeeTaxes ? <SummaryMetric label="Withholding" value={totalMoneyLabel(filtered, "withholding")} /> : null}
         {visibility.canSeeHours ? <SummaryMetric label="Hours" value={formatHours(totals.hours)} /> : null}
       </div>
 
@@ -301,9 +267,9 @@ function ChecksView({
                   <div className="mt-0.5 max-w-52 truncate text-xs text-[var(--color-ink-faint)]" title={check.individuals.join(", ")}>{check.individuals.join(", ") || "Unmatched"}</div>
                 </Td>
                 {visibility.canSeeHours ? <Td numeric>{formatHours(check.hours)}</Td> : null}
-                {visibility.canSeeBilledAmounts ? <Td numeric>{formatMoney(check.funderBilled)}</Td> : null}
-                {visibility.canSeeEmployeeAmounts ? <Td numeric>{formatMoney(check.employeeBase)}</Td> : null}
-                {visibility.canSeeAgencySpread ? <Td numeric>{formatMoney(check.agencySpread)}</Td> : null}
+                {visibility.canSeeBilledAmounts ? <Td numeric>{checkMoneyLabel(check, "funderBilled")}</Td> : null}
+                {visibility.canSeeEmployeeAmounts ? <Td numeric>{checkMoneyLabel(check, "employeeBase")}</Td> : null}
+                {visibility.canSeeAgencySpread ? <Td numeric>{checkMoneyLabel(check, "agencySpread")}</Td> : null}
                 {visibility.canSeeCheckGross ? <Td numeric>{check.verifiedCheckGross !== null ? formatMoney(check.verifiedCheckGross) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
                 {visibility.canSeeCheckNet ? <Td numeric>{check.verifiedCheckNet !== null ? formatMoney(check.verifiedCheckNet) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}
                 {visibility.canSeeTaxes ? <Td numeric>{check.withholding !== null ? formatMoney(check.withholding) : <span className="text-[var(--color-ink-faint)]">-</span>}</Td> : null}

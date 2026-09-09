@@ -1,4 +1,5 @@
 "use client";
+import SearchableSelect from "./searchable-select";
 
 import { X } from "lucide-react";
 import { clearSaveFeedback, refreshWithSaveFeedback } from "./save-feedback";
@@ -204,6 +205,7 @@ export function SelectField({
   required?: boolean;
   placeholder?: string;
 }) {
+  if (/individual|employee|person/i.test(name)) return <div className="block"><span className="text-sm font-medium">{label}</span><SearchableSelect options={options} name={name} label={label} selectLabel={label} defaultValue={defaultValue} required={required} placeholder={placeholder} /></div>;
   return (
     <label className="block">
       <span className="text-sm font-medium">{label}</span>

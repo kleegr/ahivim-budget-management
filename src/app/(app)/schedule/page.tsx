@@ -62,7 +62,10 @@ export default async function SchedulePage({
       getPlanningReferenceData(pool, planningAccess.access),
       getPlanningWorkspace(pool, today, planningAccess.access, planningAccess.agencyIds),
       initialView === "matching"
-        ? getPlanningMatchReview(pool, today, planningAccess.access, planningAccess.agencyIds)
+        ? getPlanningMatchReview(pool, today, planningAccess.access, planningAccess.agencyIds, 100, {
+            page: Number(one(sp.matchPage) ?? 1), query: one(sp.matchSearch),
+            reason: one(sp.matchReason) as import("@/lib/data/planning-reconciliation").PlanningMatchReason | undefined,
+          }).catch(() => null)
         : Promise.resolve(emptyPlanningMatchReview()),
       canViewPlannerDirectPayTargets(planningAccess)
         ? listPlannerDirectPayTargets(pool, today)
@@ -70,7 +73,8 @@ export default async function SchedulePage({
     ]);
     return {
       reference,
-      matchReview,
+      matchReview: matchReview ?? emptyPlanningMatchReview(),
+      matchReviewError: matchReview === null,
       planning: showBudgetTracking
         ? filterPlanningWorkspaceForAgency(planning, planningAccess.agencyRosters)
         : withoutPlanningBudgetDetails(
@@ -115,6 +119,7 @@ export default async function SchedulePage({
             }))}
             matchReview={result.data.matchReview}
             matchReviewLoaded={initialView === "matching"}
+            matchReviewError={result.data.matchReviewError}
             directPayTargets={result.data.directPayTargets}
             showDirectPayTargets={canViewPlannerDirectPayTargets(planningAccess)}
             showBudgetTracking={showBudgetTracking}

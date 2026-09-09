@@ -247,7 +247,8 @@ suite("canonical program budgets (real PostgreSQL)", () => {
       `INSERT INTO scheduled_sessions
          (program_id, session_date, duration_hours, status)
        VALUES
-         ($1, '2026-05-10', 12, 'pending'),
+         ($1, '2026-05-20', 12, 'pending'),
+         ($1, '2026-05-10', 7, 'pending'),
          ($1, '2026-06-10', 9, 'completed'),
          ($1, '2027-01-10', 8, 'pending')
        RETURNING id, duration_hours::text AS duration_hours`,
@@ -262,7 +263,7 @@ suite("canonical program budgets (real PostgreSQL)", () => {
       );
     }
 
-    const current = (await listProgramBudgets(pool, { individualId: person.id }))[0]!;
+    const current = (await listProgramBudgets(pool, { individualId: person.id, asOf: "2026-05-15" }))[0]!;
     expect(current).toMatchObject({
       consumedHours: "6.0000",
       consumedDollars: "60.0000",
@@ -286,7 +287,7 @@ suite("canonical program budgets (real PostgreSQL)", () => {
 
   it("uses catalog rate defaults, preserves rate revisions, and enforces the override rule", async () => {
     const person = unwrap(await createIndividual(pool, { displayName: "Rate Override Person" }, ACTOR));
-    const comHabId = await programId("COM_HAB");
+    const comHabId = await programId("SH_COM_HAB");
     const budget = unwrap(await createProgramBudget(pool, {
       individualId: person.id,
       programId: comHabId,
@@ -296,8 +297,8 @@ suite("canonical program budgets (real PostgreSQL)", () => {
       authorizedHours: "100",
     }, ACTOR));
     expect(budget).toMatchObject({
-      agencyRate: "25.0000",
-      internalRate: "21.0000",
+      agencyRate: null,
+      internalRate: "38.0000",
       individualRateOverride: null,
     });
 

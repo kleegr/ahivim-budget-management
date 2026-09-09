@@ -1,3 +1,4 @@
+import { sumKnownAmounts, type CheckSummary } from "./check-grouping";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 import {
   completeCheckIdentity,
@@ -21,9 +22,10 @@ export interface SourcePaymentSummary {
   individuals: string[];
   programs: string[];
   hours: string;
-  funderBilled: string;
-  employeeBase: string;
-  agencySpread: string;
+  funderBilled: string | null;
+  employeeBase: string | null;
+  agencySpread: string | null;
+  completeness: CheckSummary["completeness"];
   sourceNet: string | null;
   rows: number;
   transactionIds: string[];
@@ -57,9 +59,9 @@ export function groupSourcePayments(rows: GridTransaction[]): SourcePaymentSumma
   return [...groups.entries()].map(([key, group]) => {
     const first = group[0]!;
     let hours = dec(0);
-    let funderBilled = dec(0);
-    let employeeBase = dec(0);
-    let agencySpread = dec(0);
+    const funderBilled = sumKnownAmounts(group.map((row) => row.gross));
+    const employeeBase = sumKnownAmounts(group.map((row) => row.internalAmount));
+    const agencySpread = sumKnownAmounts(group.map((row) => row.agencyAdditional));
     const employees = new Set<string>();
     const individuals = new Set<string>();
     const programs = new Set<string>();
@@ -70,9 +72,6 @@ export function groupSourcePayments(rows: GridTransaction[]): SourcePaymentSumma
 
     for (const row of group) {
       if (hasAmount(row.hours)) hours = hours.plus(row.hours);
-      if (hasAmount(row.gross)) funderBilled = funderBilled.plus(row.gross);
-      if (hasAmount(row.internalAmount)) employeeBase = employeeBase.plus(row.internalAmount);
-      if (hasAmount(row.agencyAdditional)) agencySpread = agencySpread.plus(row.agencyAdditional);
       if (row.employee) employees.add(row.employee);
       if (row.individual) individuals.add(row.individual);
       if (row.program) programs.add(row.program);
@@ -114,9 +113,10 @@ export function groupSourcePayments(rows: GridTransaction[]): SourcePaymentSumma
       individuals: [...individuals].sort(),
       programs: [...programs].sort(),
       hours: hours.toFixed(2),
-      funderBilled: funderBilled.toFixed(2),
-      employeeBase: employeeBase.toFixed(2),
-      agencySpread: agencySpread.toFixed(2),
+      funderBilled: funderBilled.amount,
+      employeeBase: employeeBase.amount,
+      agencySpread: agencySpread.amount,
+      completeness: { funderBilled, employeeBase, agencySpread },
       sourceNet: netValues.size === 1 ? [...netValues.values()][0]! : null,
       rows: group.length,
       transactionIds: group.map((row) => row.id),
@@ -124,8 +124,7 @@ export function groupSourcePayments(rows: GridTransaction[]): SourcePaymentSumma
       needsReview: reviewReasons.size > 0,
       reviewReasons: [...reviewReasons],
     };
-  }).sort((a, b) => Number(b.needsReview) - Number(a.needsReview)
-    || (b.checkDate ?? "").localeCompare(a.checkDate ?? "")
+  }).sort((a, b) => (b.checkDate ?? "").localeCompare(a.checkDate ?? "")
     || (a.payTo ?? "").localeCompare(b.payTo ?? "")
     || (a.checkNumber ?? "").localeCompare(b.checkNumber ?? ""));
 }

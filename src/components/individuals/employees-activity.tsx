@@ -41,7 +41,8 @@ export default function EmployeesActivity({
       return next;
     });
 
-  const window = { pbFrom: periodStart ?? undefined, pbTo: periodEnd ?? undefined };
+  const lastDay = periodEnd ? new Date(new Date(`${periodEnd}T00:00:00Z`).getTime() - 86_400_000).toISOString().slice(0, 10) : undefined;
+  const window = { serviceFrom: periodStart ?? undefined, serviceTo: lastDay };
 
   return (
     <div className="divide-y divide-[var(--color-rule)]">
@@ -74,7 +75,7 @@ export default function EmployeesActivity({
               {canSeeBilledAmounts ? <span className="tnum w-28 text-right text-sm font-medium">{formatMoney(e.agency)}</span> : null}
               {canSeeTransactions ? <Link
                 className="w-16 text-right text-xs text-[var(--color-primary)] hover:underline"
-                href={txLink({ individualId, employeeId: e.id ?? undefined, ...window })}
+                href={e.id ? txLink({ individualId, employeeId: e.id, ...window }) : `${txLink({ individualId, ...window })}&employeeExact=${encodeURIComponent(e.name === "Unknown" ? "" : e.name)}`}
                 title="Open in the Transactions grid, filtered to this person, employee and period"
               >
                 rows →
@@ -170,7 +171,7 @@ function EmployeePanel({
         <table className="w-full border-collapse text-xs">
           <thead>
             <tr className="text-left text-[var(--color-text-soft)]">
-              <th className="py-1.5 pr-3 font-medium">Pay period</th>
+              <th className="py-1.5 pr-3 font-medium">Service date</th>
               <th className="px-2 py-1.5 font-medium">Program</th>
               {canSeeHours ? <th className="px-2 py-1.5 text-right font-medium">Hours</th> : null}
               {canSeeBilledAmounts ? <th className="px-2 py-1.5 text-right font-medium">Billed $</th> : null}

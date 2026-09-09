@@ -7,6 +7,7 @@ import { dec, formatMoney, formatHours } from "@/lib/money";
 import { BUDGET_STATUS_PRESENT, budgetStatusFromHours, type BudgetLineStatus } from "@/lib/business/budget-status";
 import { isCalendarYearProgram } from "@/lib/business/calculation-strategy";
 import { txLink } from "@/lib/nav/tx-link";
+import { isSelfHireProgram } from "@/lib/business/working-programs";
 
 /**
  * Editable financial projection inputs. These calculation-strategy lines are
@@ -246,7 +247,9 @@ export default function BudgetEditor({
         hours[r.programId] = r.hours.trim() === "" ? "0" : clean(r.hours);
         const def = defaultRate.get(r.programId) ?? "0";
         // Only store an override when it differs from the program's default rate.
-        rateOverrides[r.programId] = dec(r.perHour || 0).equals(dec(def || 0)) ? "" : clean(r.perHour);
+        if (isSelfHireProgram(programs.find((program) => program.id === r.programId)?.code ?? "")) {
+          rateOverrides[r.programId] = dec(r.perHour || 0).equals(dec(def || 0)) ? "" : clean(r.perHour);
+        }
       }
       // Delete any plan line the user removed.
       for (const orig of initialRows) if (!rows.some((r) => r.programId === orig.programId)) hours[orig.programId] = "";
@@ -471,7 +474,7 @@ export default function BudgetEditor({
                   <td className="px-3 py-2 text-right">
                     <span className="inline-flex items-center gap-1">
                       <span className="text-[var(--color-ink-faint)]">$</span>
-                      <input type="number" step="any" value={r.perHour} onChange={(e) => setRow(r.programId, { perHour: e.target.value })} className="input w-20 text-right tabular-nums" />
+                      {isSelfHireProgram(programs.find((program) => program.id === r.programId)?.code ?? "") ? <input type="number" step="any" value={r.perHour} onChange={(e) => setRow(r.programId, { perHour: e.target.value })} className="input w-20 text-right tabular-nums" /> : <span className="block text-xs"><span className="tnum">{formatMoney(r.perHour)}</span><Link href="/settings?view=programs" className="mt-1 block text-[var(--color-primary)] underline">Shared rate setup</Link><span className="block text-[var(--color-ink-soft)]">Saved projection snapshot</span></span>}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-right">

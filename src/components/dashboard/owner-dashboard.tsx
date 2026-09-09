@@ -1,3 +1,6 @@
+import { formatKnownMoneyTotal } from "@/lib/business/transaction-totals";
+import SearchableSelect from "@/components/manage/searchable-select";
+import { ReloadButton } from "@/components/ui-client";
 import Link from "next/link";
 import { Suspense, type ReactNode } from "react";
 import {
@@ -476,12 +479,7 @@ function ActivityFilters({
         <OwnerPeopleMultiSelect options={options.individuals} selected={selection.individualIds} />
         <label className="min-w-0 text-xs font-semibold text-[var(--color-ink-soft)]">
           Employee
-          <select className={fieldClass} name="employeeId" defaultValue={selection.employeeId ?? ""}>
-            <option value="">All employees</option>
-            {options.employees.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
+          <SearchableSelect label="employees" className={fieldClass} name="employeeId" defaultValue={selection.employeeId ?? ""} options={options.employees} placeholder="All employees" />
         </label>
         <label className="min-w-0 text-xs font-semibold text-[var(--color-ink-soft)]">
           Payroll period
@@ -556,15 +554,15 @@ function RecentChecks({
                 </span>
                 <span>
                   <span className="block text-[0.68rem] font-semibold uppercase text-[var(--color-ink-faint)]">Funder billed</span>
-                  <span className="tnum mt-1 block text-sm font-semibold text-[var(--color-ink)]">{formatMoney(check.funderBilled)}</span>
+                  <span className="tnum mt-1 block text-sm font-semibold text-[var(--color-ink)]">{check.funderBilled === null ? "Unavailable" : `${formatMoney(check.funderBilled)}${check.completeness.funderBilled.missing > 0 ? " · incomplete subtotal" : ""}`}</span>
                 </span>
                 <span>
                   <span className="block text-[0.68rem] font-semibold uppercase text-[var(--color-ink-faint)]">Employee base</span>
-                  <span className="tnum mt-1 block text-sm font-semibold text-[var(--color-ink)]">{formatMoney(check.employeeBase)}</span>
+                  <span className="tnum mt-1 block text-sm font-semibold text-[var(--color-ink)]">{check.employeeBase === null ? "Unavailable" : `${formatMoney(check.employeeBase)}${check.completeness.employeeBase.missing > 0 ? " · incomplete subtotal" : ""}`}</span>
                 </span>
                 <span>
                   <span className="block text-[0.68rem] font-semibold uppercase text-[var(--color-ink-faint)]">Agency spread</span>
-                  <span className="tnum mt-1 block text-sm font-semibold text-[var(--color-ink)]">{formatMoney(check.agencySpread)}</span>
+                  <span className="tnum mt-1 block text-sm font-semibold text-[var(--color-ink)]">{check.agencySpread === null ? "Unavailable" : `${formatMoney(check.agencySpread)}${check.completeness.agencySpread.missing > 0 ? " · incomplete subtotal" : ""}`}</span>
                 </span>
                 <ArrowRight aria-hidden className="hidden h-4 w-4 text-[var(--color-ink-faint)] group-hover:text-[var(--color-primary)] md:block" />
               </Link>
@@ -578,6 +576,7 @@ function RecentChecks({
 
 export default function OwnerDashboard({
   summary,
+  unavailableSections = [],
   activitySelection,
   activityOptions,
   savedViews,
@@ -585,6 +584,7 @@ export default function OwnerDashboard({
   today,
 }: {
   summary: OwnerDashboardSummary;
+  unavailableSections?: string[];
   activitySelection: OwnerActivitySelection;
   activityOptions: OwnerActivityFilterOptions;
   savedViews: GridView[];
@@ -603,7 +603,7 @@ export default function OwnerDashboard({
       ? `${formatDate(transactions.latestCheckDate, LONG_DATE)} · ${transactions.contextTotals.transactions.toLocaleString()} ${transactions.contextTotals.transactions === 1 ? "row" : "rows"} · ${transactions.contextCheckCount.toLocaleString()} ${transactions.contextCheckCount === 1 ? "check" : "checks"}`
       : null;
   const reconciliationHint = transactions.contextTotals.moneyExcludedRows > 0
-    ? `${transactions.contextTotals.moneyExcludedRows.toLocaleString()} incomplete money ${transactions.contextTotals.moneyExcludedRows === 1 ? "row is" : "rows are"} excluded.`
+    ? `${transactions.contextTotals.moneyExcludedRows.toLocaleString()} incomplete money ${transactions.contextTotals.moneyExcludedRows === 1 ? "row is" : "rows are"} included where known; incomplete subtotals are labeled.`
     : undefined;
 
   return (
@@ -632,6 +632,13 @@ export default function OwnerDashboard({
           <OwnerActualMoneySection month={financialMonth} />
         </Suspense>
 
+        {unavailableSections.includes("Transactions") ? (
+          <section aria-label="Transactions unavailable" className="border-y border-[var(--color-rule)] py-5">
+            <h2 className="display text-lg font-semibold">Transactions</h2>
+            <p role="status" className="my-3 text-sm text-[var(--color-ink-soft)]">Transactions is unavailable. Other Home sections remain usable.</p>
+            <ReloadButton label="Retry transactions" />
+          </section>
+        ) : (
         <section aria-labelledby="owner-transactions-heading">
           <SectionHeading
             id="owner-transactions-heading"
@@ -645,16 +652,25 @@ export default function OwnerDashboard({
             icon={ReceiptText}
           />
           <ActivityFilters selection={activitySelection} options={activityOptions} savedViews={savedViews} />
+          {unavailableSections.includes("Saved views") ? <p role="status" className="mt-2 text-sm">Saved views are unavailable. <ReloadButton label="Retry saved views" /></p> : null}
           <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] md:grid-cols-3 xl:grid-cols-5 xl:divide-y-0">
-            <SummaryMetric label="Funder billed" value={formatMoney(transactions.contextTotals.gross)} href={transactions.contextHref} hint={reconciliationHint} />
-            <SummaryMetric label="Employee base" value={formatMoney(transactions.contextTotals.internal)} href={transactions.contextHref} hint={reconciliationHint} />
-            <SummaryMetric label="Agency spread" value={formatMoney(transactions.contextTotals.agencyAdditional)} href={transactions.contextHref} hint={reconciliationHint} />
-            <SummaryMetric label="Net payroll" value={formatMoney(transactions.contextTotals.netPerCheck)} href={transactions.contextHref} hint="Counted once per payment" />
+            <SummaryMetric label="Funder billed" value={formatKnownMoneyTotal(transactions.contextTotals.amounts.gross)} href={transactions.contextHref} hint={reconciliationHint} />
+            <SummaryMetric label="Employee base" value={formatKnownMoneyTotal(transactions.contextTotals.amounts.internal)} href={transactions.contextHref} hint={reconciliationHint} />
+            <SummaryMetric label="Agency spread" value={formatKnownMoneyTotal(transactions.contextTotals.amounts.agencyAdditional)} href={transactions.contextHref} hint={reconciliationHint} />
+            <SummaryMetric label="Net payroll" value={formatKnownMoneyTotal(transactions.contextTotals.amounts.netPerCheck)} href={transactions.contextHref} hint="Counted once per payment" />
             <SummaryMetric label="Hours" value={formatHours(transactions.contextTotals.hours)} href={transactions.contextHref} />
           </div>
           <RecentChecks checks={transactions.recentChecks} selected={selected} />
         </section>
+        )}
 
+        {unavailableSections.includes("Budgets") ? (
+          <section aria-label="Budgets unavailable" className="border-y border-[var(--color-rule)] py-5">
+            <h2 className="display text-lg font-semibold">Budgets</h2>
+            <p role="status" className="my-3 text-sm text-[var(--color-ink-soft)]">Budgets is unavailable. Other Home sections remain usable.</p>
+            <ReloadButton label="Retry budgets" />
+          </section>
+        ) : (
         <section aria-labelledby="owner-budgets-heading">
           <SectionHeading
             id="owner-budgets-heading"
@@ -673,7 +689,15 @@ export default function OwnerDashboard({
             <SummaryMetric label="Hours remaining" value={formatHours(budgets.remainingHours)} href="/individuals" />
           </div>
         </section>
+        )}
 
+        {unavailableSections.includes("Financial setup") ? (
+          <section aria-label="Financial setup unavailable" className="border-y border-[var(--color-rule)] py-5">
+            <h2 className="display text-lg font-semibold">Financial setup</h2>
+            <p role="status" className="my-3 text-sm text-[var(--color-ink-soft)]">Financial setup is unavailable. Other Home sections remain usable.</p>
+            <ReloadButton label="Retry financial setup" />
+          </section>
+        ) : (
         <section aria-labelledby="owner-financial-heading">
           <SectionHeading
             id="owner-financial-heading"
@@ -697,6 +721,7 @@ export default function OwnerDashboard({
             />
           </div>
         </section>
+        )}
 
       </div>
     </>

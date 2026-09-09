@@ -466,7 +466,7 @@ async function authorizationProgramRules(
         programCode: rows[0].code,
         requiredAuthType: rows[0].required_auth_type,
         isActive: rows[0].is_active,
-        allowIndividualRateOverride: rows[0].allow_individual_rate_override,
+        allowIndividualRateOverride: rows[0].allow_individual_rate_override && ["SH_COM_HAB", "SH_RESPITE"].includes(rows[0].code),
         defaultAgencyRate: rows[0].agency_rate,
         defaultInternalRate: rows[0].internal_rate,
       }

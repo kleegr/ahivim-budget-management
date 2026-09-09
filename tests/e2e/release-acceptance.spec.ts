@@ -48,12 +48,13 @@ async function expectMetric(scope: Locator, label: string, value: string): Promi
 
 test("owner sees exact row totals and whole-check totals without counting repeated NET twice", async ({ page }) => {
   await signIn(page);
-  const main = await openReady(page, "/transactions", /^Activity$/);
+  const main = await openReady(page, "/transactions", /^Transactions$/);
 
   await expectMetric(main, "Funder billed", "$350.00");
   await expectMetric(main, "Employee base", "$294.00");
   await expectMetric(main, "Agency spread", "$56.00");
   await expectMetric(main, "Hours", "14");
+  await main.getByRole("button", { name: "Check review", exact: true }).click();
   await expect(main.getByText(DIRECT_CHECK_NUMBER, { exact: true }).first()).toBeVisible();
 
   await main.getByRole("button", { name: "More totals" }).click();
@@ -80,6 +81,9 @@ test("owner sees exact row totals and whole-check totals without counting repeat
 test("Budget Status and Up To Date preserve current math and historical authorization truth", async ({ page }) => {
   await signIn(page);
   const main = await openReady(page, "/individuals?sheet=up_to_date", /^People & budgets$/);
+  // The golden COM_HAB record is intentionally undecided. Inspect all programs
+  // through the normal scope control without changing its responsibility.
+  await main.getByRole("link", { name: "Show all programs / all individuals", exact: true }).click();
   await expect(main.getByRole("tab", { name: /Up To Date/ })).toHaveAttribute("aria-selected", "true");
 
   await expectMetric(main, "Current periods", "1");
@@ -118,13 +122,17 @@ test("Calculations and the two detail profiles expose real linked plan, activity
   await expect(secondary).toContainText("$85.00");
 
   main = await openReady(page, `/individuals/${LINKED_INDIVIDUAL_ID}`, "Linked Individual");
+  await expect(main.getByRole("tab", { name: "Programs & Monthly Plan", exact: true })).toHaveAttribute("aria-selected", "true");
+  await main.getByRole("link", { name: "Show all programs", exact: true }).click();
+  await expect(main.getByRole("region", { name: "Monthly actuals and remaining plan" }).first()).toBeVisible();
+  await main.getByRole("tab", { name: "Overview", exact: true }).click();
   await expect(main.getByText(/Used\s+14\s+of\s+100\s+hours/)).toBeVisible();
   await expect(main.getByText("86 h remaining now", { exact: false })).toBeVisible();
   await expect(main.getByText("2 h scheduled", { exact: true })).toBeVisible();
   await expect(main.getByText("84 h after schedule", { exact: true })).toBeVisible();
   await expect(main.getByText(/Core supports, Supplemental supports.*\$260\.00 total approved monthly/)).toBeVisible();
 
-  await main.getByRole("tab", { name: "Activity & Schedule" }).click();
+  await main.getByRole("tab", { name: "Transactions & Schedule" }).click();
   await expect(main.getByText(/Oct 15, 2026/).first()).toBeVisible();
   const employeeLink = main.getByRole("link", { name: "Linked Employee", exact: true }).first();
   await expect(employeeLink).toBeVisible();
@@ -203,7 +211,7 @@ test("a planning-only role cannot open or infer private transaction values", asy
   await expect(page.getByText("$350.00", { exact: true })).toHaveCount(0);
 });
 
-test("Owner Activity table remains usable at a phone viewport", async ({ browser }) => {
+test("Owner Transactions table remains usable at a phone viewport", async ({ browser }) => {
   const context = await browser.newContext({
     baseURL: BASE_URL,
     viewport: { width: 390, height: 844 },
@@ -214,11 +222,13 @@ test("Owner Activity table remains usable at a phone viewport", async ({ browser
   await page.getByLabel("Password").fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: /^sign in$/i }).click();
   await page.waitForURL(/\/dashboard(?:\?|$)/, { timeout: 20_000 });
-  await openReady(page, "/transactions", /^Activity$/);
+  await openReady(page, "/transactions", /^Transactions$/);
 
   const table = page.getByRole("table").last();
   await expect(table).toBeVisible();
-  await expect(table.getByRole("columnheader", { name: "Pay to" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: /^Service date(?:\s|$)/ })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: /^Individual(?:\s|$)/ })).toBeVisible();
+  await page.getByRole("button", { name: "Check review", exact: true }).click();
   await expect(table.getByText(DIRECT_CHECK_NUMBER, { exact: true }).first()).toBeVisible();
   expect(await table.getByRole("row").count()).toBeGreaterThan(1);
   await context.close();

@@ -23,13 +23,15 @@ export function sameOriginOrFail(request: NextRequest): NextResponse | null {
   return null;
 }
 
-/** Strip anything that could carry a connection string out of an error. */
+/** Unexpected exceptions never become user-visible diagnostics. Domain failures
+ * use resultResponse instead. Log only redacted technical metadata server-side. */
 export function redactError(error: unknown, fallback = "Unexpected error"): string {
-  const raw = error instanceof Error ? error.message : fallback;
-  return raw
-    .replace(/postgres(?:ql)?:\/\/[^\s"']+/gi, "[connection string redacted]")
-    .replace(/\b[A-Za-z0-9._%+-]+:[^@\s/]+@[A-Za-z0-9.-]+/g, "[credentials redacted]")
-    .slice(0, 300);
+  const code = error && typeof error === "object" && "code" in error ? String(error.code) : null;
+  console.error("Request failed", {
+    name: error instanceof Error ? error.name : "UnknownError",
+    code: code && /^[A-Z0-9_]{1,20}$/.test(code) ? code : undefined,
+  });
+  return fallback;
 }
 
 export const jsonError = (message: string, status: number) =>

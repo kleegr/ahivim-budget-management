@@ -1,4 +1,5 @@
 "use client";
+import SearchableSelect from "@/components/manage/searchable-select";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -14,6 +15,7 @@ import {
   FilePenLine,
   FilePlus2,
   FileText,
+  History,
   Library,
   Pencil,
   Plus,
@@ -109,13 +111,14 @@ function InvoicePdfActions({
       </>
     ) : null;
   }
-  if (invoice.status !== "issued") return null;
+  if (invoice.status !== "issued" && invoice.status !== "void") return null;
   const source = `/api/classes/invoices/${invoice.id}/pdf`;
   return (
     <>
-      <a className={buttonClass} href={source} aria-label="Download invoice PDF" title="Download invoice PDF">
+      <a className={buttonClass} href={source} aria-label={invoice.status === "void" ? "Download VOID invoice PDF" : "Download invoice PDF"} title={invoice.status === "void" ? "Download VOID invoice PDF" : "Download invoice PDF"}>
         <Download className="h-4 w-4" aria-hidden />
       </a>
+      {invoice.status === "void" && canManage ? <button type="button" className={buttonClass} onClick={onPreviewCover} aria-label="Open VOID cover history" title="Open VOID cover history"><History className="h-4 w-4" aria-hidden /></button> : null}
       {canManage && canEditDocuments ? (
         <Link
           className={buttonClass}
@@ -199,9 +202,7 @@ function BudgetForm({
         {!budget ? (
           <label className="block text-xs font-semibold text-[var(--color-ink-soft)]">
             Individual
-            <select className="select mt-1 w-full" value={individualId} onChange={(event) => setIndividualId(event.target.value)}>
-              {individuals.map((individual) => <option key={individual.id} value={individual.id}>{individual.label}</option>)}
-            </select>
+            <SearchableSelect label="individuals" selectLabel="Individual" value={individualId} onChange={setIndividualId} options={individuals.map((individual) => ({ value: individual.id, label: individual.label }))} />
           </label>
         ) : null}
         <label className="block text-xs font-semibold text-[var(--color-ink-soft)]">
@@ -696,11 +697,11 @@ export default function ClassesWorkspace({
                           <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === current.id} onClick={() => setDiscardInvoice(current)} aria-label="Discard draft" title="Discard draft"><Trash2 className="h-4 w-4" aria-hidden /></button>
                         </>
                       ) : null}
-                      {current?.status === "issued" ? (
+                      {current && (current.status === "issued" || current.status === "void") ? (
                         <>
                           <InvoicePdfActions invoice={current} onPreviewCover={() => setCoverInvoice(current)} canManage={canManage} canEditDocuments={canEditDocuments} />
                           {canManage ? <button type="button" className="btn btn-sm btn-secondary btn-icon" onClick={() => setCoverInvoice(current)} aria-label="Reimbursement cover sheet" title="Reimbursement cover sheet"><FileText className="h-4 w-4" aria-hidden /></button> : null}
-                          {canManage ? <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" onClick={() => setVoidInvoice(current)} aria-label="Void invoice" title="Void invoice"><Ban className="h-4 w-4" aria-hidden /></button> : null}
+                          {canManage && current.status === "issued" ? <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" onClick={() => setVoidInvoice(current)} aria-label="Void invoice" title="Void invoice"><Ban className="h-4 w-4" aria-hidden /></button> : null}
                         </>
                       ) : null}
                     </div>
@@ -768,11 +769,11 @@ export default function ClassesWorkspace({
                                 <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === current.id} onClick={() => setDiscardInvoice(current)} aria-label="Discard draft" title="Discard draft"><Trash2 className="h-4 w-4" aria-hidden /></button>
                               </>
                             ) : null}
-                            {current?.status === "issued" ? (
+                            {current && (current.status === "issued" || current.status === "void") ? (
                               <>
                                 <InvoicePdfActions invoice={current} onPreviewCover={() => setCoverInvoice(current)} canManage={canManage} canEditDocuments={canEditDocuments} />
                                 {canManage ? <button type="button" className="btn btn-sm btn-secondary btn-icon" onClick={() => setCoverInvoice(current)} aria-label="Reimbursement cover sheet" title="Reimbursement cover sheet"><FileText className="h-4 w-4" aria-hidden /></button> : null}
-                                {canManage ? <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" onClick={() => setVoidInvoice(current)} aria-label="Void invoice" title="Void invoice"><Ban className="h-4 w-4" aria-hidden /></button> : null}
+                                {canManage && current.status === "issued" ? <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" onClick={() => setVoidInvoice(current)} aria-label="Void invoice" title="Void invoice"><Ban className="h-4 w-4" aria-hidden /></button> : null}
                               </>
                             ) : null}
                           </div>
@@ -815,11 +816,11 @@ export default function ClassesWorkspace({
                             <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === invoice.id} onClick={() => setDiscardInvoice(invoice)} aria-label="Discard draft" title="Discard draft"><Trash2 className="h-4 w-4" aria-hidden /></button>
                           </>
                         ) : null}
-                        {invoice.status === "issued" ? (
+                        {invoice.status === "issued" || invoice.status === "void" ? (
                           <>
                             <InvoicePdfActions invoice={invoice} onPreviewCover={() => setCoverInvoice(invoice)} canManage={canManage} canEditDocuments={canEditDocuments} />
                             {canManage ? <button type="button" className="btn btn-sm btn-secondary btn-icon" onClick={() => setCoverInvoice(invoice)} aria-label="Reimbursement cover sheet" title="Reimbursement cover sheet"><FileText className="h-4 w-4" aria-hidden /></button> : null}
-                            {canManage ? <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === invoice.id} onClick={() => setVoidInvoice(invoice)} aria-label="Void invoice" title="Void invoice"><Ban className="h-4 w-4" aria-hidden /></button> : null}
+                            {canManage && invoice.status === "issued" ? <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === invoice.id} onClick={() => setVoidInvoice(invoice)} aria-label="Void invoice" title="Void invoice"><Ban className="h-4 w-4" aria-hidden /></button> : null}
                           </>
                         ) : null}
                       </div>
@@ -849,11 +850,11 @@ export default function ClassesWorkspace({
                                 <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === invoice.id} onClick={() => setDiscardInvoice(invoice)} aria-label="Discard draft" title="Discard draft"><Trash2 className="h-4 w-4" aria-hidden /></button>
                               </>
                             ) : null}
-                            {invoice.status === "issued" ? (
+                            {invoice.status === "issued" || invoice.status === "void" ? (
                               <>
                                 <InvoicePdfActions invoice={invoice} onPreviewCover={() => setCoverInvoice(invoice)} canManage={canManage} canEditDocuments={canEditDocuments} subtle />
                                 {canManage ? <button type="button" className="btn btn-sm btn-ghost btn-icon" onClick={() => setCoverInvoice(invoice)} aria-label="Reimbursement cover sheet" title="Reimbursement cover sheet"><FileText className="h-4 w-4" aria-hidden /></button> : null}
-                                {canManage ? <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === invoice.id} onClick={() => setVoidInvoice(invoice)} aria-label="Void invoice" title="Void invoice"><Ban className="h-4 w-4" aria-hidden /></button> : null}
+                                {canManage && invoice.status === "issued" ? <button type="button" className="btn btn-sm btn-ghost btn-icon text-[var(--color-danger)]" disabled={busyId === invoice.id} onClick={() => setVoidInvoice(invoice)} aria-label="Void invoice" title="Void invoice"><Ban className="h-4 w-4" aria-hidden /></button> : null}
                               </>
                             ) : null}
                           </div>

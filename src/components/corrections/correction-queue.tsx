@@ -1,4 +1,5 @@
 "use client";
+import SearchableSelect from "@/components/manage/searchable-select";
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -387,33 +388,11 @@ function RowCard({
               </label>
               <label className="flex items-center gap-2 text-sm">
                 <span className="w-20 text-xs text-[var(--color-ink-faint)]">Individual</span>
-                <select
-                  defaultValue={row.resolvedIndividualId ?? ""}
-                  onChange={(e) => onResolve("individualId", e.target.value || null)}
-                  disabled={disabled}
-                  aria-label={`Resolve individual for row ${row.sourceRowNumber}`}
-                  className={`${inputCls} flex-1`}
-                >
-                  <option value="">— none —</option>
-                  {individuals.map((i) => (
-                    <option key={i.id} value={i.id}>{i.label}</option>
-                  ))}
-                </select>
+                <SearchableSelect defaultValue={row.resolvedIndividualId ?? ""} onChange={(value) => onResolve("individualId", value || null)} disabled={disabled} label={`individual for row ${row.sourceRowNumber}`} selectLabel={`Resolve individual for row ${row.sourceRowNumber}`} options={individuals.map((individual) => ({ value: individual.id, label: individual.label }))} />
               </label>
               <label className="flex items-center gap-2 text-sm">
                 <span className="w-20 text-xs text-[var(--color-ink-faint)]">Employee</span>
-                <select
-                  defaultValue={row.resolvedEmployeeId ?? ""}
-                  onChange={(e) => onResolve("employeeId", e.target.value || null)}
-                  disabled={disabled}
-                  aria-label={`Resolve employee for row ${row.sourceRowNumber}`}
-                  className={`${inputCls} flex-1`}
-                >
-                  <option value="">— none —</option>
-                  {employees.map((employee) => (
-                    <option key={employee.id} value={employee.id}>{employee.label}</option>
-                  ))}
-                </select>
+                <SearchableSelect defaultValue={row.resolvedEmployeeId ?? ""} onChange={(value) => onResolve("employeeId", value || null)} disabled={disabled} label={`employee for row ${row.sourceRowNumber}`} selectLabel={`Resolve employee for row ${row.sourceRowNumber}`} options={employees.map((employee) => ({ value: employee.id, label: employee.label }))} />
               </label>
 
               <form onSubmit={submitCorrection} className="flex flex-wrap items-center gap-2">

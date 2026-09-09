@@ -5,6 +5,7 @@
   "buildCommand": "npm run build",
   "git": {
     "deploymentEnabled": {
+      "codex/ahivim-reviewed-fixes": false,
       "codex/ahivim-final-delivery": false,
       "codex/ahivim-operational-setup": false
     }

@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
+import BulkResponsibilityDialog from "./bulk-responsibility-dialog";
 import { useSearchParams } from "next/navigation";
 import { useDirectoryUrl } from "@/components/manage/directory-context";
 import OperationalFilters from "@/components/manage/operational-filters";
@@ -446,7 +447,7 @@ export default function IndividualsList({
   const [filter, setFilter] = useState<PortfolioFilter>(() => PORTFOLIO_FILTER_VALUES.has(searchParams.get("portfolio") as PortfolioFilter) ? searchParams.get("portfolio") as PortfolioFilter : initialFilter);
   const [scheduleIssueOnly, setScheduleIssueOnly] = useState(searchParams.get("scheduleIssue") === "true");
   const [moreOpen, setMoreOpen] = useState(isDetailedPortfolioView(initialFilter));
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set((searchParams.get("selected") ?? "").split(",").filter((id) => rows.some((row) => row.id === id))));
 
   const chooseFilter = useCallback((next: PortfolioFilter) => {
     setFilter(next);
@@ -727,7 +728,7 @@ export default function IndividualsList({
     serializeHidden: true,
   });
 
-  useDirectoryUrl("individuals", { ...externalConfig, q: grid.search, sort: JSON.stringify(grid.sort) });
+  useDirectoryUrl("individuals", { ...externalConfig, q: grid.search, sort: JSON.stringify(grid.sort), selected: [...selectedIds].join(",") });
 
   const budgetTotalsIncomplete = grid.filtered.some((row) => row.insightsVisible && row.budget && (row.budget.hoursLeft === null || row.budget.hoursAfterScheduled === null || row.operationalReview?.flags.some((flag) => flag.key.startsWith("undated-"))));
   const filteredIds = useMemo(() => grid.filtered.map((row) => row.id), [grid.filtered]);
@@ -991,6 +992,7 @@ export default function IndividualsList({
           <p className="mr-auto text-sm font-semibold text-[var(--color-ink)]">
             {selectedRows.length.toLocaleString()} selected in this view
           </p>
+          {canManage && hasOperationalReview ? <BulkResponsibilityDialog ids={selectedRows.map((row) => row.id)} selectionLabel={allFilteredSelected ? "All filtered results" : "Selected rows in this view"} /> : null}
           {selectedActivityRows.length > 0 ? (
             <Link
               href={selectedPeopleActualsHref(selectedActivityRows.map((row) => row.id))}
@@ -1010,6 +1012,7 @@ export default function IndividualsList({
         </section>
       ) : null}
 
+      <div className="flex flex-wrap items-center gap-3 text-sm"><button type="button" className="btn btn-sm btn-secondary" onClick={toggleAllFiltered}>{allFilteredSelected ? "Clear filtered selection" : `Select all ${filteredIds.length} filtered people`}</button>{selectedIds.size > selectedRows.length ? <span className="text-[var(--color-ink-soft)]">{selectedIds.size - selectedRows.length} selected people are outside the current filters.</span> : null}</div>
       <div className="scroll-thin max-h-[62vh] overflow-auto rounded-md border border-[var(--color-rule-strong)]">
         <table className="touch-table w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10">

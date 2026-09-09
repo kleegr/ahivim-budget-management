@@ -12,6 +12,21 @@ const one = (value: string | string[] | undefined): string | undefined =>
 const many = (value: string | string[] | undefined): string[] =>
   [...new Set((Array.isArray(value) ? value : value ? [value] : []).filter(Boolean))];
 
+const validDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+
+function withLegacyPeriod(search: TransactionSearchParams): TransactionSearchParams {
+  const period = one(search.period);
+  if (period === undefined || period === "all") return search;
+  const match = /^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/.exec(period);
+  const from = one(search.checkDateFrom); const to = one(search.checkDateTo);
+  // Every supplied window must hold, including old links with a period parameter.
+  if (!match || !validDate(match[1]!) || !validDate(match[2]!) || match[1]! > match[2]!
+    || (from !== undefined && !validDate(from)) || (to !== undefined && !validDate(to))) {
+    return { ...search, checkDateFrom: "invalid" };
+  }
+  return { ...search, checkDateFrom: from && from > match[1]! ? from : match[1], checkDateTo: to && to < match[2]! ? to : match[2] };
+}
+
 function hasDateFilter(filters: FilterState | undefined, key: string): boolean {
   const filter = filters?.[key];
   if (!filter) return false;
@@ -50,13 +65,72 @@ export function filterTransactionsBySourcePaymentIdentity(
   return rows.filter((row) => sourcePaymentIdentity(row) === paymentIdentity);
 }
 
+/** URL selection is applied to authorized rows before any workspace view/export.
+ * Stable identities and every supplied constraint are conjunctive. A missing or
+ * invalid identity never falls back to the rest of the authorized ledger. */
+export function filterTransactionsBySelection(rows: GridTransaction[], search: TransactionSearchParams): GridTransaction[] {
+  search = withLegacyPeriod(search);
+  const exact: Array<[string, (row: GridTransaction) => string | null | undefined]> = [
+    ["individualId", (row) => row.individualId], ["employeeId", (row) => row.employeeId],
+    ["programId", (row) => row.programId], ["transactionId", (row) => row.id],
+    ["individual", (row) => row.individual], ["employeeExact", (row) => row.employee],
+    ["program", (row) => row.program], ["programCode", (row) => row.programCode],
+    ["checkNumberExact", (row) => row.checkNumber], ["checkDateExact", (row) => row.checkDate],
+    ["periodBeginExact", (row) => row.periodBegin], ["periodEndExact", (row) => row.periodEnd],
+    ["payTo", (row) => row.payTo], ["recipient", (row) => row.paymentRecipient],
+  ];
+  const ranges: Array<[string, string, (row: GridTransaction) => string | null | undefined]> = [
+    ["checkDateFrom", "checkDateTo", (row) => row.checkDate],
+    ["serviceFrom", "serviceTo", (row) => row.serviceDate ?? row.periodBegin ?? row.checkDate ?? row.periodEnd],
+    ["pbFrom", "pbTo", (row) => row.periodBegin],
+  ];
+  for (const [fromKey, toKey] of ranges) {
+    const from = one(search[fromKey]); const to = one(search[toKey]);
+    if ((from !== undefined && !validDate(from)) || (to !== undefined && !validDate(to)) || (from && to && from > to)) return [];
+  }
+  if (search.undated !== undefined && !["1", "true", "0", "false"].includes(one(search.undated) ?? "")) return [];
+  return rows.filter((row) => {
+    for (const [key, valueOf] of exact) {
+      if (search[key] === undefined) continue;
+      const values = Array.isArray(search[key]) ? search[key] : [search[key]];
+      if (!values?.includes(valueOf(row) ?? "")) return false;
+    }
+    if (search.checkIdentity !== undefined && completeCheckIdentity(row) !== one(search.checkIdentity)) return false;
+    if (search.sourcePaymentIdentity !== undefined && sourcePaymentIdentity(row) !== one(search.sourcePaymentIdentity)) return false;
+    if (search.checkNumber !== undefined && (row.checkNumber ?? "").trim() !== one(search.checkNumber)?.trim()) return false;
+    if (search.payToKey !== undefined && normalizePayee(row.payTo) !== normalizePayee(one(search.payToKey))) return false;
+    if (search.employee !== undefined && normalizePersonName(row.employee) !== normalizePersonName(one(search.employee))) return false;
+    const undated = !(row.serviceDate ?? row.periodBegin ?? row.checkDate ?? row.periodEnd);
+    if (search.undated !== undefined && undated !== ["1", "true"].includes(one(search.undated) ?? "")) return false;
+    if (search.group !== undefined && (!["1", "true", "0", "false"].includes(one(search.group) ?? "") || row.isGroup !== ["1", "true"].includes(one(search.group) ?? ""))) return false;
+    for (const [fromKey, toKey, valueOf] of ranges) {
+      const value = valueOf(row); const from = one(search[fromKey]); const to = one(search[toKey]);
+      if (from && (!value || value < from)) return false;
+      if (to && (!value || value > to)) return false;
+    }
+    return true;
+  });
+}
+
 /** Resolve stable URL ids to the display values used by the transaction grid. */
 export function buildInitialFilters(
   rows: GridTransaction[],
   search: TransactionSearchParams,
 ): { filters: FilterState; label: string | null } {
+  search = withLegacyPeriod(search);
   const filters: FilterState = {};
   const labels: string[] = [];
+
+  for (const key of ["individualId", "employeeId", "programId", "transactionId"] as const) {
+    if (search[key] !== undefined) filters[key === "transactionId" ? "id" : key] = { selected: many(search[key]) };
+  }
+  for (const key of ["checkIdentity", "sourcePaymentIdentity"] as const) {
+    if (search[key] !== undefined) filters[key] = { selected: many(search[key]) };
+  }
+  if (["1", "true"].includes(one(search.undated) ?? "")) {
+    filters.serviceDate = { selected: [""] };
+    labels.push("Undated services");
+  }
 
   const setByIdOrName = (
     key: string,
@@ -66,13 +140,15 @@ export function buildInitialFilters(
     nameOf: (row: GridTransaction) => string | null,
   ) => {
     if (idParam) {
-      const match = rows.find((row) => idOf(row) === idParam);
-      const name = match ? nameOf(match) : null;
-      if (name) {
-        filters[key] = { selected: [name] };
-        labels.push(name);
+      const names = [...new Set(rows.filter((row) => idOf(row) === idParam).map(nameOf).filter((name): name is string => name !== null))];
+      if (names.length) {
+        filters[key] = { selected: names };
+        labels.push(names[0]!);
         return;
       }
+      filters[key] = { selected: [] };
+      labels.push(`${key} selection`);
+      return;
     }
     if (nameParam) {
       filters[key] = { selected: [nameParam] };
@@ -90,6 +166,7 @@ export function buildInitialFilters(
       filters.individual = { selected: names };
       labels.push(`${names.length} people`);
     }
+    else { filters.individual = { selected: [] }; labels.push(`${individualIds.length} selected people`); }
   } else {
     setByIdOrName("individual", individualIds[0], one(search.individual), (row) => row.individualId, (row) => row.individual);
   }
@@ -126,6 +203,7 @@ export function buildInitialFilters(
       filters.program = { selected: [match.program] };
       labels.push(match.program);
     }
+    else { filters.program = { selected: [] }; labels.push(programCode); }
   }
 
   const payTo = one(search.payTo);

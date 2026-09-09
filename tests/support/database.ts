@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import type { PgLikePool } from "@/lib/import/commit";
 import { runMigrations } from "@/lib/db/migrate";
+import { assertSafeTestDatabase } from "./database-safety";
 
 /**
  * Integration-test database.
@@ -10,7 +11,9 @@ import { runMigrations } from "@/lib/db/migrate";
  * and the skip is visible in the vitest output.
  *
  *   createdb ahivim_test
- *   TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/ahivim_test npm test
+ *   TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/ahivim_test \
+ *   TEST_EXPECTED_DB_HOST=127.0.0.1 TEST_EXPECTED_DB_NAME=ahivim_test \
+ *   TEST_CONFIRM_RESET=DROP_DISPOSABLE_TEST_DATABASE npm test
  */
 
 export const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL ?? "";
@@ -19,6 +22,12 @@ export const hasTestDatabase = TEST_DATABASE_URL.trim() !== "";
 let pool: Pool | null = null;
 
 export function testPool(): PgLikePool {
+  assertSafeTestDatabase({
+    connectionString: TEST_DATABASE_URL,
+    expectedHost: process.env.TEST_EXPECTED_DB_HOST ?? "",
+    expectedDatabase: process.env.TEST_EXPECTED_DB_NAME ?? "",
+    confirmation: process.env.TEST_CONFIRM_RESET ?? "",
+  });
   if (!pool) {
     pool = new Pool({ connectionString: TEST_DATABASE_URL, max: 4 });
   }

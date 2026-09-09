@@ -7,6 +7,7 @@ import type { TransactionFieldVisibility } from "@/lib/auth/money-redaction";
 import { normalizePayee } from "@/lib/business/internal-rate";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 import type { ExportCell, ExportColumn } from "@/lib/export/tabular";
+import { amountCompletenessLabel, sumKnownAmounts, type CheckMoneyField } from "./check-grouping";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import PeriodControl, { type PeriodRange } from "@/components/period-control";
 import {
@@ -43,6 +44,13 @@ export function sourcePaymentRowsHref(payment: SourcePaymentSummary): string {
   params.set("periodBeginExact", payment.periodBegin ?? "");
   params.set("periodEndExact", payment.periodEnd ?? "");
   return `/transactions?${params.toString()}`;
+}
+
+function sourceMoneyLabel(payments: SourcePaymentSummary[], field: CheckMoneyField): string {
+  const total = sumKnownAmounts(payments.map((payment) => payment[field]));
+  if (total.amount === null) return "Unavailable";
+  const incomplete = total.missing > 0 || payments.some((payment) => payment.completeness[field].missing > 0);
+  return `${formatMoney(total.amount)}${incomplete ? " · incomplete subtotal" : ""}`;
 }
 
 function SummaryMetric({ label, value }: { label: string; value: string }) {
@@ -93,9 +101,9 @@ export default function SourcePaymentsView({
 
   const totals = useMemo(() => filtered.reduce((result, payment) => ({
     rows: result.rows + payment.rows,
-    funderBilled: result.funderBilled.plus(payment.funderBilled),
-    employeeBase: result.employeeBase.plus(payment.employeeBase),
-    agencySpread: result.agencySpread.plus(payment.agencySpread),
+    funderBilled: result.funderBilled.plus(payment.funderBilled ?? 0),
+    employeeBase: result.employeeBase.plus(payment.employeeBase ?? 0),
+    agencySpread: result.agencySpread.plus(payment.agencySpread ?? 0),
     sourceNet: result.sourceNet.plus(payment.sourceNet ?? 0),
     knownNetPayments: result.knownNetPayments + (payment.sourceNet === null ? 0 : 1),
     hours: result.hours.plus(payment.hours),
@@ -139,9 +147,9 @@ export default function SourcePaymentsView({
       { key: "programs", header: "Programs", type: "text" },
       { key: "services", header: "Recorded services", type: "int" },
       ...(visibility.canSeeHours ? [{ key: "hours", header: "Hours", type: "hours" } as const] : []),
-      ...(visibility.canSeeBilledAmounts ? [{ key: "funderBilled", header: "Funder billed", type: "money" } as const] : []),
-      ...(visibility.canSeeEmployeeAmounts ? [{ key: "employeeBase", header: "Employee base", type: "money" } as const] : []),
-      ...(visibility.canSeeAgencySpread ? [{ key: "agencySpread", header: "Agency spread", type: "money" } as const] : []),
+      ...(visibility.canSeeBilledAmounts ? [{ key: "funderBilled", header: "Funder billed", type: "money" } as const, { key: "funderBilledCompleteness", header: "Funder billed completeness", type: "text" } as const] : []),
+      ...(visibility.canSeeEmployeeAmounts ? [{ key: "employeeBase", header: "Employee base", type: "money" } as const, { key: "employeeBaseCompleteness", header: "Employee base completeness", type: "text" } as const] : []),
+      ...(visibility.canSeeAgencySpread ? [{ key: "agencySpread", header: "Agency spread", type: "money" } as const, { key: "agencySpreadCompleteness", header: "Agency spread completeness", type: "text" } as const] : []),
       ...(visibility.canSeeCheckNet ? [{ key: "sourceNet", header: "Source net", type: "money" } as const] : []),
       { key: "paid", header: "Paid", type: "text" },
       { key: "review", header: "Review status", type: "text" },
@@ -159,8 +167,11 @@ export default function SourcePaymentsView({
       services: payment.rows,
       hours: payment.hours,
       funderBilled: payment.funderBilled,
+      funderBilledCompleteness: amountCompletenessLabel(payment.completeness.funderBilled),
       employeeBase: payment.employeeBase,
+      employeeBaseCompleteness: amountCompletenessLabel(payment.completeness.employeeBase),
       agencySpread: payment.agencySpread,
+      agencySpreadCompleteness: amountCompletenessLabel(payment.completeness.agencySpread),
       sourceNet: payment.sourceNet,
       paid: payment.paidStatus === "paid" ? "Paid" : payment.paidStatus === "mixed" ? "Mixed" : "Not paid",
       review: payment.needsReview ? payment.reviewReasons.join("; ") : "Ready",
@@ -215,9 +226,9 @@ export default function SourcePaymentsView({
         <SummaryMetric label="Source payments" value={filtered.length.toLocaleString()} />
         <SummaryMetric label="Employee checks" value={employeeCheckCount.toLocaleString()} />
         <SummaryMetric label="Recorded services" value={totals.rows.toLocaleString()} />
-        {visibility.canSeeBilledAmounts ? <SummaryMetric label="Funder billed" value={formatMoney(totals.funderBilled)} /> : null}
-        {visibility.canSeeEmployeeAmounts ? <SummaryMetric label="Employee base" value={formatMoney(totals.employeeBase)} /> : null}
-        {visibility.canSeeAgencySpread ? <SummaryMetric label="Agency spread" value={formatMoney(totals.agencySpread)} /> : null}
+        {visibility.canSeeBilledAmounts ? <SummaryMetric label="Funder billed" value={sourceMoneyLabel(filtered, "funderBilled")} /> : null}
+        {visibility.canSeeEmployeeAmounts ? <SummaryMetric label="Employee base" value={sourceMoneyLabel(filtered, "employeeBase")} /> : null}
+        {visibility.canSeeAgencySpread ? <SummaryMetric label="Agency spread" value={sourceMoneyLabel(filtered, "agencySpread")} /> : null}
         {visibility.canSeeCheckNet ? <SummaryMetric label={sourceNetLabel} value={formatMoney(totals.sourceNet)} /> : null}
         {visibility.canSeeHours ? <SummaryMetric label="Hours" value={formatHours(totals.hours)} /> : null}
       </div>
@@ -280,9 +291,9 @@ export default function SourcePaymentsView({
                 </Td>
                 <Td numeric>{payment.rows.toLocaleString()}</Td>
                 {visibility.canSeeHours ? <Td numeric>{formatHours(payment.hours)}</Td> : null}
-                {visibility.canSeeBilledAmounts ? <Td numeric>{formatMoney(payment.funderBilled)}</Td> : null}
-                {visibility.canSeeEmployeeAmounts ? <Td numeric>{formatMoney(payment.employeeBase)}</Td> : null}
-                {visibility.canSeeAgencySpread ? <Td numeric>{formatMoney(payment.agencySpread)}</Td> : null}
+                {visibility.canSeeBilledAmounts ? <Td numeric>{sourceMoneyLabel([payment], "funderBilled")}</Td> : null}
+                {visibility.canSeeEmployeeAmounts ? <Td numeric>{sourceMoneyLabel([payment], "employeeBase")}</Td> : null}
+                {visibility.canSeeAgencySpread ? <Td numeric>{sourceMoneyLabel([payment], "agencySpread")}</Td> : null}
                 {visibility.canSeeCheckNet ? <Td numeric>{payment.sourceNet !== null ? formatMoney(payment.sourceNet) : <span className="text-[var(--color-ink-faint)]">Review</span>}</Td> : null}
                 <Td>{paidBadge(payment)}</Td>
                 <Td>

@@ -1,5 +1,7 @@
 "use client";
 
+import SearchableSelect from "@/components/manage/searchable-select";
+
 import {
   useCallback,
   useDeferredValue,
@@ -842,15 +844,10 @@ export default function CalculationsGrid({
               {showAnalytics ? "Hide analysis" : "Show analysis"}
             </button>
             {canManage && (
-              <span className="ml-auto inline-flex items-center gap-1">
-                <select value={addFor} onChange={(e) => setAddFor(e.target.value)} className="rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1.5">
-                  <option value="">Add a setup for…</option>
-                  {individuals.map((i) => (
-                    <option key={i.id} value={i.id}>{i.name}</option>
-                  ))}
-                </select>
+              <div className="ml-auto flex flex-wrap items-end gap-2">
+                <SearchableSelect value={addFor} onChange={setAddFor} label="individuals" selectLabel="Add a setup for" placeholder="Add a setup for…" options={individuals.map((individual) => ({ value: individual.id, label: individual.name }))} />
                 <button type="button" onClick={addStrategy} disabled={busy || !addFor} className="btn btn-sm btn-primary disabled:opacity-50">Add</button>
-              </span>
+              </div>
             )}
           </>
         }

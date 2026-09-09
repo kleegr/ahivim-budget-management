@@ -109,7 +109,7 @@ describe("Masser request feedback", () => {
 
   it("uses a short check identity for transaction drilldowns", () => {
     expect(workspaceSource).toContain("payrollCheckRowsHref(row)");
-    expect(workspaceSource).toContain('params.set("checkDateFrom", check.checkDate)');
+    expect(workspaceSource).toContain('params.set("checkDateExact", check.checkDate ?? "")');
     expect(workspaceSource).not.toContain('params.append("transactionId"');
   });
 });

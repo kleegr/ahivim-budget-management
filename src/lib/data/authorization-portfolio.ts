@@ -1,4 +1,4 @@
-import { budgetStatusFromHours } from "@/lib/business/budget-status";
+import { BUDGET_STATUS_RANK, budgetStatusFromHours, type BudgetLineStatus } from "@/lib/business/budget-status";
 import { agencyDate } from "@/lib/business/agency-time";
 import {
   calculatePeriodElapsed,
@@ -76,6 +76,7 @@ export function summarizeAuthorizationPortfolio(
     let monthlyPace = dec(0);
     let weeklyPace = dec(0);
     let worst: UtilizationStatus = "not_started";
+    let worstPlain: BudgetLineStatus = "unused";
     const renewals = new Set<string>();
     const periods = new Set<string>();
     let singleElapsedPercent: number | null = null;
@@ -94,6 +95,8 @@ export function summarizeAuthorizationPortfolio(
       );
       const usage = lineAuthorized.isZero() ? dec(0) : lineUsed.dividedBy(lineAuthorized);
       const status = classifyUtilization(usage, elapsed);
+      const plainStatus = budgetStatusFromHours(lineAuthorized.toNumber(), lineUsed.toNumber());
+      if (BUDGET_STATUS_RANK[plainStatus] > BUDGET_STATUS_RANK[worstPlain]) worstPlain = plainStatus;
 
       authorized = authorized.plus(lineAuthorized);
       used = used.plus(lineUsed);
@@ -138,7 +141,7 @@ export function summarizeAuthorizationPortfolio(
       programs: [...new Set(rows.map((row) => row.programName))].sort(),
       budget: {
         status: worst,
-        plainStatus: budgetStatusFromHours(authorized.toNumber(), used.toNumber()),
+        plainStatus: worstPlain,
         usedPct: authorized.isZero() ? null : used.dividedBy(authorized).times(100).toNumber(),
         // One marker cannot honestly represent several independent period clocks.
         elapsedPct: periods.size === 1 ? singleElapsedPercent : null,

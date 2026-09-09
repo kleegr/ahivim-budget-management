@@ -72,6 +72,12 @@ export async function saveOperationalResponsibility(pool: PgLikePool, kind: 'ind
     const columns = kind === 'individual' ? 'budget_responsibility, budget_responsibility_by_program' : 'scheduling_responsibility, money_responsibility';
     const previous = await client.query(`SELECT ${columns} FROM ${table} WHERE id = $1${kind === 'individual' ? ' AND merged_into_id IS NULL' : ''} FOR UPDATE`, [id]);
     if (!previous.rows.length) { await client.query('ROLLBACK'); return fail('not_found', 'Person not found.'); }
+    const currentValue = programId ? (previous.rows[0].budget_responsibility_by_program as Record<string, Responsibility>)[programId] ?? null
+      : previous.rows[0][kind === 'individual' ? 'budget_responsibility' : field === 'scheduling' ? 'scheduling_responsibility' : 'money_responsibility'];
+    if ('expectedValue' in input && input.expectedValue !== currentValue) {
+      await client.query('ROLLBACK');
+      return fail('conflict', 'This responsibility changed since you opened it. Your draft is retained. Reload the current choice before saving again.');
+    }
     if (programId) {
       const program = await client.query("SELECT id FROM programs WHERE id = $1 AND is_active AND archived_at IS NULL AND code <> 'CLASSES'", [programId]);
       if (!program.rows.length) { await client.query('ROLLBACK'); return fail('validation', 'Choose an active program supported by service authorizations. Class allowances remain in the Classes workspace.'); }

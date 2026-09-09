@@ -20,10 +20,7 @@ export async function GET(
     const preview = new URL(request.url).searchParams.get("preview") === "1";
     const found = await accessibleClassInvoice(id, preview ? "manage" : "view");
     if ("error" in found) return found.error as Response;
-    if (found.invoice.status === "void") {
-      return jsonError("Voided class invoices cannot be rendered.", 409);
-    }
-    if (found.invoice.status !== "issued" && !preview) {
+    if (found.invoice.status !== "issued" && found.invoice.status !== "void" && !preview) {
       return jsonError("Only issued class invoices can be downloaded.", 409);
     }
     const bytes = await buildClassInvoicePdf(found.invoice, {

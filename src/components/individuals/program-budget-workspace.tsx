@@ -6,6 +6,10 @@ import { ActionButton, CreateButton, Field, TextAreaField } from "@/components/m
 import { ButtonLink, StatusBadge } from "@/components/ui";
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import ProgramBudgetFields, { type ProgramBudgetOption } from "./program-budget-fields";
+import MonthlyProgramPlan from "./monthly-program-plan";
+import { agencyDate } from "@/lib/business/agency-time";
+import { isSelfHireProgram } from "@/lib/business/working-programs";
+import { RESPONSIBILITY_LABELS, type Responsibility } from "@/lib/business/operational-responsibility";
 
 export interface VisibleProgramBudgetEvent {
   id: string;
@@ -20,6 +24,9 @@ export interface VisibleProgramBudgetEvent {
 }
 
 export interface VisibleProgramBudget {
+  responsibility?: Responsibility;
+  responsibleAgencyNames?: string[];
+  centralProgramRate?: { internalRate: string | null; agencyRate: string | null; effectiveFrom: string; effectiveTo: string | null };
   authorizationId: string;
   budgetPeriodId: string;
   programId: string;
@@ -62,6 +69,8 @@ export interface VisibleProgramBudget {
 
 export interface VisibleProgramBudgetMonth {
   month: string;
+  payrollHours?: string;
+  adjustmentHours?: string;
   usedHours: string;
   scheduledHours: string;
   cumulativeUsedHours: string;
@@ -455,6 +464,7 @@ export default function ProgramBudgetWorkspace({
   hoursOnlyManagement,
   showInternalRate,
   showAgencyRate,
+  canOpenTransactions = false,
 }: {
   operationalReview?: OperationalReview;
   individualId: string;
@@ -464,13 +474,14 @@ export default function ProgramBudgetWorkspace({
   hoursOnlyManagement: boolean;
   showInternalRate: boolean;
   showAgencyRate: boolean;
+  canOpenTransactions?: boolean;
 }) {
   return (
     <section id="service-authorizations">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3 border-b border-[var(--color-rule)] pb-4">
         <div>
-          <h2 className="text-base font-semibold text-[var(--color-ink)]">Service authorizations</h2>
-          <p className="mt-1 text-sm text-[var(--color-ink-soft)]">Current and prior program periods, utilization, and renewal timing.</p>
+          <h2 className="text-base font-semibold text-[var(--color-ink)]">Programs & Monthly Plan</h2>
+          <p className="mt-1 text-sm text-[var(--color-ink-soft)]">Authorization, actual recorded use, future scheduled coverage, and hours still to plan. Each program and period stays separate.</p>
         </div>
         {canManage ? (
           programs.length > 0 ? (
@@ -515,6 +526,7 @@ export default function ProgramBudgetWorkspace({
                         <code className="rounded bg-[var(--color-surface-muted)] px-1.5 py-0.5 text-[11px] text-[var(--color-ink-soft)]">{budget.programCode}</code>
                       </div>
                       <p className="mt-1 text-sm text-[var(--color-ink-soft)]">{budget.periodLabel}, revision {budget.revision}</p>
+                      {budget.responsibility ? <p className="mt-1 text-sm text-[var(--color-ink-soft)]">Budget: {RESPONSIBILITY_LABELS[budget.responsibility]}{budget.responsibleAgencyNames?.length ? ` · Agency: ${budget.responsibleAgencyNames.join(", ")}` : ""}</p> : null}
                     </div>
                     <StatusBadge tone={budget.periodStatus === "active" ? "good" : "muted"} label={titleCase(budget.periodStatus)} />
                   </div>
@@ -687,6 +699,8 @@ export default function ProgramBudgetWorkspace({
                     </div>
                   ) : null}
                 </div>
+                {!isSelfHireProgram(budget.programCode) && (showInternalRate || showAgencyRate) ? <div className="border-t border-[var(--color-rule)] p-4 text-sm"><p className="font-semibold">Shared program service rate</p>{budget.centralProgramRate ? <p className="mt-1">{showInternalRate && budget.centralProgramRate.internalRate !== null ? `Employee-base rate ${formatMoney(budget.centralProgramRate.internalRate)}/hour. ` : ""}{showAgencyRate && budget.centralProgramRate.agencyRate !== null ? `Funder rate ${formatMoney(budget.centralProgramRate.agencyRate)}/hour. ` : ""}Source: central program configuration, effective {budget.centralProgramRate.effectiveFrom}{budget.centralProgramRate.effectiveTo ? ` through ${budget.centralProgramRate.effectiveTo}` : " onward"}.</p> : <p className="mt-1">No current shared rate is configured.</p>}<p className="mt-1 text-xs text-[var(--color-ink-soft)]">The authorization’s saved rates remain historical snapshots. Existing individual values are preserved for review.</p>{canManage && !hoursOnlyManagement ? <ButtonLink href="/settings?view=programs">Review shared program rates</ButtonLink> : null}</div> : null}
+                {budget.authorizedHours !== null ? <MonthlyProgramPlan individualId={individualId} programId={budget.programId} canOpenTransactions={canOpenTransactions} input={{ startDate: budget.startDate, endDate: budget.endDate, renewalDate: budget.renewalDate, asOf: agencyDate(), authorizedHours: budget.authorizedHours, actualHours: budget.consumedHours, history: budget.monthlyHistory, unavailableUsage: budget.hasUndatedUsage, periodStatus: budget.periodStatus }} /> : null}
                 <MonthlyHistory months={budget.monthlyHistory} isGroupService={budget.isGroupService} />
                 <AuthorizationHistory budget={budget} />
                 {budget.showEventHistory ? <EventHistory budget={budget} canManage={!hoursOnlyManagement && canManageAuthorization && budget.programCode !== "CLASSES"} /> : null}

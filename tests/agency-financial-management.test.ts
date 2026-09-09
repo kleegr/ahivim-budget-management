@@ -9,9 +9,22 @@ import {
 describe("agency financial management math", () => {
   it("stores percentage-form inputs as fractions", () => {
     expect(percentInputToFraction("75")).toBe("0.750000");
-    expect(percentInputToFraction("0.25")).toBe("0.250000");
+    expect(percentInputToFraction("0.25")).toBe("0.002500");
     expect(percentInputToFraction("100%")).toBe("1.000000");
   });
+
+  it.each([
+    ["0", "0.0000"], ["0.5", "5.0000"], ["1", "10.0000"],
+    ["1%", "10.0000"], ["1.01", "10.1000"], ["100", "1000.0000"],
+  ])("converts percentage input %s exactly once into actual money", (input, expected) => {
+    expect(calculateRevenueSplit("1000", percentInputToFraction(input)).agencyAmount).toBe(expected);
+  });
+
+  it.each(["", " ", null, undefined, "no", "NaN", "Infinity", "-1", "100.01", "1%%"])(
+    "rejects missing or invalid approval %s", input => {
+      expect(() => percentInputToFraction(input)).toThrow(/percentage/i);
+    },
+  );
 
   it("keeps the rounded agency share and individual residual equal to gross", () => {
     const split = calculateRevenueSplit("100.01", "0.333333");

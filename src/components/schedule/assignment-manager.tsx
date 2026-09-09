@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import SearchableSelect from "@/components/manage/searchable-select";
 import { CalendarX2, Pencil, Plus, Save, Search } from "lucide-react";
 
 import { EmptyState, Hours, StatusBadge, Table, Td, Th, Tr } from "@/components/ui";
@@ -59,9 +61,14 @@ export default function AssignmentManager({
   canManage?: boolean;
   showAllowedHours?: boolean;
 }) {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const initialAssignment = rows.find((row) => row.id === searchParams.get("assignmentId"));
+  const initialDraft: AssignmentDraft = initialAssignment ? { employeeId: initialAssignment.employeeId, individualId: initialAssignment.individualId, programId: initialAssignment.programId ?? "", startDate: initialAssignment.startDate ?? "", endDate: initialAssignment.endDate ?? "", allowedHours: initialAssignment.allowedHours ?? "", notes: initialAssignment.notes ?? "", reason: "" }
+    : { ...EMPTY, individualId: individuals.some((row) => row.id === searchParams.get("individualId")) ? searchParams.get("individualId")! : "", employeeId: employees.some((row) => row.id === searchParams.get("employeeId")) ? searchParams.get("employeeId")! : "", programId: programs.some((row) => row.id === searchParams.get("programId")) ? searchParams.get("programId")! : "" };
   const [query, setQuery] = useState("");
-  const [editing, setEditing] = useState<PlanningAssignmentRow | "new" | null>(null);
-  const [draft, setDraft] = useState<AssignmentDraft>(EMPTY);
+  const [editing, setEditing] = useState<PlanningAssignmentRow | "new" | null>(() => canManage ? initialAssignment ?? (searchParams.get("newAssignment") === "1" ? "new" : null) : null);
+  const [draft, setDraft] = useState<AssignmentDraft>(initialDraft);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmEnd, setConfirmEnd] = useState(false);
@@ -76,7 +83,7 @@ export default function AssignmentManager({
   }, [query, rows]);
 
   const openNew = () => {
-    setDraft(EMPTY);
+    setDraft({ ...EMPTY, individualId: individuals.some((row) => row.id === searchParams.get("individualId")) ? searchParams.get("individualId")! : "", employeeId: employees.some((row) => row.id === searchParams.get("employeeId")) ? searchParams.get("employeeId")! : "", programId: programs.some((row) => row.id === searchParams.get("programId")) ? searchParams.get("programId")! : "" });
     setError(null);
     setConfirmEnd(false);
     setEditing("new");
@@ -102,6 +109,15 @@ export default function AssignmentManager({
     if (busy) return;
     setEditing(null);
     setConfirmEnd(false);
+  };
+
+  const finishSave = () => {
+    setEditing(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("newAssignment");
+    url.searchParams.delete("assignmentId");
+    router.replace(`${url.pathname}${url.search}`, { scroll: false });
+    router.refresh();
   };
 
   const save = async () => {
@@ -133,8 +149,7 @@ export default function AssignmentManager({
       setError(result.error ?? "Could not save the assignment.");
       return;
     }
-    setEditing(null);
-    window.location.reload();
+    finishSave();
   };
 
   const endAssignment = async () => {
@@ -154,8 +169,7 @@ export default function AssignmentManager({
       setError(result.error ?? "Could not end the assignment.");
       return;
     }
-    setEditing(null);
-    window.location.reload();
+    finishSave();
   };
 
   return (
@@ -221,27 +235,11 @@ export default function AssignmentManager({
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="text-sm font-medium">
               Employee
-              <select
-                value={draft.employeeId}
-                disabled={editing !== "new"}
-                onChange={(event) => setDraft((current) => ({ ...current, employeeId: event.target.value }))}
-                className={inputClass()}
-              >
-                <option value="">Choose employee...</option>
-                {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.label}</option>)}
-              </select>
+              <SearchableSelect value={draft.employeeId} disabled={editing !== "new"} onChange={(value) => setDraft((current) => ({ ...current, employeeId: value }))} label="employees" selectLabel="Employee" options={employees.map((employee) => ({ value: employee.id, label: employee.label }))} />
             </label>
             <label className="text-sm font-medium">
               Individual
-              <select
-                value={draft.individualId}
-                disabled={editing !== "new"}
-                onChange={(event) => setDraft((current) => ({ ...current, individualId: event.target.value }))}
-                className={inputClass()}
-              >
-                <option value="">Choose individual...</option>
-                {individuals.map((individual) => <option key={individual.id} value={individual.id}>{individual.label}</option>)}
-              </select>
+              <SearchableSelect value={draft.individualId} disabled={editing !== "new"} onChange={(value) => setDraft((current) => ({ ...current, individualId: value }))} label="individuals" selectLabel="Individual" options={individuals.map((individual) => ({ value: individual.id, label: individual.label }))} />
             </label>
             <label className="text-sm font-medium sm:col-span-2">
               Program

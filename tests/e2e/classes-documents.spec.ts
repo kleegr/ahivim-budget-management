@@ -1,5 +1,6 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { PDFDocument } from "pdf-lib";
+import { pdfText } from "../support/pdf-text";
 import {
   BASE_URL,
   E2E_CLASS_BUDGET_LABEL,
@@ -119,7 +120,7 @@ for (const viewport of [
   { name: "desktop", width: 1365, height: 900, month: "2027-05" },
   { name: "phone", width: 390, height: 844, month: "2028-01" },
 ]) {
-  test(`class allowance, draft previews, issue, separate receipt and void at ${viewport.name} size`, async ({ browser }) => {
+  test(`class allowance, draft previews, issue, separate receipt and void at ${viewport.name} size`, async ({ browser }, testInfo) => {
     test.setTimeout(120_000);
     const context = await browser.newContext({ baseURL: BASE_URL, viewport });
     const ownerContext = await browser.newContext({ baseURL: BASE_URL });
@@ -208,6 +209,24 @@ for (const viewport of [
       expect(await readBudget()).toMatchObject({ consumedAmount: "0.0000", remainingAmount: "20000.0000" });
       expect((await page.request.post(`/api/classes/invoices/${draft.id}/void`, { data: { reason: "Repeated void acceptance" } })).status()).toBe(409);
       expect((await ownerPage.request.post(`/api/agency-financials/income/${receipt.id}/void`, { data: { reason: "Synthetic payment returned" } })).status()).toBe(200);
+      const history = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Invoice history', exact: true }) });
+      const voidRecord = (viewport.width < 1024 ? history.locator('article') : history.getByRole('row')).filter({ hasText: invoiceNumber });
+      const downloadPromise = page.waitForEvent('download');
+      await voidRecord.getByRole('link', { name: 'Download VOID invoice PDF', exact: true }).click();
+      const download = await downloadPromise;
+      const stream = await download.createReadStream(); const chunks: Buffer[] = [];
+      for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
+      const voidBytes = Buffer.concat(chunks);
+      expect(await pdfText(voidBytes)).toContain('VOID');
+      expect(await pdfText(voidBytes)).toContain('Synthetic invoice void acceptance');
+      expect((await PDFDocument.load(voidBytes)).getTitle()).toBe(`VOID - Invoice ${invoiceNumber}`);
+      await testInfo.attach(`void-invoice-${viewport.name}`, { body: voidBytes, contentType: 'application/pdf' });
+      await voidRecord.getByRole('button', { name: 'Open VOID cover history', exact: true }).click();
+      await expect(page.getByRole('dialog')).toContainText('Finalized cover');
+      await expect(page.getByRole('dialog').getByLabel('Form completed by')).toHaveValue('Synthetic authorized representative');
+      await expect(page.getByRole('dialog').getByLabel('Form completed by')).toBeDisabled();
+      await testInfo.attach(`void-history-${viewport.name}`, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+      await page.keyboard.press('Escape');
       await expectNoHorizontalOverflow(page);
       await expect(page.locator("#main").getByRole("alert")).toHaveCount(0);
     } finally {

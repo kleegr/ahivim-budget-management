@@ -76,6 +76,7 @@ export default function AgencyFinancialWorkspace({
   const router = useRouter();
   const [view, setView] = useState<View>("summary");
   const [modal, setModal] = useState<Modal>(null);
+  const [replacement, setReplacement] = useState<ManualIncomeEntry | null>(null);
   const [voidEntry, setVoidEntry] = useState<ManualIncomeEntry | null>(null);
   const [countSeparatelyTarget, setCountSeparatelyTarget] = useState<CountSeparatelyTarget | null>(null);
   const [splitRepair, setSplitRepair] = useState<{ individualId: string; programId: string; effectiveFrom?: string } | null>(null);
@@ -112,6 +113,7 @@ export default function AgencyFinancialWorkspace({
   const saved = () => {
     setModal(null);
     setVoidEntry(null);
+    setReplacement(null);
     setCountSeparatelyTarget(null);
     router.refresh();
   };
@@ -184,6 +186,8 @@ export default function AgencyFinancialWorkspace({
       </div>
 
       {actionError ? <div className="mb-5"><Notice tone="error" title="The repair could not be completed" action={<Link className="btn btn-sm btn-secondary" href="/settings#programs">Open program setup</Link>}>{actionError} After correcting the setup, use Repair program link again.</Notice></div> : null}
+
+      {[...programTerms,...employeeTerms,...incomeHistory].some(row => row.needsPercentageReview) ? <p className="mb-4 text-sm text-amber-800">Earlier percentage inputs need review in Rules and Income history. Their audit history identifies the previous input contract; it does not establish what percentage was intended. Stored agreements and receipts remain unchanged.</p> : null}
 
       {view === "summary" ? (
         <div className="space-y-5">
@@ -323,7 +327,7 @@ export default function AgencyFinancialWorkspace({
                         ? <div className="min-w-52"><p className="font-semibold text-[var(--color-primary)]">Linked to Sheet payment</p><p className="mt-0.5 text-xs">Gross comes from <AutomaticSourceLink source={reportRow.matchedIncomeSource} month={report.month} /></p><p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">Individual split comes from this receipt</p><button type="button" className="touch-target mt-1 inline-flex items-center px-1 text-xs font-semibold text-[var(--color-primary)] underline" onClick={() => setCountSeparatelyTarget({ id: row.id, label: `${SOURCE_LABEL[row.sourceType]} on ${row.serviceDate}`, source: reportRow.matchedIncomeSource!, action: "count_separately", splitAlreadyCounted: reportRow.countedSplitExpense })}>Mark as separate payment</button></div>
                         : <div className="min-w-52"><p className="font-semibold text-[var(--color-danger)]">Income not counted</p><p className="mt-0.5 text-xs">Matches <AutomaticSourceLink source={reportRow.matchedIncomeSource} month={report.month} /></p>{reportRow.matchedSplitSource ? <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">Individual split not counted; <AutomaticSourceLink source={reportRow.matchedSplitSource} month={report.month} /> owns it</p> : <p className="mt-0.5 text-xs text-[var(--color-ink-soft)]">Individual split included</p>}<button type="button" className="touch-target mt-1 inline-flex items-center px-1 text-xs font-semibold text-[var(--color-primary)] underline" onClick={() => setCountSeparatelyTarget({ id: row.id, label: `${SOURCE_LABEL[row.sourceType]} on ${row.serviceDate}`, source: reportRow.matchedIncomeSource!, action: "count_separately", splitAlreadyCounted: reportRow.countedSplitExpense })}>Count separately</button></div>
                       : "Active";
-                return <Tr key={row.id}><Td>{row.serviceDate}</Td><Td>{SOURCE_LABEL[row.sourceType]}</Td><Td>{[row.individualName, row.programName].filter(Boolean).join(" / ") || "General"}</Td><Td>{row.sourceRef ?? "-"}</Td><Td numeric><Money value={row.grossAmount} /></Td><Td numeric><Money value={row.agencyAmount} /></Td><Td numeric><Money value={row.individualAmount} /></Td><Td>{status}</Td><Td>{row.status === "active" ? <button type="button" className="btn btn-icon btn-ghost text-[var(--color-danger)]" aria-label="Void income" title="Void income" onClick={() => setVoidEntry(row)}><Trash2 className="h-4 w-4" aria-hidden /></button> : null}</Td></Tr>;
+                return <Tr key={row.id}><Td>{row.serviceDate}</Td><Td>{SOURCE_LABEL[row.sourceType]}</Td><Td>{[row.individualName, row.programName].filter(Boolean).join(" / ") || "General"}</Td><Td>{row.sourceRef ?? "-"}{row.needsPercentageReview ? <span className="block text-xs text-amber-700">Review earlier percentage input; original values retained.</span> : null}{row.paymentReference ? <span className="block text-xs">Payment: {row.paymentReference}</span> : null}{row.replacesEntryId ? <span className="block text-xs">Linked replacement</span> : null}</Td><Td numeric><Money value={row.grossAmount} /></Td><Td numeric><Money value={row.agencyAmount} /></Td><Td numeric><Money value={row.individualAmount} /></Td><Td>{status}</Td><Td>{row.status === "active" ? <button type="button" className="btn btn-icon btn-ghost text-[var(--color-danger)]" aria-label="Void income" title="Void income" onClick={() => setVoidEntry(row)}><Trash2 className="h-4 w-4" aria-hidden /></button> : <button type="button" className="btn btn-sm btn-secondary" onClick={() => { setReplacement(row); setModal("income"); }}>Replace receipt</button>}</Td></Tr>;
               })}
             </SimpleTable> : <p className="px-5 py-10 text-center text-sm text-[var(--color-ink-faint)]">No receipts or other income recorded in this month.</p>}
           </section>
@@ -335,19 +339,19 @@ export default function AgencyFinancialWorkspace({
           <section className="card overflow-hidden">
             <header className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3.5"><div><h2 className="display text-base font-semibold">Individual program splits</h2><p className="mt-1 text-sm text-[var(--color-ink-soft)]">The agency percentage for non-payroll income assigned to one individual and program.</p></div><button type="button" className="btn btn-sm btn-secondary" onClick={() => openProgramSplit()}><Plus className="h-4 w-4" aria-hidden /> Add split</button></header>
             {programTerms.length ? <SimpleTable caption="Individual program splits" headers={[{ label: "Individual" }, { label: "Program" }, { label: "Agency share" }, { label: "Starts" }, { label: "Ends" }, { label: "Authorized", numeric: true }, { label: "Remaining", numeric: true }]}>
-              {programTerms.map((term) => <Tr key={term.id}><Td>{term.individualName}</Td><Td>{term.programName} ({term.programCode})</Td><Td>{percent(term.agencySharePercent)}</Td><Td>{term.effectiveFrom}</Td><Td>{term.effectiveTo ?? "Open"}</Td><Td numeric><Money value={term.authorizedDollars} /></Td><Td numeric><Money value={term.remainingDollars} /></Td></Tr>)}
+              {programTerms.map((term) => <Tr key={term.id}><Td>{term.individualName}</Td><Td>{term.programName} ({term.programCode})</Td><Td>{percent(term.agencySharePercent)}{term.needsPercentageReview ? <button className="block text-xs underline text-amber-700" onClick={() => openProgramSplit({individualId:term.individualId,programId:term.programId,effectiveFrom:term.effectiveFrom})}>Review earlier percentage input</button> : null}</Td><Td>{term.effectiveFrom}</Td><Td>{term.effectiveTo ?? "Open"}</Td><Td numeric><Money value={term.authorizedDollars} /></Td><Td numeric><Money value={term.remainingDollars} /></Td></Tr>)}
             </SimpleTable> : <p className="px-5 py-10 text-center text-sm text-[var(--color-ink-faint)]">No program splits have been saved.</p>}
           </section>
           <section className="card overflow-hidden">
             <header className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3.5"><div><h2 className="display text-base font-semibold">Employee and individual pay rules</h2><p className="mt-1 text-sm text-[var(--color-ink-soft)]">Specific rules take priority over the employee&apos;s general agency-routed deal.</p></div><button type="button" className="btn btn-sm btn-secondary" onClick={() => openPayRule()}><Plus className="h-4 w-4" aria-hidden /> Add pay rule</button></header>
             {employeeTerms.length ? <SimpleTable caption="Employee and individual pay rules" headers={[{ label: "Employee" }, { label: "Individual" }, { label: "Employee share of base" }, { label: "Starts" }, { label: "Ends" }, { label: "Notes" }]}>
-              {employeeTerms.map((term) => <Tr key={term.id}><Td>{term.employeeName}</Td><Td>{term.individualName}</Td><Td>{percent(term.employeeSharePercent)}</Td><Td>{term.effectiveFrom}</Td><Td>{term.effectiveTo ?? "Open"}</Td><Td>{term.notes ?? "-"}</Td></Tr>)}
+              {employeeTerms.map((term) => <Tr key={term.id}><Td>{term.employeeName}</Td><Td>{term.individualName}</Td><Td>{percent(term.employeeSharePercent)}{term.needsPercentageReview ? <button className="block text-xs underline text-amber-700" onClick={() => openPayRule({employeeId:term.employeeId,individualId:term.individualId,effectiveFrom:term.effectiveFrom})}>Review earlier percentage input</button> : null}</Td><Td>{term.effectiveFrom}</Td><Td>{term.effectiveTo ?? "Open"}</Td><Td>{term.notes ?? "-"}</Td></Tr>)}
             </SimpleTable> : <p className="px-5 py-10 text-center text-sm text-[var(--color-ink-faint)]">No employee-person pay rules have been saved.</p>}
           </section>
         </div>
       ) : null}
 
-      {modal === "income" ? <ModalShell title="Add actual income" onClose={() => setModal(null)}><IncomeForm month={report.month} options={options} onClose={() => setModal(null)} onSaved={saved} onOpenProgramSplit={(selection) => openProgramSplit(selection)} /></ModalShell> : null}
+      {modal === "income" ? <ModalShell title="Add actual income" onClose={() => { setModal(null); setReplacement(null); }}><IncomeForm replacement={replacement} month={report.month} options={options} onClose={() => { setModal(null); setReplacement(null); }} onSaved={saved} onOpenProgramSplit={(selection) => openProgramSplit(selection)} /></ModalShell> : null}
       {modal === "program-split" ? <ModalShell title="Set individual program split" onClose={() => setModal(null)}><ProgramSplitForm options={options} initial={splitRepair} onClose={() => setModal(null)} onSaved={saved} /></ModalShell> : null}
       {modal === "employee-term" ? <ModalShell title="Set employee pay rule" onClose={() => setModal(null)}><EmployeeTermForm options={options} initial={payRuleRepair} onClose={() => setModal(null)} onSaved={saved} /></ModalShell> : null}
       {voidEntry ? <ModalShell title="Void income entry" onClose={() => setVoidEntry(null)}><VoidIncomeForm entry={voidEntry} onClose={() => setVoidEntry(null)} onSaved={saved} /></ModalShell> : null}

@@ -21,7 +21,6 @@ import {
   recordSettlementRefreshFailure,
   settlementApplicationDate,
 } from "@/lib/manage/settlement-freshness";
-import { redactError } from "@/lib/http";
 import { dec, toMoney } from "@/lib/money";
 import { amountBasisReviewSourceKeys, legacyIndividualReviewSourceKeys, settlementReviewHolds } from "@/lib/manage/settlement-source-review";
 import { settlementSourceReviewSql } from "@/lib/data/settlement-eligibility";
@@ -62,7 +61,9 @@ function safeErrorProperty(error: unknown, key: "code" | "table" | "constraint")
 }
 
 function safeSettlementRefreshMessage(error: unknown): string {
-  const message = redactError(error, "Database operation failed.")
+  // This classifier produces allowlisted diagnostics for protected server logs.
+  // It never returns the raw database message through the HTTP error helper.
+  const message = (error instanceof Error ? error.message : "")
     .split(/\r?\n/, 1)[0]
     .trim();
   const groupBy = message.match(

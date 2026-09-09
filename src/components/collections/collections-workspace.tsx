@@ -1,5 +1,7 @@
 "use client";
 
+import SearchableSelect from "@/components/manage/searchable-select";
+
 import { reservePresentation } from "@/lib/business/reserve-presentation";
 import { verifiedBalancePresentation } from "@/lib/business/verified-balance-presentation";
 
@@ -49,12 +51,10 @@ export function payrollCheckRowsHref(check: Pick<PayrollCheckRow,
   const params = new URLSearchParams({ view: "rows" });
   params.set("employeeId", check.employeeId);
   if (check.checkNumber) params.set("checkNumber", check.checkNumber);
-  if (check.checkDate) {
-    params.set("checkDateFrom", check.checkDate);
-    params.set("checkDateTo", check.checkDate);
-  }
-  if (check.periodBegin) params.set("pbFrom", check.periodBegin);
-  if (check.periodEnd) params.set("pbTo", check.periodEnd);
+  else params.set("checkNumberExact", "");
+  params.set("checkDateExact", check.checkDate ?? "");
+  params.set("periodBeginExact", check.periodBegin ?? "");
+  params.set("periodEndExact", check.periodEnd ?? "");
   return `/transactions?${params.toString()}`;
 }
 
@@ -121,12 +121,9 @@ function TargetForm({
     <form onSubmit={submit} className="space-y-3 border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] p-4">
       {error ? <Notice tone="error">{error}</Notice> : null}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <label className={labelClass}>Employee
-          <select name="employeeId" required defaultValue={initial?.employeeId ?? ""} disabled={Boolean(initial)} className={inputClass}>
-            <option value="">Select employee</option>
-            {data.employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}
-          </select>
-        </label>
+        <div className={labelClass}><span>Employee</span>
+          <SearchableSelect name="employeeId" label="employees" selectLabel="Employee" required defaultValue={initial?.employeeId ?? ""} disabled={Boolean(initial)} className={inputClass} placeholder="Select employee" options={data.employees.map((employee) => ({ value: employee.id, label: employee.name }))} />
+        </div>
         <label className={labelClass}>Gross target
           <input name="grossTargetAmount" required inputMode="decimal" defaultValue={initial?.grossTargetAmount ?? ""} className={inputClass} />
         </label>
@@ -220,12 +217,9 @@ function PayrollCheckForm({
     <form onSubmit={submit} className="space-y-3 border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] p-4">
       {error ? <Notice tone="error">{error}</Notice> : null}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <label className={labelClass}>Employee
-          <select name="employeeId" required defaultValue={initial?.employeeId ?? draft?.employeeId ?? ""} disabled={Boolean(initial)} className={inputClass}>
-            <option value="">Select employee</option>
-            {data.employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}
-          </select>
-        </label>
+        <div className={labelClass}><span>Employee</span>
+          <SearchableSelect name="employeeId" label="employees" selectLabel="Employee" required defaultValue={initial?.employeeId ?? draft?.employeeId ?? ""} disabled={Boolean(initial)} className={inputClass} placeholder="Select employee" options={data.employees.map((employee) => ({ value: employee.id, label: employee.name }))} />
+        </div>
         <label className={labelClass}>Check number
           <input name="checkNumber" defaultValue={initial?.checkNumber ?? draft?.checkNumber ?? ""} className={inputClass} />
         </label>

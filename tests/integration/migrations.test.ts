@@ -42,7 +42,8 @@ suite("migration runner (real PostgreSQL)", () => {
       "settlement_batches", "settlement_events", "settlement_ledger_state",
       "class_activities", "class_budget_periods", "class_invoices",
       "class_invoice_lines", "class_budget_ledger", "class_reimbursement_profiles",
-      "class_cover_sheet_snapshots",
+      "class_cover_sheet_snapshots", "class_cover_sheet_versions",
+      "quantity_authorizations", "quantity_authorization_revisions", "quantity_usage_events",
       "program_budget_events",
       "individual_program_revenue_terms", "employee_individual_compensation_terms",
       "agency_manual_income_entries",
@@ -56,7 +57,7 @@ suite("migration runner (real PostgreSQL)", () => {
     ]) {
       expect(tables, `missing table ${table}`).toContain(table);
     }
-    expect(tables.length).toBe(75);
+    expect(tables.length).toBe(79);
   });
 
   it("is idempotent: a second run applies nothing and skips everything", async () => {

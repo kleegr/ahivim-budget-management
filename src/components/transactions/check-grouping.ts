@@ -1,9 +1,18 @@
 import type { GridTransaction } from "@/lib/data/transactions-grid";
-import { completeCheckIdentity } from "@/lib/business/transaction-totals";
+import { completeCheckIdentity, sumKnownAmounts } from "@/lib/business/transaction-totals";
+export { sumKnownAmounts } from "@/lib/business/transaction-totals";
 import { dec } from "@/lib/money";
 import { activityNextStep, activityNextStepLabel } from "@/lib/transactions/activity-state";
 
 export type CheckRouting = "direct" | "agency" | "review";
+
+export interface AmountCompleteness { known: number; missing: number }
+export type CheckMoneyField = "funderBilled" | "employeeBase" | "agencySpread";
+
+export function amountCompletenessLabel(counts: AmountCompleteness): string {
+  if (counts.known === 0) return "Unavailable";
+  return counts.missing > 0 ? `Incomplete subtotal (${counts.known} known, ${counts.missing} missing)` : "Complete";
+}
 
 export interface CheckSummary {
   key: string;
@@ -18,9 +27,10 @@ export interface CheckSummary {
   individuals: string[];
   programs: string[];
   hours: string;
-  funderBilled: string;
-  employeeBase: string;
-  agencySpread: string;
+  funderBilled: string | null;
+  employeeBase: string | null;
+  agencySpread: string | null;
+  completeness: Record<CheckMoneyField, AmountCompleteness>;
   netPay: string | null;
   verifiedCheckGross: string | null;
   verifiedCheckNet: string | null;
@@ -56,9 +66,9 @@ export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
   return [...groups.entries()].map(([key, group]) => {
     const first = group[0];
     let hours = dec(0);
-    let funderBilled = dec(0);
-    let employeeBase = dec(0);
-    let agencySpread = dec(0);
+    const funderBilled = sumKnownAmounts(group.map((row) => row.gross));
+    const employeeBase = sumKnownAmounts(group.map((row) => row.internalAmount));
+    const agencySpread = sumKnownAmounts(group.map((row) => row.agencyAdditional));
     const individuals = new Set<string>();
     const programs = new Set<string>();
     const recipients = new Set(group.map((row) => row.paymentRecipient).filter(Boolean));
@@ -74,9 +84,6 @@ export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
 
     for (const row of group) {
       if (hasAmount(row.hours)) hours = hours.plus(row.hours);
-      if (hasAmount(row.gross)) funderBilled = funderBilled.plus(row.gross);
-      if (hasAmount(row.internalAmount)) employeeBase = employeeBase.plus(row.internalAmount);
-      if (hasAmount(row.agencyAdditional)) agencySpread = agencySpread.plus(row.agencyAdditional);
       if (row.individual) individuals.add(row.individual);
       if (row.program) programs.add(row.program);
       if (row.employee) employees.set(row.employeeId ?? row.employee, { id: row.employeeId, name: row.employee });
@@ -118,9 +125,14 @@ export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
       individuals: [...individuals].sort(),
       programs: [...programs].sort(),
       hours: hours.toFixed(2),
-      funderBilled: funderBilled.toFixed(2),
-      employeeBase: employeeBase.toFixed(2),
-      agencySpread: agencySpread.toFixed(2),
+      funderBilled: funderBilled.amount,
+      employeeBase: employeeBase.amount,
+      agencySpread: agencySpread.amount,
+      completeness: {
+        funderBilled: { known: funderBilled.known, missing: funderBilled.missing },
+        employeeBase: { known: employeeBase.known, missing: employeeBase.missing },
+        agencySpread: { known: agencySpread.known, missing: agencySpread.missing },
+      },
       netPay: routing === "direct" ? ([...netValues.values()][0] ?? null) : null,
       verifiedCheckGross: [...verifiedGrossValues.values()][0] ?? null,
       verifiedCheckNet: [...verifiedNetValues.values()][0] ?? null,
@@ -131,7 +143,6 @@ export function groupChecks(rows: GridTransaction[]): CheckSummary[] {
       needsReview: reviewReasons.size > 0,
       reviewReasons: [...reviewReasons],
     };
-  }).sort((a, b) => Number(b.needsReview) - Number(a.needsReview)
-    || (b.checkDate ?? "").localeCompare(a.checkDate ?? "")
-    || (a.employee ?? "").localeCompare(b.employee ?? ""));
+  }).sort((a, b) => (b.checkDate ?? "").localeCompare(a.checkDate ?? "")
+    || a.key.localeCompare(b.key));
 }

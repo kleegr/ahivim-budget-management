@@ -150,7 +150,7 @@ async function verifyIncompleteReport(page: Page, pool: Pool): Promise<void> {
   await reviewLink.click();
   await page.waitForURL((url) => url.pathname === "/transactions"
     && url.searchParams.get("transactionId") === DIRECT_TRANSACTION_ONE_ID);
-  await expect(main.getByRole("heading", { level: 1, name: "Activity", exact: true })).toBeVisible();
+  await expect(main.getByRole("heading", { level: 1, name: "Transactions", exact: true })).toBeVisible();
   await expect(main.getByText(`Selected transaction · check ${DIRECT_CHECK_NUMBER}`, { exact: true })).toBeVisible();
   const transactionRows = main.getByRole("tabpanel").locator("tbody > tr");
   await expect(transactionRows).toHaveCount(1);

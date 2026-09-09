@@ -27,6 +27,9 @@ export async function POST(request: NextRequest) {
         grossAmount: body.grossAmount,
         agencySharePercent: body.agencySharePercent,
         sourceRef: body.sourceRef ? String(body.sourceRef) : null,
+        paymentReference: body.paymentReference ? String(body.paymentReference) : null,
+        replacesEntryId: body.replacesEntryId ? String(body.replacesEntryId) : null,
+        requestId: body.requestId ? String(body.requestId) : undefined,
         notes: body.notes ? String(body.notes) : null,
         overBudgetOverrideReason: body.overBudgetOverrideReason
           ? String(body.overBudgetOverrideReason)
@@ -35,7 +38,7 @@ export async function POST(request: NextRequest) {
           ? String(body.automaticSourceOverrideReason)
           : null,
       },
-      user.id,
+      user.actorId,
     );
     if (!result.ok) return resultResponse(result);
     return NextResponse.json({ ok: true, data: result.data }, { status: 201 });

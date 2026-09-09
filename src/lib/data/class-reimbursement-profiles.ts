@@ -104,3 +104,18 @@ export async function getClassCoverSheetSnapshot(
   );
   return rows[0]?.profile_snapshot ?? null;
 }
+
+export async function listClassCoverVersions(pool: Queryable, invoiceId: string): Promise<{ version: number; reason: string | null; createdAt: string }[]> {
+  const { rows } = await pool.query<{ version: number; reason: string | null; created_at: string }>(`
+    SELECT 1 AS version, NULL::text AS reason, created_at::text FROM class_cover_sheet_snapshots WHERE class_invoice_id = $1
+    UNION ALL SELECT version, reason, created_at::text FROM class_cover_sheet_versions WHERE class_invoice_id = $1
+    ORDER BY version DESC`, [invoiceId]);
+  return rows.map(row => ({ version: row.version, reason: row.reason, createdAt: row.created_at }));
+}
+
+export async function getClassCoverVersion(pool: Queryable, invoiceId: string, version: number): Promise<ClassReimbursementProfile | null> {
+  if (version === 1) return getClassCoverSheetSnapshot(pool, invoiceId);
+  const { rows } = await pool.query<{ profile_snapshot: ClassReimbursementProfile }>(
+    "SELECT profile_snapshot FROM class_cover_sheet_versions WHERE class_invoice_id = $1 AND version = $2", [invoiceId, version]);
+  return rows[0]?.profile_snapshot ?? null;
+}

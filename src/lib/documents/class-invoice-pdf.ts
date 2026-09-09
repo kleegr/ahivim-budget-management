@@ -224,7 +224,7 @@ export async function buildClassInvoicePdf(
   options: { draft?: boolean } = {},
 ): Promise<Uint8Array> {
   const document = await PDFDocument.create();
-  document.setTitle(`${options.draft ? "DRAFT - " : ""}Invoice ${invoice.invoiceNumber}`);
+  document.setTitle(`${invoice.status === "void" ? "VOID - " : options.draft ? "DRAFT - " : ""}Invoice ${invoice.invoiceNumber}`);
   document.setAuthor(BRAND.name);
   document.setSubject(`${invoice.purpose} - ${invoice.billToName}`);
   document.setCreator("Ahivim Budget Management");
@@ -238,6 +238,7 @@ export async function buildClassInvoicePdf(
       invoice.billToCityStateZip,
       invoice.purpose,
       invoice.notes,
+      invoice.voidReason,
       ...invoice.lines.flatMap((line) => [line.description, line.notes]),
     ]),
     loadPdfBrandAsset("xcellent-staffing.png").then((bytes) => document.embedPng(bytes)),
@@ -257,6 +258,11 @@ export async function buildClassInvoicePdf(
     const bottom = drawTableRows(page, rows, 511, regular);
     if (pageIndex === chunks.length - 1) drawTotal(page, invoice, Math.max(92, bottom - 8), regular, bold);
     drawFooter(page, pageIndex + 1, chunks.length, regular, bold);
+    if (invoice.status === "void") {
+      page.drawText("VOID", { x: 190, y: 330, size: 90, font: bold, color: rgb(0.75, 0.1, 0.1), opacity: 0.3, rotate: degrees(30) });
+      const reason = fitPdfText(`VOID: ${cleanPdfText(invoice.voidReason)} | ${invoice.voidedAt?.slice(0, 10) ?? ""}`, regular, 8, TABLE_WIDTH);
+      page.drawText(reason.text, { x: MARGIN, y: 66, size: reason.size, font: regular, color: rgb(0.75, 0.1, 0.1) });
+    }
     if (options.draft) {
       const label = "DRAFT - NOT ISSUED";
       page.drawText(label, {

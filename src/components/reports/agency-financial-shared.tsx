@@ -25,18 +25,18 @@ export const SOURCE_LABEL: Record<ManualIncomeSource, string> = {
 export async function request(
   url: string,
   body: Record<string, unknown>,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; settlementWarning?: string }> {
   try {
     const response = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    const result = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    const result = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; settlementWarning?: string };
     if (!response.ok || result.ok === false) {
       return { ok: false, error: result.error ?? `Request failed (${response.status}).` };
     }
-    return { ok: true };
+    return { ok: true, ...(result.settlementWarning ? { settlementWarning: result.settlementWarning } : {}) };
   } catch {
     return { ok: false, error: "Could not reach the server." };
   }

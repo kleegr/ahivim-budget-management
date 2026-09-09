@@ -1,5 +1,7 @@
 "use client";
 
+import SearchableSelect from "@/components/manage/searchable-select";
+
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CalendarOff, Check, CircleHelp, Clock3, UserMinus } from "lucide-react";
@@ -56,7 +58,6 @@ export default function CreateSessionModal({
   const [picked, setPicked] = useState<Set<string>>(
     new Set(initialIndividualId ? [initialIndividualId] : []),
   );
-  const [indSearch, setIndSearch] = useState("");
   const [date, setDate] = useState(defaultDate);
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
@@ -135,11 +136,6 @@ export default function CreateSessionModal({
     recurring, frequency, recurrenceInterval, weekdays, endDate,
   ]);
 
-  const filteredIndividuals = useMemo(() => {
-    const q = indSearch.trim().toLowerCase();
-    return q ? individuals.filter((i) => i.label.toLowerCase().includes(q)) : individuals;
-  }, [individuals, indSearch]);
-
   const availability = preview?.employeeAvailability ?? null;
   const rankedEmployees = useMemo(() => {
     const pickerById = new Map(employees.map((employee) => [employee.id, employee]));
@@ -169,13 +165,6 @@ export default function CreateSessionModal({
   const hasWarnings = serverRequiresOverride || Boolean(preview
     && schedulePreviewRequiresOverride(preview, { recurring, selectedEmployeeId: employeeId }));
 
-  function toggleInd(id: string) {
-    setPicked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
   function toggleWeekday(n: number) {
     setWeekdays((prev) => {
       const next = new Set(prev);
@@ -268,16 +257,7 @@ export default function CreateSessionModal({
             {isGroup && selectedProgram && !selectedProgram.isGroupCapable ? (
               <span className="ml-2 text-xs text-[var(--color-pace-near)]">group of {individualIds.length} — program not marked group-capable</span>
             ) : isGroup ? <span className="ml-2 text-xs text-[var(--color-ink-faint)]">group of {individualIds.length}</span> : null}
-            <input value={indSearch} onChange={(e) => setIndSearch(e.target.value)} placeholder="Search…" className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1 text-sm" />
-            <div className="mt-1 max-h-40 overflow-y-auto rounded border border-[var(--color-rule)] p-1">
-              {filteredIndividuals.length === 0 ? <p className="px-1 py-2 text-xs text-[var(--color-ink-faint)]">No matches.</p> : null}
-              {filteredIndividuals.map((i) => (
-                <label key={i.id} className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-sm hover:bg-[var(--color-paper)]">
-                  <input type="checkbox" checked={picked.has(i.id)} onChange={() => toggleInd(i.id)} />
-                  {i.label}
-                </label>
-              ))}
-            </div>
+            <SearchableSelect multiple label="individuals" selectLabel="Individuals" values={individualIds} onValuesChange={(values) => setPicked(new Set(values))} options={individuals.map((individual) => ({ value: individual.id, label: individual.label }))} />
           </div>
 
           {!recurring ? (
@@ -329,14 +309,7 @@ export default function CreateSessionModal({
 
           <label className="block text-sm">
             <span className="font-medium">Employee <span className="text-[var(--color-ink-faint)]">(optional — leave blank to leave unassigned)</span></span>
-            <select value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} className="mt-1 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 py-1.5 text-sm">
-              <option value="">Unassigned</option>
-              {rankedEmployees.map(({ employee, availability: signal }) => (
-                <option key={employee.id} value={employee.id}>
-                  {employee.label}{signal ? ` — ${employeeAvailabilityLabel(signal, availability!.timeRangeKnown, availability!.occurrenceCount)}` : ""}
-                </option>
-              ))}
-            </select>
+            <SearchableSelect label="employees" selectLabel="Employee" value={employeeId} onChange={setEmployeeId} placeholder="Unassigned" options={rankedEmployees.map(({ employee, availability: signal }) => ({ value: employee.id, label: `${employee.label}${signal ? ` — ${employeeAvailabilityLabel(signal, availability!.timeRangeKnown, availability!.occurrenceCount)}` : ""}` }))} />
           </label>
 
           {availability ? (

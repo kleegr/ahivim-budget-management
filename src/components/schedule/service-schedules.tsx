@@ -1,5 +1,7 @@
 "use client";
 
+import SearchableSelect from "@/components/manage/searchable-select";
+
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { CalendarDays, Pencil, Plus, Search, X } from "lucide-react";
@@ -169,14 +171,8 @@ export default function ServiceSchedules({
             className="h-9 w-full rounded border border-[var(--color-rule-strong)] bg-white pl-9 pr-3 text-sm"
           />
         </label>
-        <select aria-label="Employee" value={employeeId} onChange={(event) => setEmployeeId(event.target.value)} className="select">
-          <option value="">All employees</option>
-          {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.label}</option>)}
-        </select>
-        <select aria-label="Individual" value={individualId} onChange={(event) => setIndividualId(event.target.value)} className="select">
-          <option value="">All individuals</option>
-          {individuals.map((individual) => <option key={individual.id} value={individual.id}>{individual.label}</option>)}
-        </select>
+        <SearchableSelect label="employees" selectLabel="Employee" value={employeeId} onChange={setEmployeeId} options={employees.map((record) => ({ value: record.id, label: record.label }))} placeholder="All employees" />
+        <SearchableSelect label="individuals" selectLabel="Individual" value={individualId} onChange={setIndividualId} options={individuals.map((record) => ({ value: record.id, label: record.label }))} placeholder="All individuals" />
         <select aria-label="Program" value={programId} onChange={(event) => setProgramId(event.target.value)} className="select">
           <option value="">All programs</option>
           {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}

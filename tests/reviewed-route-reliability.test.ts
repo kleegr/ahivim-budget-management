@@ -1,0 +1,22 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
+const mocks=vi.hoisted(()=>({apiUser:vi.fn(),apiPlanningUser:vi.fn(),getPool:vi.fn(),save:vi.fn(),refresh:vi.fn(),createSession:vi.fn(),listSessions:vi.fn(),listFlags:vi.fn()}));
+vi.mock("@/lib/auth/session",()=>({apiUser:mocks.apiUser}));
+vi.mock("@/lib/db",()=>({getPool:mocks.getPool}));
+vi.mock("@/lib/manage/agency-financials",()=>({saveEmployeeIndividualCompensationTerm:mocks.save}));
+vi.mock("@/lib/manage/settlements",()=>({refreshSettlementObligations:mocks.refresh}));
+vi.mock("@/lib/auth/planning-access",()=>({apiPlanningUser:mocks.apiPlanningUser,canViewPlannerDirectPayTargets:vi.fn(),isBudgetPlanningWarningCode:vi.fn(),planningProgramAllowed:vi.fn(),planningSubjectsAllowed:vi.fn()}));
+vi.mock("@/lib/manage/schedule",()=>({createSession:mocks.createSession}));
+vi.mock("@/lib/data/schedule-queries",()=>({listSessions:mocks.listSessions,listSessionWarningFlags:mocks.listFlags}));
+import { POST as saveTerm } from "@/app/api/agency-financials/employee-terms/route";
+import { GET as listSchedule,POST as createSchedule } from "@/app/api/schedule/sessions/route";
+import { request as formRequest } from "@/components/reports/agency-financial-shared";
+const EMPLOYEE="00000000-0000-4000-8000-000000000001";
+const post=(path:string,body:object)=>new NextRequest(`http://localhost${path}`,{method:"POST",headers:{"content-type":"application/json",origin:"http://localhost"},body:JSON.stringify(body)});
+describe("reviewed route reliability",()=>{
+ beforeEach(()=>{vi.resetAllMocks();mocks.apiUser.mockResolvedValue({id:"target",actorId:"actual-owner"});mocks.apiPlanningUser.mockResolvedValue({user:{actorId:"planner"},canManageSchedules:true,access:{}});mocks.save.mockResolvedValue({ok:true,data:{id:"saved-rule",employeeId:EMPLOYEE}});});
+ it.each(["domain","unexpected"])("keeps the committed rule successful when %s refresh fails",async kind=>{const log=vi.spyOn(console,"error").mockImplementation(()=>{});if(kind==="domain")mocks.refresh.mockResolvedValue({ok:false,message:"Recalculation unavailable; retry refresh."});else mocks.refresh.mockRejectedValue(new Error("postgres://secret@private SQL details"));const response=await saveTerm(post("/api/agency-financials/employee-terms",{employeeId:EMPLOYEE,employeeSharePercent:"1"}));expect(response.status).toBe(201);const body=await response.json();expect(body).toMatchObject({ok:true,data:{id:"saved-rule"}});expect(body.settlementWarning).toMatch(/refresh|Recalculation/);expect(JSON.stringify(body)).not.toMatch(/postgres|secret|private SQL/);expect(mocks.save).toHaveBeenCalledTimes(1);expect(mocks.save.mock.calls[0]![2]).toBe("actual-owner");log.mockRestore();});
+ it("preserves the saved warning through the shared form transport",async()=>{const fetchMock=vi.spyOn(globalThis,"fetch").mockResolvedValue(Response.json({ok:true,data:{id:"saved-rule"},settlementWarning:"Retry balance refresh"},{status:201}));expect(await formRequest("/api/example",{})).toMatchObject({ok:true,settlementWarning:"Retry balance refresh"});fetchMock.mockRestore();});
+ it.each(["2026-02-31","2026-02-29","2026-04-31",""])("rejects actual invalid calendar date %s before querying",async date=>{const response=await listSchedule(new NextRequest(`http://localhost/api/schedule/sessions?from=${date}&to=2026-12-31`));expect(response.status).toBe(400);expect((await response.json()).error).toContain("valid calendar dates");expect(mocks.getPool).not.toHaveBeenCalled();const create=await createSchedule(post("/api/schedule/sessions",{sessionDate:date}));expect(create.status).toBe(400);expect(mocks.createSession).not.toHaveBeenCalled();});
+ it("rejects a reversed range without a database call",async()=>{expect((await listSchedule(new NextRequest("http://localhost/api/schedule/sessions?from=2026-03-01&to=2026-02-28"))).status).toBe(400);expect(mocks.getPool).not.toHaveBeenCalled();});
+});

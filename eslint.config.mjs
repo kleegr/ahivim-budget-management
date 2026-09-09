@@ -12,6 +12,8 @@ const config = [
     ignores: [
       ".next/**",
       "node_modules/**",
+      "playwright-report/**",
+      "test-results/**",
       "public/tesseract/**",
       "drizzle/**",
       "next-env.d.ts",

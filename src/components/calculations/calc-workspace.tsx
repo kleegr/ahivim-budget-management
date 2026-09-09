@@ -1,5 +1,7 @@
 "use client";
 
+import SearchableSelect from "@/components/manage/searchable-select";
+
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { dec, formatMoney } from "@/lib/money";
@@ -168,9 +170,11 @@ interface LabeledSelectProps {
   value: string;
   onChange: (v: string) => void;
   options: { value: string; label: string }[];
+  searchable?: boolean;
 }
 
-function LabeledSelect({ label, value, onChange, options }: LabeledSelectProps) {
+function LabeledSelect({ label, value, onChange, options, searchable = false }: LabeledSelectProps) {
+  if (searchable) return <div><span className="eyebrow">{label}</span><SearchableSelect label={label.toLocaleLowerCase()} selectLabel={label} value={value} onChange={onChange} placeholder={options.find((option) => option.value === "")?.label} options={options.filter((option) => option.value !== "")} className={inputCls} /></div>;
   return (
     <label className="block">
       <span className="eyebrow">{label}</span>
@@ -274,6 +278,7 @@ export default function CalcWorkspace({
             <div className="sm:col-span-2">
               <LabeledSelect
                 label="Program"
+                searchable
                 value={form.programId}
                 onChange={onProgram}
                 options={[

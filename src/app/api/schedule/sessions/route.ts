@@ -10,6 +10,7 @@ import {
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { createSession, type CreateSessionInput } from "@/lib/manage/schedule";
 import { listSessions, listSessionWarningFlags, type CalendarFilter } from "@/lib/data/schedule-queries";
+import { isScheduleDate } from "@/lib/business/scheduling";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,9 +36,10 @@ export async function GET(request: NextRequest) {
 
   const sp = request.nextUrl.searchParams;
   const range = defaultRange();
-  const isDate = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
-  const from = isDate(sp.get("from")) ? sp.get("from")! : range.from;
-  const to = isDate(sp.get("to")) ? sp.get("to")! : range.to;
+  const from = sp.get("from") ?? range.from;
+  const to = sp.get("to") ?? range.to;
+  if (!isScheduleDate(from) || !isScheduleDate(to)) return jsonError("Enter valid calendar dates for From and To.", 400);
+  if (to < from) return jsonError("To must be on or after From.", 400);
 
   const filter: CalendarFilter = {
     from,
@@ -78,6 +80,7 @@ export async function POST(request: NextRequest) {
 
   const planning = await apiPlanningUser();
   if (!planning) return jsonError("Planning access required", 403);
+  if (!planning.canManageSchedules) return jsonError("Schedule management access required", 403);
   const { user } = planning;
 
   const body = await readJson(request);
@@ -94,7 +97,7 @@ export async function POST(request: NextRequest) {
     overrideReason: asString(body.overrideReason) ?? null,
   };
   const reason = asString(body.reason) ?? null;
-  if (!planning.canManageSchedules) return jsonError("Schedule management access required", 403);
+  if (!isScheduleDate(input.sessionDate)) return jsonError("Enter a valid session date.", 400);
   const canSeeDirectPayTargets = canViewPlannerDirectPayTargets(planning);
   if (!planningSubjectsAllowed(planning, {
     individualIds: input.individualIds,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { dec, formatMoney, formatHours } from "@/lib/money";
 import { computeGridTotals } from "@/lib/business/transaction-totals";
@@ -10,6 +10,7 @@ import { formatCell } from "@/components/data-grid/engine";
 import { useGrid } from "@/components/data-grid/use-grid";
 import { Toolbar } from "@/components/data-grid/toolbar";
 import { FilterBar, HeaderFilter } from "@/components/data-grid/filter-bar";
+import { REPORT_PAGE_SIZE, reportPage } from "./report-pagination";
 
 /**
  * A report table on top of the shared data-grid engine. The adapter turns the
@@ -137,14 +138,7 @@ export default function ReportGrid({
     [table.columns],
   );
 
-  const grid = useGrid<ReportCellRow, ReportTotals>({
-    rows: table.rows,
-    columns,
-    gridKey: `report:${reportKey}`,
-    canManage,
-    initialSort: [],
-    initialHidden: [],
-    computeTotals: (filtered) => {
+  const computeTotals = useCallback((filtered: ReportCellRow[]): ReportTotals => {
       if (reportKey === "payroll-checks" || reportKey === "transactions") {
         const text = (value: ReportCell) => typeof value === "string" ? value : null;
         const transactionsReport = reportKey === "transactions";
@@ -221,9 +215,28 @@ export default function ReportGrid({
           return [{ key: c.key, header: c.header, label }];
         });
       return { tiles, rowCount: filtered.length, source: totalsSource(filtered, reportKey, table.source) };
-    },
+    }, [reportKey, table.columns, table.source]);
+
+  const grid = useGrid<ReportCellRow, ReportTotals>({
+    rows: table.rows,
+    columns,
+    gridKey: `report:${reportKey}`,
+    canManage,
+    initialSort: [],
+    initialHidden: [],
+    computeTotals,
     serializeHidden: true,
   });
+
+  // Only the rendered page is bounded. Grid filters, totals and export keep the
+  // complete result set; changing its order or filters starts at the first page.
+  const [page, setPage] = useState<{ rows: ReportCellRow[] | null; number: number }>({ rows: null, number: 1 });
+  const tableScroll = useRef<HTMLDivElement>(null);
+  const { pageCount, currentPage, pageStart, visibleRows } = reportPage(grid.sorted, page.rows === grid.sorted ? page.number : 1);
+  const goToPage = (number: number) => {
+    setPage({ rows: grid.sorted, number });
+    if (tableScroll.current) tableScroll.current.scrollTop = 0;
+  };
 
   const tileCls = "min-w-0 px-4 py-3";
   const totals = grid.totals;
@@ -284,7 +297,7 @@ export default function ReportGrid({
       ) : null}
 
       {/* grid */}
-      <div id={`report-table-${table.key}`} className="scroll-thin max-h-[62vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
+      <div ref={tableScroll} id={`report-table-${table.key}`} className="scroll-thin max-h-[62vh] overflow-auto rounded-lg border border-[var(--color-rule-strong)]">
         <table className="min-w-full border-collapse text-sm">
           <thead className="sticky top-0 z-20">
             <tr>
@@ -320,8 +333,8 @@ export default function ReportGrid({
             </tr>
           </thead>
           <tbody>
-            {grid.sorted.map((row, i) => (
-              <tr key={i} className="hover:bg-black/[0.03]">
+            {visibleRows.map((row, i) => (
+              <tr key={pageStart + i} className="hover:bg-black/[0.03]">
                 {grid.visibleColumns.map((col) => {
                   const numeric = isNumericKind(col.kind);
                   const text = formatCell(col, row);
@@ -351,6 +364,10 @@ export default function ReportGrid({
           </tbody>
         </table>
       </div>
+      <nav aria-label="Report pages" className="flex flex-wrap items-center justify-between gap-3 text-sm">
+        <p role="status" className="text-[var(--color-ink-soft)]">{grid.sorted.length ? `Showing ${(pageStart + 1).toLocaleString()}–${Math.min(pageStart + REPORT_PAGE_SIZE, grid.sorted.length).toLocaleString()} of ${grid.sorted.length.toLocaleString()} matching rows` : "0 matching rows"}. Totals and exports include every matching row.</p>
+        <div className="flex items-center gap-3"><button type="button" className="btn btn-sm btn-secondary" disabled={currentPage === 1} onClick={() => goToPage(currentPage - 1)}>Previous</button><span className="tnum">Page {currentPage} of {pageCount}</span><button type="button" className="btn btn-sm btn-secondary" disabled={currentPage === pageCount} onClick={() => goToPage(currentPage + 1)}>Next</button></div>
+      </nav>
     </div>
   );
 }

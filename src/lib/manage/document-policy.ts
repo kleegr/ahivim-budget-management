@@ -16,15 +16,28 @@ export async function creationDocumentContext(access: DocumentAccess, source: un
     kind: "private", requiredCapabilities: DOCUMENT_VISIBILITY.filter((capability) => access.scope[capability]),
   });
   if (typeof source !== "string") return fail("validation", "Choose a valid document source.");
-  const match = /^\/api\/classes\/invoices\/([a-f0-9-]{36})\/(?:pdf|cover-sheet)(?:\?preview=1)?$/i.exec(source);
+  const match = /^\/api\/classes\/invoices\/([a-f0-9-]{36})\/(pdf|cover-sheet)(?:\?(preview=1|version=[1-9]\d*))?$/i.exec(source);
   if (!match || !DOCUMENT_UUID.test(match[1])) return fail("validation", "That document source is not supported.");
+  const requestedVersion = match[3]?.startsWith("version=") ? Number(match[3].slice(8)) : null;
+  if (requestedVersion !== null && (match[2] !== "cover-sheet" || !Number.isSafeInteger(requestedVersion) || requestedVersion > 2_147_483_647)) {
+    return fail("validation", "Choose a valid cover version.");
+  }
   const { rows } = await access.pool.query<{ individual_id: string }>(
-    `SELECT individual_id FROM class_invoices WHERE id = $1 AND status <> 'void'`, [match[1]],
+    `SELECT individual_id FROM class_invoices WHERE id = $1`, [match[1]],
   );
   const invoice = rows[0];
   const context: DocumentAccessContext = { kind: "classes", individualId: invoice?.individual_id, sourceInvoiceId: match[1] };
   if (!invoice || access.external || !canAccessDocumentSource(access.scope, { accessContext: context, createdByUserId: access.user.id })) {
     return fail("not_found", "That document source was not found.");
+  }
+  if (match[2] === "cover-sheet") {
+    const covers = await access.pool.query<{ version: number }>(`SELECT version FROM (
+      SELECT 1 AS version FROM class_cover_sheet_snapshots WHERE class_invoice_id = $1
+      UNION ALL SELECT version FROM class_cover_sheet_versions WHERE class_invoice_id = $1
+    ) history WHERE ($2::integer IS NULL OR version = $2) ORDER BY version DESC LIMIT 1`, [match[1], requestedVersion]);
+    const coverVersion = covers.rows[0]?.version;
+    if (requestedVersion !== null && coverVersion === undefined) return fail("not_found", "That finalized cover version was not found.");
+    if (coverVersion !== undefined) context.sourceCoverVersion = coverVersion;
   }
   // The client uploads bytes, so a source URL cannot prove that those bytes
   // are the generated invoice. Retain validated scope without widening the

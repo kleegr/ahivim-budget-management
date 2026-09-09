@@ -3,9 +3,9 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PgLikePool } from "@/lib/import/commit";
 
-const mocks = vi.hoisted(() => ({ recordChange: vi.fn() }));
+const mocks = vi.hoisted(() => ({ recordChange: vi.fn(), recordChanges: vi.fn() }));
 
-vi.mock("@/lib/manage/audit", () => ({ recordChange: mocks.recordChange }));
+vi.mock("@/lib/manage/audit", () => mocks);
 
 import { setTransactionsPaid } from "@/lib/manage/transactions";
 
@@ -38,8 +38,13 @@ describe("read-only Google Sheet boundary", () => {
   it("stores an operator Paid decision only in Neon", async () => {
     const request = vi.fn();
     vi.stubGlobal("fetch", request);
+    const transactionId = "00000000-0000-4000-8000-000000000001";
     const query = vi.fn(async (statement: string) => ({
-      rows: [],
+      rows: statement.includes("FROM payroll_transactions")
+        ? [{ id: transactionId, is_paid: false, paid_at: null, paid_note: "Prior note" }]
+        : statement.includes("UPDATE payroll_transactions")
+          ? [{ id: transactionId, is_paid: true, paid_at: "2026-09-09", paid_note: "Prior note" }]
+          : [],
       rowCount: statement.includes("UPDATE payroll_transactions") ? 1 : 0,
     }));
     const release = vi.fn();
@@ -54,9 +59,14 @@ describe("read-only Google Sheet boundary", () => {
       "00000000-0000-4000-8000-000000000002",
     );
 
-    expect(result).toEqual({ ok: true, data: { updated: 1 } });
+    expect(result).toEqual({ ok: true, data: { updated: 1, batchId: expect.any(String) } });
     expect(query.mock.calls.map((call) => String(call[0])).join("\n")).not.toContain("sheet_sync_rows");
     expect(mocks.recordChange).toHaveBeenCalledOnce();
+    expect(mocks.recordChanges).toHaveBeenCalledWith(expect.anything(), [expect.objectContaining({
+      entityId: transactionId,
+      previous: expect.objectContaining({ is_paid: false, paid_note: "Prior note" }),
+      next: expect.objectContaining({ is_paid: true, paid_note: "Prior note" }),
+    })]);
     expect(request).not.toHaveBeenCalled();
     expect(query.mock.calls.at(-1)?.[0]).toBe("COMMIT");
     expect(release).toHaveBeenCalledOnce();

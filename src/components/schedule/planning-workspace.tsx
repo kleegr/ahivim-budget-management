@@ -8,7 +8,7 @@ import ServiceSchedules from "@/components/schedule/service-schedules";
 import BudgetCoveragePanel from "@/components/schedule/budget-coverage-panel";
 import DirectPayTargetsPanel from "@/components/schedule/direct-pay-targets-panel";
 import ScheduleMatchingPanel from "@/components/schedule/schedule-matching-panel";
-import { TabPanels } from "@/components/ui-client";
+import { TabPanels, ReloadButton } from "@/components/ui-client";
 import type { PlanningWorkspaceData } from "@/lib/data/planning-queries";
 import type { PlannerDirectPayTargetRow } from "@/lib/data/direct-pay-operations";
 import type { PlanningMatchReview } from "@/lib/data/planning-reconciliation";
@@ -29,6 +29,7 @@ interface PlanningWorkspaceProps {
   programs: ScheduleCalendarProps["programs"];
   matchReview: PlanningMatchReview;
   matchReviewLoaded?: boolean;
+  matchReviewError?: boolean;
   directPayTargets?: PlannerDirectPayTargetRow[];
   showDirectPayTargets?: boolean;
   showBudgetTracking?: boolean;
@@ -74,6 +75,7 @@ export default function PlanningWorkspace({
   programs,
   matchReview,
   matchReviewLoaded = false,
+  matchReviewError = false,
   directPayTargets = [],
   showDirectPayTargets = false,
   showBudgetTracking = true,
@@ -98,6 +100,7 @@ export default function PlanningWorkspace({
     <div>
       <TabPanels
         paramKey="view"
+        serverNavigation
         initialId={initialView}
         panels={[
           { id: "calendar", label: "Calendar", content: calendar },
@@ -125,7 +128,12 @@ export default function PlanningWorkspace({
           {
             id: "matching",
             label: "Recorded match review",
-            content: matchReviewLoaded ? (
+            content: matchReviewError ? (
+              <section role="alert" className="py-7">
+                <p className="mb-3">Recorded match review is unavailable. Your calendar remains available.</p>
+                <ReloadButton label="Retry match review" />
+              </section>
+            ) : matchReviewLoaded ? (
               <ScheduleMatchingPanel review={matchReview} />
             ) : (
               <section className="border-y border-[var(--color-rule)] py-7 text-center">

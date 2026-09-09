@@ -1,5 +1,7 @@
 "use client";
 
+import SearchableSelect from "@/components/manage/searchable-select";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
 import type {
@@ -272,16 +274,10 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
           ))}
         </div>
         {perspective === "employee" ? (
-          <select aria-label="Choose employee" value={filters.employeeId} onChange={(e) => setFilters((f) => ({ ...f, employeeId: e.target.value, unassigned: false }))} className="select min-w-48">
-            <option value="">Choose employee</option>
-            {employees.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
-          </select>
+          <SearchableSelect label="employees" selectLabel="Choose employee" value={filters.employeeId} onChange={(value) => setFilters((filters) => ({ ...filters, employeeId: value, unassigned: false }))} options={employees.map((employee) => ({ value: employee.id, label: employee.label }))} placeholder="Choose employee" className="select min-w-48" />
         ) : null}
         {perspective === "individual" ? (
-          <select aria-label="Choose individual" value={filters.individualId} onChange={(e) => setFilters((f) => ({ ...f, individualId: e.target.value }))} className="select min-w-48">
-            <option value="">Choose individual</option>
-            {individuals.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
-          </select>
+          <SearchableSelect label="individuals" selectLabel="Choose individual" value={filters.individualId} onChange={(value) => setFilters((filters) => ({ ...filters, individualId: value }))} options={individuals.map((individual) => ({ value: individual.id, label: individual.label }))} placeholder="Choose individual" className="select min-w-48" />
         ) : null}
         <select aria-label="Filter by program" value={filters.programId} onChange={(e) => setFilters((f) => ({ ...f, programId: e.target.value }))} className="select">
           <option value="">All programs</option>

@@ -77,6 +77,10 @@ async function setup(page: Page, pool: Pool): Promise<Journey> {
     groupsAllowed: false, allowIndividualRateOverride: false,
   });
   const individual = await post<{ id: string }>(page, "/api/individuals", { displayName: individualName });
+  const responsibility = await page.request.patch(`/api/individuals/${individual.id}/responsibility`, {
+    data: { field: "budget", value: "managed" },
+  });
+  expect(responsibility.status()).toBe(200);
   const employee = await post<{ id: string }>(page, "/api/employees", {
     displayName: employeeName, notes: "PRIVATE EMPLOYEE DEAL SENTINEL", externalRef: `PRIVATE-PAYROLL-${suffix}`,
   });

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requireUser } from "@/lib/auth/session";
 import { isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
 import { redirect } from "next/navigation";
@@ -8,15 +9,14 @@ import BilledActivityWorkspace from "@/components/transactions/billed-activity-w
 import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
 import {
   buildInitialFilters,
-  filterTransactionsByCheckIdentity,
-  filterTransactionsBySourcePaymentIdentity,
+  filterTransactionsBySelection,
 } from "@/lib/transactions/initial-filters";
 import { RefreshCw } from "lucide-react";
 import { listSettlementSourceTransactions } from "@/lib/data/settlement-source-transactions";
 import { getActivityReviewSummary } from "@/lib/data/activity-overview";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Activity - Ahivim" };
+export const metadata = { title: "Transactions - Ahivim" };
 
 type SP = Record<string, string | string[] | undefined>;
 const one = (v: string | string[] | undefined): string | undefined =>
@@ -28,8 +28,6 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   const user = await requireUser("viewer");
   const canManage = user.role !== "viewer";
   const sp = await searchParams;
-  const requestedCheckIdentity = one(sp.checkIdentity);
-  const requestedSourcePaymentIdentity = one(sp.sourcePaymentIdentity);
   const requestedTransactionIdsFromUrl = many(sp.transactionId);
   const requestedSettlementSource = one(sp.settlementSource);
   const requestedTransactionId = !requestedSettlementSource && requestedTransactionIdsFromUrl.length === 1
@@ -89,21 +87,15 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   if (result.ok && result.data.denied) {
     return (
       <>
-        <PageHeader eyebrow="Recorded work" title="Activity" />
-        <ErrorPanel title="No access to Activity" action={<ButtonLink href="/home">Back to home</ButtonLink>}>
+        <PageHeader eyebrow="Recorded work" title="Transactions" />
+        <ErrorPanel title="No access to Transactions" action={<ButtonLink href="/home">Back to home</ButtonLink>}>
           Your account doesn&rsquo;t include permission to view recorded services or payroll. Ask an administrator if you need it.
         </ErrorPanel>
       </>
     );
   }
 
-  const allRows = filterTransactionsBySourcePaymentIdentity(
-    filterTransactionsByCheckIdentity(
-      result.ok ? result.data.rows : [],
-      requestedCheckIdentity,
-    ),
-    requestedSourcePaymentIdentity,
-  );
+  const allRows = filterTransactionsBySelection(result.ok ? result.data.rows : [], sp);
   const requestedTransactionIds = result.ok
     ? result.data.requestedTransactionIds
     : requestedTransactionIdsFromUrl;
@@ -145,7 +137,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     <>
       <PageHeader
         eyebrow="Recorded work"
-        title="Activity"
+        title="Transactions"
         description="See what service happened, how payroll was grouped, and what needs a decision."
       />
 
@@ -170,14 +162,15 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
       ) : rows.length === 0 ? (
         <Card>
           <EmptyState
-            title="No recorded activity yet"
+            title={Object.keys(sp).some((key) => key !== "view") ? "No transactions match this selection" : "No recorded activity yet"}
             action={canManage ? (
               <ButtonLink href="/sync" variant="primary">
                 <RefreshCw aria-hidden className="h-4 w-4" /> Update activity
               </ButtonLink>
             ) : undefined}
           >
-            Recorded services and payroll checks will appear here after activity is updated.
+            {Object.keys(sp).some((key) => key !== "view") ? "This exact selection has no available rows. Clear the selection to return to all transactions." : "Recorded services and payroll checks will appear here after activity is updated."}
+            <Link href="/transactions" className="mt-3 block text-[var(--color-primary)]">Clear selection</Link>
           </EmptyState>
         </Card>
       ) : (
