@@ -12,13 +12,16 @@ async function signIn(page: Page, email = ADMIN_EMAIL, password = ADMIN_PASSWORD
 async function saveChoice(page: Page, label: string, value: string) {
   const setup = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: /^Finish setup/ }) }).first();
   if (label.endsWith('budget responsibility')) {
+    await page.waitForURL(url => /^\/individuals\/[^/]+$/.test(url.pathname), { waitUntil: 'load' });
     // A profile Link can finish clicking before its next server page arrives.
     // Wait for setup instead of treating a momentary zero count as no setup.
     await expect(setup).toBeVisible();
     if (await setup.getAttribute('open') === null) await setup.locator('summary').first().click();
   }
   await page.getByRole('combobox', { name: label, exact: true }).selectOption(value);
+  const saved = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/responsibility') && response.request().method() === 'PATCH' && response.request().postDataJSON()?.value === value);
   await page.getByRole('button', { name: `Save ${label}`, exact: true }).click();
+  expect((await saved).status()).toBe(200);
   await expect(page.getByRole('status').filter({ hasText: 'Saved this responsibility.' }).first()).toBeVisible();
 }
 function testPool() {

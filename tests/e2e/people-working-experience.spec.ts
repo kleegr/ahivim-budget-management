@@ -70,8 +70,11 @@ test('People working flow retains bulk selection, shows separate program overrun
     expect(drillUrl.searchParams.get('serviceTo')).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     await testInfo.attach('people-programs-desktop', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
     await page.getByRole('link', { name: 'Show all programs', exact: true }).click();
+    await page.waitForURL(url => url.searchParams.get('programScope') === 'all', { waitUntil: 'load' });
     await expect(page.getByRole('region', { name: 'Monthly actuals and remaining plan' })).toHaveCount(3);
     await page.getByRole('link', { name: 'Show working programs', exact: true }).click();
+    await page.waitForURL(url => !url.searchParams.has('programScope'), { waitUntil: 'load' });
+    await expect(page.getByRole('region', { name: 'Monthly actuals and remaining plan' })).toHaveCount(2);
     await page.locator(`a[href*="programId=${secondary.id}"][href*="newAssignment=1"]`).click();
     const assignment = page.getByRole('dialog', { name: 'New assignment', exact: true });
     await expect(assignment.getByRole('combobox', { name: 'Employee', exact: true })).toHaveValue(employeeId);
@@ -83,6 +86,8 @@ test('People working flow retains bulk selection, shows separate program overrun
     await assignment.getByLabel('Change reason').fill('Synthetic prior-work follow-up');
     await assignment.getByRole('button', { name: 'Save assignment', exact: true }).click();
     await expect(assignment).toHaveCount(0);
+    await page.waitForURL(url => url.pathname === '/schedule' && !url.searchParams.has('newAssignment'));
+    await expect(page.getByRole('table', { name: 'Current and future employee assignments' }).getByRole('row').filter({ hasText: names[0] })).toContainText(`${prefix} Employee`);
     await page.reload(); await expect(page.getByRole('dialog', { name: 'New assignment' })).toHaveCount(0);
     const duplicate = await page.request.post('/api/assignments', { data: { individualId: ids[0], employeeId, programId: secondary.id, startDate: today } });
     expect(duplicate.status()).toBe(409);

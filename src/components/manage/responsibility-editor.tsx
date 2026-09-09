@@ -43,7 +43,9 @@ function Choice({ endpoint, label, field, value, programId, storedValue }: {
       setSavedChoice(selected); setBaseline(selected); setChoice(null); setBusy(false);
       try { sessionStorage.removeItem(draftKey); } catch { /* Saved successfully. */ }
       setFeedback('Saved this responsibility. Other unsaved choices are retained.');
-      router.refresh();
+      // Revisit the active record so a profile restored from directory history
+      // receives its new server panels while mounted sibling drafts survive.
+      router.replace(window.location.pathname + window.location.search, { scroll: false });
     } catch (error) { setBusy(false); setFailed(true); setFeedback(error instanceof Error ? error.message : 'Could not save. Try again.'); }
   }}>
     <label className="min-w-0 flex-1 sm:min-w-56"><span className="mb-1 block text-sm font-medium">{label}</span>

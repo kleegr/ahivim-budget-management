@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import SearchableSelect from "@/components/manage/searchable-select";
 import { CalendarX2, Pencil, Plus, Save, Search } from "lucide-react";
 
@@ -62,7 +62,6 @@ export default function AssignmentManager({
   showAllowedHours?: boolean;
 }) {
   const searchParams = useSearchParams();
-  const router = useRouter();
   const initialAssignment = rows.find((row) => row.id === searchParams.get("assignmentId"));
   const initialDraft: AssignmentDraft = initialAssignment ? { employeeId: initialAssignment.employeeId, individualId: initialAssignment.individualId, programId: initialAssignment.programId ?? "", startDate: initialAssignment.startDate ?? "", endDate: initialAssignment.endDate ?? "", allowedHours: initialAssignment.allowedHours ?? "", notes: initialAssignment.notes ?? "", reason: "" }
     : { ...EMPTY, individualId: individuals.some((row) => row.id === searchParams.get("individualId")) ? searchParams.get("individualId")! : "", employeeId: employees.some((row) => row.id === searchParams.get("employeeId")) ? searchParams.get("employeeId")! : "", programId: programs.some((row) => row.id === searchParams.get("programId")) ? searchParams.get("programId")! : "" };
@@ -116,8 +115,9 @@ export default function AssignmentManager({
     const url = new URL(window.location.href);
     url.searchParams.delete("newAssignment");
     url.searchParams.delete("assignmentId");
-    router.replace(`${url.pathname}${url.search}`, { scroll: false });
-    router.refresh();
+    // One navigation clears the modal URL and loads the saved rows together.
+    // Competing router replace/refresh actions can restore cached assignments.
+    window.location.replace(`${url.pathname}${url.search}`);
   };
 
   const save = async () => {

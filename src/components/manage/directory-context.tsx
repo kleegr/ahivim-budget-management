@@ -26,7 +26,9 @@ export function useDirectoryUrl(directory: 'individuals' | 'employees', values: 
       if (value) url.searchParams.set(key, value); else url.searchParams.delete(key);
     }
     const href = url.pathname + url.search + url.hash;
-    if (href !== window.location.pathname + window.location.search + window.location.hash) window.history.replaceState(window.history.state, '', href);
+    // Let Next synchronize its canonical URL. Passing its existing __NA state
+    // makes Next treat this as an internal write and skip that synchronization.
+    if (href !== window.location.pathname + window.location.search + window.location.hash) window.history.replaceState(null, '', href);
     try { sessionStorage.setItem(`ahivim-directory-${directory}`, href); } catch { /* URL is sufficient when storage is disabled. */ }
   }, [directory, serialized]);
 }

@@ -172,7 +172,12 @@ for (const viewport of [
       expect((await PDFDocument.load(await preview.body())).getTitle()).toBe(`DRAFT - Invoice ${invoiceNumber}`);
       await record.getByRole("button", { name: "Preview draft cover sheet", exact: true }).click();
       const cover = page.getByRole("dialog");
-      await cover.getByLabel("Listed in Life Plan").check();
+      const lifePlan = cover.getByLabel("Listed in Life Plan");
+      // Metadata can replace the initial disabled false value with a previously
+      // saved true value. Begin check() only after that load has completed.
+      await expect(lifePlan).toBeEnabled();
+      await lifePlan.check();
+      await expect(lifePlan).toBeChecked();
       await cover.getByLabel("Form completed by").fill("Synthetic authorized representative");
       await cover.getByRole("button", { name: "Save profile", exact: true }).click();
       await expect(cover.getByRole("status")).toHaveText("Saved");
