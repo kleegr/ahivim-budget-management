@@ -285,7 +285,7 @@ export default function BudgetEditor({
   /* -------------------------------------------------------------- read-only */
   if (!editing) {
     return (
-      <div className="card mb-6">
+      <div id={strategyId ? `financial-plan-${strategyId}` : "financial-plan-new"} className="card mb-6">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] px-5 py-3">
           <div>
             <p className="font-semibold text-[var(--color-ink)]">Projection inputs by program</p>
@@ -414,7 +414,7 @@ export default function BudgetEditor({
 
   /* ---------------------------------------------------------------- editing */
   return (
-    <div className="card mb-6 border-[var(--color-primary-soft)]">
+    <div id={strategyId ? `financial-plan-${strategyId}` : "financial-plan-new"} className="card mb-6 border-[var(--color-primary-soft)]">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] bg-[var(--color-primary-tint)] px-5 py-3">
         <div>
           <p className="font-semibold text-[var(--color-ink)]">Editing financial projection inputs</p>

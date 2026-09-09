@@ -6,7 +6,6 @@ import {
   BarChart3,
   CalendarPlus,
   Calculator,
-  CheckCircle2,
   Filter,
   HandCoins,
   ReceiptText,
@@ -20,11 +19,9 @@ import OwnerPeopleMultiSelect from "@/components/dashboard/owner-people-multi-se
 import OwnerSavedViews from "@/components/dashboard/owner-saved-views";
 import { ButtonLink, PageHeader } from "@/components/ui";
 import {
-  buildOwnerAttentionItems,
   buildOwnerActualMoney,
   type OwnerActivityFilterOptions,
   type OwnerActivitySelection,
-  type OwnerAttentionItem,
   type OwnerDashboardSummary,
 } from "@/lib/dashboard/owner-summary";
 import { formatHours, formatMoney } from "@/lib/money";
@@ -32,6 +29,7 @@ import type { GridView } from "@/lib/manage/grid-views";
 import { getAgencyFinancialReport } from "@/lib/data/agency-financial-report";
 import { getSettlementDashboard } from "@/lib/data/settlements";
 import { getOwnerScheduleAttention } from "@/lib/dashboard/owner-schedule-attention";
+import { getOperationalReviewSummary } from "@/lib/data/operational-review";
 import { withDb } from "@/lib/data/pool";
 import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 
@@ -144,58 +142,65 @@ function SummaryMetric({
   );
 }
 
-function OwnerAttentionSection({
-  items,
+interface OwnerReviewGroup {
+  key: string;
+  title: string;
+  detail: string;
+  href: string;
+  undecided?: { count: number; unit: string; href: string };
+}
+
+function OwnerReviewSection({
+  groups,
   unavailableSources = [],
 }: {
-  items: OwnerAttentionItem[];
+  groups: OwnerReviewGroup[];
   unavailableSources?: string[];
 }) {
   return (
     <section aria-labelledby="owner-attention-heading">
       <div className="flex min-w-0 items-start gap-3">
-        <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-md bg-[var(--color-warn-soft)] text-[var(--color-warn)]">
+        <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-md bg-[var(--color-primary-tint)] text-[var(--color-primary)]">
           <AlertTriangle aria-hidden className="h-4 w-4" />
         </span>
         <div className="min-w-0">
-          <p className="eyebrow text-[var(--color-ink-faint)]">Owner follow-up</p>
-          <h2 id="owner-attention-heading" className="display mt-1 text-xl font-semibold text-[var(--color-ink)]">Needs attention</h2>
-          <p className="mt-1 text-sm text-[var(--color-ink-soft)]">Start with work that can affect a person, a schedule, a check, or current cash.</p>
+          <p className="eyebrow text-[var(--color-ink-faint)]">Review</p>
+          <h2 id="owner-attention-heading" className="display mt-1 text-xl font-semibold text-[var(--color-ink)]">Review summary</h2>
+          <p className="mt-1 text-sm text-[var(--color-ink-soft)]">Open a workspace to review detected issues. People are counted once within each directory.</p>
         </div>
       </div>
 
-      {items.length > 0 ? (
-        <div className="mt-4 divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)]">
-          {items.map((item) => (
+      <div className="mt-4 grid divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] md:grid-cols-2 md:divide-y-0">
+        {groups.map((group, index) => (
+          <div
+            key={group.key}
+            className={`min-w-0 border-[var(--color-rule)] py-3 md:py-4 ${index % 2 ? "md:border-l md:pl-5" : "md:pr-5"} ${index > 1 ? "md:border-t" : ""}`}
+          >
             <Link
-              key={item.key}
-              href={item.href}
-              className="group grid min-h-16 gap-1 px-1 py-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-primary)] sm:grid-cols-[5.5rem_minmax(0,1fr)_auto] sm:items-center sm:gap-4"
+              href={group.href}
+              className="group flex min-h-12 items-start justify-between gap-3 px-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-primary)]"
             >
-              <span className="text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">{item.category}</span>
               <span className="min-w-0">
-                <span className="block text-sm font-semibold text-[var(--color-ink)] group-hover:text-[var(--color-primary)]">{item.title}</span>
-                <span className="mt-0.5 block text-xs leading-5 text-[var(--color-ink-soft)]">{item.detail}</span>
+                <span className="block text-sm font-semibold text-[var(--color-ink)] group-hover:text-[var(--color-primary)]">{group.title}</span>
+                <span className="mt-1 block text-xs leading-5 text-[var(--color-ink-soft)]">{group.detail}</span>
               </span>
-              <span className="mt-1 inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--color-primary)] sm:mt-0 sm:justify-self-end">
-                {item.action}
-                <ArrowRight aria-hidden className="h-3.5 w-3.5" />
-              </span>
+              <ArrowRight aria-hidden className="mt-1 h-3.5 w-3.5 shrink-0 text-[var(--color-primary)]" />
             </Link>
-          ))}
-        </div>
-      ) : (
-        <div className="mt-4 flex min-h-16 items-center gap-3 border-y border-[var(--color-rule-strong)] px-1 py-3 text-sm text-[var(--color-ink-soft)]">
-          <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-success)]" />
-          <p>
-            No follow-up appears in the budget, schedule, check, money, or financial setup data loaded on Home.
-          </p>
-        </div>
-      )}
+            {group.undecided && group.undecided.count > 0 ? (
+              <Link href={group.undecided.href} className="mt-1 inline-block px-1 text-xs leading-5 text-[var(--color-ink-faint)] underline underline-offset-2">
+                Not decided yet: {group.undecided.count.toLocaleString()} {group.undecided.unit}
+              </Link>
+            ) : null}
+          </div>
+        ))}
+      </div>
       {unavailableSources.length > 0 ? (
-        <p role="status" className="mt-2 text-xs text-[var(--color-ink-faint)]">
-          {unavailableSources.join(" and ")} {unavailableSources.length === 1 ? "is" : "are"} temporarily unavailable; the follow-up shown above is still current.
-        </p>
+        <div role="alert" className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm">
+          <p className="text-[var(--color-ink-soft)]">
+            {unavailableSources.join(" and ")} could not be loaded. The review summary is incomplete.
+          </p>
+          <ButtonLink href="/dashboard">Try again</ButtonLink>
+        </div>
       ) : null}
     </section>
   );
@@ -205,16 +210,16 @@ function OwnerAttentionLoading() {
   return (
     <section aria-labelledby="owner-attention-heading">
       <div className="flex min-w-0 items-start gap-3">
-        <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-md bg-[var(--color-warn-soft)] text-[var(--color-warn)]">
+        <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-md bg-[var(--color-primary-tint)] text-[var(--color-primary)]">
           <AlertTriangle aria-hidden className="h-4 w-4" />
         </span>
         <div className="min-w-0">
-          <p className="eyebrow text-[var(--color-ink-faint)]">Owner follow-up</p>
-          <h2 id="owner-attention-heading" className="display mt-1 text-xl font-semibold text-[var(--color-ink)]">Needs attention</h2>
+          <p className="eyebrow text-[var(--color-ink-faint)]">Review</p>
+          <h2 id="owner-attention-heading" className="display mt-1 text-xl font-semibold text-[var(--color-ink)]">Review summary</h2>
         </div>
       </div>
       <div role="status" aria-live="polite" className="mt-4 min-h-16 border-y border-[var(--color-rule-strong)] px-1 py-4 text-sm text-[var(--color-ink-soft)]">
-        Loading current follow-up...
+        Loading review summary...
       </div>
     </section>
   );
@@ -251,33 +256,80 @@ function OwnerMoneyLoading({ month }: { month: string }) {
   );
 }
 
-async function OwnerAttentionData({
-  today,
-  summary,
-}: {
-  today: string;
-  summary: OwnerDashboardSummary;
-}) {
-  const [settlementResult, scheduleResult] = await Promise.all([
+export async function OwnerReviewData({ today }: { today: string }) {
+  const [settlementResult, scheduleResult, reviewResult] = await Promise.all([
     withDb((pool) => readOnlySnapshot(pool, (client) => getSettlementDashboard(client))),
     withDb((pool) => getOwnerScheduleAttention(pool, today)),
+    withDb((pool) => getOperationalReviewSummary(pool, today)),
   ]);
   const unavailableSources = [
+    reviewResult.ok ? null : "People and employee review status",
     settlementResult.ok ? null : "Current money and check status",
     scheduleResult.ok ? null : "Upcoming schedule status",
   ].filter((value): value is string => value !== null);
+  const review = reviewResult.ok ? reviewResult.data : null;
+  const money = settlementResult.ok ? settlementResult.data : null;
+  const schedule = scheduleResult.ok ? scheduleResult.data : null;
+  const groups: OwnerReviewGroup[] = [
+    {
+      key: "individuals",
+      title: "People & budgets",
+      detail: review
+        ? `${review.individuals.toLocaleString()} ${review.individuals === 1 ? "individual" : "individuals"} with detected issues`
+        : "Review status unavailable",
+      href: "/individuals?review=needs_review",
+      undecided: review ? {
+        count: review.undecidedIndividuals,
+        unit: review.undecidedIndividuals === 1 ? "individual" : "individuals",
+        href: "/individuals?management=undecided",
+      } : undefined,
+    },
+    {
+      key: "employees",
+      title: "Employees & setup",
+      detail: review
+        ? `${review.employees.toLocaleString()} ${review.employees === 1 ? "employee" : "employees"} with detected issues`
+        : "Review status unavailable",
+      href: "/employees?review=needs_review",
+      undecided: review ? {
+        count: review.undecidedEmployees,
+        unit: review.undecidedEmployees === 1 ? "employee" : "employees",
+        href: "/employees?management=undecided",
+      } : undefined,
+    },
+    {
+      key: "schedule",
+      title: "Schedule",
+      detail: !schedule
+        ? "Upcoming schedule status unavailable"
+        : schedule.conflictCount > 0 && schedule.unassignedCount > 0
+          ? "Upcoming visits have conflicts or need staffing."
+          : schedule.conflictCount > 0
+            ? "Upcoming visits have scheduling conflicts."
+            : schedule.unassignedCount > 0
+              ? "Upcoming visits need staffing."
+              : "Open upcoming visits and staffing coverage.",
+      href: "/schedule?view=coverage",
+    },
+    {
+      key: "money",
+      title: "Money & checks",
+      detail: !money
+        ? "Current money and check status unavailable"
+        : money.freshness.dirty
+          ? "Current balances are unavailable until refreshed. Review check sources and recorded history."
+          : money.rows.some((row) => row.reviewRequired) || (money.freshness.sourceReviewCount ?? 0) > 0
+            ? "Some balances are held for review. Open source details before taking action."
+            : money.checkIssues.length > 0
+              ? "Check source information needs review before money actions."
+              : "Open verified balances, check sources, and recorded money actions.",
+      href: money?.freshness.dirty ? "/masser" : "/settlements?focus=check-issues",
+    },
+  ];
 
   return (
-    <OwnerAttentionSection
-      items={buildOwnerAttentionItems(
-        summary,
-        settlementResult.ok ? {
-          ...settlementResult.data.summary,
-          dirty: settlementResult.data.freshness.dirty,
-        } : undefined,
-        settlementResult.ok ? settlementResult.data.checkIssues.length : 0,
-        scheduleResult.ok ? scheduleResult.data : undefined,
-      )}
+    <OwnerReviewSection
+      groups={groups}
       unavailableSources={unavailableSources}
     />
   );
@@ -296,7 +348,7 @@ async function OwnerActualMoneySection({ month }: { month: string }) {
     return (
       <OwnerMoneyShell month={month}>
         <div role="alert" className="mt-4 flex min-h-24 flex-wrap items-center justify-between gap-3 border-y border-[var(--color-rule-strong)] px-3 py-4 text-sm">
-          <p className="text-[var(--color-ink-soft)]">Actual income, expenses, and result are temporarily unavailable. The rest of Home is still current.</p>
+          <p className="text-[var(--color-ink-soft)]">Actual income, expenses, and result are temporarily unavailable.</p>
           <ButtonLink href="/dashboard">Try again</ButtonLink>
         </div>
       </OwnerMoneyShell>
@@ -341,9 +393,9 @@ async function OwnerActualMoneySection({ month }: { month: string }) {
 function OwnerQuickActions() {
   const actions = [
     {
-      href: "/individuals?view=attention",
-      label: "Review budget follow-up",
-      detail: "Open the people who need a budget or renewal decision.",
+      href: "/individuals?review=needs_review",
+      label: "Review people & budgets",
+      detail: "Open the people with detected setup or budget issues.",
       icon: WalletCards,
     },
     {
@@ -559,7 +611,7 @@ export default function OwnerDashboard({
       <PageHeader
         eyebrow="Ahivim"
         title="Home"
-        description="See what needs attention, take the next action, and keep budgets, checks, and money moving."
+        description="See actual activity, open a workspace, and review the records that need a correction."
         action={(
           <>
             <ButtonLink href="/reports">
@@ -573,7 +625,7 @@ export default function OwnerDashboard({
 
       <div className="space-y-12">
         <Suspense fallback={<OwnerAttentionLoading />}>
-          <OwnerAttentionData today={today} summary={summary} />
+          <OwnerReviewData today={today} />
         </Suspense>
         <OwnerQuickActions />
         <Suspense fallback={<OwnerMoneyLoading month={financialMonth} />}>
@@ -613,17 +665,12 @@ export default function OwnerDashboard({
             action="Open people & budgets"
             icon={WalletCards}
           />
-          <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] md:grid-cols-3 lg:grid-cols-6 lg:divide-y-0">
+          <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-[var(--color-rule)] border-y border-[var(--color-rule-strong)] md:grid-cols-3 lg:grid-cols-5 lg:divide-y-0">
             <SummaryMetric label="People" value={budgets.people.toLocaleString()} href="/individuals?budget=with" hint="With active authorizations" />
             <SummaryMetric label="Authorizations" value={budgets.authorizations.toLocaleString()} href="/individuals?budget=with" />
             <SummaryMetric label="Hours authorized" value={formatHours(budgets.authorizedHours)} href="/individuals" />
             <SummaryMetric label="Hours used" value={formatHours(budgets.usedHours)} href="/individuals" />
             <SummaryMetric label="Hours remaining" value={formatHours(budgets.remainingHours)} href="/individuals" />
-            <SummaryMetric
-              label="Billing without budget"
-              value={budgets.billingWithoutBudget.toLocaleString()}
-              href="/individuals?view=billing_without_budget"
-            />
           </div>
         </section>
 

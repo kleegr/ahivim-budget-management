@@ -1,6 +1,7 @@
 "use client";
 
 import { X } from "lucide-react";
+import { clearSaveFeedback, refreshWithSaveFeedback } from "./save-feedback";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 /**
@@ -235,6 +236,7 @@ export function CreateButton({
   variant = "primary",
   size = "md",
   onDone,
+  successMessage,
 }: {
   label: string;
   title: string;
@@ -246,6 +248,7 @@ export function CreateButton({
   variant?: "primary" | "secondary";
   size?: "sm" | "md";
   onDone?: () => void;
+  successMessage?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -253,6 +256,7 @@ export function CreateButton({
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    clearSaveFeedback();
     const raw = Object.fromEntries(new FormData(e.currentTarget)) as Record<string, string>;
     const body = transform ? transform(raw) : raw;
     setBusy(true);
@@ -265,7 +269,8 @@ export function CreateButton({
     }
     setOpen(false);
     onDone?.();
-    window.location.reload();
+    if (successMessage) refreshWithSaveFeedback(successMessage);
+    else window.location.reload();
   }
 
   return (

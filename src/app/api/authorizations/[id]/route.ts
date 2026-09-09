@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { revalidatePath } from "next/cache";
 import { readJson, resultResponse, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import {
   cancelAuthorization,
@@ -66,6 +67,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       operator.user.id,
       reason,
     );
+    if (result.ok) {
+      revalidatePath(`/individuals/${result.data.individualId}`);
+      revalidatePath('/individuals');
+      revalidatePath('/dashboard');
+    }
     return resultResponse(
       result.ok && operator.mode === "hours_only"
         ? { ...result, data: redactHourAuthorizationResult(result.data) }

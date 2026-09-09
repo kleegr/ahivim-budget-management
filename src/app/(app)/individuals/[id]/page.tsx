@@ -1,4 +1,11 @@
 import Link from "next/link";
+import SaveFeedback from "@/components/manage/save-feedback";
+import { DirectoryBackLink } from "@/components/manage/directory-context";
+import { hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
+import { listIndividualOperationalReviews } from "@/lib/data/operational-review";
+import { RESPONSIBILITY_LABELS } from "@/lib/business/operational-responsibility";
+import { IndividualResponsibilityEditor } from "@/components/manage/responsibility-editor";
+import OperationalFlags from "@/components/manage/operational-flags";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/session";
 import { canAccessPlanning, canViewEmployee, canViewIndividual, hasDirectIndividualAccess, resolveAccessScope } from "@/lib/auth/access";
@@ -152,6 +159,8 @@ export default async function IndividualDetailPage({
     if (!individual) return null;
     // A scoped user may only open an individual they have access to.
     if (!canViewIndividual(scope, id)) return null;
+    const canManageResponsibility = hasPortalCapability(await resolvePortalAccess(pool, user), "agencies.manage");
+    const operationalReview = canManageResponsibility ? (await listIndividualOperationalReviews(pool, today, id)).get(id) : undefined;
     const directAccess = hasDirectIndividualAccess(scope, id);
     const canSeeBudgets = scope.canSeeBudgets && scope.canSeeHours && directAccess;
     const canSeeAnyProgramDollars = (scope.canSeeBilledAmounts || scope.canSeeClassFinancials) && directAccess;
@@ -393,7 +402,8 @@ export default async function IndividualDetailPage({
     );
     return {
       individual: individualRecordForAccess(scope, individual), budget, operationalBudget, activity: visibleActivity, settlement, masserStatement,
-      profileContext,
+      profileContext, operationalReview,
+      responsibilityPrograms: canManageResponsibility ? programCatalogRaw.map((program) => ({ id: program.id, name: program.name })) : [],
       strategy,
       otherPlans,
       financialSetupOverview,
@@ -441,21 +451,21 @@ export default async function IndividualDetailPage({
     return (
       <>
         <PageHeader eyebrow="Individual" title="Individual" />
-        <ErrorPanel title="Individual profile is unavailable">{result.error}</ErrorPanel>
+        <ErrorPanel title="Individual profile is unavailable">{result.error} <ButtonLink href={`/individuals/${id}`}>Try again</ButtonLink></ErrorPanel>
       </>
     );
   }
   if (!result.data) notFound();
 
   const {
-    individual, budget, operationalBudget, activity, settlement, masserStatement, profileContext,
+    individual, budget, operationalBudget, activity, settlement, masserStatement, profileContext, operationalReview,
     strategy, otherPlans, financialSetupOverview,
     canSeeHours, canSeeAssignmentHours, canSeeBilledAmounts, canSeeEmployeeAmounts, canSeeAgencySpread,
     canSeeBudgets, canSeeProgramBudgets,
     canSeeSettlements, canSeeTransactions, canPlan, canSeeClasses, canManageClasses,
     canManageHourAuthorizations: canManageHours,
     classBudgets, classInvoices, programBudgets, programCatalog,
-    programs, assignments, aliases,
+    programs, assignments, aliases, responsibilityPrograms,
   } = result.data;
   const operationalHeadline = operationalBudget
     ? BUDGET_STATUS_PRESENT[operationalBudget.plainStatus]
@@ -466,6 +476,7 @@ export default async function IndividualDetailPage({
   const nextSession = profileContext.upcomingSessions[0] ?? null;
   const reserve = masserStatement ? reservePresentation(masserStatement) : null;
   const profileAction = individualProfileMainAction({
+    operationalReview,
     individualId: id,
     status: individual.status,
     canManage: canEdit || canManageHours,
@@ -566,17 +577,20 @@ export default async function IndividualDetailPage({
 
   return (
     <>
+      <DirectoryBackLink directory="individuals" />
+      <SaveFeedback />
       <PageHeader eyebrow="Individual" title={individual.displayName} action={headerActions} />
+      {operationalReview ? <><IndividualResponsibilityEditor id={id} value={operationalReview.responsibility} programs={responsibilityPrograms} /><OperationalFlags flags={operationalReview.flags} /></> : null}
       <ProfileHeaderSummary
         individualId={id}
         status={individual.status}
         renewal={canSeeBudgets ? operationalBudget?.renews ?? budget.effectiveRenewal : null}
-        budgetStatus={operationalHeadline?.label ?? (canSeeBudgets ? "Not configured" : "Restricted")}
+        budgetStatus={operationalHeadline?.label ?? (operationalReview ? RESPONSIBILITY_LABELS[operationalReview.responsibility.budget] : canSeeBudgets ? "Not configured" : "Restricted")}
         budgetStatusColor={operationalHeadline?.color ?? "var(--color-ink-faint)"}
         authorized={canSeeBudgets && operationalBudget ? formatHours(operationalAuthorized.toString()) : null}
         actual={canSeeBudgets && operationalBudget ? formatHours(operationalBudget.usedHours) : null}
         scheduled={canSeeBudgets && operationalBudget ? formatHours(operationalBudget.scheduledHours) : null}
-        remainingAfterSchedule={canSeeBudgets && operationalBudget ? formatHours(operationalBudget.hoursAfterScheduled ?? 0) : null}
+        remainingAfterSchedule={canSeeBudgets && operationalBudget ? operationalBudget.hoursAfterScheduled === null ? "Unavailable" : formatHours(operationalBudget.hoursAfterScheduled) : null}
         remainingAfterScheduleIsNegative={(operationalBudget?.hoursAfterScheduled ?? 0) < 0}
         assignments={assignments}
         agencies={profileContext.agencies}
@@ -615,7 +629,7 @@ export default async function IndividualDetailPage({
                       <span className="tnum font-medium text-[var(--color-ink)]">{formatHours(operationalBudget.scheduledHours)} h scheduled</span>
                       {" · "}
                       <span className="tnum font-medium" style={{ color: (operationalBudget.hoursAfterScheduled ?? 0) < 0 ? "var(--color-pace-over)" : undefined }}>
-                        {formatHours(operationalBudget.hoursAfterScheduled ?? 0)} h after schedule
+                        {operationalBudget.hoursAfterScheduled === null ? "Unavailable after schedule" : `${formatHours(operationalBudget.hoursAfterScheduled)} h after schedule`}
                       </span>
                     </p>
                     {operationalBudget.mustUseMonthly && (operationalBudget.daysToRenewal === null || operationalBudget.daysToRenewal >= 30) ? (
@@ -643,13 +657,13 @@ export default async function IndividualDetailPage({
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <p className="eyebrow">Budget</p>
-                    <p className="mt-1 text-lg font-semibold">No hourly authorization is configured</p>
+                    <p className="mt-1 text-lg font-semibold">{operationalReview && operationalReview.responsibility.budget !== "managed" ? RESPONSIBILITY_LABELS[operationalReview.responsibility.budget] : "No hourly authorization is configured"}</p>
                     {canSeeTransactions && budget.money.txCount > 0 ? (
                       <p className="mt-1 text-sm text-[var(--color-ink-soft)]">{budget.money.txCount.toLocaleString()} billed transactions are already on file.</p>
                     ) : null}
                   </div>
-                  <ButtonLink href={`/individuals/${id}?view=budget`} variant={canEdit ? "primary" : "secondary"}>
-                    {canEdit ? "Set up budget" : "Open budget"}
+                  <ButtonLink href={`/individuals/${id}?view=budget`} variant={canEdit && (!operationalReview || operationalReview.responsibility.budget === "managed") ? "primary" : "secondary"}>
+                    {canEdit && (!operationalReview || operationalReview.responsibility.budget === "managed") ? "Set up budget" : "Open budget"}
                   </ButtonLink>
                 </div>
               </section>
@@ -687,6 +701,7 @@ export default async function IndividualDetailPage({
             badge: programBudgets.length || undefined,
             content: (
               <ProgramBudgetWorkspace
+                operationalReview={operationalReview}
                 individualId={id}
                 budgets={programBudgets}
                 programs={programCatalog}
@@ -794,7 +809,7 @@ export default async function IndividualDetailPage({
             content: (
               <div className="space-y-6">
                 {canSeeFinancialSetup && (canEdit || strategy || otherPlans.length > 0) ? <>
-                <section className="border-y border-[var(--color-rule)] bg-[var(--color-surface)] px-5 py-4">
+                <section id="financial-setup" className="border-y border-[var(--color-rule)] bg-[var(--color-surface)] px-5 py-4">
                   <h2 className="text-base font-semibold text-[var(--color-ink)]">Financial projection assumptions</h2>
                   <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
                     Rates, target hours, and cuts here are used only for financial projections. They do not authorize service or change the balances shown in Budget.

@@ -1,10 +1,12 @@
+import { hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
+import { listIndividualOperationalReviews } from "@/lib/data/operational-review";
 import { requireUser } from "@/lib/auth/session";
 import { canAccessPlanning, hasDirectIndividualAccess, resolveAccessScope } from "@/lib/auth/access";
 import { withDb } from "@/lib/data/pool";
 import { listIndividualBudgetBoard } from "@/lib/data/queries";
 import { listCurrentProgramBudgets, listProgramBudgets } from "@/lib/data/program-budgets";
 import { summarizeAuthorizationPortfolio } from "@/lib/data/authorization-portfolio";
-import { Card, EmptyState, ErrorPanel, PageHeader } from "@/components/ui";
+import { Card, EmptyState, ErrorPanel, PageHeader, ButtonLink } from "@/components/ui";
 import { CreateButton, Field, TextAreaField } from "@/components/manage/client";
 import BudgetStatusWorkspace from "@/components/individuals/budget-status-workspace";
 import { agencyDate } from "@/lib/business/agency-time";
@@ -49,6 +51,8 @@ export default async function IndividualsPage({
     const scope = await resolveAccessScope(pool, user);
     const today = agencyDate();
     const asOf = new Date(`${today}T12:00:00Z`);
+    const canManageResponsibility = hasPortalCapability(await resolvePortalAccess(pool, user), "agencies.manage");
+    const reviews = canManageResponsibility ? await listIndividualOperationalReviews(pool, today) : new Map();
     const canPlan = canAccessPlanning(scope);
     const canViewUpToDate = scope.canSeeBudgets && scope.canSeeHours;
     const [rows, authorizationRows, explicitAuthorizationRows, staffingContext] = await Promise.all([
@@ -80,6 +84,7 @@ export default async function IndividualsPage({
       const staffing = staffingContext.get(row.id);
       const nextSession = staffing?.nextSession ?? null;
       const staffingFacts = {
+        operationalReview: reviews.get(row.id),
         staffingVisible: canPlan,
         canPlan,
         assignedEmployees: staffing?.assignedEmployees ?? [],
@@ -153,7 +158,7 @@ export default async function IndividualsPage({
       />
 
       {!result.ok ? (
-        <ErrorPanel title="Budget list is unavailable">{result.error}</ErrorPanel>
+        <ErrorPanel title="Budget list is unavailable">{result.error} <ButtonLink href="/individuals">Try again</ButtonLink></ErrorPanel>
       ) : result.data.people.length === 0 ? (
         <Card>
           <EmptyState title="No people yet">

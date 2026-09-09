@@ -300,11 +300,13 @@ suite("Developer 1 settlement integrity regressions (real PostgreSQL)", () => {
     const profile = await getEmployeeMoneyProfile(pool, employeeId);
     expect(profile.roots).toHaveLength(0);
     expect(profile.events).toHaveLength(1);
+    expect(profile.coverage).toEqual({ heldSources: 1, dirty: true });
     unwrap(await refreshSettlementObligations(pool, {}, ACTOR));
     const dashboard = await getSettlementDashboard(pool);
     expect(dashboard.rows).toHaveLength(1);
     expect(dashboard.rows[0]).toMatchObject({ id: obligation.id, originalAmount: "8.0000", appliedAmount: "2.0000", reviewRequired: true });
     expect(dashboard.freshness).toMatchObject({ dirty: false, sourceReviewCount: 1 });
+    expect((await getEmployeeMoneyProfile(pool, employeeId)).coverage).toEqual({ heldSources: 1, dirty: false });
     unwrap(await savePayrollCheck(pool, { ...checkInput, id: check.id, verificationStatus: "verified" }, ACTOR));
     unwrap(await refreshSettlementObligations(pool, {}, ACTOR));
     expect((await getSettlementDashboard(pool)).rows[0]).toMatchObject({ id: obligation.id, reviewRequired: false });

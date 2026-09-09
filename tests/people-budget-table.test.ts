@@ -151,7 +151,7 @@ describe("people and budgets working table", () => {
     for (const label of ["Billing, no budget", "Renewal missing", "Renewal overdue", "Schedule over", "Behind pace"]) {
       expect(tableSource).toContain(label);
     }
-    expect(tableSource).toContain('useState<PeopleStatusFilter>("all")');
+    expect(tableSource).toMatch(/useState<PeopleStatusFilter>\(\(\) =>[\s\S]*?searchParams.get\("status"\)[\s\S]*?: "all"\)/);
   });
 
   it("does not infer budget problems from redacted rows", () => {

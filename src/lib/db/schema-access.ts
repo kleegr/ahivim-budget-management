@@ -157,12 +157,18 @@ export const individuals = pgTable(
     category: text("category"),
     legalName: text("legal_name"),
     preferredName: text("preferred_name"),
+    budgetResponsibility: text("budget_responsibility"),
+    budgetResponsibilityByProgram: jsonb("budget_responsibility_by_program").$type<Record<string, string>>().default({}).notNull(),
     status: text("status").default("active").notNull(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (table) => [uniqueIndex("individuals_normalized_name_key").on(table.normalizedName)],
+  (table) => [
+    uniqueIndex("individuals_normalized_name_key").on(table.normalizedName),
+    check("individuals_budget_responsibility_check", sql`${table.budgetResponsibility} is null or ${table.budgetResponsibility} in ('managed','unmanaged','undecided')`),
+    check("individuals_program_responsibility_check", sql`jsonb_typeof(${table.budgetResponsibilityByProgram}) = 'object'`),
+  ],
 );
 
 export const individualAliases = pgTable(
@@ -196,11 +202,17 @@ export const employees = pgTable(
     /** A separate payout cut (0016): a percentage taken from what is paid to this
      *  employee, paid to him separately. Stored as a decimal fraction (0.10 = 10%). */
     payoutCutPercent: numeric("payout_cut_percent", { precision: 9, scale: 6 }).default("0").notNull(),
+    schedulingResponsibility: text("scheduling_responsibility").default("undecided").notNull(),
+    moneyResponsibility: text("money_responsibility").default("undecided").notNull(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (table) => [uniqueIndex("employees_normalized_name_key").on(table.normalizedName)],
+  (table) => [
+    uniqueIndex("employees_normalized_name_key").on(table.normalizedName),
+    check("employees_scheduling_responsibility_check", sql`${table.schedulingResponsibility} in ('managed','unmanaged','undecided')`),
+    check("employees_money_responsibility_check", sql`${table.moneyResponsibility} in ('managed','unmanaged','undecided')`),
+  ],
 );
 
 export const employeeAliases = pgTable(
