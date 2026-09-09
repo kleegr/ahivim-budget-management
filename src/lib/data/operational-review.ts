@@ -14,7 +14,7 @@ export async function listIndividualOperationalReviews(pool: PgLikePool, today: 
     listProgramBudgets(pool, { individualId: id, status: "active" }),
     pool.query<{ id: string; active: boolean }>(`SELECT id, (status = 'active' AND archived_at IS NULL) AS active FROM individuals WHERE merged_into_id IS NULL AND ($1::uuid IS NULL OR id = $1)`, [id ?? null]),
     pool.query<{ id: string; individual_id: string; label: string; renewal_date: string | null }>(`SELECT strategy.id, strategy.individual_id, strategy.label, strategy.renewal_date::text FROM calculation_strategies strategy JOIN individuals person ON person.id = strategy.individual_id WHERE strategy.status = 'active' AND strategy.after_all > 0 AND person.status = 'active' AND person.archived_at IS NULL AND ($1::uuid IS NULL OR person.id = $1) AND strategy.renewal_date IS NULL`, [id ?? null]),
-    pool.query<{ id: string; name: string }>("SELECT id,name FROM programs"),
+    pool.query<{ id: string; name: string }>("SELECT id,name FROM programs WHERE is_active AND archived_at IS NULL AND code <> 'CLASSES'"),
   ]);
   const programNames = Object.fromEntries(programResult.rows.map((program) => [program.id, program.name]));
   const budgets = [...currentBudgets];

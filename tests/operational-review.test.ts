@@ -40,4 +40,7 @@ describe('operational responsibility and record review', () => {
     expect(reviewEmployeeSetup({ id: 'employee', missingDealTransactions: null })).toEqual([]);
     expect(reviewEmployeeSetup({ id: 'employee', missingDealTransactions: 3 })[0].href).toBe('/employees/employee?view=money#employee-arrangements');
   });
+  it('does not offer an impossible missing-authorization action for an unavailable program', () => {
+    expect(reviewIndividualBudgets({ id: 'person', active: true, responsibility: { ...responsibility, programs: { archived: 'managed' } }, budgets: [], today: '2026-09-08', programNames: { active: 'Active program' } })).toEqual([]);
+  });
 });

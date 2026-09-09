@@ -8,7 +8,7 @@ export function reviewIndividualBudgets(input: {
 }): OperationalFlag[] {
   const flags: OperationalFlag[] = [];
   const base = `/individuals/${input.id}?view=budget`;
-  const managedMissing = Object.entries(input.responsibility.programs).filter(([programId, value]) => value === 'managed' && !input.budgets.some((budget) => budget.programId === programId));
+  const managedMissing = Object.entries(input.responsibility.programs).filter(([programId, value]) => value === 'managed' && (!input.programNames || programId in input.programNames) && !input.budgets.some((budget) => budget.programId === programId));
   if (input.active && input.responsibility.budget === 'managed' && input.budgets.length === 0 && managedMissing.length === 0) {
     flags.push({ key: 'missing-budget', message: 'Budget managed here; no authorization is saved.', action: 'Add budget', href: `${base}#service-authorizations` });
   }

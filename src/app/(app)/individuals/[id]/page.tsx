@@ -403,7 +403,7 @@ export default async function IndividualDetailPage({
     return {
       individual: individualRecordForAccess(scope, individual), budget, operationalBudget, activity: visibleActivity, settlement, masserStatement,
       profileContext, operationalReview,
-      responsibilityPrograms: canManageResponsibility ? programCatalogRaw.map((program) => ({ id: program.id, name: program.name })) : [],
+      responsibilityPrograms: canManageResponsibility ? programCatalogRaw.filter((program) => program.isActive && program.code !== "CLASSES").map((program) => ({ id: program.id, name: program.name })) : [],
       strategy,
       otherPlans,
       financialSetupOverview,

@@ -7,6 +7,7 @@ import { listIndividualOperationalReviews, getOperationalReviewSummary } from '@
 import { createProgramBudget } from '@/lib/manage/program-budgets';
 import { updateBudgetPeriodRenewal } from '@/lib/manage/authorizations';
 import { runSheetSync } from '@/lib/sheets/sync';
+import { setAgencyIndividualMembership } from '@/lib/manage/agencies';
 
 const suite = hasTestDatabase ? describe : describe.skip;
 const actor = randomUUID(), person = randomUUID(), employee = randomUUID();
@@ -46,12 +47,33 @@ suite('operational choices on isolated PostgreSQL', () => {
     const pool = testPool();
     expect((await listIndividualResponsibilities(pool, '2026-09-08', person)).get(person)?.budget).toBe('undecided');
     const home = (await pool.query<{ id: string }>('SELECT id FROM agencies WHERE is_home_agency')).rows[0].id;
-    await pool.query(`INSERT INTO agency_individuals(agency_id,individual_id,manages_budget,bills_services,effective_from,created_by_user_id) VALUES($1,$2,false,true,'2026-01-01',$3)`, [home, person, actor]);
+    unwrap(await setAgencyIndividualMembership(pool, home, { individualId: person, managesBudget: false, billsServices: true, effectiveFrom: '2026-01-01' }, actor));
     expect((await listIndividualResponsibilities(pool, '2026-09-08', person)).get(person)).toMatchObject({ budget: 'unmanaged', source: 'agency' });
     const before = (await pool.query('SELECT * FROM agency_individuals WHERE individual_id=$1', [person])).rows;
     unwrap(await saveOperationalResponsibility(pool, 'individual', person, { field: 'budget', value: 'managed' }, actor));
     expect((await pool.query('SELECT * FROM agency_individuals WHERE individual_id=$1', [person])).rows).toEqual(before);
     expect((await listIndividualOperationalReviews(pool, '2026-09-08', person)).get(person)?.flags[0].key).toBe('missing-budget');
+  });
+
+  it('keeps the audited human choice when authorization triggers change the legacy membership value', async () => {
+    const pool = testPool(), audited = randomUUID(), unproven = randomUUID();
+    const home = (await pool.query<{ id: string }>('SELECT id FROM agencies WHERE is_home_agency')).rows[0].id;
+    await pool.query(`INSERT INTO individuals(id,normalized_name,display_name) VALUES($1,'audited responsibility','Audited Responsibility'),($2,'unproven responsibility','Unproven Responsibility')`, [audited, unproven]);
+    unwrap(await setAgencyIndividualMembership(pool, home, { individualId: audited, managesBudget: false, billsServices: true, effectiveFrom: '2026-01-01' }, actor));
+    unwrap(await createProgramBudget(pool, { individualId: audited, programId: program, renewalDate: '2027-01-01', authorizedHours: '100', internalRate: '20', agencyRate: '25' }, actor));
+    expect((await pool.query('SELECT manages_budget FROM agency_individuals WHERE individual_id=$1', [audited])).rows[0].manages_budget).toBe(true);
+    expect((await listIndividualResponsibilities(pool, '2026-09-08', audited)).get(audited)).toMatchObject({ budget: 'unmanaged', source: 'agency' });
+    await pool.query(`INSERT INTO agency_individuals(agency_id,individual_id,manages_budget,bills_services,effective_from,created_by_user_id) VALUES($1,$2,true,true,'2026-01-01',$3)`, [home, unproven, actor]);
+    expect((await listIndividualResponsibilities(pool, '2026-09-08', unproven)).get(unproven)?.budget).toBe('undecided');
+  });
+
+  it('rejects unsupported and inactive program choices without creating an impossible setup flag', async () => {
+    const pool = testPool();
+    const classes = (await pool.query<{ id: string }>("SELECT id FROM programs WHERE code='CLASSES'")).rows[0].id;
+    expect(await saveOperationalResponsibility(pool, 'individual', person, { field: 'budget', value: 'managed', programId: classes }, actor)).toMatchObject({ ok: false, code: 'validation' });
+    const inactive = (await pool.query<{ id: string }>("UPDATE programs SET is_active=false WHERE code='DAY_HAB' RETURNING id")).rows[0].id;
+    expect(await saveOperationalResponsibility(pool, 'individual', person, { field: 'budget', value: 'managed', programId: inactive }, actor)).toMatchObject({ ok: false, code: 'validation' });
+    await pool.query('UPDATE programs SET is_active=true WHERE id=$1', [inactive]);
   });
 
   it('corrects a managed renewal through the existing mutation and refreshes the exact review', async () => {

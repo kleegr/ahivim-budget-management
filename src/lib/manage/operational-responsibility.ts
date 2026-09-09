@@ -6,8 +6,9 @@ import { fail, ok } from './errors';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/** Owner-only read model. Existing explicit agency decisions are reused; inferred
- * memberships (no human actor) and transaction activity cannot invent a choice.
+/** Owner-only read model. Reuse the audited human decision for the effective
+ * agency interval. Actor IDs alone cannot prove the mutable membership value:
+ * authorization triggers can overwrite it without clearing those actor IDs.
  * Agency manages_budget still governs the existing portal contract, never these
  * operational controls. Keeping its value intact prevents an access grant. */
 export async function listIndividualResponsibilities(pool: PgLikePool, asOf = agencyDate(), id?: string) {
@@ -20,13 +21,23 @@ export async function listIndividualResponsibilities(pool: PgLikePool, asOf = ag
         explicit.manages_budget AS explicit_agency_decision
       FROM individuals person
       LEFT JOIN LATERAL (
-        SELECT membership.manages_budget
+        SELECT (decision.metadata->'next'->>'managesBudget')::boolean AS manages_budget
         FROM agency_individuals membership JOIN agencies agency ON agency.id = membership.agency_id
+        JOIN LATERAL (
+          SELECT audit.metadata
+          FROM audit_logs audit
+          WHERE audit.entity_type = 'individual' AND audit.entity_id = person.id
+            AND audit.action IN ('agency_individual_membership_started', 'agency_individual_membership_changed')
+            AND audit.metadata->'next'->>'agencyId' = agency.id::text
+            AND jsonb_typeof(audit.metadata->'next'->'managesBudget') = 'boolean'
+            AND COALESCE(audit.metadata->'next'->>'effectiveFrom',
+              to_char(audit.created_at AT TIME ZONE 'America/New_York', 'YYYY-MM-DD')) = membership.effective_from::text
+          ORDER BY audit.created_at DESC, audit.id DESC LIMIT 1
+        ) decision ON true
         WHERE membership.individual_id = person.id AND agency.is_home_agency
           AND agency.status = 'active' AND membership.is_active
           AND membership.effective_from <= $1::date
           AND (membership.effective_to IS NULL OR membership.effective_to >= $1::date)
-          AND (membership.created_by_user_id IS NOT NULL OR membership.updated_by_user_id IS NOT NULL)
         ORDER BY membership.effective_from DESC, membership.id LIMIT 1
       ) explicit ON true
       WHERE person.merged_into_id IS NULL AND ($2::uuid IS NULL OR person.id = $2)`, [asOf, id ?? null]);
@@ -62,8 +73,8 @@ export async function saveOperationalResponsibility(pool: PgLikePool, kind: 'ind
     const previous = await client.query(`SELECT ${columns} FROM ${table} WHERE id = $1${kind === 'individual' ? ' AND merged_into_id IS NULL' : ''} FOR UPDATE`, [id]);
     if (!previous.rows.length) { await client.query('ROLLBACK'); return fail('not_found', 'Person not found.'); }
     if (programId) {
-      const program = await client.query('SELECT id FROM programs WHERE id = $1', [programId]);
-      if (!program.rows.length) { await client.query('ROLLBACK'); return fail('not_found', 'Program not found.'); }
+      const program = await client.query("SELECT id FROM programs WHERE id = $1 AND is_active AND archived_at IS NULL AND code <> 'CLASSES'", [programId]);
+      if (!program.rows.length) { await client.query('ROLLBACK'); return fail('validation', 'Choose an active program supported by service authorizations. Class allowances remain in the Classes workspace.'); }
     }
     // Update exactly one choice: concurrent edits to other programs/employee
     // responsibilities are not overwritten. Business fields are never included.
