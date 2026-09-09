@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { transformSync } from "esbuild";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { formatKnownMoneyTotal } from "@/lib/business/transaction-totals";
 
 const mocks = {
   getSettlementDashboard: vi.fn(),
@@ -34,6 +35,7 @@ new Function("require", "module", "exports", compiled)((name: string) => {
   if (name === "@/lib/data/operational-review") return { getOperationalReviewSummary: mocks.getOperationalReviewSummary };
   if (name === "@/lib/data/agency-financial-report" || name === "@/lib/dashboard/owner-summary") return {};
   if (name === "@/lib/money") return { formatHours: String, formatMoney: String };
+  if (name === "@/lib/business/transaction-totals") return { formatKnownMoneyTotal };
   if (name === "@/components/ui") return { ButtonLink: Anchor, PageHeader: EmptyComponent };
   if (name.startsWith("@/components/")) return EmptyComponent;
   return nodeRequire(name);

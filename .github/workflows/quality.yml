@@ -35,6 +35,9 @@ jobs:
           --health-retries 12
     env:
       TEST_DATABASE_URL: postgresql://ahivim:ahivim-test@127.0.0.1:5432/ahivim_test
+      TEST_EXPECTED_DB_HOST: 127.0.0.1
+      TEST_EXPECTED_DB_NAME: ahivim_test
+      TEST_CONFIRM_RESET: DROP_DISPOSABLE_TEST_DATABASE
     steps:
       - uses: actions/checkout@v7
         with:

@@ -4,6 +4,7 @@ import { apiUser } from "@/lib/auth/session";
 import { resolveAccessScope } from "@/lib/auth/access";
 import { readJson, sameOriginOrFail, jsonError, redactError } from "@/lib/http";
 import { agencyDate } from "@/lib/business/agency-time";
+import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
 import {
   buildXlsx,
   buildCsv,
@@ -59,18 +60,44 @@ export async function POST(request: NextRequest) {
       .filter((c): c is ExportColumn => c !== null);
 
     if (columns.length === 0) return jsonError("No columns to export.", 400);
+    if (columns.length > 100) return jsonError("Too many columns to export.", 400);
+    const visibility = transactionFieldVisibility(scope);
+    const permitted = new Set([
+      "id", "individualId", "employeeId", "programId", "checkIdentity", "sourcePaymentIdentity",
+      "serviceDate", "payTo", "checkDate", "checkNumber", "periodBegin", "periodEnd", "programCode", "program",
+      "individual", "employee", "paid", "paymentRecipient", "nextStep", "matchStatus", "groupStatus",
+      "sourceName", "sourceSheet", "sourceRowNumber", "routing", "individuals", "programs", "services",
+      "employees", "employeeChecks", "review",
+      ...(visibility.canSeeHours ? ["hours"] : []),
+      ...(visibility.canSeeBilledAmounts ? ["rate", "gross", "funderBilled", "funderBilledCompleteness"] : []),
+      ...(visibility.canSeeEmployeeAmounts ? ["employeeRate", "internalAmount", "employeeBase", "employeeBaseCompleteness"] : []),
+      ...(visibility.canSeeAgencySpread ? ["agencyAdditional", "agencySpread", "agencySpreadCompleteness"] : []),
+      ...(visibility.canSeeBilledAmounts && visibility.canSeeEmployeeAmounts ? ["moneyReconciliation"] : []),
+      ...(visibility.canSeeCheckGross ? ["verifiedCheckGross", "verifiedGross"] : []),
+      ...(visibility.canSeeCheckNet ? ["verifiedCheckNet", "verifiedNet", "totalNetPay", "sourceNet"] : []),
+      ...(visibility.canSeeCheckGross || visibility.canSeeCheckNet ? ["verificationStatus", "verification"] : []),
+      ...(visibility.canSeeTaxes ? ["withholding"] : []),
+    ]);
+    if (columns.some((column) => !permitted.has(column.key))) {
+      return jsonError("One or more requested fields are outside your transaction access.", 403);
+    }
 
     const rawRows = Array.isArray(body.rows) ? body.rows : [];
     if (rawRows.length > 200_000) return jsonError("Too many rows to export at once.", 400);
-    const rows: Record<string, ExportCell>[] = rawRows.map((r) => {
-      const src = (r && typeof r === "object" ? r : {}) as Record<string, unknown>;
+    const rows: Record<string, ExportCell>[] = [];
+    for (const r of rawRows) {
+      if (!r || typeof r !== "object" || Array.isArray(r)) return jsonError("Invalid export row.", 400);
+      const src = r as Record<string, unknown>;
       const out: Record<string, ExportCell> = {};
       for (const col of columns) {
         const v = src[col.key];
-        out[col.key] = v === null || v === undefined ? null : (v as ExportCell);
+        if (v !== null && v !== undefined && !["string", "number", "boolean"].includes(typeof v)) return jsonError("Invalid export cell.", 400);
+        if (typeof v === "number" && !Number.isFinite(v)) return jsonError("Invalid export number.", 400);
+        if (typeof v === "string" && v.length > 32_767) return jsonError("An export cell is too long.", 400);
+        out[col.key] = v === null || v === undefined ? null : typeof v === "boolean" ? String(v) : (v as ExportCell);
       }
-      return out;
-    });
+      rows.push(out);
+    }
 
     const filename = `${baseName}-${agencyDate()}.${format}`;
 

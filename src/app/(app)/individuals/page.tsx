@@ -14,6 +14,8 @@ import { resolvePortfolioView } from "@/components/individuals/portfolio-view";
 import { resolveBudgetStatusView } from "@/components/individuals/budget-status-view";
 import { getIndividualPortfolioStaffingContext } from "@/lib/data/individual-profile";
 import { buildUpToDateBudgetPortfolio } from "@/lib/business/up-to-date-budget";
+import { listIndividualResponsibilities } from "@/lib/manage/operational-responsibility";
+import { isWorkingProgram } from "@/lib/business/working-programs";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "People & budgets - Ahivim Budget Management" };
@@ -46,6 +48,13 @@ export default async function IndividualsPage({
   const requestedSheet = Array.isArray(sp.sheet) ? sp.sheet[0] : sp.sheet;
   const initialView = resolvePortfolioView({ view: requestedView, budget: requestedBudget });
   const initialSheet = resolveBudgetStatusView(requestedSheet);
+  const showAllPrograms = sp.programScope === "all";
+  const scopeParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(sp)) if (key !== "programScope" && value !== undefined) {
+    for (const item of Array.isArray(value) ? value : [value]) scopeParams.append(key, item);
+  }
+  if (!showAllPrograms) scopeParams.set("programScope", "all");
+  const scopeHref = `/individuals${scopeParams.size ? `?${scopeParams}` : ""}`;
 
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
@@ -69,8 +78,20 @@ export default async function IndividualsPage({
       }),
     ]);
     const visibleIds = new Set(rows.map((row) => row.id));
-    const visibleAuthorizationRows = authorizationRows.filter((row) => visibleIds.has(row.individualId));
-    const visibleExplicitAuthorizationRows = explicitAuthorizationRows.filter((row) => visibleIds.has(row.individualId));
+    const responsibilities = canViewUpToDate ? await listIndividualResponsibilities(pool, today) : new Map();
+    const memberships = canViewUpToDate ? await pool.query<{ individual_id: string; program_id: string; program_code: string; program_name: string }>(
+      `SELECT DISTINCT relation.individual_id, program.id AS program_id, program.code AS program_code, program.name AS program_name
+       FROM (SELECT individual_id, program_id FROM payroll_transactions WHERE individual_id = ANY($1::uuid[])
+         UNION SELECT strategy.individual_id, line.program_id FROM calculation_strategies strategy
+           JOIN calculation_strategy_lines line ON line.strategy_id = strategy.id WHERE strategy.individual_id = ANY($1::uuid[])
+         UNION SELECT individual_id, program_id FROM program_budget_balances WHERE individual_id = ANY($1::uuid[])) relation
+       JOIN programs program ON program.id = relation.program_id`, [[...visibleIds]]) : { rows: [] };
+    const workingMemberships = memberships.rows.filter((row) => isWorkingProgram({ programId: row.program_id, programCode: row.program_code }, responsibilities.get(row.individual_id)));
+    const workingPeople = new Set([...workingMemberships.map((row) => row.individual_id), ...authorizationRows.filter((row) => isWorkingProgram(row, responsibilities.get(row.individualId))).map((row) => row.individualId)]);
+    const isVisibleProgram = (row: (typeof authorizationRows)[number]) => visibleIds.has(row.individualId)
+      && (showAllPrograms || isWorkingProgram(row, responsibilities.get(row.individualId)));
+    const visibleAuthorizationRows = authorizationRows.filter(isVisibleProgram);
+    const visibleExplicitAuthorizationRows = explicitAuthorizationRows.filter(isVisibleProgram);
     const authorizationPortfolio = summarizeAuthorizationPortfolio(
       visibleAuthorizationRows,
       asOf,
@@ -80,7 +101,7 @@ export default async function IndividualsPage({
         .filter((row) => row.requiredAuthType === "hours" || row.requiredAuthType === "both")
         .map((row) => row.individualId),
     );
-    const people = rows.map((row) => {
+    const people = rows.filter((row) => !canViewUpToDate || showAllPrograms || workingPeople.has(row.id)).map((row) => {
       const staffing = staffingContext.get(row.id);
       const nextSession = staffing?.nextSession ?? null;
       const staffingFacts = {
@@ -103,7 +124,7 @@ export default async function IndividualsPage({
             ...row,
             ...staffingFacts,
             programs: [...new Set([
-              ...row.programs,
+              ...(showAllPrograms ? row.programs : workingMemberships.filter((membership) => membership.individual_id === row.id).map((membership) => membership.program_name)),
               ...(authorizationPortfolio.get(row.id)?.programs ?? []),
             ])].sort(),
             budget: (() => {
@@ -156,13 +177,17 @@ export default async function IndividualsPage({
           ) : undefined
         }
       />
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded border border-[var(--color-rule)] p-3 text-sm">
+        <p>{showAllPrograms ? "All authorized program relationships are shown. Totals cover the displayed scope." : "Working scope: Self-Hired ComHab, Self-Hired Respite, and other programs explicitly managed by us. Totals cover these programs."}</p>
+        <ButtonLink href={scopeHref}>{showAllPrograms ? "Show working programs" : "Show all programs / all individuals"}</ButtonLink>
+      </div>
 
       {!result.ok ? (
         <ErrorPanel title="Budget list is unavailable">{result.error} <ButtonLink href="/individuals">Try again</ButtonLink></ErrorPanel>
       ) : result.data.people.length === 0 ? (
         <Card>
-          <EmptyState title="No people yet">
-            <p>People appear here after billing data is added{canEdit ? ", or you can add someone with the Add person button." : "."}</p>
+          <EmptyState title={showAllPrograms ? "No people yet" : "No people in the working program scope"}>
+            <p>{showAllPrograms ? "People appear here after billing data is added." : "Use Show all programs / all individuals to find people for setup."}</p>
           </EmptyState>
         </Card>
       ) : (

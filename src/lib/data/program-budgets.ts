@@ -141,7 +141,7 @@ const PROGRAM_BUDGET_SELECT = `
          AND scheduled_session.program_id = balance.program_id
          AND scheduled_session.status = 'pending'
          AND scheduled_session.matched_transaction_id IS NULL
-         AND scheduled_session.session_date BETWEEN balance.start_date AND balance.end_date
+         AND scheduled_session.session_date BETWEEN greatest(balance.start_date, (now() AT TIME ZONE 'America/New_York')::date) AND least(balance.end_date, COALESCE(balance.renewal_date - 1, balance.end_date))
     ) schedule`;
 
 function toProgramBudget(row: ProgramBudgetRow): ProgramBudgetRecord {
@@ -350,7 +350,7 @@ export async function listCurrentProgramBudgets(
             AND scheduled_session.program_id = effective.program_id
             AND scheduled_session.status = 'pending'
             AND scheduled_session.matched_transaction_id IS NULL
-            AND scheduled_session.session_date BETWEEN effective.start_date AND effective.end_date
+            AND scheduled_session.session_date BETWEEN greatest(effective.start_date, $1::date) AND least(effective.end_date, COALESCE(explicit_balance.renewal_date - 1, effective.end_date))
        ) schedule
       WHERE ${where.join(" AND ")}${directScope}
       ORDER BY effective.end_date, individual_name, program.name, effective.period_id`,
@@ -365,6 +365,7 @@ export async function listProgramBudgets(
 ): Promise<ProgramBudgetRecord[]> {
   const params: unknown[] = [];
   const where: string[] = ["TRUE"];
+  let asOfParameter: string | null = null;
   if (filters.individualId) {
     if (!UUID.test(filters.individualId)) return [];
     params.push(filters.individualId);
@@ -381,6 +382,7 @@ export async function listProgramBudgets(
   }
   if (filters.asOf && /^\d{4}-\d{2}-\d{2}$/.test(filters.asOf)) {
     params.push(filters.asOf);
+    asOfParameter = `$${params.length}::date`;
     where.push(`$${params.length}::date BETWEEN balance.start_date AND balance.end_date`);
   }
   const directScope = filters.scope
@@ -388,7 +390,7 @@ export async function listProgramBudgets(
     : "";
 
   const { rows } = await pool.query<ProgramBudgetRow>(
-    `${PROGRAM_BUDGET_SELECT}
+    `${asOfParameter ? PROGRAM_BUDGET_SELECT.replace("(now() AT TIME ZONE 'America/New_York')::date", asOfParameter) : PROGRAM_BUDGET_SELECT}
       WHERE ${where.join(" AND ")}${directScope}
       ORDER BY balance.end_date, balance.individual_name, balance.program_name,
                balance.budget_period_id`,
@@ -413,6 +415,8 @@ export async function getProgramBudget(
 
 export interface ProgramBudgetMonthRecord {
   month: string;
+  payrollHours: string;
+  adjustmentHours: string;
   usedHours: string;
   scheduledHours: string;
   cumulativeUsedHours: string;
@@ -430,6 +434,8 @@ interface ProgramBudgetMonthRow {
   authorized_hours: string;
   used_hours: string;
   scheduled_hours: string;
+  payroll_hours?: string;
+  adjustment_hours?: string;
 }
 
 function inclusiveDays(from: string, to: string): number {
@@ -450,13 +456,13 @@ export async function listProgramBudgetMonthlyHistory(
   const { rows } = await pool.query<ProgramBudgetMonthRow>(
     `WITH account AS (
        SELECT balance.budget_period_id, balance.individual_id, balance.program_id,
-              balance.start_date, balance.end_date, balance.authorized_hours,
+              balance.start_date, balance.end_date, balance.renewal_date, balance.authorized_hours,
               balance.internal_rate, balance.consumption_source, balance.rate_scope
          FROM program_budget_balances balance
         WHERE balance.budget_period_id = $1 AND balance.program_id = $2
        UNION ALL
        SELECT effective.period_id, effective.individual_id, effective.program_id,
-              effective.start_date, effective.end_date, effective.authorized_hours,
+              effective.start_date, effective.end_date, effective.end_date + 1 AS renewal_date, effective.authorized_hours,
               effective.internal_rate, program.consumption_source, program.rate_scope
          FROM effective_budget_authorizations_at($3::date) effective
          JOIN programs program ON program.id = effective.program_id
@@ -511,7 +517,7 @@ export async function listProgramBudgetMonthlyHistory(
           AND scheduled_session.program_id = account.program_id
           AND scheduled_session.status = 'pending'
           AND scheduled_session.matched_transaction_id IS NULL
-          AND scheduled_session.session_date BETWEEN account.start_date AND account.end_date
+          AND scheduled_session.session_date BETWEEN greatest(account.start_date, $3::date) AND least(account.end_date, COALESCE(account.renewal_date - 1, account.end_date))
         GROUP BY 1
      )
      SELECT months.month_start::text AS month_start,
@@ -519,6 +525,8 @@ export async function listProgramBudgetMonthlyHistory(
             months.effective_end::text AS effective_end,
             account.authorized_hours::text AS authorized_hours,
             (COALESCE(payroll.used_hours, 0) + COALESCE(events.used_hours, 0))::text AS used_hours,
+            COALESCE(payroll.used_hours, 0)::text AS payroll_hours,
+            COALESCE(events.used_hours, 0)::text AS adjustment_hours,
             COALESCE(schedule.scheduled_hours, 0)::text AS scheduled_hours
        FROM account
        JOIN months ON true
@@ -545,6 +553,8 @@ export async function listProgramBudgetMonthlyHistory(
       : authorized.times(inclusiveDays(periodStart, cutoff)).dividedBy(inclusiveDays(periodStart, periodEnd));
     return {
       month: row.month_start.slice(0, 7),
+      payrollHours: toHours(row.payroll_hours ?? row.used_hours),
+      adjustmentHours: toHours(row.adjustment_hours ?? 0),
       usedHours: toHours(row.used_hours),
       scheduledHours: toHours(row.scheduled_hours),
       cumulativeUsedHours: toHours(cumulativeUsed),

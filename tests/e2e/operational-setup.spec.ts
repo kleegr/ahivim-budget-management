@@ -10,9 +10,19 @@ async function signIn(page: Page, email = ADMIN_EMAIL, password = ADMIN_PASSWORD
   await page.waitForURL((url) => url.pathname !== '/signin');
 }
 async function saveChoice(page: Page, label: string, value: string) {
+  const setup = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: /^Finish setup/ }) }).first();
+  if (label.endsWith('budget responsibility')) {
+    await page.waitForURL(url => /^\/individuals\/[^/]+$/.test(url.pathname), { waitUntil: 'load' });
+    // A profile Link can finish clicking before its next server page arrives.
+    // Wait for setup instead of treating a momentary zero count as no setup.
+    await expect(setup).toBeVisible();
+    if (await setup.getAttribute('open') === null) await setup.locator('summary').first().click();
+  }
   await page.getByRole('combobox', { name: label, exact: true }).selectOption(value);
+  const saved = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/responsibility') && response.request().method() === 'PATCH' && response.request().postDataJSON()?.value === value);
   await page.getByRole('button', { name: `Save ${label}`, exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'Saved. Review state updated.' }).first()).toBeVisible();
+  expect((await saved).status()).toBe(200);
+  await expect(page.getByRole('status').filter({ hasText: 'Saved this responsibility.' }).first()).toBeVisible();
 }
 function testPool() {
   assertSafeE2eDatabaseReset({ connectionString: TEST_DB_URL, expectedHost: EXPECTED_DISPOSABLE_DB_HOST, confirmation: RESET_CONFIRMATION });
@@ -32,13 +42,13 @@ test('Owner manages mixed program responsibility and corrects the flagged renewa
     await pool.query(`INSERT INTO payroll_transactions(individual_id,employee_id,program_id,period_begin,check_date,imported_hours,imported_rate,imported_amount,payment_recipient,transaction_fingerprint) VALUES($1,$2,$3,$4,$4,2,25,50,'agency',$5)`, [id, employeeId, programs[0].id, today, `responsibility-${id}`]);
     const source = (await pool.query('SELECT * FROM payroll_transactions WHERE individual_id=$1', [id])).rows;
     await signIn(page);
-    await page.goto(`/individuals?q=${encodeURIComponent(name)}`);
+    await page.goto(`/individuals?programScope=all&q=${encodeURIComponent(name)}`);
     await expect(page.getByRole('link', { name, exact: true })).toBeVisible();
     await expect(page.getByRole('row').filter({ hasText: name })).toContainText('Not decided yet');
     await page.getByRole('link', { name, exact: true }).click();
     await saveChoice(page, 'General budget responsibility', 'unmanaged');
     await expect(page.getByRole('region', { name: 'Record review' })).toHaveCount(0);
-    await page.reload(); await expect(page.getByRole('combobox', { name: 'General budget responsibility', exact: true })).toHaveValue('unmanaged');
+    await page.reload(); await page.locator('summary').filter({ hasText: /^Finish setup/ }).click(); await expect(page.getByRole('combobox', { name: 'General budget responsibility', exact: true })).toHaveValue('unmanaged');
     await page.getByRole('link', { name: 'Back to people & budgets' }).click();
     await expect(page).toHaveURL((url) => url.searchParams.get("q") === name);
     await expect(page.getByRole('row').filter({ hasText: name })).not.toContainText('Needs budget');
@@ -47,10 +57,11 @@ test('Owner manages mixed program responsibility and corrects the flagged renewa
     await saveChoice(page, 'General budget responsibility', 'managed');
     await expect(page.getByRole('link', { name: 'Add budget', exact: true }).first()).toBeVisible();
     for (const program of programs) {
-      const response = await page.request.post('/api/program-budgets', { data: { individualId: id, programId: program.id, startDate: `${today.slice(0,4)}-01-01`, endDate: `${today.slice(0,4)}-12-31`, authorizedHours: '100', internalRate: '20', agencyRate: '25' } });
+      const response = await page.request.post('/api/program-budgets', { data: { individualId: id, programId: program.id, startDate: `${today.slice(0,4)}-01-01`, endDate: `${today.slice(0,4)}-12-31`, authorizedHours: '100' } });
       expect(response.ok(), JSON.stringify(await response.json())).toBe(true);
     }
     await page.reload();
+    await page.locator('summary').filter({ hasText: /^Finish setup/ }).click();
     await page.getByText('Program responsibility', { exact: true }).click();
     await saveChoice(page, `${programs[1].name} budget responsibility`, 'unmanaged');
     await page.getByRole('link', { name: 'Set renewal date', exact: true }).first().click();
@@ -63,6 +74,9 @@ test('Owner manages mixed program responsibility and corrects the flagged renewa
     await expect(dialog).toHaveCount(0);
     await expect(page.getByRole('status').filter({ hasText: 'Renewal saved. Budget and review state updated.' })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Record review' })).toHaveCount(0);
+    await expect(page.locator('article')).toHaveCount(1);
+    await page.getByRole('link', { name: 'Show all programs', exact: true }).click();
+    await page.waitForURL(url => url.searchParams.get('programScope') === 'all', { waitUntil: 'load' });
     await expect(page.locator('article')).toHaveCount(2);
     expect((await pool.query('SELECT * FROM payroll_transactions WHERE individual_id=$1', [id])).rows).toEqual(source);
     expect((await pool.query('SELECT count(*)::int AS count FROM budget_authorizations WHERE individual_id=$1', [id])).rows[0].count).toBe(2);
@@ -70,6 +84,7 @@ test('Owner manages mixed program responsibility and corrects the flagged renewa
     const saved = await (await page.request.get(`/api/individuals/${id}/responsibility`)).json();
     expect(saved.data.budget).toBe('managed'); expect(saved.data.programs[programs[1].id]).toBe('unmanaged');
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('summary').filter({ hasText: /^Finish setup/ }).click();
     await expect(page.getByRole('combobox', { name: 'General budget responsibility' })).toBeVisible();
     const widths = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
     expect(widths.scroll).toBeLessThanOrEqual(widths.client + 1);
@@ -86,7 +101,15 @@ test('Employee operational choices are independent, persistent, searchable, and 
     await pool.query(`INSERT INTO payroll_transactions(employee_id,check_date,imported_amount,payment_recipient,transaction_fingerprint) VALUES($1,CURRENT_DATE,125,'employee',$2)`, [id, `employee-responsibility-${id}`]);
     const source = (await pool.query('SELECT * FROM payroll_transactions WHERE employee_id=$1', [id])).rows;
     await signIn(page); await page.goto(`/employees/${id}`);
-    await saveChoice(page, 'Scheduling responsibility', 'managed'); await saveChoice(page, 'Money operations responsibility', 'unmanaged');
+    await page.getByRole('combobox', { name: 'Scheduling responsibility' }).selectOption('managed');
+    await page.getByRole('combobox', { name: 'Money operations responsibility' }).selectOption('unmanaged');
+    await page.getByRole('button', { name: 'Save Scheduling responsibility', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'Saved this responsibility.' })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'Money operations responsibility' })).toHaveValue('unmanaged');
+    page.on('dialog', dialog => dialog.accept());
+    await page.reload();
+    await expect(page.getByRole('combobox', { name: 'Money operations responsibility' })).toHaveValue('unmanaged');
+    await saveChoice(page, 'Money operations responsibility', 'unmanaged');
     await page.reload();
     await expect(page.getByRole('combobox', { name: 'Scheduling responsibility' })).toHaveValue('managed');
     await expect(page.getByRole('combobox', { name: 'Money operations responsibility' })).toHaveValue('unmanaged');

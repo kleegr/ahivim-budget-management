@@ -1,5 +1,7 @@
 "use client";
 
+import SearchableSelect from "@/components/manage/searchable-select";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -683,16 +685,13 @@ function NotesCell({ row, canManage, saving, onSave }: { row: MasserSheetRow; ca
 /* ------------------------------------------------------------- add budget */
 
 function AddBudgetModal({ candidates, onClose, onDone }: { candidates: BudgetCandidate[]; onClose: () => void; onDone: () => void }) {
-  const [q, setQ] = useState("");
+  const [candidateId, setCandidateId] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [newRenewal, setNewRenewal] = useState("");
 
-  const filtered = useMemo(() => {
-    const n = q.trim().toLowerCase();
-    return (n ? candidates.filter((c) => c.name.toLowerCase().includes(n)) : candidates).slice(0, 40);
-  }, [q, candidates]);
+  const candidate = candidates.find((entry) => entry.id === candidateId);
 
   const addExisting = async (c: BudgetCandidate) => {
     setBusy(c.id); setErr(null);
@@ -725,17 +724,9 @@ function AddBudgetModal({ candidates, onClose, onDone }: { candidates: BudgetCan
         {err ? <p className="rounded border border-[var(--color-danger)] bg-[#fdf2f5] px-3 py-2 text-sm text-[var(--color-danger)]">{err}</p> : null}
         <div>
           <p className="mb-1 text-sm font-medium">From someone already in your transactions</p>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search a person…" className="input w-full" autoFocus />
-          <div className="scroll-thin mt-2 max-h-64 overflow-auto rounded-lg border border-[var(--color-rule)]">
-            {filtered.length === 0 ? (
-              <p className="px-3 py-6 text-center text-sm text-[var(--color-text-soft)]">{candidates.length === 0 ? "Everyone already has a budget." : "No match."}</p>
-            ) : filtered.map((c) => (
-              <div key={c.id} className="flex items-center justify-between gap-2 border-b border-[var(--color-rule)] px-3 py-2 last:border-0">
-                <div className="min-w-0"><div className="truncate text-sm font-medium">{c.name}</div><div className="text-xs text-[var(--color-text-soft)]">{c.txCount.toLocaleString()} transaction{c.txCount === 1 ? "" : "s"} · {formatMoney(c.billed)} billed</div></div>
-                <button type="button" disabled={!!busy} onClick={() => addExisting(c)} className="btn btn-sm btn-secondary shrink-0">{busy === c.id ? "Adding…" : "Add budget"}</button>
-              </div>
-            ))}
-          </div>
+          <SearchableSelect value={candidateId} onChange={setCandidateId} label="individuals" selectLabel="Individual for budget" placeholder="Choose a person" disabled={Boolean(busy)} options={candidates.map((entry) => ({ value: entry.id, label: `${entry.name} · ${entry.txCount.toLocaleString()} transactions · ${formatMoney(entry.billed)} billed` }))} />
+          {candidates.length === 0 ? <p className="mt-2 text-sm text-[var(--color-text-soft)]">Everyone already has a budget.</p> : null}
+          <button type="button" disabled={Boolean(busy) || !candidate} onClick={() => { if (candidate) void addExisting(candidate); }} className="btn btn-sm btn-secondary mt-2">{candidate && busy === candidate.id ? "Adding…" : "Add budget"}</button>
         </div>
         <div className="border-t border-[var(--color-rule)] pt-3">
           <p className="mb-1 text-sm font-medium">Or create a new person</p>

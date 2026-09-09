@@ -22,11 +22,11 @@ import { GET as getUtilization } from "@/app/api/schedule/utilization/route";
 const ID = "00000000-0000-4000-8000-000000000001";
 const params = { params: Promise.resolve({ id: ID }) };
 
-function request(path: string, method: "GET" | "POST" | "PATCH" = "GET"): NextRequest {
+function request(path: string, method: "GET" | "POST" | "PATCH" = "GET", body: Record<string, unknown> = {}): NextRequest {
   return new NextRequest(`http://localhost${path}`, method === "GET" ? undefined : {
     method,
     headers: { "content-type": "application/json" },
-    body: "{}",
+    body: JSON.stringify(body),
   });
 }
 
@@ -74,6 +74,9 @@ describe("planning API authorization boundary", () => {
 
     const writes = [
       await createSession(request("/api/schedule/sessions", "POST")),
+      await createSession(request("/api/schedule/sessions", "POST", {
+        sessionDate: "2026-09-09", programId: ID, individualIds: [ID], durationHours: "2",
+      })),
       await updateSession(request(`/api/schedule/sessions/${ID}`, "PATCH"), params),
       await createSeries(request("/api/schedule/series", "POST")),
       await updateSeries(request(`/api/schedule/series/${ID}`, "PATCH"), params),
@@ -83,6 +86,20 @@ describe("planning API authorization boundary", () => {
       expect(response.status).toBe(403);
       expect(await response.json()).toEqual({ ok: false, error: "Schedule management access required" });
     }
+    expect(mocks.getPool).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "2026-02-31", "09/09/2026"])("rejects invalid session date %s before opening the database", async (sessionDate) => {
+    mocks.apiPlanningUser.mockResolvedValue({
+      user: { id: "schedule-manager" },
+      access: { canSeeBudgets: true },
+      canManageSchedules: true,
+    });
+    const response = await createSession(request("/api/schedule/sessions", "POST", {
+      sessionDate, programId: ID, individualIds: [ID], durationHours: "2",
+    }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ ok: false, error: "Enter a valid session date." });
     expect(mocks.getPool).not.toHaveBeenCalled();
   });
 });

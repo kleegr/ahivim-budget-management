@@ -109,8 +109,19 @@ describe("authorization portfolio summary", () => {
 
     const budget = summaries.get("person-1")?.budget;
     expect(budget?.hoursLeft).toBe(0);
+    expect(budget?.plainStatus).toBe("over");
     expect(budget?.mustUseMonthly).not.toBeNull();
     expect(budget!.mustUseMonthly!).toBeGreaterThan(0);
+  });
+
+  it("does not label a person on track when spare hours mask a program overrun", () => {
+    const summary = summarizeAuthorizationPortfolio([
+      authorization({ authorizedHours: "100", consumedHours: "120" }),
+      authorization({ programId: "program-2", programName: "Respite", authorizedHours: "300", consumedHours: "10" }),
+    ], new Date("2026-08-30T12:00:00Z")).get("person-1")!;
+    expect(summary.budget.hoursLeft).toBe(270);
+    expect(summary.budget.plainStatus).toBe("over");
+    expect(summary.budget.status).toBe("over_authorization");
   });
 
   it("subtracts pending schedule from the pace still needing to be planned", () => {

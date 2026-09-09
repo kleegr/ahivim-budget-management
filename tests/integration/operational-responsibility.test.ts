@@ -60,7 +60,7 @@ suite('operational choices on isolated PostgreSQL', () => {
     const home = (await pool.query<{ id: string }>('SELECT id FROM agencies WHERE is_home_agency')).rows[0].id;
     await pool.query(`INSERT INTO individuals(id,normalized_name,display_name) VALUES($1,'audited responsibility','Audited Responsibility'),($2,'unproven responsibility','Unproven Responsibility')`, [audited, unproven]);
     unwrap(await setAgencyIndividualMembership(pool, home, { individualId: audited, managesBudget: false, billsServices: true, effectiveFrom: '2026-01-01' }, actor));
-    unwrap(await createProgramBudget(pool, { individualId: audited, programId: program, renewalDate: '2027-01-01', authorizedHours: '100', internalRate: '20', agencyRate: '25' }, actor));
+    unwrap(await createProgramBudget(pool, { individualId: audited, programId: program, renewalDate: '2027-01-01', authorizedHours: '100' }, actor));
     expect((await pool.query('SELECT manages_budget FROM agency_individuals WHERE individual_id=$1', [audited])).rows[0].manages_budget).toBe(true);
     expect((await listIndividualResponsibilities(pool, '2026-09-08', audited)).get(audited)).toMatchObject({ budget: 'unmanaged', source: 'agency' });
     await pool.query(`INSERT INTO agency_individuals(agency_id,individual_id,manages_budget,bills_services,effective_from,created_by_user_id) VALUES($1,$2,true,true,'2026-01-01',$3)`, [home, unproven, actor]);
@@ -78,7 +78,7 @@ suite('operational choices on isolated PostgreSQL', () => {
 
   it('corrects a managed renewal through the existing mutation and refreshes the exact review', async () => {
     const pool = testPool();
-    const created = unwrap(await createProgramBudget(pool, { individualId: person, programId: program, startDate: '2026-01-01', endDate: '2026-12-31', authorizedHours: '100', internalRate: '20', agencyRate: '25' }, actor));
+    const created = unwrap(await createProgramBudget(pool, { individualId: person, programId: program, startDate: '2026-01-01', endDate: '2026-12-31', authorizedHours: '100' }, actor));
     const flags = (await listIndividualOperationalReviews(pool, '2026-09-08', person)).get(person)!.flags;
     expect(flags.some((flag) => flag.key === `renewal-missing-${created.authorizationId}`)).toBe(true);
     unwrap(await updateBudgetPeriodRenewal(pool, created.budgetPeriodId, '2027-01-01', actor, 'Owner corrected renewal'));

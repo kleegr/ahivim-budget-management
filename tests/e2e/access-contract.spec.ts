@@ -27,12 +27,18 @@ test.describe("13-preset server route/action/field contract", () => {
       await verifyDecision(classResponse, contract.classInvoices);
       if (contract.classInvoices) expect((await classResponse.json()).data.length).toBeGreaterThan(0);
 
-      // This exporter serializes only client-supplied data, but still requires
-      // the transaction capability. No business mutation occurs.
+      // Exercise the capability with a permitted nonfinancial field. Unknown
+      // field keys must still be denied, including for an owner.
+      const exported = await api.post("/api/transactions/export", {
+        headers: { origin: new URL(page.url()).origin },
+        data: { format: "csv", columns: [{ key: "individual", header: "Individual", type: "text" }], rows: [{ individual: "D2-EXPORT-CAPABILITY-SENTINEL" }] },
+      });
+      await verifyDecision(exported, contract.transactionExport);
+      if (contract.transactionExport) expect(await exported.text()).toContain("D2-EXPORT-CAPABILITY-SENTINEL");
       await verifyDecision(await api.post("/api/transactions/export", {
         headers: { origin: new URL(page.url()).origin },
-        data: { format: "csv", columns: [{ key: "value", header: "Value", type: "text" }], rows: [{ value: "D2-EXPORT-CAPABILITY-SENTINEL" }] },
-      }), contract.transactionExport);
+        data: { format: "csv", columns: [{ key: "unrecognizedSecret", header: "Value", type: "text" }], rows: [{ unrecognizedSecret: "E2E-PRIVATE" }] },
+      }), false);
 
       if (contract.safeEmployeeRoster) {
         const response = await api.get("/api/employees?includeArchived=true");

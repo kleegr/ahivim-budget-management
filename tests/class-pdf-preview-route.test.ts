@@ -55,7 +55,7 @@ describe("class invoice PDF preview route", () => {
     expect(mocks.buildClassInvoicePdf).not.toHaveBeenCalled();
   });
 
-  it("keeps issued downloads available and rejects voided records", async () => {
+  it("keeps issued and void history downloads available using their preserved invoice", async () => {
     mocks.accessibleClassInvoice.mockResolvedValueOnce({ invoice: invoice("issued"), access: {} });
     const issued = await GET(request(), context);
     expect(issued.status).toBe(200);
@@ -63,6 +63,6 @@ describe("class invoice PDF preview route", () => {
 
     mocks.accessibleClassInvoice.mockResolvedValueOnce({ invoice: invoice("void"), access: {} });
     const voided = await GET(request("?preview=1"), context);
-    expect(voided.status).toBe(409);
+    expect(voided.status).toBe(200); expect(mocks.buildClassInvoicePdf).toHaveBeenLastCalledWith(invoice("void"), { draft: false });
   });
 });

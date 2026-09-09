@@ -29,7 +29,7 @@ test("role changes and account revocation apply to the same browser session", as
   try {
     await signIn(target, email, PASSWORD, "/home");
     const exportRequest = () => target.request.post("/api/transactions/export", {
-      headers: { origin }, data: { format: "csv", columns: [{ key: "value", header: "Value", type: "text" }], rows: [{ value: "D2 same-session export" }] },
+      headers: { origin }, data: { format: "csv", columns: [{ key: "individual", header: "Individual", type: "text" }], rows: [{ individual: "D2 same-session export" }] },
     });
     const allowed = await exportRequest();
     expect(allowed.status()).toBe(200);

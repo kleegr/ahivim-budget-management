@@ -22,6 +22,22 @@ export interface ChangeEntry {
 
 type Queryable = Pick<PgLikePool, "query"> | Pick<PgLikeClient, "query">;
 
+/** Insert a bounded mutation's per-record history on the caller's transaction. */
+export async function recordChanges(db: Queryable, entries: ChangeEntry[]): Promise<void> {
+  if (!entries.length) return;
+  const attribution = await resolveAuditAttribution(entries[0]!.actorId);
+  const rows = entries.map(entry => ({
+    action: entry.action, entity_type: entry.entityType, entity_id: entry.entityId,
+    reason: entry.reason ?? null,
+    metadata: { ...entry.extra, previous: entry.previous, next: entry.next,
+      ...(attribution.impersonatedUserId ? { impersonatedUserId: attribution.impersonatedUserId } : {}) },
+  }));
+  await db.query(`INSERT INTO audit_logs (user_id, action, entity_type, entity_id, reason, metadata)
+    SELECT $1, action, entity_type, entity_id, reason, metadata
+      FROM jsonb_to_recordset($2::jsonb) AS item(action text, entity_type text, entity_id uuid, reason text, metadata jsonb)`,
+  [attribution.actorId, JSON.stringify(rows)]);
+}
+
 export async function recordChange(db: Queryable, entry: ChangeEntry): Promise<void> {
   const attribution = await resolveAuditAttribution(entry.actorId);
   const metadata: Record<string, unknown> = { ...(entry.extra ?? {}) };

@@ -1,5 +1,7 @@
 "use client";
 
+import SearchableSelect from "@/components/manage/searchable-select";
+
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Modal } from "@/components/manage/client";
@@ -433,16 +435,10 @@ export function CreditModal({
         <p className="text-sm text-[var(--color-ink-soft)]">
           Available credit <strong className="tnum text-[var(--color-ink)]">{formatMoney(creditAvailable)}</strong>
         </p>
-        <label className="block text-sm font-medium">
-          Apply to
-          <select required value={targetId} onChange={(event) => chooseTarget(event.target.value)} className="input mt-1 w-full">
-            {targets.map((row) => (
-              <option key={row.id} value={row.id}>
-                {row.label} | {formatDate(rowDate(row))} | {formatMoney(row.balance)} remaining
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="block text-sm font-medium">
+          <span>Apply to</span>
+          <SearchableSelect required value={targetId} onChange={chooseTarget} label="available balances" selectLabel="Apply to" placeholder="Choose a balance" className="input mt-1 w-full" options={targets.map((row) => ({ value: row.id, label: `${row.label} | ${formatDate(rowDate(row))} | ${formatMoney(row.balance)} remaining` }))} />
+        </div>
         <label className="block text-sm font-medium">
           Credit amount
           <input

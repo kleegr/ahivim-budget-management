@@ -7,12 +7,28 @@ import { useRouter } from 'next/navigation';
 export function useDirectoryUrl(directory: 'individuals' | 'employees', values: Record<string, string>) {
   const serialized = JSON.stringify(values);
   useEffect(() => {
+    const key = `ahivim-directory-scroll-${directory}`;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(key) ?? 'null');
+      if (saved?.href === window.location.pathname + window.location.search) requestAnimationFrame(() => {
+        window.scrollTo(0, saved.top ?? 0);
+        document.querySelectorAll('.scroll-thin').forEach((element, index) => { element.scrollTop = saved.panels?.[index] ?? 0; });
+      });
+    } catch { /* Normal browser restoration remains available. */ }
+    const remember = () => { try { sessionStorage.setItem(key, JSON.stringify({ href: window.location.pathname + window.location.search, top: window.scrollY, panels: Array.from(document.querySelectorAll('.scroll-thin'), (element) => element.scrollTop) })); } catch { /* Optional context persistence. */ } };
+    window.addEventListener('pagehide', remember);
+    document.addEventListener('click', remember, true);
+    return () => { window.removeEventListener('pagehide', remember); document.removeEventListener('click', remember, true); };
+  }, [directory]);
+  useEffect(() => {
     const url = new URL(window.location.href);
     for (const [key, value] of Object.entries(JSON.parse(serialized) as Record<string, string>)) {
       if (value) url.searchParams.set(key, value); else url.searchParams.delete(key);
     }
     const href = url.pathname + url.search + url.hash;
-    if (href !== window.location.pathname + window.location.search + window.location.hash) window.history.replaceState(window.history.state, '', href);
+    // Let Next synchronize its canonical URL. Passing its existing __NA state
+    // makes Next treat this as an internal write and skip that synchronization.
+    if (href !== window.location.pathname + window.location.search + window.location.hash) window.history.replaceState(null, '', href);
     try { sessionStorage.setItem(`ahivim-directory-${directory}`, href); } catch { /* URL is sufficient when storage is disabled. */ }
   }, [directory, serialized]);
 }

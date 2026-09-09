@@ -19,12 +19,16 @@ export async function POST(request: NextRequest) {
   if (!user) return jsonError("Manager role required", 403);
 
   const body = await readJson(request);
+  if (typeof body.paid !== "boolean" || !Array.isArray(body.ids) || body.ids.some(id => typeof id !== "string")) return jsonError("Choose valid transactions and a Paid state.", 400);
   const ids = Array.isArray(body.ids) ? (body.ids as unknown[]).filter((x): x is string => typeof x === "string") : [];
   const paid = body.paid === true;
   const note = typeof body.note === "string" ? body.note : undefined;
 
   try {
-    const result = await setTransactionsPaid(getPool(), { ids, paid, note }, user.id);
+    const result = await setTransactionsPaid(getPool(), { ids, paid, note,
+      reason: typeof body.reason === "string" ? body.reason : undefined,
+      batchId: typeof body.batchId === "string" ? body.batchId : undefined,
+    }, user.actorId);
     return resultResponse(result, 200);
   } catch (error) {
     return jsonError(redactError(error), 500);

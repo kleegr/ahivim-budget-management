@@ -1,9 +1,12 @@
 import { agencyDate } from "@/lib/business/agency-time";
+import { createHash } from "node:crypto";
 import type { PgLikeClient, PgLikePool } from "@/lib/import/commit";
 import { dec, toMoney } from "@/lib/money";
 import { recordChange } from "./audit";
 import { fail, ok, type Result } from "./errors";
 import { acquireSettlementSourceLock } from "./settlement-freshness";
+import { percentInputToFraction } from "@/lib/business/percentage-input";
+export { percentInputToFraction } from "@/lib/business/percentage-input";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -14,6 +17,7 @@ export type ManualIncomeSource = "class" | "reimbursement" | "custom_program" | 
 export type AutomaticIncomeSourceType = "google_sheet_transaction" | "issued_class_invoice";
 
 export interface ProgramRevenueTerm {
+  needsPercentageReview?: boolean;
   id: string;
   individualId: string;
   individualName: string;
@@ -31,6 +35,7 @@ export interface ProgramRevenueTerm {
 }
 
 export interface EmployeeIndividualCompensationTerm {
+  needsPercentageReview?: boolean;
   id: string;
   employeeId: string;
   employeeName: string;
@@ -45,6 +50,10 @@ export interface EmployeeIndividualCompensationTerm {
 }
 
 export interface ManualIncomeEntry {
+  needsPercentageReview?: boolean;
+  paymentReference?: string | null;
+  classInvoiceId?: string | null;
+  replacesEntryId?: string | null;
   id: string;
   serviceDate: string;
   sourceType: ManualIncomeSource;
@@ -70,6 +79,7 @@ export interface ManualIncomeEntry {
 }
 
 interface ProgramTermRow {
+  needs_percentage_review?: boolean;
   id: string;
   individual_id: string;
   individual_name: string;
@@ -87,6 +97,7 @@ interface ProgramTermRow {
 }
 
 interface CompensationTermRow {
+  needs_percentage_review?: boolean;
   id: string;
   employee_id: string;
   employee_name: string;
@@ -101,6 +112,10 @@ interface CompensationTermRow {
 }
 
 interface ManualIncomeRow {
+  needs_percentage_review?: boolean;
+  payment_reference?: string | null;
+  class_invoice_id?: string | null;
+  replaces_entry_id?: string | null;
   id: string;
   service_date: string;
   source_type: ManualIncomeSource;
@@ -135,17 +150,6 @@ function previousDay(value: string): string {
   const parsed = new Date(`${value}T00:00:00Z`);
   parsed.setUTCDate(parsed.getUTCDate() - 1);
   return parsed.toISOString().slice(0, 10);
-}
-
-export function percentInputToFraction(value: unknown): string {
-  const raw = String(value ?? "").trim().replace("%", "");
-  if (!raw) return "0.000000";
-  const parsed = dec(raw);
-  const fraction = parsed.abs().greaterThan(1) ? parsed.dividedBy(100) : parsed;
-  if (fraction.isNegative() || fraction.greaterThan(1)) {
-    throw new RangeError("Percentage must be between 0% and 100%.");
-  }
-  return fraction.toDecimalPlaces(6).toFixed(6);
 }
 
 export function calculateRevenueSplit(
@@ -206,6 +210,7 @@ async function inTransaction<T>(pool: PgLikePool, run: (client: PgLikeClient) =>
 
 function mapProgramTerm(row: ProgramTermRow): ProgramRevenueTerm {
   return {
+    needsPercentageReview: row.needs_percentage_review === true,
     id: row.id,
     individualId: row.individual_id,
     individualName: row.individual_name,
@@ -225,6 +230,7 @@ function mapProgramTerm(row: ProgramTermRow): ProgramRevenueTerm {
 
 function mapCompensationTerm(row: CompensationTermRow): EmployeeIndividualCompensationTerm {
   return {
+    needsPercentageReview: row.needs_percentage_review === true,
     id: row.id,
     employeeId: row.employee_id,
     employeeName: row.employee_name,
@@ -241,6 +247,10 @@ function mapCompensationTerm(row: CompensationTermRow): EmployeeIndividualCompen
 
 function mapManualIncome(row: ManualIncomeRow): ManualIncomeEntry {
   return {
+    needsPercentageReview: row.needs_percentage_review === true,
+    paymentReference: row.payment_reference ?? null,
+    classInvoiceId: row.class_invoice_id ?? null,
+    replacesEntryId: row.replaces_entry_id ?? null,
     id: row.id,
     serviceDate: row.service_date,
     sourceType: row.source_type,
@@ -267,7 +277,7 @@ function mapManualIncome(row: ManualIncomeRow): ManualIncomeEntry {
 }
 
 const PROGRAM_TERM_SELECT = `
-  SELECT term.id, term.individual_id,
+  SELECT COALESCE((SELECT audit.metadata->>'percentageInputContract' IS DISTINCT FROM 'percentage_points_v1' FROM audit_logs audit WHERE audit.entity_id = term.id AND audit.action IN ('program_revenue_split.created','program_revenue_split.updated') ORDER BY audit.created_at DESC, audit.id DESC LIMIT 1), false) AS needs_percentage_review, term.id, term.individual_id,
          COALESCE(individual.display_name, individual.normalized_name) AS individual_name,
          term.program_id, program.code AS program_code, program.name AS program_name,
          term.agency_share_percent::text, term.effective_from::text,
@@ -288,7 +298,7 @@ const PROGRAM_TERM_SELECT = `
     ) budget ON true`;
 
 const COMPENSATION_TERM_SELECT = `
-  SELECT term.id, term.employee_id,
+  SELECT COALESCE((SELECT audit.metadata->>'percentageInputContract' IS DISTINCT FROM 'percentage_points_v1' FROM audit_logs audit WHERE audit.entity_id = term.id AND audit.action IN ('employee_individual_pay.created','employee_individual_pay.updated') ORDER BY audit.created_at DESC, audit.id DESC LIMIT 1), false) AS needs_percentage_review, term.id, term.employee_id,
          COALESCE(employee.display_name, employee.normalized_name) AS employee_name,
          term.individual_id,
          COALESCE(individual.display_name, individual.normalized_name) AS individual_name,
@@ -299,14 +309,14 @@ const COMPENSATION_TERM_SELECT = `
     JOIN individuals individual ON individual.id = term.individual_id`;
 
 const MANUAL_INCOME_SELECT = `
-  SELECT entry.id, entry.service_date::text, entry.source_type,
+  SELECT COALESCE((SELECT audit.metadata->>'percentageInputContract' IS DISTINCT FROM 'percentage_points_v1' FROM audit_logs audit WHERE audit.entity_id = entry.id AND audit.action IN ('agency_income.created') ORDER BY audit.created_at DESC, audit.id DESC LIMIT 1), false) AS needs_percentage_review, entry.id, entry.service_date::text, entry.source_type,
          entry.individual_id,
          CASE WHEN individual.id IS NULL THEN NULL
               ELSE COALESCE(individual.display_name, individual.normalized_name) END AS individual_name,
          entry.program_id, program.code AS program_code, program.name AS program_name,
          entry.gross_amount::text, entry.agency_share_percent::text,
          entry.agency_amount::text, entry.individual_amount::text,
-         entry.source_ref, entry.notes,
+         entry.source_ref, entry.notes, entry.payment_reference, entry.class_invoice_id, entry.replaces_entry_id,
          separate_decision.automatic_source_override_reason,
          separate_decision.automatic_source_override_source_type,
          separate_decision.automatic_source_override_source_id,
@@ -620,6 +630,7 @@ export async function saveProgramRevenueTerm(
       await recordChange(client, {
         actorId,
         action: "program_revenue_split.updated",
+        extra: { percentageInputContract: "percentage_points_v1", enteredPercent: String(input.agencySharePercent) },
         entityType: "individual_program_revenue_term",
         entityId: same.id,
         previous: same,
@@ -666,6 +677,7 @@ export async function saveProgramRevenueTerm(
     await recordChange(client, {
       actorId,
       action: "program_revenue_split.created",
+        extra: { percentageInputContract: "percentage_points_v1", enteredPercent: String(input.agencySharePercent) },
       entityType: "individual_program_revenue_term",
       entityId: id,
       next: { ...input, agencySharePercent: share.data, effectiveTo },
@@ -752,6 +764,7 @@ export async function saveEmployeeIndividualCompensationTerm(
       await recordChange(client, {
         actorId,
         action: "employee_individual_pay.updated",
+        extra: { percentageInputContract: "percentage_points_v1", enteredPercent: String(input.employeeSharePercent) },
         entityType: "employee_individual_compensation_term",
         entityId: same.id,
         previous: same,
@@ -798,6 +811,7 @@ export async function saveEmployeeIndividualCompensationTerm(
     await recordChange(client, {
       actorId,
       action: "employee_individual_pay.created",
+        extra: { percentageInputContract: "percentage_points_v1", enteredPercent: String(input.employeeSharePercent) },
       entityType: "employee_individual_compensation_term",
       entityId: id,
       next: { ...input, employeeSharePercent: share.data, effectiveTo },
@@ -809,6 +823,9 @@ export async function saveEmployeeIndividualCompensationTerm(
 }
 
 export interface CreateManualIncomeInput {
+  paymentReference?: string | null;
+  replacesEntryId?: string | null;
+  requestId?: string;
   serviceDate: string;
   sourceType: ManualIncomeSource;
   individualId?: string | null;
@@ -851,6 +868,11 @@ export async function createManualIncomeEntry(
     return fail("validation", "Custom program income needs an individual and program.");
   }
   const sourceRef = input.sourceRef?.trim() || null;
+  const paymentReference = input.paymentReference?.trim() || null;
+  const replacesEntryId = input.replacesEntryId?.trim() || null;
+  if (paymentReference && paymentReference.length > 200) return fail("validation", "Payment reference must be at most 200 characters.");
+  if ((input.requestId && !UUID.test(input.requestId)) || (replacesEntryId && !UUID.test(replacesEntryId))) return fail("validation", "Invalid receipt or replacement identity.");
+  const requestFingerprint = createHash("sha256").update(JSON.stringify({ ...input, grossAmount: gross.data, actorId })).digest("hex");
   if (input.sourceType === "class" && !sourceRef && (!individualId || !programId)) {
     return fail(
       "validation",
@@ -861,6 +883,32 @@ export async function createManualIncomeEntry(
 
   return inTransaction(pool, async (client) => {
     await acquireSettlementSourceLock(client);
+    if (input.requestId) {
+      const retry = await client.query<{ id: string; request_fingerprint: string }>(
+        "SELECT id, request_fingerprint FROM agency_manual_income_entries WHERE request_id = $1", [input.requestId]);
+      if (retry.rows[0]) {
+        if (retry.rows[0].request_fingerprint !== requestFingerprint) return fail("conflict", "This receipt request already saved different values.");
+        const existing = await client.query<ManualIncomeRow>(`${MANUAL_INCOME_SELECT} WHERE entry.id = $1`, [retry.rows[0].id]);
+        return ok(mapManualIncome(existing.rows[0]!));
+      }
+    }
+    let replacementPaymentReference: string | null = null;
+    if (replacesEntryId) {
+      const original = await client.query<{ status: string; source_type: string; source_ref: string | null; payment_reference: string | null }>(
+        "SELECT status, source_type, source_ref, payment_reference FROM agency_manual_income_entries WHERE id = $1 FOR UPDATE", [replacesEntryId]);
+      const row = original.rows[0];
+      replacementPaymentReference = row?.payment_reference ?? null;
+      if (!row || row.status !== "void" || row.source_type !== input.sourceType || row.source_ref !== sourceRef
+          || (row.payment_reference && row.payment_reference !== paymentReference)) return fail("conflict", "Replace a voided receipt using its original invoice and payment reference.");
+      const replacement = await client.query("SELECT id FROM agency_manual_income_entries WHERE replaces_entry_id = $1", [replacesEntryId]);
+      if (replacement.rows[0]) return fail("conflict", "That receipt already has a linked replacement.");
+      if ((input.notes?.trim().length ?? 0) < 5) return fail("validation", "Explain the receipt correction in Notes.");
+    }
+    if (paymentReference) {
+      const duplicate = await client.query<{ id: string; status: string }>(`SELECT id, status FROM agency_manual_income_entries
+        WHERE source_type = $1 AND lower(btrim(payment_reference)) = lower(btrim($2)) ORDER BY created_at DESC`, [input.sourceType, paymentReference]);
+      if ((duplicate.rows.length > 0 && replacesEntryId && !replacementPaymentReference) || duplicate.rows.some(row => row.status === "active" || !replacesEntryId)) return fail("conflict", "That payment identity is already recorded. Open its receipt to review or replace it.");
+    }
     let referencedClassInvoice: {
       id: string;
       individual_id: string;
@@ -870,13 +918,15 @@ export async function createManualIncomeEntry(
       custom_split_required: boolean;
     } | null = null;
     if (sourceRef) {
-      const duplicate = await client.query<{ id: string }>(
-        `SELECT id FROM agency_manual_income_entries
-          WHERE source_type = $1 AND lower(btrim(source_ref)) = lower(btrim($2))
-          LIMIT 1`,
+      if (!paymentReference) {
+      const duplicate = await client.query<{ id: string; status: string }>(
+        `SELECT id, status FROM agency_manual_income_entries
+          WHERE source_type = $1 AND lower(btrim(source_ref)) = lower(btrim($2)) AND payment_reference IS NULL`,
         [input.sourceType, sourceRef],
       );
-      if (duplicate.rows[0]) return fail("conflict", "That reference is already recorded.");
+      if (duplicate.rows.some(row => row.status === "active")) return fail("conflict", "That reference is already recorded.");
+      if (duplicate.rows.length && !replacesEntryId) return fail("conflict", "Open the void receipt and use its linked replacement, or give this separate payment its own payment identity.");
+      }
       if (input.sourceType === "class") {
         const invoice = await client.query<{
           id: string;
@@ -1006,7 +1056,7 @@ export async function createManualIncomeEntry(
     const individualAmount = split.individualAmount;
 
     let manualIncomeMatch: { id: string } | null = null;
-    if (!sourceRef) {
+    if (!sourceRef && !paymentReference) {
       const duplicate = await client.query<{ id: string }>(
         `SELECT id
            FROM agency_manual_income_entries
@@ -1077,8 +1127,8 @@ export async function createManualIncomeEntry(
       `INSERT INTO agency_manual_income_entries
          (service_date, source_type, individual_id, program_id, gross_amount,
           agency_share_percent, agency_amount, individual_amount, source_ref,
-          notes, created_by_user_id)
-       VALUES ($1::date, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          notes, created_by_user_id, payment_reference, class_invoice_id, replaces_entry_id, request_id, request_fingerprint)
+       VALUES ($1::date, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        RETURNING id`,
       [
         input.serviceDate,
@@ -1092,6 +1142,7 @@ export async function createManualIncomeEntry(
         sourceRef,
         input.notes?.trim() || null,
         actorId,
+        paymentReference, referencedClassInvoice?.id ?? null, replacesEntryId, input.requestId ?? null, requestFingerprint,
       ],
     );
     const id = inserted.rows[0]!.id;
@@ -1126,6 +1177,7 @@ export async function createManualIncomeEntry(
     await recordChange(client, {
       actorId,
       action: "agency_income.created",
+      extra: { percentageInputContract: "percentage_points_v1", enteredPercent: input.agencySharePercent == null ? null : String(input.agencySharePercent) },
       entityType: "agency_manual_income_entry",
       entityId: id,
       next: {
@@ -1139,6 +1191,8 @@ export async function createManualIncomeEntry(
         individualAmount,
         sourceRef,
         referencedClassInvoiceId: referencedClassInvoice?.id ?? null,
+        paymentReference, replacesEntryId, requestId: input.requestId ?? null,
+        percentageInputContract: "percentage_points_v1",
         budgetEventId,
         automaticSourceOverride: automaticIncomeMatch ? {
           sourceType: automaticIncomeMatch.source_type,

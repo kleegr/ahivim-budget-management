@@ -20,7 +20,7 @@ export function reviewIndividualBudgets(input: {
     const add = (key: string, message: string, action: string, target = href) => flags.push({ key: `${key}-${budget.authorizationId}`, message: `${budget.programName}: ${message}`, action, href: target, programId: budget.programId });
     // Source-integrity and real overages are independent of who manages setup.
     if (budget.startDate > budget.endDate || (budget.renewalDate && budget.renewalDate <= budget.startDate)) add('dates', 'saved authorization dates conflict.', 'Correct dates');
-    if (budget.hasUndatedUsage) add('undated', 'usage has no usable service date; remaining allowance is incomplete.', 'Review source transactions', `/transactions?individualId=${input.id}&programId=${budget.programId}`);
+    if (budget.hasUndatedUsage) add('undated', 'usage has no usable service date; remaining allowance is incomplete.', 'Review source transactions', `/transactions?individualId=${input.id}&programId=${budget.programId}&undated=1`);
     if (budget.sourceCandidateCount > 1) add('sources', 'multiple active financial plans provide this program.', 'Review financial setup', `/individuals/${input.id}?view=financial#financial-setup`);
     if (dec(budget.remainingHours).lessThan(0) || (budget.remainingDollars !== null && dec(budget.remainingDollars).lessThan(0))) add('over', 'recorded usage exceeds the authorization.', 'Review authorization');
     if (input.active && dec(budget.remainingAfterScheduledHours).lessThan(0) && !dec(budget.remainingHours).lessThan(0)) add('schedule-over', 'scheduled hours exceed remaining hours.', 'Review schedule', `/schedule?individualId=${input.id}&view=coverage`);

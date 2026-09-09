@@ -242,7 +242,7 @@ describe("buildOwnerDashboardSummary", () => {
     expect(summary.transactions.contextHref).not.toContain("transactionId");
     expect(summary.transactions.recentChecks[0]).toMatchObject({ rows: 2 });
     expect(summary.transactions.recentChecks[0]?.href).toContain("checkNumber=900");
-    expect(summary.transactions.recentChecks[0]?.href).toContain("checkDateFrom=2026-08-22");
+    expect(summary.transactions.recentChecks[0]?.href).toContain("checkDateExact=2026-08-22");
     expect(summary.transactions.recentChecks[0]?.href).not.toContain("transactionId");
     expect(summary.transactions.recentChecks[0]?.netPay).toBe("800");
 

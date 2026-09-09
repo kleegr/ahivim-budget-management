@@ -236,12 +236,12 @@ suite("class invoice ledger (real PostgreSQL)", () => {
 
     const receipt = unwrap(await createManualIncomeEntry(pool, {
       serviceDate: "2026-08-03", sourceType: "class", sourceRef: "8513",
-      grossAmount: "3300", agencySharePercent: "0.80",
+      grossAmount: "3300", agencySharePercent: "80",
       notes: "Actual payment received for the issued invoice",
     }, ACTOR));
     await expect(createManualIncomeEntry(pool, {
       serviceDate: "2026-08-03", sourceType: "class", sourceRef: "8513",
-      grossAmount: "3300", agencySharePercent: "0.80",
+      grossAmount: "3300", agencySharePercent: "80",
     }, ACTOR)).resolves.toMatchObject({ ok: false, code: "conflict" });
     const afterReceipt = await getAgencyFinancialReport(pool, "2026-08");
     expect(afterReceipt.totals.income.classes).toBe("3300.0000");

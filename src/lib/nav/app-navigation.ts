@@ -125,7 +125,7 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
   },
   {
     id: "activity",
-    label: "Activity",
+    label: "Transactions",
     hint: "Transactions, schedules, matching, and source review",
     activePrefixes: [
       "/transactions",
@@ -178,7 +178,7 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
     id: "money",
     label: "Money & reports",
     hint: "Amounts to action, financial setup, classes, and reporting",
-    activePrefixes: ["/collections", "/settlements", "/calculations", "/projections", "/masser", "/reports", "/classes"],
+    activePrefixes: ["/collections", "/settlements", "/calculations", "/projections", "/masser", "/reports", "/classes", "/documents"],
     destinations: [
       {
         id: "money-overview",
@@ -212,6 +212,14 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
         keywords: "classes revenue invoice allowance reimbursement idgs",
         gate: "classes",
       },
+  {
+    id: "documents",
+    label: "Documents",
+    href: "/documents",
+    hint: "Saved documents, invoices, and version history",
+    keywords: "documents library pdf ocr scans cover sheets forms editor signature versions",
+    gate: "documents",
+  },
       {
         id: "report-library",
         label: "Reports",
@@ -240,14 +248,6 @@ const ADMIN_DESTINATIONS: readonly NavigationDestination[] = [
     hint: "Organizations, memberships, and portal assignments",
     keywords: "agency organization parent guardian employee staffing scheduler collector portal",
     gate: "agencies",
-  },
-  {
-    id: "documents",
-    label: "Documents",
-    href: "/documents",
-    hint: "Saved PDFs, direct editing and version history",
-    keywords: "documents library pdf ocr scans cover sheets forms editor signature versions",
-    gate: "documents",
   },
   {
     id: "settings",

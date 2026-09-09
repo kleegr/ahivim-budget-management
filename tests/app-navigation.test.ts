@@ -189,7 +189,7 @@ describe("role-specific workspaces", () => {
 
     expect(getVisibleWorkspaces(access).find((workspace) => workspace.id === "activity")?.href).toBe("/transactions");
     expect(getVisibleWorkspaces({ ...access, canSeeTransactions: false }).find((workspace) => workspace.id === "activity")?.href).toBe("/schedule");
-    expect(getCommandDestinations(access).find((item) => item.href === "/transactions")?.label).toBe("Activity");
+    expect(getCommandDestinations(access).find((item) => item.href === "/transactions")?.label).toBe("Transactions");
   });
 
   it("gives a class-billing operator Classes and documents without employee money", () => {

@@ -1,5 +1,7 @@
 "use client";
 
+import SearchableSelect from "@/components/manage/searchable-select";
+
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { CalendarSession } from "@/lib/data/schedule-queries";
@@ -161,14 +163,7 @@ export default function SessionDetail({
                 </div>
                 <label className="block text-xs">
                   Employee
-                  <select data-modal-initial-focus value={employeeId} onChange={(event) => setEmployeeId(event.target.value)} className="mt-1 min-h-10 w-full rounded border border-[var(--color-rule-strong)] bg-white px-2 py-1.5 text-sm">
-                    <option value="">Leave unassigned</option>
-                    {employeeOptions.map(({ employee, signal }) => (
-                      <option key={employee.id} value={employee.id}>
-                        {employee.label}{signal && availability ? ` — ${employeeAvailabilityLabel(signal, availability.timeRangeKnown, availability.occurrenceCount)}` : ""}
-                      </option>
-                    ))}
-                  </select>
+                  <SearchableSelect label="employees" selectLabel="Employee" value={employeeId} onChange={setEmployeeId} placeholder="Leave unassigned" options={employeeOptions.map(({ employee, signal }) => ({ value: employee.id, label: `${employee.label}${signal && availability ? ` — ${employeeAvailabilityLabel(signal, availability.timeRangeKnown, availability.occurrenceCount)}` : ""}` }))} />
                 </label>
                 {availabilityBusy ? <p role="status" className="text-xs text-[var(--color-ink-faint)]">Checking availability…</p> : null}
                 {availabilityError ? <p role="alert" className="text-xs text-[var(--color-danger)]">{availabilityError}</p> : null}

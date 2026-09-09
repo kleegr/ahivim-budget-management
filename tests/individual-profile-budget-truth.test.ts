@@ -16,7 +16,7 @@ describe("individual profile budget truth", () => {
     const nextTab = profileSource.indexOf('id: "activity"', budgetStart);
     const budgetPanel = profileSource.slice(budgetStart, nextTab);
 
-    expect(profileSource).toContain("summarizeAuthorizationPortfolio(programBudgetsRaw)");
+    expect(profileSource).toContain("summarizeAuthorizationPortfolio(visibleProgramBudgetRows)");
     expect(profileSource).toContain("operationalBudget.elapsedPct / 100");
     expect(budgetPanel).toContain("<ProgramBudgetWorkspace");
     expect(budgetPanel).not.toContain("<BudgetEditor");

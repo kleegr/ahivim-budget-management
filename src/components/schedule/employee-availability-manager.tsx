@@ -1,5 +1,7 @@
 "use client";
 
+import SearchableSelect from "@/components/manage/searchable-select";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Archive, CalendarOff, Clock3, Plus } from "lucide-react";
 import { EmptyState, Table, Td, Th, Tr } from "@/components/ui";
@@ -242,9 +244,7 @@ export default function EmployeeAvailabilityManager({
       <div className="mb-5 max-w-md">
         <label className="text-sm font-medium">
           Employee
-          <select value={employeeId} onChange={(event) => changeEmployee(event.target.value)} className={inputClass()}>
-            {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.label}</option>)}
-          </select>
+          <SearchableSelect label="employees" selectLabel="Employee" value={employeeId} onChange={changeEmployee} options={employees.map((employee) => ({ value: employee.id, label: employee.label }))} className={inputClass()} placeholder="Choose employee" />
         </label>
       </div>
 

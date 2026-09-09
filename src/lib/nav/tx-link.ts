@@ -14,6 +14,7 @@ export interface TxLinkParams {
   individualId?: string | null;
   employeeId?: string | null;
   program?: string | null;
+  programId?: string | null;
   programCode?: string | null;
   payTo?: string | null;
   checkNumber?: string | null;
@@ -38,6 +39,7 @@ export function txLink(p: TxLinkParams): string {
   if (p.individualId) q.set("individualId", p.individualId);
   if (p.employeeId) q.set("employeeId", p.employeeId);
   if (p.program) q.set("program", p.program);
+  if (p.programId) q.set("programId", p.programId);
   if (p.programCode) q.set("programCode", p.programCode);
   if (p.payTo) q.set("payTo", p.payTo);
   if (p.checkNumber) q.set("checkNumber", p.checkNumber);
@@ -46,6 +48,10 @@ export function txLink(p: TxLinkParams): string {
   if (p.pbFrom) q.set("pbFrom", p.pbFrom);
   if (p.pbTo) q.set("pbTo", p.pbTo);
   if (p.from && p.to) q.set("period", `${p.from}..${p.to}`);
+  else {
+    if (p.from) q.set("checkDateFrom", p.from);
+    if (p.to) q.set("checkDateTo", p.to);
+  }
   if (p.serviceFrom) q.set("serviceFrom", p.serviceFrom);
   if (p.serviceTo) q.set("serviceTo", p.serviceTo);
   const s = q.toString();

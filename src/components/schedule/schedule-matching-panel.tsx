@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, Search, UsersRound } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { PlanningMatchReason, PlanningMatchReview } from "@/lib/data/planning-reconciliation";
 import { formatHours } from "@/lib/money";
 
@@ -29,40 +29,16 @@ const STATUS: Record<PlanningMatchReason, { label: string; className: string }> 
   },
 };
 
-function matchReviewCountLabel(
-  filteredCount: number,
-  loadedCount: number,
-  totalCount: number,
-  hasActiveFilters: boolean,
-): string {
-  if (!hasActiveFilters) return `Showing ${loadedCount} of ${totalCount} unmatched visits.`;
-  if (loadedCount < totalCount) {
-    return `Showing ${filteredCount} matches from ${loadedCount} loaded of ${totalCount} total unmatched visits.`;
-  }
-  return `Showing ${filteredCount} of ${totalCount} unmatched visits for these filters.`;
-}
-
-function matchReviewEmptyLabel(loadedCount: number, totalCount: number): string {
-  if (totalCount === 0) return "Every past planned visit is matched.";
-  if (loadedCount < totalCount) {
-    return `No matches in the ${loadedCount} loaded visits. Refine the search or filter to check a different part of the review.`;
-  }
-  return "No visits match these filters.";
-}
-
 export default function ScheduleMatchingPanel({ review }: { review: PlanningMatchReview }) {
-  const [query, setQuery] = useState("");
-  const [reason, setReason] = useState<"all" | PlanningMatchReason>("all");
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase();
-    return review.rows.filter((row) => (
-      (reason === "all" || row.reason === reason)
-      && (!needle || `${row.employeeName ?? ""} ${row.programName} ${row.programCode} ${row.individualNames.join(" ")}`
-        .toLocaleLowerCase().includes(needle))
-    ));
-  }, [query, reason, review.rows]);
-  const loadedCount = review.rows.length;
-  const hasActiveFilters = query.trim().length > 0 || reason !== "all";
+  const [query, setQuery] = useState(review.query ?? "");
+  const [reason, setReason] = useState<"all" | PlanningMatchReason>(review.reason ?? "all");
+  const filtered = review.rows;
+  const page = review.page ?? 1;
+  const pageSize = review.pageSize ?? 100;
+  const first = review.rows.length ? (page - 1) * pageSize + 1 : 0;
+  const last = (page - 1) * pageSize + review.rows.length;
+  const hasActiveFilters = Boolean(review.query || (review.reason && review.reason !== "all"));
+  const pageHref = (next: number) => `/schedule?${new URLSearchParams({ view: "matching", matchPage: String(next), matchSearch: review.query ?? "", matchReason: review.reason ?? "all" })}`;
 
   return (
     <section aria-labelledby="schedule-matching-heading">
@@ -80,17 +56,18 @@ export default function ScheduleMatchingPanel({ review }: { review: PlanningMatc
         <Summary label="No recorded service" value={review.noCandidateCount} />
       </div>
 
-      <div className="mt-5 flex flex-wrap items-end gap-3">
+      <form action="/schedule" className="mt-5 flex flex-wrap items-end gap-3">
+        <input type="hidden" name="view" value="matching" />
         <label className="min-w-64 flex-1 text-xs font-semibold text-[var(--color-ink-soft)]">
           Find a person, employee, or program
           <span className="relative mt-1 block">
             <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-ink-faint)]" />
-            <input className="input min-h-10 w-full pl-9 text-sm font-normal" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search" />
+            <input className="input min-h-10 w-full pl-9 text-sm font-normal" type="search" name="matchSearch" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search" />
           </span>
         </label>
         <label className="min-w-56 text-xs font-semibold text-[var(--color-ink-soft)]">
           Review reason
-          <select className="input mt-1 min-h-10 w-full text-sm font-normal" value={reason} onChange={(event) => setReason(event.target.value as typeof reason)}>
+          <select className="input mt-1 min-h-10 w-full text-sm font-normal" name="matchReason" value={reason} onChange={(event) => setReason(event.target.value as typeof reason)}>
             <option value="all">All reasons</option>
             <option value="group">Group review needed</option>
             <option value="multiple">Multiple possible records</option>
@@ -99,16 +76,17 @@ export default function ScheduleMatchingPanel({ review }: { review: PlanningMatc
             <option value="none">No recorded service found</option>
           </select>
         </label>
-      </div>
+        <button type="submit" className="btn btn-secondary min-h-10">Search review</button>
+      </form>
 
       <p aria-live="polite" className="mt-3 text-xs text-[var(--color-ink-soft)]">
-        {matchReviewCountLabel(filtered.length, loadedCount, review.total, hasActiveFilters)}
+        Showing {first.toLocaleString()}–{last.toLocaleString()} of {review.total.toLocaleString()} unmatched visits{hasActiveFilters ? " matching these filters" : ""}. Search covers the complete authorized queue.
       </p>
 
       {filtered.length === 0 ? (
         <div className="mt-5 flex items-center justify-center gap-2 border-y border-[var(--color-rule)] py-9 text-sm text-[var(--color-ink-soft)]">
           {review.total === 0 ? <CheckCircle2 aria-hidden className="h-4 w-4 text-[var(--color-success)]" /> : null}
-          <span>{matchReviewEmptyLabel(loadedCount, review.total)}</span>
+          <span>{hasActiveFilters ? "No visits match these filters." : page > 1 ? "No visits on this page. Return to the previous page." : "Every past planned visit is matched."}</span>
         </div>
       ) : (
         <div className="scroll-thin mt-4 overflow-x-auto border-y border-[var(--color-rule-strong)]">
@@ -150,6 +128,11 @@ export default function ScheduleMatchingPanel({ review }: { review: PlanningMatc
           </table>
         </div>
       )}
+      <nav aria-label="Match review pages" className="mt-4 flex items-center justify-between gap-3">
+        {page > 1 ? <Link href={pageHref(page - 1)} className="btn btn-secondary">Previous</Link> : <span />}
+        <span className="text-sm text-[var(--color-ink-soft)]">Page {page}</span>
+        {last < review.total ? <Link href={pageHref(page + 1)} className="btn btn-secondary">Next</Link> : <span />}
+      </nav>
     </section>
   );
 }

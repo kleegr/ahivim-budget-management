@@ -105,7 +105,7 @@ describe("planning schedule match review", () => {
       [EMPLOYEE_ID],
       [INDIVIDUAL_ID],
       [AGENCY_ID],
-      200,
+      100, "", "all", 0,
     ]);
   });
 
@@ -201,11 +201,15 @@ describe("planning schedule match review", () => {
     expect(sql).toContain("total_no_candidate_count");
   });
 
-  it("states the loaded range and keeps truncated empty-search wording honest", () => {
+  it("searches the whole queue and exposes bounded previous/next pages", () => {
     const source = readFileSync("src/components/schedule/schedule-matching-panel.tsx", "utf8");
-    expect(source).toContain("Showing ${loadedCount} of ${totalCount} unmatched visits.");
-    expect(source).toContain("Showing ${filteredCount} matches from ${loadedCount} loaded of ${totalCount} total unmatched visits.");
-    expect(source).toContain("No matches in the ${loadedCount} loaded visits.");
-    expect(source).toContain("if (loadedCount < totalCount)");
+    expect(source).toContain('name="matchSearch"');
+    expect(source).toContain('name="matchReason"');
+    expect(source).toContain("Search covers the complete authorized queue");
+    expect(source).toContain('aria-label="Match review pages"');
+    const tabs = readFileSync("src/components/ui-client.tsx", "utf8");
+    const workspace = readFileSync("src/components/schedule/planning-workspace.tsx", "utf8");
+    expect(workspace).toContain("serverNavigation");
+    expect(tabs).toContain("router.push(`${url.pathname}${url.search}`");
   });
 });

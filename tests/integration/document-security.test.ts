@@ -10,7 +10,8 @@ import { CLASS_BILLING_ACCESS, PORTAL_ONLY_ACCESS } from "@/lib/auth/access-pres
 import { createUserWithAccessQuery, type UserAccessConfig } from "@/lib/auth/users";
 import { completeDocumentUpload, createDocument, createDocumentVersionUpload, finalizeDocumentVersion } from "@/lib/manage/documents";
 import type { DocumentAccessContext } from "@/lib/auth/document-policy";
-import { createClassBudget, createClassInvoiceDraft } from "@/lib/manage/class-invoices";
+import { createClassBudget, createClassInvoiceDraft, issueClassInvoice, voidClassInvoice } from "@/lib/manage/class-invoices";
+import { appendClassCoverCorrection, createClassCoverSheetSnapshot, saveClassReimbursementProfile } from "@/lib/manage/class-reimbursement-profiles";
 import { MIGRATIONS } from "@/lib/db/migrations.generated";
 import { prepareOriginalPdfUpload } from "@/lib/documents/pdf-document-upload";
 import { createPdfEditorManifest, parsePdfEditorManifest } from "@/lib/documents/pdf-editor-persistence";
@@ -296,6 +297,30 @@ suite("document resource authorization (real PostgreSQL and route handlers)", ()
     const retainedSource = await file(request("/api/documents?source=1"), vparams(reservation.document.id, saved.id));
     expect(retainedSource.status).toBe(200);
     expect((await PDFDocument.load(await retainedSource.arrayBuffer())).getPageCount()).toBe(pageCount);
+  });
+
+  it("saves exact frozen cover versions from VOID history privately and rejects nonexistent versions", async () => {
+    const budget = unwrap(await createClassBudget(pool, { individualId: I1, startDate: "2026-01-01", endDate: "2026-12-31", authorizedAmount: "1000" }, OWNER));
+    const draft = unwrap(await createClassInvoiceDraft(pool, { classBudgetPeriodId: budget.id, invoiceNumber: "COVER-SOURCE-VERSIONS", invoiceDate: "2026-01-05", servicePeriodStart: "2026-01-01", servicePeriodEnd: "2026-01-31", lines: [{ serviceDate: "2026-01-02", description: "Class", quantity: "1", unitPrice: "100" }] }, OWNER));
+    const invoice = unwrap(await issueClassInvoice(pool, draft.id, OWNER));
+    const originalProfile = unwrap(await saveClassReimbursementProfile(pool, I1, { mailingName: "Frozen original", lifePlanConfirmed: true }, OWNER));
+    unwrap(await createClassCoverSheetSnapshot(pool, invoice.id, originalProfile, OWNER));
+    const correctedProfile = unwrap(await saveClassReimbursementProfile(pool, I1, { mailingName: "Appended correction", lifePlanConfirmed: true }, OWNER));
+    unwrap(await appendClassCoverCorrection(pool, invoice.id, correctedProfile, OWNER, 1, "Correct mailing name"));
+    unwrap(await voidClassInvoice(pool, invoice.id, OWNER, "Historical invoice retained"));
+    await login(classUser);
+    const body = { title: "Historical cover", filename: "cover.pdf", byteSize: 17 };
+    for (const version of [1, 2]) {
+      const response = await upload(request("/api/documents", "POST", { ...body, source: `/api/classes/invoices/${invoice.id}/cover-sheet?version=${version}` }));
+      expect(response.status).toBe(201);
+      const saved = (await response.json()).data.document;
+      expect(saved.accessContext).toMatchObject({ kind: "private", individualId: I1, sourceInvoiceId: invoice.id, sourceCoverVersion: version });
+      expect((await detail(request(), params(saved.id))).status).toBe(200);
+    }
+    expect((await upload(request("/api/documents", "POST", { ...body, source: `/api/classes/invoices/${invoice.id}/cover-sheet?version=3` }))).status).toBe(404);
+    expect((await upload(request("/api/documents", "POST", { ...body, source: `/api/classes/invoices/${invoice.id}/pdf` }))).status).toBe(201);
+    await login(parentUser);
+    expect((await upload(request("/api/documents", "POST", { ...body, source: `/api/classes/invoices/${invoice.id}/cover-sheet?version=1` }))).status).toBe(403);
   });
 
   it("inherits a real invoice's person/category for an editable creator-private save without trusting it as a sharing flag", async () => {

@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { useDirectoryUrl } from "@/components/manage/directory-context";
 import Link from "next/link";
 import { CalendarDays, Clock3, Search, UserRoundCheck, Users, X } from "lucide-react";
 import { Badge } from "@/components/ui";
@@ -18,8 +20,10 @@ export default function PlanningEmployeesList({
 }: {
   rows: PlanningEmployeeDirectoryRow[];
 }) {
-  const [query, setQuery] = useState("");
-  const [showArchived, setShowArchived] = useState(false);
+  const searchParams = useSearchParams();
+  const [query, setQuery] = useState(searchParams.get("q") ?? "");
+  const [showArchived, setShowArchived] = useState(searchParams.get("archived") === "true");
+  useDirectoryUrl("employees", { q: query, archived: showArchived ? "true" : "" });
   const activeRows = useMemo(() => rows.filter((row) => row.archivedAt === null), [rows]);
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -29,20 +33,20 @@ export default function PlanningEmployeesList({
       .sort((left, right) => left.displayName.localeCompare(right.displayName));
   }, [query, rows, showArchived]);
   const totals = useMemo(() => ({
-    assignments: activeRows.reduce((sum, row) => sum + row.activeAssignments, 0),
-    scheduledHours: activeRows.reduce((sum, row) => sum.plus(row.pendingHours), dec(0)).toString(),
-    availabilitySet: activeRows.filter((row) => row.weeklyAvailabilityWindows > 0).length,
-  }), [activeRows]);
+    assignments: visible.reduce((sum, row) => sum + row.activeAssignments, 0),
+    scheduledHours: visible.reduce((sum, row) => sum.plus(row.pendingHours), dec(0)).toString(),
+    availabilitySet: visible.filter((row) => row.weeklyAvailabilityWindows > 0).length,
+  }), [visible]);
   const archivedCount = rows.length - activeRows.length;
 
   return (
     <div className="space-y-4">
-      <section aria-label="Staffing summary" className="border-y border-[var(--color-rule-strong)]">
+      <section aria-label="Staffing totals for all employees matching this view" className="border-y border-[var(--color-rule-strong)]">
         <div className="grid grid-cols-2 gap-x-5 sm:grid-cols-4">
-          <Summary icon={Users} label="Active employees" value={activeRows.length.toLocaleString()} />
+          <Summary icon={Users} label="Employees in this view" value={visible.length.toLocaleString()} />
           <Summary icon={UserRoundCheck} label="Active assignments" value={totals.assignments.toLocaleString()} />
           <Summary icon={Clock3} label="Hours scheduled" value={formatHours(totals.scheduledHours)} />
-          <Summary icon={CalendarDays} label="Availability set" value={`${totals.availabilitySet}/${activeRows.length}`} />
+          <Summary icon={CalendarDays} label="Availability set" value={`${totals.availabilitySet}/${visible.length}`} />
         </div>
       </section>
 

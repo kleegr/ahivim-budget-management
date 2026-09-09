@@ -2,6 +2,7 @@ import { isIsoCalendarDate } from "@/lib/business/class-invoicing";
 import {
   getClassCoverSheetSnapshot,
   getClassReimbursementProfile,
+  listClassCoverVersions,
   type ClassReimbursementProfile,
 } from "@/lib/data/class-reimbursement-profiles";
 import type { PgLikePool } from "@/lib/import/commit";
@@ -27,6 +28,31 @@ export interface ClassReimbursementProfileInput {
 }
 
 const clean = (value: string | null | undefined): string | null => value?.trim() || null;
+
+/** Append a correction without replacing the original signed/issued facts. */
+export async function appendClassCoverCorrection(pool: PgLikePool, invoiceId: string, profile: ClassReimbursementProfile,
+  actorId: string, expectedVersion: number, reason: string): Promise<Result<{ version: number }>> {
+  if (reason.trim().length < 5) return fail("validation", "Explain this cover-sheet correction.");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const invoice = await client.query<{ status: string; individual_id: string }>("SELECT status, individual_id FROM class_invoices WHERE id = $1 FOR UPDATE", [invoiceId]);
+    if (invoice.rows[0]?.status !== "issued" || invoice.rows[0].individual_id !== profile.individualId || !profile.lifePlanConfirmed) {
+      await client.query("ROLLBACK"); return fail("conflict", "Use a confirmed profile for this issued invoice.");
+    }
+    const versions = await listClassCoverVersions(client, invoiceId);
+    if (!versions.length || versions[0]!.version !== expectedVersion) {
+      await client.query("ROLLBACK"); return fail("conflict", "The cover history changed. Reopen it before appending a correction.");
+    }
+    const version = expectedVersion + 1;
+    await client.query(`INSERT INTO class_cover_sheet_versions (class_invoice_id, version, profile_snapshot, reason, created_by_user_id)
+      VALUES ($1, $2, $3, $4, $5)`, [invoiceId, version, JSON.stringify(profile), reason.trim(), actorId]);
+    await recordChange(client, { actorId, action: "class_cover_sheet_corrected", entityType: "class_invoice", entityId: invoiceId,
+      previous: { version: expectedVersion }, next: { version }, reason: reason.trim() });
+    await client.query("COMMIT"); return ok({ version });
+  } catch (error) { await client.query("ROLLBACK").catch(() => undefined); throw error; }
+  finally { client.release(); }
+}
 
 export async function saveClassReimbursementProfile(
   pool: PgLikePool,

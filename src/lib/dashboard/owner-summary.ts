@@ -47,9 +47,10 @@ export interface OwnerRecentCheck {
   programs: number;
   rows: number;
   hours: string;
-  funderBilled: string;
-  employeeBase: string;
-  agencySpread: string;
+  funderBilled: string | null;
+  employeeBase: string | null;
+  agencySpread: string | null;
+  completeness: CheckSummary["completeness"];
   netPay: string | null;
   href: string;
 }
@@ -179,19 +180,14 @@ function checkRowsHref(
   selection?: OwnerActivitySelection,
 ): string {
   const params = new URLSearchParams({ view: "rows" });
+  params.set("checkIdentity", check.key);
   if (check.checkNumber) params.set("checkNumber", check.checkNumber);
-  if (check.payTo) params.set("payToKey", check.payTo.trim().toLocaleLowerCase());
-  else if (check.employeeId) params.set("employeeId", check.employeeId);
-  else if (check.employee) params.set("employee", check.employee);
-  if (check.checkDate) {
-    params.set("checkDateFrom", check.checkDate);
-    params.set("checkDateTo", check.checkDate);
-  } else if (check.periodBegin || check.periodEnd) {
-    if (check.periodBegin) {
-      params.set("pbFrom", check.periodBegin);
-      params.set("pbTo", check.periodBegin);
-    }
-  }
+  else params.set("checkNumberExact", "");
+  if (check.employeeId) params.set("employeeId", check.employeeId);
+  else params.set("employeeExact", check.employee ?? "");
+  params.set("checkDateExact", check.checkDate ?? "");
+  params.set("periodBeginExact", check.periodBegin ?? "");
+  params.set("periodEndExact", check.periodEnd ?? "");
   for (const individualId of selection?.individualIds ?? []) params.append("individualId", individualId);
   if (selection?.employeeId) params.set("employeeId", selection.employeeId);
   if (selection?.payrollPeriod) {
@@ -335,6 +331,7 @@ export function buildOwnerDashboardSummary(input: {
       employeeBase: check.employeeBase,
       agencySpread: check.agencySpread,
       netPay: check.netPay,
+      completeness: check.completeness,
       href: checkRowsHref(check, selectionActive ? selection : undefined),
     }));
 

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   ChevronDown,
@@ -68,6 +68,8 @@ function WorkspaceNavigation({
   onNavigate?: (href: string) => void;
 }) {
   const workspaces = useMemo(() => getVisibleWorkspaces(access), [access]);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const navigationId = useId();
 
   return (
     <div>
@@ -75,6 +77,7 @@ function WorkspaceNavigation({
       <ul className="space-y-1">
         {workspaces.map((workspace) => {
           const active = workspaceIsActive(pathname, workspace);
+          const open = expanded[workspace.id] ?? active;
           const landingActive = destinationIsActive(pathname, workspace.destinations[0]);
           const Icon = WORKSPACE_ICONS[workspace.id];
           const secondary = workspace.destinations.filter((destination) => destination.href !== workspace.href);
@@ -84,12 +87,13 @@ function WorkspaceNavigation({
 
           return (
             <li key={workspace.id}>
+              <div className="flex items-center">
               <Link
                 href={workspace.href}
                 onNavigate={() => onNavigate?.(workspace.href)}
                 aria-current={landingActive ? "page" : undefined}
                 title={workspace.hint}
-                className={`flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
+                className={`flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
                   active
                     ? "bg-[var(--color-primary-tint)] font-semibold text-[var(--color-primary)]"
                     : "font-medium text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-ink)]"
@@ -98,9 +102,15 @@ function WorkspaceNavigation({
                 <Icon className={`h-[1.1rem] w-[1.1rem] shrink-0 ${active ? "text-[var(--color-primary)]" : "text-[var(--color-ink-faint)]"}`} aria-hidden />
                 <span className="min-w-0 flex-1 truncate">{workspace.label}</span>
               </Link>
+              {secondary.length > 0 ? (
+                <button type="button" aria-label={`${open ? "Collapse" : "Expand"} ${workspace.label}`} aria-expanded={open} aria-controls={`${navigationId}-${workspace.id}`} onClick={() => setExpanded((current) => ({ ...current, [workspace.id]: !open }))} className="grid h-11 w-10 shrink-0 place-items-center rounded-lg text-[var(--color-ink-soft)] hover:bg-[var(--color-surface-strong)]">
+                  <ChevronDown aria-hidden className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`} />
+                </button>
+              ) : null}
+              </div>
 
-              {active && secondary.length > 0 ? (
-                <ul className="ml-[1.8rem] mt-1 space-y-0.5 border-l border-[var(--color-rule-strong)] pl-3">
+              {open && secondary.length > 0 ? (
+                <ul id={`${navigationId}-${workspace.id}`} className="ml-[1.8rem] mt-1 space-y-0.5 border-l border-[var(--color-rule-strong)] pl-3">
                   {secondary.map((destination) => {
                     const childActive = destination.id === activeSecondaryId;
                     return (

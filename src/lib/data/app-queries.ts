@@ -918,7 +918,7 @@ export async function listTransactions(
        ${joins}
        LEFT JOIN imported_files f ON f.id = t.source_file_id
        ${where}
-       ORDER BY t.check_date DESC NULLS LAST, t.source_row_number NULLS LAST
+       ORDER BY canonical_service_date(t.period_begin, t.check_date, t.period_end) DESC NULLS LAST, t.id
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, limit, offset],
     ),

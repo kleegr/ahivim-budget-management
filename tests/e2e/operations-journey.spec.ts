@@ -77,6 +77,10 @@ async function setup(page: Page, pool: Pool): Promise<Journey> {
     groupsAllowed: false, allowIndividualRateOverride: false,
   });
   const individual = await post<{ id: string }>(page, "/api/individuals", { displayName: individualName });
+  const responsibility = await page.request.patch(`/api/individuals/${individual.id}/responsibility`, {
+    data: { field: "budget", value: "managed" },
+  });
+  expect(responsibility.status()).toBe(200);
   const employee = await post<{ id: string }>(page, "/api/employees", {
     displayName: employeeName, notes: "PRIVATE EMPLOYEE DEAL SENTINEL", externalRef: `PRIVATE-PAYROLL-${suffix}`,
   });
@@ -115,14 +119,13 @@ async function createAuthorization(page: Page, journey: Journey) {
     const response = await route.fetch();
     savedJson = await response.json();
     await route.fulfill({ response, json: savedJson });
-  });
+  }, { times: 1 });
   const saved = page.waitForResponse((response) => response.url().endsWith("/api/program-budgets") && response.request().method() === "POST");
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   const response = await saved;
   expect(response.status()).toBe(201);
   expect(savedJson).toHaveProperty("data.authorizationId");
   expect(privateValues(savedJson)).toEqual([]);
-  await page.unroute("**/api/program-budgets");
   await expect(dialog).toHaveCount(0);
   await metric(page.locator("#main"), "Hours authorized", "12");
 }

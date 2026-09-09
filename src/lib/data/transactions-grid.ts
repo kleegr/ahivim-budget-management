@@ -75,6 +75,7 @@ export async function listTransactionsForGrid(
   scope?: AccessScope,
   opts?: {
     employeeId?: string;
+    individualId?: string;
     transactionId?: string;
     transactionIds?: string[];
     /** IDs already resolved from a bounded, access-scoped server-side source. */
@@ -92,10 +93,16 @@ export async function listTransactionsForGrid(
   const scopeClause = scope
     ? transactionScopeClause(scope, "t.individual_id", "t.employee_id", params)
     : "";
+  if (opts?.employeeId !== undefined && !UUID_PATTERN.test(opts.employeeId)) return [];
+  if (opts?.individualId !== undefined && !UUID_PATTERN.test(opts.individualId)) return [];
   let employeeClause = "";
   if (opts?.employeeId && UUID_PATTERN.test(opts.employeeId)) {
     params.push(opts.employeeId);
     employeeClause = ` AND t.employee_id = $${params.length}`;
+  }
+  if (opts?.individualId) {
+    params.push(opts.individualId);
+    employeeClause += ` AND t.individual_id = $${params.length}`;
   }
   let transactionClause = "";
   if (requestedIds.length > 0) {
@@ -210,7 +217,7 @@ export async function listTransactionsForGrid(
     LEFT JOIN import_rows ir ON ir.id = t.import_row_id
     LEFT JOIN service_sessions ss ON ss.id = t.service_session_id
     WHERE TRUE${scopeClause}${employeeClause}${transactionClause}
-    ORDER BY t.check_date DESC NULLS LAST, t.check_number, t.source_row_number NULLS LAST
+    ORDER BY canonical_service_date(t.period_begin, t.check_date, t.period_end) DESC NULLS LAST, t.id
   `, params);
 
   return rows.map((r) => {

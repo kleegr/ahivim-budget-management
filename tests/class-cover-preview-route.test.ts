@@ -1,90 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-
-const mocks = vi.hoisted(() => ({
-  accessibleClassInvoice: vi.fn(),
-  getClassCoverSheetSnapshot: vi.fn(),
-  getClassReimbursementProfile: vi.fn(),
-  buildClassCoverSheetPdf: vi.fn(),
-}));
-
-vi.mock("@/lib/class-route-helpers", () => ({
-  accessibleClassInvoice: mocks.accessibleClassInvoice,
-}));
-vi.mock("@/lib/data/class-reimbursement-profiles", () => ({
-  getClassCoverSheetSnapshot: mocks.getClassCoverSheetSnapshot,
-  getClassReimbursementProfile: mocks.getClassReimbursementProfile,
-}));
-vi.mock("@/lib/documents/class-cover-sheet-pdf", () => ({
-  buildClassCoverSheetPdf: mocks.buildClassCoverSheetPdf,
-}));
-vi.mock("@/lib/manage/class-reimbursement-profiles", () => ({
-  createClassCoverSheetSnapshot: vi.fn(),
-}));
-
-import { GET, POST } from "@/app/api/classes/invoices/[id]/cover-sheet/route";
-
-const ID = "00000000-0000-4000-8000-000000000001";
-const INDIVIDUAL_ID = "00000000-0000-4000-8000-000000000002";
-const context = { params: Promise.resolve({ id: ID }) };
-const invoice = { id: ID, individualId: INDIVIDUAL_ID, invoiceNumber: "8514", status: "issued" };
-const profile = { individualId: INDIVIDUAL_ID, mailingName: "Sample Individual" };
-
-describe("class cover-sheet preview", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.accessibleClassInvoice.mockResolvedValue({ invoice, access: { pool: {} } });
-    mocks.buildClassCoverSheetPdf.mockResolvedValue(new Uint8Array([37, 80, 68, 70]));
-  });
-
-  it("renders the current saved profile inline without freezing a snapshot", async () => {
-    mocks.getClassReimbursementProfile.mockResolvedValue(profile);
-    const request = new NextRequest(`http://localhost/api/classes/invoices/${ID}/cover-sheet?preview=1`);
-
-    const response = await GET(request, context);
-
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-disposition")).toContain("inline");
-    expect(mocks.getClassReimbursementProfile).toHaveBeenCalledWith({}, INDIVIDUAL_ID);
-    expect(mocks.getClassCoverSheetSnapshot).not.toHaveBeenCalled();
-    expect(mocks.buildClassCoverSheetPdf).toHaveBeenCalledWith(invoice, profile);
-  });
-
-  it("keeps the ordinary download tied to the frozen snapshot", async () => {
-    mocks.getClassCoverSheetSnapshot.mockResolvedValue(profile);
-    const request = new NextRequest(`http://localhost/api/classes/invoices/${ID}/cover-sheet`);
-
-    const response = await GET(request, context);
-
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-disposition")).toContain("attachment");
-    expect(mocks.getClassCoverSheetSnapshot).toHaveBeenCalledWith({}, ID);
-    expect(mocks.getClassReimbursementProfile).not.toHaveBeenCalled();
-  });
-
-  it("allows a manager to preview a draft before issue without creating a frozen output", async () => {
-    const draft = { ...invoice, status: "draft" };
-    mocks.accessibleClassInvoice.mockResolvedValue({ invoice: draft, access: { pool: {} } });
-    mocks.getClassReimbursementProfile.mockResolvedValue(profile);
-    const response = await GET(new NextRequest(`http://localhost/api/classes/invoices/${ID}/cover-sheet?preview=1`), context);
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-disposition")).toContain("inline");
-    expect(mocks.accessibleClassInvoice).toHaveBeenCalledWith(ID, "manage");
-    expect(mocks.buildClassCoverSheetPdf).toHaveBeenCalledWith(draft, profile);
-    expect(mocks.getClassCoverSheetSnapshot).not.toHaveBeenCalled();
-  });
-
-  it.each(["draft", "void"])("blocks finalized downloads and finalization for %s invoices", async (status) => {
-    mocks.accessibleClassInvoice.mockResolvedValue({ invoice: { ...invoice, status }, access: { pool: {} } });
-    expect((await GET(new NextRequest(`http://localhost/api/classes/invoices/${ID}/cover-sheet`), context)).status).toBe(409);
-    expect((await POST(new NextRequest(`http://localhost/api/classes/invoices/${ID}/cover-sheet`, { method: "POST" }), context)).status).toBe(409);
-    expect(mocks.getClassCoverSheetSnapshot).not.toHaveBeenCalled();
-    expect(mocks.buildClassCoverSheetPdf).not.toHaveBeenCalled();
-  });
-
-  it("blocks preview of a void invoice", async () => {
-    mocks.accessibleClassInvoice.mockResolvedValue({ invoice: { ...invoice, status: "void" }, access: { pool: {} } });
-    expect((await GET(new NextRequest(`http://localhost/api/classes/invoices/${ID}/cover-sheet?preview=1`), context)).status).toBe(409);
-    expect(mocks.buildClassCoverSheetPdf).not.toHaveBeenCalled();
-  });
+const mocks=vi.hoisted(()=>({accessibleClassInvoice:vi.fn(),getClassCoverSheetSnapshot:vi.fn(),getClassReimbursementProfile:vi.fn(),getClassCoverVersion:vi.fn(),listClassCoverVersions:vi.fn(),buildClassCoverSheetPdf:vi.fn()}));
+vi.mock("@/lib/class-route-helpers",()=>({accessibleClassInvoice:mocks.accessibleClassInvoice}));
+vi.mock("@/lib/data/class-reimbursement-profiles",()=>mocks);
+vi.mock("@/lib/documents/class-cover-sheet-pdf",()=>({buildClassCoverSheetPdf:mocks.buildClassCoverSheetPdf}));
+vi.mock("@/lib/manage/class-reimbursement-profiles",()=>({createClassCoverSheetSnapshot:vi.fn(),appendClassCoverCorrection:vi.fn()}));
+import { GET,POST } from "@/app/api/classes/invoices/[id]/cover-sheet/route";
+const ID="00000000-0000-4000-8000-000000000001", INDIVIDUAL_ID="00000000-0000-4000-8000-000000000002";
+const context={params:Promise.resolve({id:ID})};
+const invoice={id:ID,individualId:INDIVIDUAL_ID,invoiceNumber:"SYNTHETIC-1",status:"issued"};
+const profileA={individualId:INDIVIDUAL_ID,mailingName:"Issued Profile A"};
+const profileB={individualId:INDIVIDUAL_ID,mailingName:"Future Profile B"};
+const request=(query="")=>new NextRequest(`http://localhost/api/classes/invoices/${ID}/cover-sheet${query}`);
+describe("cover history uses the frozen selected version",()=>{
+ beforeEach(()=>{vi.resetAllMocks();mocks.accessibleClassInvoice.mockResolvedValue({invoice,access:{pool:{}}});mocks.listClassCoverVersions.mockResolvedValue([]);mocks.getClassReimbursementProfile.mockResolvedValue(profileB);mocks.buildClassCoverSheetPdf.mockImplementation(async(_invoice,profile)=>new TextEncoder().encode(`PDF:${profile.mailingName}`));});
+ it("previews an unfinalized draft without freezing it",async()=>{mocks.accessibleClassInvoice.mockResolvedValue({invoice:{...invoice,status:"draft"},access:{pool:{}}});const response=await GET(request("?preview=1"),context);expect(response.status).toBe(200);expect(response.headers.get("content-disposition")).toContain("inline");expect(await response.text()).toBe("PDF:Future Profile B");expect(mocks.accessibleClassInvoice).toHaveBeenCalledWith(ID,"manage");});
+ it("returns identical finalized preview/download content after the reusable profile changes",async()=>{mocks.listClassCoverVersions.mockResolvedValue([{version:1}]);mocks.getClassCoverVersion.mockResolvedValue(profileA);const preview=await GET(request("?preview=1"),context);const download=await GET(request(),context);expect(await preview.text()).toBe("PDF:Issued Profile A");expect(await download.text()).toBe("PDF:Issued Profile A");expect(mocks.getClassReimbursementProfile).not.toHaveBeenCalled();expect(download.headers.get("content-disposition")).toContain("attachment");});
+ it("pins appended correction versions across metadata, preview and download",async()=>{mocks.listClassCoverVersions.mockResolvedValue([{version:2},{version:1}]);mocks.getClassCoverVersion.mockImplementation(async(_pool,_id,version)=>version===1?profileA:version===2?profileB:null);const metadata=await GET(request("?metadata=1&version=1"),context);expect((await metadata.json()).data).toMatchObject({version:1,finalized:true,profile:profileA});expect(await(await GET(request("?preview=1&version=1"),context)).text()).toBe("PDF:Issued Profile A");expect(await(await GET(request(),context)).text()).toBe("PDF:Future Profile B");expect((await GET(request("?metadata=1&version=3"),context)).status).toBe(404);});
+ it("retrieves void history with issued facts and refuses new finalization",async()=>{const voided={...invoice,status:"void",voidReason:"Duplicate invoice"};mocks.accessibleClassInvoice.mockResolvedValue({invoice:voided,access:{pool:{}}});mocks.listClassCoverVersions.mockResolvedValue([{version:1}]);mocks.getClassCoverVersion.mockResolvedValue(profileA);for(const query of["","?preview=1"]){expect((await GET(request(query),context)).status).toBe(200);expect(mocks.buildClassCoverSheetPdf).toHaveBeenLastCalledWith(voided,profileA);}expect((await POST(new NextRequest(request().url,{method:"POST"}),context)).status).toBe(409);expect(mocks.getClassReimbursementProfile).not.toHaveBeenCalled();});
+ it("does not invent a historical profile when no cover was finalized",async()=>{mocks.accessibleClassInvoice.mockResolvedValue({invoice:{...invoice,status:"void"},access:{pool:{}}});expect((await GET(request(),context)).status).toBe(409);const metadata=await GET(request("?metadata=1"),context);expect((await metadata.json()).data.profile).toBeNull();expect(mocks.buildClassCoverSheetPdf).not.toHaveBeenCalled();expect(mocks.getClassReimbursementProfile).not.toHaveBeenCalled();});
+ it("rejects appending a profile changed after the displayed draft was saved",async()=>{mocks.getClassReimbursementProfile.mockResolvedValue({...profileB,updatedAt:"2026-09-09T20:00:00Z"});const response=await POST(new NextRequest(request().url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"append_correction",expectedVersion:1,expectedProfileUpdatedAt:"2026-09-09T19:00:00Z",reason:"Synthetic correction"})}),context);expect(response.status).toBe(409);expect((await response.json()).error).toContain("profile changed");});
+ it("keeps ordinary draft downloads blocked",async()=>{mocks.accessibleClassInvoice.mockResolvedValue({invoice:{...invoice,status:"draft"},access:{pool:{}}});expect((await GET(request(),context)).status).toBe(409);expect(mocks.buildClassCoverSheetPdf).not.toHaveBeenCalled();});
 });

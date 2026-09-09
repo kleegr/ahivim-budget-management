@@ -134,12 +134,6 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
     no_activity: activeRows.filter((row) => row.transactionCount === 0).length,
   }), [activeRows]);
 
-  const totals = useMemo(() => ({
-    transactions: activeRows.reduce((sum, row) => sum + row.transactionCount, 0),
-    checks: activeRows.reduce((sum, row) => sum + row.checkCount, 0),
-    billedHours: activeRows.reduce((sum, row) => sum.plus(row.billedHours ?? 0), dec(0)).toString(),
-  }), [activeRows]);
-
   const filterOptions = useMemo(() => {
     const options: Array<{ key: DirectoryFilter; label: string; icon: LucideIcon }> = [
       { key: "all", label: "All", icon: Users },
@@ -194,6 +188,12 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
     return list.slice().sort(compare);
   }, [filter, q, rows, showArchived, sort, hasResponsibilities, management, review, workflow]);
 
+  const totals = useMemo(() => ({
+    transactions: visible.reduce((sum, row) => sum + row.transactionCount, 0),
+    checks: visible.reduce((sum, row) => sum + row.checkCount, 0),
+    billedHours: visible.reduce((sum, row) => sum.plus(row.billedHours ?? 0), dec(0)).toString(),
+  }), [visible]);
+
   const archivedCount = rows.filter((row) => row.archived).length;
   const hasActiveFilters = q.trim().length > 0 || filter !== "all" || management !== "all" || review !== "all" || workflow !== "any";
   const resetFilters = () => {
@@ -213,9 +213,9 @@ export default function EmployeesList({ rows, canEdit }: { rows: EmployeeRow[]; 
 
   return (
     <div className="space-y-4">
-      <section aria-label="Employee portfolio summary" className="border-y border-[var(--color-rule-strong)]">
+      <section aria-label="Totals for all employees matching this view" className="border-y border-[var(--color-rule-strong)]">
         <div className="grid grid-cols-2 gap-x-5 sm:grid-cols-4">
-          <SummaryMetric icon={Users} label="Active employees" value={activeRows.length.toLocaleString()} />
+          <SummaryMetric icon={Users} label="Employees in this view" value={visible.length.toLocaleString()} />
           <SummaryMetric icon={Activity} label="Billing records" value={totals.transactions.toLocaleString()} />
           <SummaryMetric icon={CalendarDays} label="Pay periods" value={totals.checks.toLocaleString()} />
           {canSeeHours ? <SummaryMetric icon={Clock3} label="Billed hours" value={formatHours(totals.billedHours)} /> : null}

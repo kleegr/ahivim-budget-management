@@ -17,7 +17,9 @@ import type {
   ManualIncomeSource,
 } from "@/lib/manage/agency-financials";
 import { agencyDate } from "@/lib/business/agency-time";
-import { formatMoney } from "@/lib/money";
+import { dec, formatMoney } from "@/lib/money";
+import { percentInputToFraction } from "@/lib/business/percentage-input";
+import SearchableSelect from "@/components/manage/searchable-select";
 
 export type CountSeparatelyTarget = {
   id: string;
@@ -26,6 +28,22 @@ export type CountSeparatelyTarget = {
   action: "count_separately" | "treat_as_same_payment";
   splitAlreadyCounted: boolean;
 };
+
+export function PercentagePreview({ share, employee = false, amount = "1000", scope, date }: {
+  share: string; employee?: boolean; amount?: string; scope: string; date: string;
+}) {
+  try {
+    const fraction = percentInputToFraction(share);
+    const base = dec(amount);
+    if (!base.isFinite() || base.lte(0)) return null;
+    const allocated = base.times(fraction);
+    return <p role="status" className="rounded-lg bg-[var(--color-surface-muted)] p-3 text-sm leading-6">
+      {employee ? <>On {formatMoney(base)} Employee base, the employee receives {formatMoney(allocated)} and the agency retains {formatMoney(base.minus(allocated))} of that base. Agency spread is separate.</>
+        : <>On {formatMoney(base)} received, the agency receives {formatMoney(allocated)} and the individual receives {formatMoney(base.minus(allocated))}.</>}
+      <span className="block text-xs">Scope: {scope || "Choose the affected records"}. Effective {date || "date required"}.</span>
+    </p>;
+  } catch { return <p className="text-xs text-[var(--color-ink-soft)]">Enter a percentage from 0 to 100 to preview. 1 means 1%.</p>; }
+}
 
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -43,25 +61,29 @@ function FormFooter({ saving, onClose }: { saving: boolean; onClose: () => void 
 }
 
 export function IncomeForm({
+  replacement,
   month,
   options,
   onClose,
   onSaved,
   onOpenProgramSplit,
 }: {
+  replacement?: ManualIncomeEntry | null;
   month: string;
   options: AgencyFinancialOptions;
   onClose: () => void;
   onSaved: () => void;
   onOpenProgramSplit: (selection: { individualId: string; programId: string; effectiveFrom: string }) => void;
 }) {
-  const [sourceType, setSourceType] = useState<ManualIncomeSource>("other");
-  const [serviceDate, setServiceDate] = useState(`${month}-01`);
-  const [individualId, setIndividualId] = useState("");
-  const [programId, setProgramId] = useState("");
-  const [grossAmount, setGrossAmount] = useState("");
-  const [agencySharePercent, setAgencySharePercent] = useState("100");
-  const [sourceRef, setSourceRef] = useState("");
+  const [sourceType, setSourceType] = useState<ManualIncomeSource>(replacement?.sourceType ?? "other");
+  const [serviceDate, setServiceDate] = useState(replacement?.serviceDate ?? `${month}-01`);
+  const [individualId, setIndividualId] = useState(replacement?.individualId ?? "");
+  const [programId, setProgramId] = useState(replacement?.programId ?? "");
+  const [grossAmount, setGrossAmount] = useState(replacement?.grossAmount ?? "");
+  const [agencySharePercent, setAgencySharePercent] = useState(replacement ? dec(replacement.agencySharePercent).times(100).toString() : "100");
+  const [sourceRef, setSourceRef] = useState(replacement?.sourceRef ?? "");
+  const [paymentReference, setPaymentReference] = useState(replacement?.paymentReference ?? "");
+  const [requestId] = useState(() => crypto.randomUUID());
   const [notes, setNotes] = useState("");
   const [overrideReason, setOverrideReason] = useState("");
   const [separatePaymentReason, setSeparatePaymentReason] = useState("");
@@ -84,6 +106,9 @@ export function IncomeForm({
       grossAmount,
       agencySharePercent: custom ? undefined : agencySharePercent,
       sourceRef: sourceRef || null,
+      paymentReference: paymentReference || null,
+      replacesEntryId: replacement?.id ?? null,
+      requestId,
       notes: notes || null,
       overBudgetOverrideReason: overrideReason || null,
       automaticSourceOverrideReason: separatePaymentReason || null,
@@ -100,6 +125,7 @@ export function IncomeForm({
 
   return (
     <form className="space-y-4" onSubmit={submit}>
+      {replacement ? <Notice tone="info" title="Linked receipt correction">The voided original and its reason remain in history. Use the original invoice and payment reference and explain this correction in Notes.</Notice> : null}
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Income type">
           <select className="select mt-1 w-full" value={sourceType} onChange={(event) => setSourceType(event.target.value as ManualIncomeSource)}>
@@ -115,10 +141,7 @@ export function IncomeForm({
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label={custom ? "Individual (required)" : classReceipt ? "Individual (required without invoice number)" : "Individual (optional)"}>
-          <select required={dimensionsRequired} className="select mt-1 w-full" value={individualId} onChange={(event) => setIndividualId(event.target.value)}>
-            <option value="">None</option>
-            {options.individuals.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-          </select>
+          <SearchableSelect required={dimensionsRequired} label="individuals" value={individualId} onChange={setIndividualId} placeholder="None" options={options.individuals.map(item => ({ value: item.id, label: item.label }))} />
         </Field>
         <Field label={custom ? "Program (required)" : classReceipt ? "Program (required without invoice number)" : "Program (optional)"}>
           <select required={dimensionsRequired} className="select mt-1 w-full" value={programId} onChange={(event) => setProgramId(event.target.value)}>
@@ -128,14 +151,16 @@ export function IncomeForm({
         </Field>
       </div>
       {!custom ? <Field label="Agency share (%)"><input className="input tnum mt-1 w-full" inputMode="decimal" value={agencySharePercent} onChange={(event) => setAgencySharePercent(event.target.value)} /></Field> : null}
+      {!custom ? <PercentagePreview share={agencySharePercent} amount={grossAmount} date={serviceDate} scope={options.individuals.find(item => item.id === individualId)?.label ?? "This receipt"} /> : null}
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label={sourceType === "class" ? "Invoice or payment reference (optional)" : "Reference (optional)"}>
+        <Field label={sourceType === "class" ? "Invoice number (optional)" : "Reference (optional)"}>
           <input className="input mt-1 w-full" value={sourceRef} onChange={(event) => setSourceRef(event.target.value)} />
         </Field>
         <Field label="Budget override reason (only if needed)">
           <input className="input mt-1 w-full" value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} />
         </Field>
       </div>
+      <Field label="Payment identity (check, transfer, or installment reference)"><input required={classReceipt} className="input mt-1 w-full" value={paymentReference} onChange={event => setPaymentReference(event.target.value)} /><span className="block mt-1 text-xs">Each actual payment needs a distinct identity. Installments may share an invoice number.</span></Field>
       {showSeparatePaymentReason ? (
         <Field label="Why is this a separate payment?">
           <input
@@ -215,10 +240,11 @@ export function ProgramSplitForm({
   return (
     <form className="space-y-4" onSubmit={submit}>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Individual"><select required className="select mt-1 w-full" value={individualId} onChange={(event) => setIndividualId(event.target.value)}>{options.individuals.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>
+        <Field label="Individual"><SearchableSelect required label="individuals" value={individualId} onChange={setIndividualId} options={options.individuals.map(item => ({ value: item.id, label: item.label }))} /></Field>
         <Field label="Program"><select required className="select mt-1 w-full" value={programId} onChange={(event) => setProgramId(event.target.value)}>{options.programs.map((item) => <option key={item.id} value={item.id}>{item.label}{item.code ? ` (${item.code})` : ""}</option>)}</select></Field>
       </div>
       <Field label="Agency share (%)"><input required className="input tnum mt-1 w-full" inputMode="decimal" value={share} onChange={(event) => setShare(event.target.value)} /></Field>
+      <PercentagePreview share={share} date={effectiveFrom} scope={`${options.individuals.find(item => item.id === individualId)?.label ?? "Individual"} / ${options.programs.find(item => item.id === programId)?.label ?? "Program"}${effectiveTo ? ` through ${effectiveTo}` : ""}`} />
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Starts"><input required className="input mt-1 w-full" type="date" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} /></Field>
         <Field label="Ends (optional)"><input className="input mt-1 w-full" type="date" value={effectiveTo} onChange={(event) => setEffectiveTo(event.target.value)} /></Field>
@@ -251,9 +277,11 @@ export function EmployeeTermForm({
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [settlementWarning, setSettlementWarning] = useState<string | null>(null);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (settlementWarning) return;
     setSaving(true);
     setError(null);
     const result = await request("/api/agency-financials/employee-terms", {
@@ -270,16 +298,33 @@ export function EmployeeTermForm({
       setError(result.error ?? "The employee pay rule could not be saved.");
       return;
     }
+    if (result.settlementWarning) { setSettlementWarning(result.settlementWarning); return; }
     onSaved();
   };
+
+  if (settlementWarning) return <div className="space-y-4">
+    <Notice tone="warning" title="Rule saved; balance refresh failed">{settlementWarning} The saved rule is retained. Balances remain unverified until recalculation succeeds.</Notice>
+    {error ? <p role="alert">{error}</p> : null}
+    <div className="flex justify-end gap-2">
+      <button className="btn btn-secondary" type="button" disabled={saving} onClick={onSaved}>Close saved rule</button>
+      <button className="btn btn-primary" type="button" disabled={saving} onClick={async () => {
+        setSaving(true); setError(null);
+        const result = await request("/api/settlements/refresh", { employeeId });
+        setSaving(false);
+        if (!result.ok) { setError(result.error ?? "Balance refresh failed."); return; }
+        onSaved();
+      }}>{saving ? "Refreshing…" : "Retry balance refresh"}</button>
+    </div>
+  </div>;
 
   return (
     <form className="space-y-4" onSubmit={submit}>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Employee"><select required className="select mt-1 w-full" value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}>{options.employees.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>
-        <Field label="Individual"><select required className="select mt-1 w-full" value={individualId} onChange={(event) => setIndividualId(event.target.value)}>{options.individuals.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>
+        <Field label="Employee"><SearchableSelect required label="employees" value={employeeId} onChange={setEmployeeId} options={options.employees.map(item => ({ value: item.id, label: item.label }))} /></Field>
+        <Field label="Individual"><SearchableSelect required label="individuals" value={individualId} onChange={setIndividualId} options={options.individuals.map(item => ({ value: item.id, label: item.label }))} /></Field>
       </div>
       <Field label="Employee share of base (%)"><input required className="input tnum mt-1 w-full" inputMode="decimal" value={share} onChange={(event) => setShare(event.target.value)} /></Field>
+      <PercentagePreview employee share={share} date={effectiveFrom} scope={`${options.employees.find(item => item.id === employeeId)?.label ?? "Employee"} / ${options.individuals.find(item => item.id === individualId)?.label ?? "Individual"}${effectiveTo ? ` through ${effectiveTo}` : ""}`} />
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Starts"><input required className="input mt-1 w-full" type="date" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} /></Field>
         <Field label="Ends (optional)"><input className="input mt-1 w-full" type="date" value={effectiveTo} onChange={(event) => setEffectiveTo(event.target.value)} /></Field>

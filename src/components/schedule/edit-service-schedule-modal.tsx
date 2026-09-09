@@ -1,5 +1,7 @@
 "use client";
 
+import SearchableSelect from "@/components/manage/searchable-select";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CalendarX2, Save } from "lucide-react";
 import type { PlanningSeriesRow } from "@/lib/data/planning-queries";
@@ -40,7 +42,6 @@ export default function EditServiceScheduleModal({
   const [employeeId, setEmployeeId] = useState(row.employeeId ?? "");
   const [programId, setProgramId] = useState(row.programId ?? "");
   const [picked, setPicked] = useState(new Set(row.participantIds));
-  const [individualSearch, setIndividualSearch] = useState("");
   const [frequency, setFrequency] = useState<"weekly" | "daily">(row.frequency === "daily" ? "daily" : "weekly");
   const [interval, setInterval] = useState(String(row.interval));
   const [weekdays, setWeekdays] = useState(new Set(row.weekdays));
@@ -96,12 +97,6 @@ export default function EditServiceScheduleModal({
     startTime,
     weekdays,
   ]);
-  const filteredIndividuals = useMemo(() => {
-    const query = individualSearch.trim().toLocaleLowerCase();
-    return query
-      ? individuals.filter((individual) => individual.label.toLocaleLowerCase().includes(query))
-      : individuals;
-  }, [individualSearch, individuals]);
   const hasWarnings = preview
     ? schedulePreviewRequiresOverride(preview, { recurring: true, selectedEmployeeId: employeeId })
     : false;
@@ -152,14 +147,6 @@ export default function EditServiceScheduleModal({
     weekdays.size,
   ]);
 
-  function toggleIndividual(id: string) {
-    setPicked((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
 
   function toggleWeekday(day: number) {
     setWeekdays((current) => {
@@ -247,28 +234,11 @@ export default function EditServiceScheduleModal({
             </label>
             <label className="block text-sm">
               <span className="font-medium">Employee</span>
-              <select value={employeeId} onChange={(event) => setEmployeeId(event.target.value)} className="select mt-1 w-full">
-                <option value="">Employee needed</option>
-                {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.label}</option>)}
-              </select>
+              <SearchableSelect label="employees" selectLabel="Employee" value={employeeId} onChange={setEmployeeId} placeholder="Employee needed" options={employees.map((employee) => ({ value: employee.id, label: employee.label }))} />
             </label>
             <div className="text-sm">
               <span className="font-medium">Individuals</span>
-              <input
-                type="search"
-                value={individualSearch}
-                onChange={(event) => setIndividualSearch(event.target.value)}
-                placeholder="Search individuals"
-                className="mt-1 h-9 w-full rounded border border-[var(--color-rule-strong)] bg-white px-3 text-sm"
-              />
-              <div className="scroll-thin mt-1 max-h-44 overflow-y-auto rounded border border-[var(--color-rule)] p-1">
-                {filteredIndividuals.map((individual) => (
-                  <label key={individual.id} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 hover:bg-[var(--color-paper)]">
-                    <input type="checkbox" checked={picked.has(individual.id)} onChange={() => toggleIndividual(individual.id)} />
-                    <span>{individual.label}</span>
-                  </label>
-                ))}
-              </div>
+              <SearchableSelect multiple label="individuals" selectLabel="Individuals" values={individualIds} onValuesChange={(values) => setPicked(new Set(values))} options={individuals.map((individual) => ({ value: individual.id, label: individual.label }))} />
             </div>
             <label className="block text-sm">
               <span className="font-medium">Service type <span className="font-normal text-[var(--color-ink-faint)]">(optional)</span></span>

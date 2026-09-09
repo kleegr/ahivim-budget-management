@@ -1,4 +1,5 @@
 "use client";
+import SearchableSelect from "@/components/manage/searchable-select";
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -1203,10 +1204,7 @@ export default function UserAccessAdmin({
             <div className="mt-3 grid max-w-2xl gap-3 sm:grid-cols-2">
               <label className="block text-sm">
                 <span className="text-xs font-medium">Individual</span>
-                <select required value={addIndividualId} onChange={(event) => setAddIndividualId(event.target.value)} className="input mt-1 w-full text-sm">
-                  <option value="">Choose an individual</option>
-                  {individuals.map((individual) => <option key={individual.id} value={individual.id}>{individual.name}</option>)}
-                </select>
+                <SearchableSelect required label="individuals" selectLabel="Individual" value={addIndividualId} onChange={setAddIndividualId} options={individuals.map((individual) => ({ value: individual.id, label: individual.name }))} />
               </label>
               <label className="block text-sm">
                 <span className="text-xs font-medium">Relationship</span>
@@ -1222,11 +1220,7 @@ export default function UserAccessAdmin({
               <div key={index} className="mt-3 flex max-w-2xl flex-wrap items-end gap-3">
                 <label className="block min-w-48 flex-1 text-sm">
                   <span className="text-xs font-medium">Additional individual</span>
-                  <select required value={binding.individualId} onChange={(event) => setAdditionalIndividuals((current) => current.map((value, i) => i === index ? { ...value, individualId: event.target.value } : value))} className="input mt-1 w-full text-sm">
-                    <option value="">Choose an individual</option>
-                    {individuals.filter((individual) => individual.id === binding.individualId || (individual.id !== addIndividualId && !additionalIndividuals.some((value) => value.individualId === individual.id)))
-                      .map((individual) => <option key={individual.id} value={individual.id}>{individual.name}</option>)}
-                  </select>
+                  <SearchableSelect required label="additional individuals" selectLabel="Additional individual" value={binding.individualId} onChange={(next) => setAdditionalIndividuals((current) => current.map((value, i) => i === index ? { ...value, individualId: next } : value))} options={individuals.filter((individual) => individual.id === binding.individualId || (individual.id !== addIndividualId && !additionalIndividuals.some((value) => value.individualId === individual.id))).map((individual) => ({ value: individual.id, label: individual.name }))} />
                 </label>
                 <label className="block min-w-40 flex-1 text-sm">
                   <span className="text-xs font-medium">Relationship</span>
@@ -1244,10 +1238,7 @@ export default function UserAccessAdmin({
           {addBinding === "employee" ? (
             <label className="mt-3 block max-w-md text-sm">
               <span className="text-xs font-medium">Employee</span>
-              <select required value={addEmployeeId} onChange={(event) => setAddEmployeeId(event.target.value)} className="input mt-1 w-full text-sm">
-                <option value="">Choose an employee</option>
-                {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}
-              </select>
+              <SearchableSelect required label="employees" selectLabel="Employee" value={addEmployeeId} onChange={setAddEmployeeId} options={employees.map((employee) => ({ value: employee.id, label: employee.name }))} />
             </label>
           ) : null}
           {addBinding === "agency" ? (

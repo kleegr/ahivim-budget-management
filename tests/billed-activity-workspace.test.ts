@@ -71,37 +71,19 @@ function transaction(overrides: Partial<GridTransaction> = {}): GridTransaction 
 }
 
 describe("billed activity check grouping", () => {
-  it("starts row mode with the takeover's complete transaction columns", () => {
+  it("starts row mode with concise service columns and keeps advanced task columns available", () => {
     const visible = transactionColumns()
       .filter((column) => !column.hidden)
       .map((column) => [column.key, column.label]);
 
     expect(visible).toEqual([
-      ["payTo", "Pay to"],
-      ["checkDate", "Check date"],
-      ["checkNumber", "Check #"],
-      ["serviceDate", "Service date"],
-      ["periodBegin", "Period begin"],
-      ["periodEnd", "Period end"],
-      ["programCode", "Code"],
-      ["program", "Program"],
-      ["individual", "Individual"],
-      ["employee", "Employee"],
-      ["hours", "Hours"],
-      ["rate", "Funder rate"],
-      ["gross", "Funder billed"],
-      ["employeeRate", "Employee rate"],
-      ["internalAmount", "Employee base"],
-      ["agencyAdditional", "Agency spread"],
-      ["moneyReconciliation", "Money check"],
-      ["verifiedCheckGross", "Verified check gross"],
-      ["verifiedCheckNet", "Verified check net"],
-      ["withholding", "Withholding"],
-      ["verificationStatus", "Check status"],
-      ["paid", "Paid"],
-      ["paymentRecipient", "Payment recipient"],
-      ["nextStep", "Review status"],
+      ["serviceDate", "Service date"], ["program", "Program"], ["individual", "Individual"],
+      ["employee", "Employee"], ["hours", "Hours"], ["gross", "Funder billed"],
+      ["internalAmount", "Employee base"], ["agencyAdditional", "Agency spread"],
     ]);
+    expect(transactionGridSource).toContain('"Service review"');
+    expect(transactionGridSource).toContain('"Check review"');
+    expect(transactionGridSource).toContain('"Money verification"');
   });
 
   it("keeps advanced source, calculation and audit fields in the column chooser", () => {
@@ -184,16 +166,16 @@ describe("billed activity check grouping", () => {
     expect(checks.every((check) => check.rows === 1)).toBe(true);
   });
 
-  it("puts payroll checks needing a decision before ready checks", () => {
+  it("orders payroll by newest check date while preserving review status", () => {
     const checks = groupChecks([
-      transaction({ id: "ready", checkNumber: "CHK-READY", totalNetPay: "20.00" }),
+      transaction({ id: "ready", checkNumber: "CHK-READY", checkDate: "2026-02-15", totalNetPay: "20.00" }),
       transaction({ id: "review", checkNumber: "CHK-REVIEW", paymentRecipient: "unknown" }),
     ]);
 
-    expect(checks.map((check) => check.checkNumber)).toEqual(["CHK-REVIEW", "CHK-READY"]);
-    expect(checks[0]).toMatchObject({ needsReview: true });
-    expect(checks[0]?.reviewReasons).toContain("Confirm recipient");
-    expect(checks[1]).toMatchObject({ needsReview: false, reviewReasons: [] });
+    expect(checks.map((check) => check.checkNumber)).toEqual(["CHK-READY", "CHK-REVIEW"]);
+    expect(checks[1]).toMatchObject({ needsReview: true });
+    expect(checks[1]?.reviewReasons).toContain("Confirm recipient");
+    expect(checks[0]).toMatchObject({ needsReview: false, reviewReasons: [] });
   });
 
   it("uses the populated check net once and flags conflicting source values", () => {

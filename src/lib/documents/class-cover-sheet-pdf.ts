@@ -1,5 +1,6 @@
 import {
   PDFDocument,
+  degrees,
   rgb,
   type PDFFont,
   type PDFImage,
@@ -207,7 +208,7 @@ export async function buildClassCoverSheetPdf(
   profile: ClassReimbursementProfile,
 ): Promise<Uint8Array> {
   const document = await PDFDocument.create();
-  document.setTitle(`${invoice.status === "draft" ? "DRAFT - " : ""}Reimbursement application ${invoice.invoiceNumber}`);
+  document.setTitle(`${invoice.status === "void" ? "VOID - " : invoice.status === "draft" ? "DRAFT - " : ""}Reimbursement application ${invoice.invoiceNumber}`);
   document.setAuthor("Ahivim");
   document.setCreator("Ahivim Budget Management");
   const [{ regular, bold }, logo] = await Promise.all([
@@ -215,6 +216,7 @@ export async function buildClassCoverSheetPdf(
       invoice.individualName,
       invoice.billToName,
       invoice.purpose,
+      invoice.voidReason,
       ...invoice.lines.map((line) => line.description),
       ...Object.values(profile),
     ]),
@@ -229,5 +231,10 @@ export async function buildClassCoverSheetPdf(
   drawAttestation(page, bold);
   const totalY = drawExpenseTable(page, invoice, profile, regular, bold);
   drawSignature(page, invoice, profile, totalY - 12, regular, bold);
+  if (invoice.status === "void") {
+    page.drawText("VOID", { x: 185, y: 320, size: 90, font: bold, color: rgb(0.75, 0.1, 0.1), opacity: 0.3, rotate: degrees(30) });
+    const reason = fitPdfText(`VOID: ${safe(invoice.voidReason)} | ${invoice.voidedAt?.slice(0, 10) ?? ""}`, regular, 8, CONTENT_WIDTH);
+    page.drawText(reason.text, { x: MARGIN, y: 22, size: reason.size, font: regular, color: rgb(0.75, 0.1, 0.1) });
+  }
   return document.save();
 }

@@ -58,7 +58,7 @@ describe("canonical service-date read models", () => {
     expect(utilization).toContain("explicit_balance.authorization_id = effective.authorization_id");
     expect(utilization).toContain("explicit_balance.budget_period_id = effective.period_id");
     expect(utilization).toContain(
-      "scheduled_session.session_date BETWEEN effective.start_date AND effective.end_date",
+      "scheduled_session.session_date BETWEEN greatest(effective.start_date, $1::date) AND least(effective.end_date, COALESCE(explicit_balance.renewal_date - 1, effective.end_date))",
     );
     expect(utilization).not.toContain("FROM service_allocations");
 

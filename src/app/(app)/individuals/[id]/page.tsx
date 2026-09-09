@@ -3,7 +3,7 @@ import SaveFeedback from "@/components/manage/save-feedback";
 import { DirectoryBackLink } from "@/components/manage/directory-context";
 import { hasPortalCapability, resolvePortalAccess } from "@/lib/auth/portal-access";
 import { listIndividualOperationalReviews } from "@/lib/data/operational-review";
-import { RESPONSIBILITY_LABELS } from "@/lib/business/operational-responsibility";
+import { RESPONSIBILITY_LABELS, responsibilityForProgram } from "@/lib/business/operational-responsibility";
 import { IndividualResponsibilityEditor } from "@/components/manage/responsibility-editor";
 import OperationalFlags from "@/components/manage/operational-flags";
 import { notFound } from "next/navigation";
@@ -59,6 +59,14 @@ import ProgramBudgetWorkspace from "@/components/individuals/program-budget-work
 import { dec, formatHours, formatMoney } from "@/lib/money";
 import { txLink } from "@/lib/nav/tx-link";
 import { agencyDate } from "@/lib/business/agency-time";
+import { listIndividualResponsibilities } from "@/lib/manage/operational-responsibility";
+import { isWorkingProgram, isSelfHireProgram } from "@/lib/business/working-programs";
+import { listPriorWorkers } from "@/lib/data/prior-workers";
+import PriorWorkers from "@/components/individuals/prior-workers";
+import QuantityAuthorizations from "@/components/individuals/quantity-authorizations";
+import PersonTransactionHistory from "@/components/transactions/person-transaction-history";
+import { listTransactionsForGrid } from "@/lib/data/transactions-grid";
+import { transactionFieldVisibility } from "@/lib/auth/money-redaction";
 import {
   evaluateAssignmentAllowedHours,
   type AssignmentAllowedHoursEvaluation,
@@ -120,6 +128,9 @@ const PROFILE_DATE = new Intl.DateTimeFormat("en-US", {
 function profileDate(value: string | null): string {
   return value ? PROFILE_DATE.format(new Date(`${value}T00:00:00.000Z`)) : "Not set";
 }
+function inclusiveServiceEnd(exclusiveEnd: string | null | undefined): string | undefined {
+  return exclusiveEnd ? new Date(Date.parse(`${exclusiveEnd}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10) : undefined;
+}
 
 function profileTime(value: string | null): string | null {
   if (!value) return null;
@@ -136,14 +147,15 @@ export default async function IndividualDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams?: Promise<{ view?: string | string[] }>;
+  searchParams?: Promise<{ view?: string | string[]; programScope?: string | string[] }>;
 }) {
   const [user, { id }, query] = await Promise.all([
     requireUser("viewer"),
     params,
-    searchParams ?? Promise.resolve<{ view?: string | string[] }>({}),
+    searchParams ?? Promise.resolve<{ view?: string | string[]; programScope?: string | string[] }>({}),
   ]);
   const canEdit = user.role !== "viewer";
+  const showAllPrograms = query.programScope === "all";
   const requestedView = typeof query.view === "string" ? query.view : undefined;
   const initialView = requestedView === "financial" || requestedView === "classes" || requestedView === "details"
     ? "more"
@@ -169,6 +181,10 @@ export default async function IndividualDetailPage({
     const canSeeClasses = scope.canSeeClassFinancials && directAccess;
     const canManageHours = canManageHourAuthorizations(scope) && directAccess;
     const canPlan = canAccessPlanning(scope);
+    const [priorWorkers, fullHistory] = await Promise.all([
+      canPlan ? listPriorWorkers(pool, scope, id) : Promise.resolve([]),
+      scope.canSeeTransactions && directAccess ? listTransactionsForGrid(pool, scope, { individualId: id }) : Promise.resolve([]),
+    ]);
     const budgetPromise = getIndividualBudgetView(pool, id, undefined, scope);
     const supportingDataPromise = Promise.all([
       canSeeBudgets
@@ -228,11 +244,18 @@ export default async function IndividualDetailPage({
     const canSeeRowDollars = (serviceCategory: string) => directAccess && (
       serviceCategory === "classes" ? scope.canSeeClassFinancials : scope.canSeeBilledAmounts
     );
+    const workingResponsibility = (await listIndividualResponsibilities(pool, today, id)).get(id);
     const visibleProgramBudgetRows = programBudgetsRaw.filter((row) => {
       const hasVisibleHours = canSeeBudgets && row.requiredAuthType !== "dollars";
       const hasVisibleDollars = canSeeRowDollars(row.serviceCategory) && row.requiredAuthType !== "hours";
-      return hasVisibleHours || hasVisibleDollars;
+      return (hasVisibleHours || hasVisibleDollars) && (showAllPrograms || isWorkingProgram(row, workingResponsibility));
     });
+    const sharedRates = scope.canSeeMoney && directAccess ? await pool.query<{ program_id: string; internal_rate: string | null; agency_rate: string | null; effective_from: string; effective_to: string | null }>(
+      `SELECT DISTINCT ON (program_id) program_id, internal_rate::text, agency_rate::text,
+        effective_from::text, effective_to::text FROM program_rate_schedules
+       WHERE program_id = ANY($1::uuid[]) AND archived_at IS NULL AND effective_from <= $2::date
+         AND (effective_to IS NULL OR effective_to >= $2::date)
+       ORDER BY program_id, effective_from DESC, id DESC`, [visibleProgramBudgetRows.map((row) => row.programId), today]) : { rows: [] };
     const programBudgetHistoryVisibility = visibleProgramBudgetRows.map((row) => (
       (scope.canSeeTransactions || canSeeRowDollars(row.serviceCategory)) && directAccess
     ));
@@ -260,11 +283,14 @@ export default async function IndividualDetailPage({
       ),
     ]);
     const programBudgets = visibleProgramBudgetRows.map((row, index) => ({
+      responsibility: workingResponsibility ? responsibilityForProgram(workingResponsibility, row.programId) : undefined,
+      responsibleAgencyNames: profileContext.agencies.filter((agency) => agency.managesBudget).map((agency) => agency.agencyName),
       authorizationId: row.authorizationId,
       budgetPeriodId: row.budgetPeriodId,
       programId: row.programId,
       programCode: row.programCode,
       programName: row.programName,
+      centralProgramRate: (() => { const rate = sharedRates.rows.find((rate) => rate.program_id === row.programId); return rate ? { internalRate: scope.canSeeEmployeeAmounts ? rate.internal_rate : null, agencyRate: canSeeRowDollars(row.serviceCategory) ? rate.agency_rate : null, effectiveFrom: rate.effective_from, effectiveTo: rate.effective_to } : undefined; })(),
       periodLabel: row.periodLabel,
       startDate: row.startDate,
       endDate: row.endDate,
@@ -280,7 +306,7 @@ export default async function IndividualDetailPage({
       internalRate: scope.canSeeEmployeeAmounts && directAccess ? row.internalRate : null,
       agencyRate: canSeeRowDollars(row.serviceCategory) ? row.agencyRate : null,
       individualRateOverride: scope.canSeeEmployeeAmounts && directAccess ? row.individualRateOverride : null,
-      allowIndividualRateOverride: row.allowIndividualRateOverride,
+      allowIndividualRateOverride: row.allowIndividualRateOverride && isSelfHireProgram(row.programCode),
       notes: scope.canSeeMoney ? row.notes : null,
       consumedHours: canSeeBudgets && row.requiredAuthType !== "dollars" ? row.consumedHours : null,
       consumedDollars: canSeeRowDollars(row.serviceCategory) && row.requiredAuthType !== "hours" ? row.consumedDollars : null,
@@ -339,7 +365,7 @@ export default async function IndividualDetailPage({
         })),
     }));
     const operationalBudget = canSeeBudgets
-      ? summarizeAuthorizationPortfolio(programBudgetsRaw).get(id)?.budget ?? null
+      ? summarizeAuthorizationPortfolio(visibleProgramBudgetRows).get(id)?.budget ?? null
       : null;
     // The plan the main view describes (matches the budget board), plus any OTHER
     // plans this individual has — each gets its own budget view so a second plan
@@ -386,11 +412,12 @@ export default async function IndividualDetailPage({
           : [],
       })),
     };
-    const currentAssignments = assignments.filter((assignment) => (
+    const planningAssignments = assignments.filter((assignment) => (
       assignment.status === "active"
-      && assignmentIsCurrent(assignment, today)
+      && (!assignment.endDate || assignment.endDate >= today)
       && canViewEmployee(scope, assignment.employeeId)
     ));
+    const currentAssignments = planningAssignments.filter((assignment) => assignmentIsCurrent(assignment, today));
     const canSeeAssignmentHours = scope.canSeeHours;
     const allowedHours = canSeeAssignmentHours && currentAssignments.length > 0
       ? await evaluateAssignmentAllowedHours(pool, {
@@ -403,6 +430,8 @@ export default async function IndividualDetailPage({
     return {
       individual: individualRecordForAccess(scope, individual), budget, operationalBudget, activity: visibleActivity, settlement, masserStatement,
       profileContext, operationalReview,
+      priorWorkers, fullHistory, transactionVisibility: transactionFieldVisibility(scope),
+      planningAssignments: planningAssignments.map((assignment) => ({ ...assignment, allowedHours: scope.canSeeHours ? assignment.allowedHours : null })),
       responsibilityPrograms: canManageResponsibility ? programCatalogRaw.filter((program) => program.isActive && program.code !== "CLASSES").map((program) => ({ id: program.id, name: program.name })) : [],
       strategy,
       otherPlans,
@@ -434,7 +463,7 @@ export default async function IndividualDetailPage({
           requiredAuthType: program.requiredAuthType,
           defaultAgencyRate: scope.canSeeBilledAmounts && directAccess ? program.agencyRate : null,
           defaultInternalRate: scope.canSeeEmployeeAmounts && directAccess ? program.internalRate : null,
-          allowIndividualRateOverride: program.allowIndividualRateOverride,
+          allowIndividualRateOverride: program.allowIndividualRateOverride && isSelfHireProgram(program.code),
         })),
       canSeeTransactions: scope.canSeeTransactions,
       canPlan,
@@ -459,6 +488,7 @@ export default async function IndividualDetailPage({
 
   const {
     individual, budget, operationalBudget, activity, settlement, masserStatement, profileContext, operationalReview,
+    priorWorkers, fullHistory, transactionVisibility, planningAssignments,
     strategy, otherPlans, financialSetupOverview,
     canSeeHours, canSeeAssignmentHours, canSeeBilledAmounts, canSeeEmployeeAmounts, canSeeAgencySpread,
     canSeeBudgets, canSeeProgramBudgets,
@@ -580,7 +610,7 @@ export default async function IndividualDetailPage({
       <DirectoryBackLink directory="individuals" />
       <SaveFeedback />
       <PageHeader eyebrow="Individual" title={individual.displayName} action={headerActions} />
-      {operationalReview ? <><IndividualResponsibilityEditor id={id} value={operationalReview.responsibility} programs={responsibilityPrograms} /><OperationalFlags flags={operationalReview.flags} /></> : null}
+      {operationalReview ? <><details className="card mb-4 p-4" open={undefined}><summary className="cursor-pointer text-sm font-semibold">Finish setup · responsibility and program choices</summary><p className="my-3 text-sm text-[var(--color-ink-soft)]">1. Choose responsibility ({RESPONSIBILITY_LABELS[operationalReview.responsibility.budget]}). 2. Enter the relevant program setup. 3. Inspect the resulting position below. Saved choices remember your progress; Not decided and Not managed are valid choices.</p><IndividualResponsibilityEditor id={id} value={operationalReview.responsibility} programs={responsibilityPrograms} /><div className="flex flex-wrap gap-2"><ButtonLink href={`/individuals/${id}?view=budget`}>Review program setup</ButtonLink><ButtonLink href={`/individuals/${id}?view=more`}>Dated agency responsibility</ButtonLink></div></details><OperationalFlags flags={operationalReview.flags} /></> : null}
       <ProfileHeaderSummary
         individualId={id}
         status={individual.status}
@@ -601,8 +631,9 @@ export default async function IndividualDetailPage({
         canOpenSchedule={canPlan}
         action={profileAction}
       />
+      {canSeeBudgets && programBudgets.some((row) => row.periodStatus === "active" && row.remainingHours !== null && dec(row.remainingHours).isNegative()) ? <p className="mb-4 rounded border border-[var(--color-danger)] p-3 text-sm text-[var(--color-danger)]">Over authorization: {programBudgets.filter((row) => row.periodStatus === "active" && row.remainingHours !== null && dec(row.remainingHours).isNegative()).map((row) => `${row.programName}: ${formatHours(row.remainingHours!)} hours remaining`).join("; ")}. Aggregate totals do not transfer unused hours between programs.</p> : null}
       <TabPanels
-        initialId={initialView}
+        initialId={initialView ?? (canSeeProgramBudgets ? "budget" : undefined)}
         paramKey="view"
         panels={[
           {
@@ -697,10 +728,10 @@ export default async function IndividualDetailPage({
           },
           ...(canSeeProgramBudgets ? [{
             id: "budget",
-            label: "Budgets",
+            label: "Programs & Monthly Plan",
             badge: programBudgets.length || undefined,
             content: (
-              <ProgramBudgetWorkspace
+              <div><div className="mb-4 flex flex-wrap items-center justify-between gap-3 text-sm"><p>{showAllPrograms ? "All programs. Totals cover the displayed scope." : "Self-Hired ComHab, Self-Hired Respite, and other programs managed by us."}</p><div className="flex flex-wrap gap-2">{canSeeFinancialSetup ? <ButtonLink href={`/individuals/${id}?view=more#financial-plan-${strategy?.id ?? "new"}`}>Projection inputs</ButtonLink> : null}<ButtonLink href={`/individuals/${id}?view=budget${showAllPrograms ? "" : "&programScope=all"}`}>{showAllPrograms ? "Show working programs" : "Show all programs"}</ButtonLink></div></div><ProgramBudgetWorkspace
                 operationalReview={operationalReview}
                 individualId={id}
                 budgets={programBudgets}
@@ -709,14 +740,17 @@ export default async function IndividualDetailPage({
                 hoursOnlyManagement={!canEdit && canManageHours}
                 showInternalRate={canSeeEmployeeAmounts}
                 showAgencyRate={canSeeBilledAmounts}
-              />
+                canOpenTransactions={canSeeTransactions}
+              />{canSeeBudgets && (canManageHours || canEdit) ? <QuantityAuthorizations individualId={id} programs={programCatalog} /> : null}{canPlan ? <div className="mt-5"><PriorWorkers individualId={id} workers={priorWorkers} assignments={planningAssignments} /></div> : null}</div>
             ),
           }] : []),
-          ...(canSeeBudgets || canPlan || assignments.length > 0 || profileContext.upcomingSessions.length > 0 ? [{
+          ...(canSeeTransactions || canSeeBudgets || canPlan || assignments.length > 0 || profileContext.upcomingSessions.length > 0 ? [{
             id: "activity",
-            label: "Activity & Schedule",
+            label: "Transactions & Schedule",
             content: (
               <div className="space-y-6">
+                {canSeeTransactions ? <PersonTransactionHistory individualId={id} rows={fullHistory} visibility={transactionVisibility} /> : null}
+                {canPlan ? <PriorWorkers individualId={id} workers={priorWorkers} assignments={planningAssignments} /> : null}
                 <StaffingAndSchedule
                   individualId={id}
                   assignments={assignments}
@@ -745,7 +779,7 @@ export default async function IndividualDetailPage({
                     description={canSeeTransactions
                       ? "Employees with billed activity in the current financial reporting period."
                       : "Employees with recorded service activity in the current financial reporting period."}
-                    action={canSeeTransactions ? <ButtonLink href={txLink({ individualId: id, pbFrom: employeeActivityPeriod?.start, pbTo: employeeActivityPeriod?.end })} variant="secondary">All rows →</ButtonLink> : undefined}
+                    action={canSeeTransactions ? <ButtonLink href={txLink({ individualId: id, serviceFrom: employeeActivityPeriod?.start, serviceTo: inclusiveServiceEnd(employeeActivityPeriod?.end) })} variant="secondary">Period transactions →</ButtonLink> : undefined}
                   >
                     <EmployeesActivity
                       individualId={id}
@@ -774,7 +808,7 @@ export default async function IndividualDetailPage({
                   <Card
                     title="Transaction money"
                     description="Funder billed and employee base within the current financial reporting period."
-                    action={canSeeTransactions ? <ButtonLink href={txLink({ individualId: id, pbFrom: budget.periodStart ?? undefined, pbTo: budget.periodEnd ?? undefined })} variant="secondary">See these rows →</ButtonLink> : undefined}
+                    action={canSeeTransactions ? <ButtonLink href={txLink({ individualId: id, serviceFrom: budget.periodStart ?? undefined, serviceTo: inclusiveServiceEnd(budget.periodEnd) })} variant="secondary">See these rows →</ButtonLink> : undefined}
                   >
                     <div className="grid gap-3 px-5 py-4 sm:grid-cols-3">
                       {canSeeBilledAmounts ? <MoneyTile label="Funder billed" value={formatMoney(budget.money.agencyBilled)} /> : null}
@@ -997,7 +1031,7 @@ function ProfileHeaderSummary({
 
   return (
     <section aria-label="Individual at a glance" className="mb-5 overflow-hidden rounded-lg border border-[var(--color-rule-strong)] bg-[var(--color-surface)]">
-      <div className="grid divide-y divide-[var(--color-rule)] sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
+      <div className="grid grid-cols-2 divide-y divide-[var(--color-rule)] sm:divide-x sm:divide-y-0 lg:grid-cols-4">
         <ProfileFact label="Status" value={status} />
         <div className="px-3 py-2">
           <span className="block text-xs font-medium text-[var(--color-ink-faint)]">Budget status</span>
@@ -1009,7 +1043,7 @@ function ProfileHeaderSummary({
         <ProfileFact label="Current renewal" value={profileDate(renewal)} href={budgetHref} />
         <ProfileFact label="Main action" value={action.label} href={action.href} danger={action.tone === "danger"} />
       </div>
-      <div className="grid border-t border-[var(--color-rule)] sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 border-t border-[var(--color-rule)] lg:grid-cols-4">
         <ProfileFact label="Authorized" value={authorized ? `${authorized} h` : "Restricted or not configured"} href={authorized ? budgetHref : undefined} />
         <ProfileFact label="Actual used" value={actual ? `${actual} h` : "Restricted or not configured"} href={actual ? activityHref : undefined} />
         <ProfileFact label="Future scheduled" value={scheduled ? `${scheduled} h` : "Restricted or not configured"} href={scheduled ? (canOpenSchedule ? `/schedule?view=calendar&individualId=${individualId}` : activityHref) : undefined} />
@@ -1020,7 +1054,7 @@ function ProfileHeaderSummary({
           danger={remainingAfterScheduleIsNegative}
         />
       </div>
-      <div className="grid border-t border-[var(--color-rule)] sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 border-t border-[var(--color-rule)] lg:grid-cols-4">
         <ProfileFact
           label="Assigned staffing"
           value={assignments.length > 0
@@ -1070,8 +1104,8 @@ function OverviewSnapshot({
 }) {
   const transactionHref = txLink({
     individualId,
-    pbFrom: transactionFrom ?? undefined,
-    pbTo: transactionTo ?? undefined,
+    serviceFrom: transactionFrom ?? undefined,
+    serviceTo: inclusiveServiceEnd(transactionTo),
   });
   const scheduledEmployees = [...new Set(upcomingSessions.map((session) => session.employeeName).filter((name): name is string => Boolean(name)))];
   return (
@@ -1211,7 +1245,7 @@ function ClassesProfileSection({
                 <Td><span className="tnum">{invoice.invoiceDate}</span></Td>
                 <Td><span className="badge">{invoice.status === "void" ? "Voided" : invoice.status === "issued" ? "Issued" : "Draft"}</span></Td>
                 <Td numeric><Money value={invoice.totalAmount} /></Td>
-                <Td numeric>{invoice.status === "issued" ? <ButtonLink href={`/api/classes/invoices/${invoice.id}/pdf`} variant="secondary">Download</ButtonLink> : null}</Td>
+                <Td numeric>{invoice.status === "issued" || invoice.status === "void" ? <ButtonLink href={`/api/classes/invoices/${invoice.id}/pdf`} variant="secondary">{invoice.status === "void" ? "Download VOID history" : "Download"}</ButtonLink> : null}</Td>
               </Tr>
             ))}
           </Table>

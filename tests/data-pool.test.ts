@@ -11,7 +11,7 @@ describe("database-backed screen errors", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     const result = await withDb(async () => {
-      throw new Error('column "private_table.secret_column" must appear in the GROUP BY clause');
+      throw Object.assign(new Error('column "private_table.secret_column" must appear in the GROUP BY clause'), { code: "42803" });
     });
 
     expect(result).toEqual({
@@ -20,8 +20,10 @@ describe("database-backed screen errors", () => {
     });
     expect(consoleError).toHaveBeenCalledWith(
       "[withDb] Database-backed view failed:",
-      'column "private_table.secret_column" must appear in the GROUP BY clause',
+      "Unknown database error",
     );
+    expect(consoleError).toHaveBeenCalledWith("Request failed", { name: "Error", code: "42803" });
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("private_table");
 
     consoleError.mockRestore();
   });

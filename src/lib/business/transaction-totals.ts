@@ -1,4 +1,4 @@
-import { dec } from "@/lib/money";
+import { dec, formatMoney } from "@/lib/money";
 import { normalizePersonName } from "@/lib/business/name-matching";
 import { normalizePayee } from "@/lib/business/internal-rate";
 
@@ -95,7 +95,21 @@ export function sourcePaymentIdentity(row: SourcePaymentIdentityInput): string |
   return JSON.stringify([recipientKey, checkNumber, checkDate, periodBegin, periodEnd]);
 }
 
+export interface KnownAmountTotal { amount: string | null; known: number; missing: number }
+
+export function sumKnownAmounts(values: Array<string | null | undefined>): KnownAmountTotal {
+  const known = values.filter((value): value is string => value !== null && value !== undefined && value !== "");
+  return { amount: known.length ? known.reduce((sum, value) => sum.plus(value), dec(0)).toFixed(2) : null, known: known.length, missing: values.length - known.length };
+}
+
+export function formatKnownMoneyTotal(total: KnownAmountTotal): string {
+  if (total.amount === null) return "Unavailable";
+  return `${formatMoney(total.amount)}${total.missing ? ` · incomplete subtotal (${total.missing} missing)` : ""}`;
+}
+
 export interface GridTotals {
+  /** Per-field facts for display; the legacy fields below retain the reconciled cohort. */
+  amounts: Record<"gross" | "internal" | "agencyAdditional" | "netPerCheck" | "verifiedCheckGross" | "verifiedCheckNet" | "withholding", KnownAmountTotal>;
   gross: string;
   internal: string;
   agencyAdditional: string;
@@ -113,6 +127,8 @@ export interface GridTotals {
 }
 
 export function computeGridTotals(rows: TotalsInput[]): GridTotals {
+  const checkFacts = new Map<string, { gross: Set<string>; net: Set<string>; withholding: Set<string> }>();
+  const sourceFacts = new Map<string, Set<string>>();
   let gross = dec(0);
   let internal = dec(0);
   let addl = dec(0);
@@ -144,6 +160,15 @@ export function computeGridTotals(rows: TotalsInput[]): GridTotals {
     if (r.hours) hours = hours.plus(dec(r.hours));
     const paymentKey = completeCheckIdentity(r);
     if (paymentKey) checks.add(paymentKey);
+    if (paymentKey) {
+      const facts = checkFacts.get(paymentKey) ?? { gross: new Set<string>(), net: new Set<string>(), withholding: new Set<string>() };
+      if (r.verificationStatus === "verified") {
+        for (const [key, value] of [["gross", r.verifiedCheckGross], ["net", r.verifiedCheckNet], ["withholding", r.withholding]] as const) {
+          if (value !== null && value !== undefined && value !== "") facts[key].add(dec(value).toFixed(2));
+        }
+      }
+      checkFacts.set(paymentKey, facts);
+    }
     const indKey = r.individualId ?? r.individual;
     if (indKey) inds.add(indKey);
     const empKey = r.employeeId ?? r.employee;
@@ -154,6 +179,11 @@ export function computeGridTotals(rows: TotalsInput[]): GridTotals {
     // verified facts below deliberately remain at the complete-check grain.
     const sourcePaymentKey = sourcePaymentIdentity(r);
     if (sourcePaymentKey) sourcePayments.add(sourcePaymentKey);
+    if (sourcePaymentKey) {
+      const facts = sourceFacts.get(sourcePaymentKey) ?? new Set<string>();
+      if (r.totalNetPay !== null && r.totalNetPay !== undefined && r.totalNetPay !== "") facts.add(dec(r.totalNetPay).toFixed(2));
+      sourceFacts.set(sourcePaymentKey, facts);
+    }
     if (sourcePaymentKey && r.totalNetPay && !seenNetPayment.has(sourcePaymentKey)) {
       seenNetPayment.add(sourcePaymentKey);
       net = net.plus(dec(r.totalNetPay));
@@ -174,7 +204,17 @@ export function computeGridTotals(rows: TotalsInput[]): GridTotals {
     }
   }
 
+  const consistentValue = (values: Set<string>) => values.size === 1 ? [...values][0]! : null;
   return {
+    amounts: {
+      gross: sumKnownAmounts(rows.map(row => row.gross)),
+      internal: sumKnownAmounts(rows.map(row => row.internalAmount)),
+      agencyAdditional: sumKnownAmounts(rows.map(row => row.gross !== null && row.gross !== "" && row.internalAmount !== null && row.internalAmount !== "" ? dec(row.gross).minus(row.internalAmount).toString() : null)),
+      netPerCheck: sumKnownAmounts([...sourceFacts.values()].map(consistentValue)),
+      verifiedCheckGross: sumKnownAmounts([...checkFacts.values()].map(facts => consistentValue(facts.gross))),
+      verifiedCheckNet: sumKnownAmounts([...checkFacts.values()].map(facts => consistentValue(facts.net))),
+      withholding: sumKnownAmounts([...checkFacts.values()].map(facts => consistentValue(facts.withholding))),
+    },
     gross: gross.toFixed(2),
     internal: internal.toFixed(2),
     agencyAdditional: addl.toFixed(2),

@@ -24,6 +24,7 @@ import {
 } from "@/lib/dashboard/owner-summary";
 import { agencyDate } from "@/lib/business/agency-time";
 import { dec, formatHours } from "@/lib/money";
+import { ReloadButton } from "@/components/ui-client";
 import { ErrorPanel, PageHeader } from "@/components/ui";
 import GoogleSheetSyncButton from "@/components/sync/google-sheet-sync-button";
 import OwnerDashboard from "@/components/dashboard/owner-dashboard";
@@ -143,23 +144,29 @@ export default async function DashboardPage({
         strategyResult,
         savedViews,
       ] = await Promise.all([
-        listTransactionsForGrid(pool),
-        listCurrentProgramBudgets(pool, { asOf: today }),
-        listIndividualBudgetBoard(pool, new Date(`${today}T12:00:00Z`)),
-        listStrategies(pool),
-        listGridViews(pool, "owner_dashboard"),
+        listTransactionsForGrid(pool).catch(() => null),
+        listCurrentProgramBudgets(pool, { asOf: today }).catch(() => null),
+        listIndividualBudgetBoard(pool, new Date(`${today}T12:00:00Z`)).catch(() => null),
+        listStrategies(pool).catch(() => null),
+        listGridViews(pool, "owner_dashboard").catch(() => null),
       ]);
       return {
         summary: buildOwnerDashboardSummary({
-          transactions,
-          programBudgets,
-          budgetBoard,
-          strategies: strategyResult.rows,
+          transactions: transactions ?? [],
+          programBudgets: programBudgets ?? [],
+          budgetBoard: budgetBoard ?? [],
+          strategies: strategyResult?.rows ?? [],
           asOf: new Date(`${today}T12:00:00Z`),
           activitySelection,
         }),
-        activityOptions: buildOwnerActivityFilterOptions(transactions),
-        savedViews,
+        activityOptions: buildOwnerActivityFilterOptions(transactions ?? []),
+        savedViews: savedViews ?? [],
+        unavailableSections: [
+          ...(transactions === null ? ["Transactions"] : []),
+          ...(programBudgets === null || budgetBoard === null ? ["Budgets"] : []),
+          ...(strategyResult === null ? ["Financial setup"] : []),
+          ...(savedViews === null ? ["Saved views"] : []),
+        ],
       };
     });
 
@@ -177,6 +184,7 @@ export default async function DashboardPage({
     return (
       <OwnerDashboard
         summary={ownerResult.data.summary}
+        unavailableSections={ownerResult.data.unavailableSections}
         activitySelection={activitySelection}
         activityOptions={ownerResult.data.activityOptions}
         savedViews={ownerResult.data.savedViews}
@@ -189,9 +197,9 @@ export default async function DashboardPage({
   const result = await withDb(async (pool) => {
     const scope = await resolveAccessScope(pool, user);
     const [people, programBudgets, openMoneyResult] = await Promise.all([
-      listIndividualBudgetBoard(pool, new Date(`${today}T12:00:00Z`), scope),
+      listIndividualBudgetBoard(pool, new Date(`${today}T12:00:00Z`), scope).catch(() => null),
       scope.canSeeBudgets && scope.canSeeHours
-        ? listCurrentProgramBudgets(pool, { asOf: today, scope })
+        ? listCurrentProgramBudgets(pool, { asOf: today, scope }).catch(() => null)
         : Promise.resolve([]),
       scope.canSeeSettlements
         ? pool.query<{ open_count: string }>(
@@ -206,14 +214,14 @@ export default async function DashboardPage({
                 )::text AS open_count
            FROM settlement_obligations o
            LEFT JOIN applied ON applied.settlement_obligation_id = o.id`,
-        )
+        ).catch(() => null)
         : Promise.resolve({ rows: [{ open_count: "0" }] }),
     ]);
     return {
       people,
       programBudgets,
       canSeeSettlements: scope.canSeeSettlements,
-      openMoneyItems: Number(openMoneyResult.rows[0]?.open_count ?? 0),
+      openMoneyItems: openMoneyResult === null ? null : Number(openMoneyResult.rows[0]?.open_count ?? 0),
     };
   });
 
@@ -228,8 +236,8 @@ export default async function DashboardPage({
     );
   }
 
-  const activePeople = result.data.people.filter((row) => row.status === "active" && !row.archived);
-  const operationalBudgets = result.data.programBudgets.filter(
+  const activePeople = (result.data.people ?? []).filter((row) => row.status === "active" && !row.archived);
+  const operationalBudgets = (result.data.programBudgets ?? []).filter(
     (row) => row.requiredAuthType === "hours" || row.requiredAuthType === "both",
   );
   const activeBudgetPeople = new Set(operationalBudgets.map((row) => row.individualId));
@@ -267,14 +275,16 @@ export default async function DashboardPage({
             ? "grid-cols-2 lg:grid-cols-4"
             : "grid-cols-1 sm:grid-cols-3"
         }`}>
-          <HeadlineNumber label="Active people" value={activePeople.length.toLocaleString()} />
-          <HeadlineNumber label="Active budgets" value={activeBudgetPeople.size.toLocaleString()} />
-          <HeadlineNumber label="Hours remaining" value={formatHours(hoursRemaining)} />
+          <HeadlineNumber label="Active people" value={result.data.people === null ? "Unavailable" : activePeople.length.toLocaleString()} />
+          <HeadlineNumber label="Active budgets" value={result.data.programBudgets === null ? "Unavailable" : activeBudgetPeople.size.toLocaleString()} />
+          <HeadlineNumber label="Hours remaining" value={result.data.programBudgets === null ? "Unavailable" : formatHours(hoursRemaining)} />
           {result.data.canSeeSettlements ? (
-            <HeadlineNumber label="Open money items" value={result.data.openMoneyItems.toLocaleString()} />
+            <HeadlineNumber label="Open money items" value={result.data.openMoneyItems === null ? "Unavailable" : result.data.openMoneyItems.toLocaleString()} />
           ) : null}
         </div>
       </section>
+
+      {result.data.people === null || result.data.programBudgets === null || result.data.openMoneyItems === null ? <div className="mt-3 flex flex-wrap items-center gap-3 text-sm"><p>Some overview information is unavailable. The other workspaces remain accessible.</p><ReloadButton label="Retry unavailable overview" /></div> : null}
 
       <section aria-labelledby="other-heading" className="mt-9">
         <h2 id="other-heading" className="display text-lg font-semibold text-[var(--color-ink)]">More</h2>

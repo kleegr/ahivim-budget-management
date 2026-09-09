@@ -8,7 +8,7 @@ import { formatMoney, formatHours } from "@/lib/money";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 import { importCorrectionsHref, individualBudgetHref } from "@/lib/nav/review-actions";
 import { ACTIVITY_NEXT_STEP_LABELS, activityNextStep } from "@/lib/transactions/activity-state";
-import { computeGridTotals, type GridTotals } from "@/lib/business/transaction-totals";
+import { completeCheckIdentity, sourcePaymentIdentity, computeGridTotals, formatKnownMoneyTotal, type GridTotals } from "@/lib/business/transaction-totals";
 import { useGrid } from "@/components/data-grid/use-grid";
 import { Toolbar } from "@/components/data-grid/toolbar";
 import { FilterBar, HeaderFilter } from "@/components/data-grid/filter-bar";
@@ -21,7 +21,7 @@ import { hasInitialTransactionDateContext } from "@/lib/transactions/initial-fil
 
 /* ------------------------------------------------------------------ config */
 
-const ROW_H = 33;
+const ROW_H = 44;
 const SEARCH_KEYS = ["individual", "employee", "program", "payTo", "checkNumber"];
 const RECIPIENT_LABEL: Record<string, string> = {
   employee: "Paid to employee",
@@ -47,19 +47,20 @@ const VERIFICATION_LABEL: Record<string, string> = {
    stay available through the column chooser, saved views and exports. */
 
 const COLUMNS: ColumnDef<GridTransaction>[] = [
-  { key: "payTo", label: "Pay to", kind: "text", width: 150, frozen: true, accessor: (r) => r.payTo },
-  { key: "checkDate", label: "Check date", kind: "date", width: 110, accessor: (r) => r.checkDate },
-  { key: "checkNumber", label: "Check #", kind: "text", width: 90, accessor: (r) => r.checkNumber },
   { key: "serviceDate", label: "Service date", kind: "date", width: 110, accessor: (r) => r.serviceDate ?? null },
-  { key: "periodBegin", label: "Period begin", kind: "date", width: 110, accessor: (r) => r.periodBegin },
-  { key: "periodEnd", label: "Period end", kind: "date", width: 110, accessor: (r) => r.periodEnd },
-  { key: "programCode", label: "Code", kind: "text", width: 90, accessor: (r) => r.programCode },
+  { key: "payTo", label: "Pay to", kind: "text", width: 150, frozen: true, hidden: true, accessor: (r) => r.payTo },
+  { key: "checkDate", label: "Check date", kind: "date", width: 110, hidden: true, accessor: (r) => r.checkDate },
+  { key: "checkNumber", label: "Check #", kind: "text", width: 90, hidden: true, accessor: (r) => r.checkNumber },
+  { key: "periodBegin", label: "Period begin", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodBegin },
+  { key: "periodEnd", label: "Period end", kind: "date", width: 110, hidden: true, accessor: (r) => r.periodEnd },
+  { key: "programCode", label: "Code", kind: "text", width: 90, hidden: true, accessor: (r) => r.programCode },
   { key: "program", label: "Program", kind: "text", width: 150, accessor: (r) => r.program },
   {
     key: "individual",
     label: "Individual",
     kind: "text",
-    width: 170,
+    width: 190,
+    frozen: true,
     accessor: (r) => r.individual,
     render: (r, text) =>
       r.individualId ? (
@@ -86,25 +87,28 @@ const COLUMNS: ColumnDef<GridTransaction>[] = [
       ),
   },
   { key: "hours", label: "Hours", kind: "hours", width: 80, accessor: (r) => r.hours },
-  { key: "rate", label: "Funder rate", kind: "money", width: 105, accessor: (r) => r.rate },
+  { key: "rate", label: "Funder rate", kind: "money", width: 105, hidden: true, accessor: (r) => r.rate },
   { key: "gross", label: "Funder billed", kind: "money", width: 120, accessor: (r) => r.gross },
-  { key: "employeeRate", label: "Employee rate", kind: "money", width: 115, accessor: (r) => r.employeeRate ?? null },
+  { key: "employeeRate", label: "Employee rate", kind: "money", width: 115, hidden: true, accessor: (r) => r.employeeRate ?? null },
   { key: "internalAmount", label: "Employee base", kind: "money", width: 150, accessor: (r) => r.internalAmount },
   { key: "agencyAdditional", label: "Agency spread", kind: "money", width: 160, accessor: (r) => r.agencyAdditional },
-  { key: "moneyReconciliation", label: "Money check", kind: "text", width: 170, accessor: moneyReconciliationStatus },
-  { key: "verifiedCheckGross", label: "Verified check gross", kind: "money", width: 155, accessor: (r) => r.verifiedCheckGross ?? null },
-  { key: "verifiedCheckNet", label: "Verified check net", kind: "money", width: 145, accessor: (r) => r.verifiedCheckNet ?? null },
-  { key: "withholding", label: "Withholding", kind: "money", width: 110, accessor: (r) => r.withholding ?? null },
-  { key: "verificationStatus", label: "Check status", kind: "badge", width: 130, badgeLabels: VERIFICATION_LABEL, accessor: (r) => r.verificationStatus ?? null },
+  { key: "moneyReconciliation", label: "Money check", kind: "text", width: 170, hidden: true, accessor: moneyReconciliationStatus },
+  { key: "verifiedCheckGross", label: "Verified check gross", kind: "money", width: 155, hidden: true, accessor: (r) => r.verifiedCheckGross ?? null },
+  { key: "verifiedCheckNet", label: "Verified check net", kind: "money", width: 145, hidden: true, accessor: (r) => r.verifiedCheckNet ?? null },
+  { key: "withholding", label: "Withholding", kind: "money", width: 110, hidden: true, accessor: (r) => r.withholding ?? null },
+  { key: "verificationStatus", label: "Check status", kind: "badge", width: 130, badgeLabels: VERIFICATION_LABEL, hidden: true, accessor: (r) => r.verificationStatus ?? null },
   { key: "totalNetPay", label: "Source net pay", kind: "money", width: 120, hidden: true, accessor: (r) => r.totalNetPay },
-  { key: "paid", label: "Paid", kind: "text", width: 100, accessor: (r) => (r.isPaid ? "Paid" : "Not paid") },
-  { key: "paymentRecipient", label: "Payment recipient", kind: "badge", width: 150, badgeLabels: RECIPIENT_LABEL, accessor: (r) => r.paymentRecipient },
-  { key: "nextStep", label: "Review status", kind: "badge", width: 140, badgeLabels: ACTIVITY_NEXT_STEP_LABELS, accessor: (r) => activityNextStep(r) },
+  { key: "paid", label: "Paid", kind: "text", width: 100, hidden: true, accessor: (r) => (r.isPaid ? "Paid" : "Not paid") },
+  { key: "paymentRecipient", label: "Payment recipient", kind: "badge", width: 150, badgeLabels: RECIPIENT_LABEL, hidden: true, accessor: (r) => r.paymentRecipient },
+  { key: "nextStep", label: "Review status", kind: "badge", width: 140, badgeLabels: ACTIVITY_NEXT_STEP_LABELS, hidden: true, accessor: (r) => activityNextStep(r) },
   { key: "matchStatus", label: "Duplicate review", kind: "badge", width: 130, hidden: true, badgeLabels: REVIEW_LABEL, accessor: (r) => r.matchStatus },
   { key: "groupStatus", label: "Group status", kind: "badge", width: 120, hidden: true, badgeLabels: RECIPIENT_LABEL, accessor: (r) => (r.isGroup ? "Group" : "Individual") },
   { key: "sourceName", label: "Original source", kind: "text", width: 190, hidden: true, accessor: (r) => r.sourceName ?? null },
   { key: "sourceSheet", label: "Source sheet", kind: "text", width: 120, hidden: true, accessor: (r) => r.sourceSheet ?? null },
   { key: "sourceRowNumber", label: "Source row", kind: "int", width: 90, hidden: true, accessor: (r) => r.sourceRowNumber == null ? null : String(r.sourceRowNumber) },
+  { key: "checkIdentity", label: "Check identity", kind: "text", hidden: true, accessor: completeCheckIdentity },
+  { key: "sourcePaymentIdentity", label: "Source payment identity", kind: "text", hidden: true, accessor: sourcePaymentIdentity },
+  ...(["id", "individualId", "employeeId", "programId"] as const).map((key) => ({ key, label: key === "id" ? "Transaction identity" : `${key.replace("Id", "")} identity`, kind: "text" as const, hidden: true, accessor: (row: GridTransaction) => row[key] })),
 ];
 
 // The existing per-column width and default-hidden maps. useGrid seeds its
@@ -179,7 +183,7 @@ export default function TransactionsGrid({
   // Reveal any column that arrives pre-filtered (e.g. a budget drill-through seeds
   // the service-period window), so the user can see exactly what is constraining the view.
   const seededKeys = initialFilters ? Object.keys(initialFilters) : [];
-  const initialHidden = INITIAL_HIDDEN.filter((k) => !seededKeys.includes(k));
+  const initialHidden = INITIAL_HIDDEN.filter((k) => k === "id" || k.endsWith("Id") || k.endsWith("Identity") || !seededKeys.includes(k));
   const hasFixedDateContext = hasInitialTransactionDateContext(initialFilters);
 
   const grid = useGrid<GridTransaction, GridTotals>({
@@ -188,8 +192,8 @@ export default function TransactionsGrid({
     gridKey: "transactions",
     canManage,
     initialSort: [
-      { key: "nextStep", dir: "asc" },
       { key: "serviceDate", dir: "desc" },
+      { key: "id", dir: "asc" },
     ],
     initialHidden,
     initialWidths: INITIAL_WIDTHS,
@@ -215,6 +219,7 @@ export default function TransactionsGrid({
   const actionBusy = busy || refreshing;
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
+  const pendingPaidBatch = useRef<{ key: string; id: string } | null>(null);
 
   useEffect(() => {
     if (!busy && !refreshing) setBusyIds(new Set());
@@ -253,13 +258,16 @@ export default function TransactionsGrid({
       setBusy(true);
       setNotice(null);
       try {
+        const key = `${paid}:${[...ids].sort().join(",")}`;
+        if (pendingPaidBatch.current?.key !== key) pendingPaidBatch.current = { key, id: crypto.randomUUID() };
         const res = await fetch("/api/transactions/paid", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ids, paid }),
+          body: JSON.stringify({ ids, paid, batchId: pendingPaidBatch.current.id, reason: paid ? "Marked paid from Transactions" : "Cleared paid status from Transactions" }),
         });
         const j = await res.json();
         if (!res.ok || j.ok === false) throw new Error(j.error ?? "Could not update.");
+        pendingPaidBatch.current = null;
         startRefresh(() => router.refresh());
       } catch (e) {
         setNotice(e instanceof Error ? e.message : "Could not update.");
@@ -359,6 +367,15 @@ export default function TransactionsGrid({
       {/* A contextual date link already defines the reporting basis. Showing a
           separate check-date picker would misleadingly say "All time" or mix dates. */}
       {hasFixedDateContext ? null : <PeriodControl onChange={applyPeriod} paramKey="period" />}
+      <div role="group" aria-label="Transaction task views" className="flex flex-wrap gap-2">
+        {([
+          ["Service review", ["serviceDate", "individual", "program", "employee", "hours", "gross", "internalAmount", "agencyAdditional"], "serviceDate"],
+          ["Check review", ["checkDate", "checkNumber", "employee", "payTo", "periodBegin", "periodEnd", "hours", "verifiedCheckGross", "verifiedCheckNet", "verificationStatus"], "checkDate"],
+          ["Money verification", ["serviceDate", "individual", "employee", "gross", "internalAmount", "agencyAdditional", "moneyReconciliation", "verificationStatus", "paid", "nextStep"], "serviceDate"],
+        ] as const).map(([label, visible, dateKey]) => (
+          <button key={label} type="button" className="btn btn-sm btn-secondary" onClick={() => grid.applyView({ ...grid.currentConfig(), hidden: columns.filter((column) => !(visible as readonly string[]).includes(column.key)).map((column) => column.key), sort: [{ key: dateKey, dir: "desc" }, { key: "id", dir: "asc" }] })}>{label}</button>
+        ))}
+      </div>
       <Toolbar
         grid={grid}
         searchPlaceholder="Search recorded services…"
@@ -375,9 +392,9 @@ export default function TransactionsGrid({
       {totals ? (
         <div className="space-y-2">
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {canSeeReconciliationTotals ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Funder billed</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.gross)}</div></div> : null}
-            {canSeeReconciliationTotals ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee base</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.internal)}</div></div> : null}
-            {canSeeReconciliationTotals && fields.canSeeAgencySpread ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency spread</div><div className="text-xl font-semibold tabular-nums">{formatMoney(totals.agencyAdditional)}</div></div> : null}
+            {fields.canSeeBilledAmounts ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Funder billed</div><div className="text-xl font-semibold tabular-nums">{formatKnownMoneyTotal(totals.amounts.gross)}</div></div> : null}
+            {fields.canSeeEmployeeAmounts ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Employee base</div><div className="text-xl font-semibold tabular-nums">{formatKnownMoneyTotal(totals.amounts.internal)}</div></div> : null}
+            {fields.canSeeAgencySpread ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Agency spread</div><div className="text-xl font-semibold tabular-nums">{formatKnownMoneyTotal(totals.amounts.agencyAdditional)}</div></div> : null}
             {fields.canSeeHours ? <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Hours</div><div className="text-xl font-semibold tabular-nums">{formatHours(totals.hours)}</div></div> : null}
             {!canSeeReconciliationTotals ? (
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Recorded services</div><div className="text-xl font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
@@ -385,7 +402,7 @@ export default function TransactionsGrid({
           </div>
           {totals.moneyExcludedRows > 0 && canSeeReconciliationTotals ? (
             <p className="text-xs font-medium text-[var(--color-warn)]">
-              {totals.moneyExcludedRows.toLocaleString()} incomplete money {totals.moneyExcludedRows === 1 ? "row is" : "rows are"} excluded from the money totals above.
+              {totals.moneyExcludedRows.toLocaleString()} incomplete money {totals.moneyExcludedRows === 1 ? "row is" : "rows are"} included only where an amount is recorded. Incomplete subtotals are labeled.
             </p>
           ) : null}
           <button
@@ -399,16 +416,16 @@ export default function TransactionsGrid({
           {showMore ? (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
               {fields.canSeeCheckGross ? (
-                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Verified check gross</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.verifiedCheckGross)}</div></div>
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Verified check gross</div><div className="text-lg font-semibold tabular-nums">{formatKnownMoneyTotal(totals.amounts.verifiedCheckGross)}</div></div>
               ) : null}
               {fields.canSeeCheckNet ? (
-                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Verified check net</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.verifiedCheckNet)}</div></div>
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Verified check net</div><div className="text-lg font-semibold tabular-nums">{formatKnownMoneyTotal(totals.amounts.verifiedCheckNet)}</div></div>
               ) : null}
               {fields.canSeeTaxes ? (
-                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Verified withholding</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.withholding)}</div></div>
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Verified withholding</div><div className="text-lg font-semibold tabular-nums">{formatKnownMoneyTotal(totals.amounts.withholding)}</div></div>
               ) : null}
               {fields.canSeeCheckNet ? (
-                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Source net (per payment)</div><div className="text-lg font-semibold tabular-nums">{formatMoney(totals.netPerCheck)}</div></div>
+                <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Source net (per payment)</div><div className="text-lg font-semibold tabular-nums">{formatKnownMoneyTotal(totals.amounts.netPerCheck)}</div></div>
               ) : null}
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]">Recorded services</div><div className="text-lg font-semibold tabular-nums">{totals.transactions.toLocaleString()}</div></div>
               <div className={tileCls}><div className="eyebrow text-[var(--color-text-soft)]"># Checks</div><div className="text-lg font-semibold tabular-nums">{totals.checks.toLocaleString()}</div></div>
@@ -613,16 +630,16 @@ export default function TransactionsGrid({
       {selTotals ? (
         <div className="sticky bottom-0 z-30 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-[var(--color-primary)] bg-[var(--color-primary-tint)] px-3 py-2 text-sm shadow-sm">
           <span role="status" aria-live="polite" className="font-semibold text-[var(--color-ink)]">{selectedRows.length.toLocaleString()} selected</span>
-          {canSeeReconciliationTotals ? <span className="text-[var(--color-ink-soft)]">Funder billed <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.gross)}</span></span> : null}
-          {canSeeReconciliationTotals ? <span className="text-[var(--color-ink-soft)]">Employee base <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.internal)}</span></span> : null}
-          {canSeeReconciliationTotals && fields.canSeeAgencySpread ? <span className="text-[var(--color-ink-soft)]">Agency spread <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.agencyAdditional)}</span></span> : null}
-          {selTotals.moneyExcludedRows > 0 && canSeeReconciliationTotals ? <span className="font-medium text-[var(--color-warn)]">{selTotals.moneyExcludedRows.toLocaleString()} incomplete {selTotals.moneyExcludedRows === 1 ? "row" : "rows"} excluded</span> : null}
+          {fields.canSeeBilledAmounts ? <span className="text-[var(--color-ink-soft)]">Funder billed <span className="tnum font-semibold text-[var(--color-ink)]">{formatKnownMoneyTotal(selTotals.amounts.gross)}</span></span> : null}
+          {fields.canSeeEmployeeAmounts ? <span className="text-[var(--color-ink-soft)]">Employee base <span className="tnum font-semibold text-[var(--color-ink)]">{formatKnownMoneyTotal(selTotals.amounts.internal)}</span></span> : null}
+          {fields.canSeeAgencySpread ? <span className="text-[var(--color-ink-soft)]">Agency spread <span className="tnum font-semibold text-[var(--color-ink)]">{formatKnownMoneyTotal(selTotals.amounts.agencyAdditional)}</span></span> : null}
+          {selTotals.moneyExcludedRows > 0 && canSeeReconciliationTotals ? <span className="font-medium text-[var(--color-warn)]">{selTotals.moneyExcludedRows.toLocaleString()} incomplete {selTotals.moneyExcludedRows === 1 ? "row" : "rows"} with missing amounts</span> : null}
           {fields.canSeeHours ? <span className="text-[var(--color-ink-soft)]">Hours <span className="tnum font-semibold text-[var(--color-ink)]">{formatHours(selTotals.hours)}</span></span> : null}
           {fields.canSeeCheckNet ? (
-            <span className="text-[var(--color-ink-soft)]">Verified net <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.verifiedCheckNet)}</span></span>
+            <span className="text-[var(--color-ink-soft)]">Verified net <span className="tnum font-semibold text-[var(--color-ink)]">{formatKnownMoneyTotal(selTotals.amounts.verifiedCheckNet)}</span></span>
           ) : null}
           {fields.canSeeTaxes ? (
-            <span className="text-[var(--color-ink-soft)]">Withholding <span className="tnum font-semibold text-[var(--color-ink)]">{formatMoney(selTotals.withholding)}</span></span>
+            <span className="text-[var(--color-ink-soft)]">Withholding <span className="tnum font-semibold text-[var(--color-ink)]">{formatKnownMoneyTotal(selTotals.amounts.withholding)}</span></span>
           ) : null}
           <div className="ml-auto flex items-center gap-2">
             {grid.canManage ? (

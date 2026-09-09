@@ -1,7 +1,8 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { RefreshCw, X } from "lucide-react";
-import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, useTransition, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 
 /**
  * Interactive primitives (client-only): accessible Tabs, a server-composable
@@ -148,6 +149,7 @@ export function TabPanels({
   panels,
   initialId,
   paramKey,
+  serverNavigation = false,
 }: {
   panels: TabPanel[];
   initialId?: string;
@@ -155,7 +157,11 @@ export function TabPanels({
    *  is linkable and survives a refresh. We use history.replaceState to avoid a
    *  server round-trip on force-dynamic pages. */
   paramKey?: string;
+  /** Fetch server-composed panels when their data depends on the selected tab. */
+  serverNavigation?: boolean;
 }) {
+  const router = useRouter();
+  const [pending, startNavigation] = useTransition();
   const [active, setActive] = useState<string>(validTabId(panels, initialId) ?? panels[0]?.id ?? "");
   const current = panels.find((p) => p.id === active) ?? panels[0];
   const baseId = useId();
@@ -199,12 +205,14 @@ export function TabPanels({
     if (paramKey && typeof window !== "undefined") {
       const url = new URL(window.location.href);
       url.searchParams.set(paramKey, id);
-      window.history.replaceState(null, "", url.toString());
+      if (serverNavigation) startNavigation(() => router.push(`${url.pathname}${url.search}`, { scroll: false }));
+      else window.history.replaceState(null, "", url.toString());
     }
   };
   return (
     <div>
       <TabList tabs={panels} active={current?.id ?? ""} onSelect={select} baseId={baseId} />
+      {pending ? <p role="status" className="pt-4 text-sm text-[var(--color-ink-soft)]">Loading view…</p> : null}
       {panels.map((panel, index) => (visited.has(panel.id) || panel.id === current?.id) ? (
         <div
           key={panel.id}

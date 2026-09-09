@@ -86,6 +86,7 @@ function fakeCreateClient(options: FakeOptions = {}) {
       const values = inserted!;
       return {
         rows: [authorizationRow({
+          program_code: options.programCode ?? "COM_HAB",
           authorized_hours: values[3],
           internal_rate: values[4],
           agency_rate: values[5],
@@ -150,7 +151,7 @@ describe("authorization catalog rates", () => {
   });
 
   it("writes allowed individual funder and employee overrides explicitly", async () => {
-    const client = fakeCreateClient({ allowOverride: true });
+    const client = fakeCreateClient({ allowOverride: true, programCode: "SH_COM_HAB" });
     const result = await createAuthorizationInTransaction(client, {
       budgetPeriodId: PERIOD_ID,
       programId: PROGRAM_ID,
@@ -170,7 +171,7 @@ describe("authorization catalog rates", () => {
   });
 
   it("rejects rate deviations when the catalog disables individual overrides", async () => {
-    const client = fakeCreateClient({ allowOverride: false });
+    const client = fakeCreateClient({ allowOverride: false, programCode: "SH_COM_HAB" });
     const result = await createAuthorizationInTransaction(client, {
       budgetPeriodId: PERIOD_ID,
       programId: PROGRAM_ID,
@@ -192,6 +193,16 @@ describe("authorization catalog rates", () => {
     }, ACTOR_ID);
     expect(result).toMatchObject({ ok: false, code: "conflict" });
   });
+
+  it("keeps a non-self-hired program on shared rates even when its legacy override flag is enabled", async () => {
+    const client = fakeCreateClient({ allowOverride: true, programCode: "COM_HAB" });
+    const result = await createAuthorizationInTransaction(client, {
+      budgetPeriodId: PERIOD_ID, programId: PROGRAM_ID, authorizedHours: "100",
+      agencyRate: "26", individualRateOverride: "22",
+    }, ACTOR_ID);
+    expect(result).toMatchObject({ ok: false, code: "validation" });
+    expect(client.query.mock.calls.some(([sql]) => sql.includes("INSERT INTO budget_authorizations"))).toBe(false);
+  });
 });
 
 describe("authorization revisions", () => {
@@ -205,6 +216,7 @@ describe("authorization revisions", () => {
       if (sql.includes("FROM budget_authorizations a JOIN programs")) {
         if (params[0] === REVISED_ID && inserted) {
           return { rows: [authorizationRow({
+            program_code: "SH_RESPITE",
             id: REVISED_ID,
             authorized_hours: inserted[3],
             internal_rate: inserted[4],
@@ -217,7 +229,7 @@ describe("authorization revisions", () => {
             supersedes_id: inserted[14],
           })] };
         }
-        return { rows: [authorizationRow()] };
+        return { rows: [authorizationRow({ program_code: "SH_RESPITE" })] };
       }
       if (sql.includes("FROM budget_periods WHERE id")) {
         return { rows: [{
@@ -235,7 +247,7 @@ describe("authorization revisions", () => {
       }
       if (sql.includes("FROM programs p")) {
         return { rows: [{
-          code: "COM_HAB",
+          code: "SH_RESPITE",
           required_auth_type: "hours",
           is_active: true,
           allow_individual_rate_override: true,

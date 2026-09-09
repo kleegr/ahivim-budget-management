@@ -286,7 +286,7 @@ export function hasPdfEditorChanges(
 /** Only generated class PDFs may be handed directly into the editor. */
 export function normalizePdfEditorSourcePath(value: string | null | undefined): string | null {
   if (!value) return null;
-  return /^\/api\/classes\/invoices\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/(?:cover-sheet|pdf)$/i.test(value)
+  return /^\/api\/classes\/invoices\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/(?:cover-sheet(?:\?version=[1-9]\d*)?|pdf)$/i.test(value)
     ? value
     : null;
 }

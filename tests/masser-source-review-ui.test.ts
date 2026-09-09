@@ -22,6 +22,16 @@ function render(value: CollectionsWorkspaceData, options: { manager?: boolean; c
     canManageFinancialPlans: options.manager ?? true, canRepairImports: true, initialView: options.checks ? "checks" : "summary" }));
 }
 describe("Masser source review and check-count display", () => {
+  it("retains a prefilled employee beyond the bounded initial choices and its form field", () => {
+    const value = data(); value.employees = Array.from({ length: 201 }, (_, index) => ({ id: `scoped-employee-${index}`, name: `Scoped worker ${index}` }));
+    const html = renderToStaticMarkup(createElement(CollectionsWorkspace, { data: value, canManage: true, canSeeEmployeeDeals: false, canManageEmployeeDeals: false, canSeeTransactions: true, canManageFinancialPlans: true, canRepairImports: false, initialView: "checks", initialCheckDraft: { employeeId: "scoped-employee-200", checkNumber: "", checkDate: null, periodBegin: null, periodEnd: null, sourceTransactionIds: [] } }));
+    expect(html).toContain('aria-label="Search employees"');
+    expect(html).toContain('name="employeeId"');
+    expect(html).toContain('value="scoped-employee-200" selected=""');
+    expect(html).toContain("Showing the first 100 matches");
+    expect(html).not.toContain("outside-scope-worker");
+  });
+
   it("keeps approved monthly and actual cash visible while replacing Ready and the held-only record action", () => {
     const html = render(data());
     expect(html).toContain("$200.00"); expect(html).toContain("$20.00");
