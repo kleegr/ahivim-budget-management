@@ -143,3 +143,37 @@ test('Saving one program choice preserves two sibling drafts through refresh and
     expect(saved.budget_responsibility_by_program).toEqual({ [programs[0].id]: 'unmanaged', [programs[1].id]: 'undecided' });
   } finally { await pool.query('DELETE FROM individuals WHERE id=$1', [id]); await pool.end(); }
 });
+
+test('A saved responsibility stays visible with sibling drafts when safe refresh storage is unavailable', async ({ page }) => {
+  const pool = testPool(); const id = randomUUID();
+  try {
+    await pool.query('INSERT INTO individuals(id,display_name,normalized_name,budget_responsibility) VALUES($1,$2,$3,$4)', [id, `Storage ${id.slice(0,8)}`, `storage-${id}`, 'managed']);
+    const programs = (await pool.query<{ id: string; name: string }>("SELECT id,name FROM programs WHERE code IN ('SH_COM_HAB','SH_RESPITE') ORDER BY code")).rows;
+    await signIn(page); await page.goto(`/individuals/${id}?programScope=all`); await openSetup(page);
+    await page.getByText('Program responsibility', { exact: true }).click();
+    const general = page.getByRole('combobox', { name: 'General budget responsibility', exact: true });
+    const first = page.getByRole('combobox', { name: `${programs[0].name} budget responsibility`, exact: true });
+    const second = page.getByRole('combobox', { name: `${programs[1].name} budget responsibility`, exact: true });
+    await general.selectOption('unmanaged'); await first.selectOption('unmanaged'); await second.selectOption('undecided');
+    let navigations = 0;
+    page.on('framenavigated', frame => { if (frame === page.mainFrame()) navigations += 1; });
+    await page.evaluate(() => { Storage.prototype.setItem = () => { throw new DOMException('Synthetic storage unavailable', 'QuotaExceededError'); }; });
+    const saved = page.waitForResponse(response => response.url().endsWith(`/api/individuals/${id}/responsibility`) && response.request().method() === 'PATCH');
+    await page.getByRole('button', { name: `Save ${programs[0].name} budget responsibility`, exact: true }).click();
+    expect((await saved).status()).toBe(200);
+    await expect(page.getByRole('status').filter({ hasText: 'The display could not be refreshed safely.' })).toBeVisible();
+    await expect(general).toHaveValue('unmanaged'); await expect(first).toHaveValue('unmanaged'); await expect(second).toHaveValue('undecided');
+    const stored = (await pool.query('SELECT budget_responsibility,budget_responsibility_by_program FROM individuals WHERE id=$1', [id])).rows[0];
+    expect(stored.budget_responsibility).toBe('managed');
+    expect(stored.budget_responsibility_by_program).toEqual({ [programs[0].id]: 'unmanaged' });
+    expect(navigations).toBe(0);
+    const beforeUnload = page.waitForEvent('dialog');
+    // A canceled navigation never reaches page.reload's load-state wait.
+    // Trigger the real browser reload and wait for its JavaScript call instead.
+    const reload = page.evaluate(() => window.location.reload());
+    const warning = await beforeUnload;
+    expect(warning.type()).toBe('beforeunload');
+    await warning.dismiss(); await reload;
+    await expect(general).toHaveValue('unmanaged'); await expect(second).toHaveValue('undecided');
+  } finally { await pool.query('DELETE FROM individuals WHERE id=$1', [id]); await pool.end(); }
+});

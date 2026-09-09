@@ -76,6 +76,7 @@ test('Owner manages mixed program responsibility and corrects the flagged renewa
     await expect(page.getByRole('region', { name: 'Record review' })).toHaveCount(0);
     await expect(page.locator('article')).toHaveCount(1);
     await page.getByRole('link', { name: 'Show all programs', exact: true }).click();
+    await page.waitForURL(url => url.searchParams.get('programScope') === 'all', { waitUntil: 'load' });
     await expect(page.locator('article')).toHaveCount(2);
     expect((await pool.query('SELECT * FROM payroll_transactions WHERE individual_id=$1', [id])).rows).toEqual(source);
     expect((await pool.query('SELECT count(*)::int AS count FROM budget_authorizations WHERE individual_id=$1', [id])).rows[0].count).toBe(2);
