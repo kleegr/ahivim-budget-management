@@ -58,6 +58,9 @@ export interface ColumnDef<Row> {
   percentPlaces?: number;
   /** Map a raw value to a friendly label (e.g. payment recipient). */
   badgeLabels?: Record<string, string>;
+  /** Friendly filter presentation; stored values and exact matching stay unchanged. */
+  filterLabel?: string;
+  filterValueLabel?: (value: string) => string;
 }
 
 /** Granularity of the value list for a date column (Google-Sheets style). */
