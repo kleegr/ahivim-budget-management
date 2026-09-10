@@ -64,16 +64,16 @@ describe("Home grouped review summary", () => {
 
   it("groups review by people and workspace without presenting source rows as tasks", async () => {
     const html = await markup();
-    expect(html).toContain("Review summary");
+    expect(html).toContain("Needs attention");
     expect(html).toContain("2 individuals with detected issues");
     expect(html).toContain("1 employee with detected issues");
     expect(html).toContain('href="/individuals?review=needs_review"');
     expect(html).toContain('href="/employees?review=needs_review"');
-    expect(html).toContain('href="/schedule?view=coverage"');
+    expect(html).toContain('href="/schedule?view=calendar"');
     expect(html).toContain('href="/settlements?focus=check-issues"');
     expect(html).toContain("Upcoming visits have conflicts or need staffing.");
     expect(html).toContain("Check source information needs review before money actions.");
-    expect(html).not.toMatch(/688|1,200|1200|Billing without budget|tasks|Needs attention/);
+    expect(html).not.toMatch(/688|1,200|1200|Billing without budget|tasks/);
   });
 
   it("keeps undecided responsibility separate from detected issues", async () => {
@@ -81,8 +81,9 @@ describe("Home grouped review summary", () => {
       individuals: 0, employees: 0, undecidedIndividuals: 3, undecidedEmployees: 1,
     });
     const html = await markup();
-    expect(html).toContain("0 individuals with detected issues");
-    expect(html).toContain("0 employees with detected issues");
+    expect(html).not.toContain('href="/individuals?review=needs_review"');
+    expect(html).not.toContain('href="/employees?review=needs_review"');
+    expect(html).toContain("Optional setup");
     expect(html).toContain("Not decided yet: 3 individuals");
     expect(html).toContain("Not decided yet: 1 employee");
     expect(html).toContain('href="/individuals?management=undecided"');

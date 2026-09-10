@@ -13,7 +13,7 @@ const transactionGridSource = readFileSync(
 );
 
 function transactionColumns(): Array<{ key: string; label: string; hidden: boolean }> {
-  const start = transactionGridSource.indexOf("const COLUMNS:");
+  const start = transactionGridSource.indexOf("const TRANSACTION_COLUMNS:");
   const end = transactionGridSource.indexOf("\n];", start);
   const block = transactionGridSource.slice(start, end);
   const matches = [...block.matchAll(/\bkey: "([^"]+)"/g)];
@@ -78,7 +78,7 @@ describe("billed activity check grouping", () => {
 
     expect(visible).toEqual([
       ["serviceDate", "Service date"], ["program", "Program"], ["individual", "Individual"],
-      ["employee", "Employee"], ["hours", "Hours"], ["gross", "Funder billed"],
+      ["employee", "Employee"], ["hours", "Imported hours"], ["gross", "Funder billed"],
       ["internalAmount", "Employee base"], ["agencyAdditional", "Agency spread"],
     ]);
     expect(transactionGridSource).toContain('"Service review"');

@@ -42,7 +42,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { upload } from "@vercel/blob/client";
+import { uploadReservedPdf } from "@/lib/documents/upload-reserved-pdf";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api";
@@ -179,6 +179,7 @@ interface UploadReservation {
   intentId: string;
   pathname: string;
   handleUploadUrl: string;
+  transport?: "blob" | "local-test";
   maximumSizeInBytes: number;
   expiresAt: string;
 }
@@ -311,6 +312,7 @@ export default function PdfEditorWorkspace({
   const [fitPage, setFitPage] = useState(true);
   const [manualScale, setManualScale] = useState(1);
   const [opening, setOpening] = useState(false);
+  const [savedOpenAttempt, setSavedOpenAttempt] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState<{ completed: number; total: number } | null>(null);
   const [draggingOver, setDraggingOver] = useState(false);
@@ -960,6 +962,9 @@ export default function PdfEditorWorkspace({
     return { ...detail, currentVersion, file };
   }, [openPdf, restoreManifestAssets]);
 
+  const loadStoredDocumentRef = useRef(loadStoredDocument);
+  loadStoredDocumentRef.current = loadStoredDocument;
+
   useEffect(() => {
     if (!initialDocumentId || initialDocumentLoadedRef.current === initialDocumentId) return;
     const controller = new AbortController();
@@ -967,7 +972,7 @@ export default function PdfEditorWorkspace({
     initialDocumentLoadedRef.current = initialDocumentId;
     setOpening(true);
     setError(null);
-    void loadStoredDocument(initialDocumentId, { signal: controller.signal })
+    void loadStoredDocumentRef.current(initialDocumentId, { signal: controller.signal })
       .then(() => undefined)
       .catch((documentError: unknown) => {
         if (active && !(documentError instanceof DOMException && documentError.name === "AbortError")) {
@@ -980,8 +985,9 @@ export default function PdfEditorWorkspace({
     return () => {
       active = false;
       controller.abort();
+      if (initialDocumentLoadedRef.current === initialDocumentId) initialDocumentLoadedRef.current = null;
     };
-  }, [initialDocumentId, loadStoredDocument]);
+  }, [initialDocumentId, savedOpenAttempt]);
 
   useEffect(() => {
     const documentId = storedDocument?.id;
@@ -1519,12 +1525,7 @@ export default function PdfEditorWorkspace({
   };
 
   const uploadPdf = async (reservation: UploadReservation, file: File) => {
-    await upload(reservation.pathname, file, {
-      access: "private",
-      handleUploadUrl: reservation.handleUploadUrl,
-      clientPayload: JSON.stringify({ intentId: reservation.intentId }),
-      multipart: true,
-    });
+    await uploadReservedPdf(reservation, file);
   };
 
   const downloadPdf = async () => {
@@ -1782,6 +1783,7 @@ export default function PdfEditorWorkspace({
               <Upload className="h-4 w-4" aria-hidden />
               Choose PDF
             </button>
+            {initialDocumentId && !opening && error ? <button type="button" className="btn btn-secondary mt-3" onClick={() => { initialDocumentLoadedRef.current = null; setSavedOpenAttempt((attempt) => attempt + 1); }}>Retry opening saved PDF</button> : null}
             {error ? <p className="mt-4 text-sm font-medium text-[var(--color-danger)]" role="alert">{error}</p> : null}
           </div>
         </section>

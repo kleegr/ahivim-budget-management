@@ -18,7 +18,7 @@ import { listIndividualResponsibilities } from "@/lib/manage/operational-respons
 import { isWorkingProgram } from "@/lib/business/working-programs";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "People & budgets - Ahivim Budget Management" };
+export const metadata = { title: "People - Ahivim Budget Management" };
 
 /** The create/edit form shares one field set. */
 function individualFields() {
@@ -169,7 +169,7 @@ export default async function IndividualsPage({
     <>
       <PageHeader
         eyebrow="Budgets"
-        title="People & budgets"
+        title="People"
         description="See each person's renewal date, remaining hours, and monthly plan."
         action={
           canEdit ? (

@@ -1,3 +1,4 @@
+import { localDocumentTestRoot } from "@/lib/documents/local-test-storage";
 import { randomUUID } from "node:crypto";
 import type { DocumentAccessContext } from "@/lib/auth/document-policy";
 import {
@@ -34,6 +35,7 @@ export interface DocumentUploadReservation {
   intentId: string;
   pathname: string;
   handleUploadUrl: "/api/documents/uploads";
+  transport?: "blob" | "local-test";
   maximumSizeInBytes: number;
   expiresAt: string;
 }
@@ -149,6 +151,7 @@ function uploadReservation(
 ): DocumentUploadReservation {
   return {
     intentId,
+    ...(localDocumentTestRoot() ? { transport: "local-test" as const } : {}),
     pathname: documentUploadPathname(documentId, intentId),
     handleUploadUrl: "/api/documents/uploads",
     maximumSizeInBytes: maxPdfUploadBytes(),

@@ -328,7 +328,7 @@ describe("portal-safe home read model", () => {
       && statement.includes("authorized_hours"),
     );
     expect(memberHoursCall?.[1]?.[0]).toEqual([AGENCY_B]);
-    expect(memberHoursCall?.[0]).not.toMatch(/dollar/i);
+    expect(memberHoursCall?.[0]).not.toMatch(/authorized_dollars|consumed_dollars|remaining_dollars/i);
     const hourCalls = query.mock.calls.filter(([statement]) => statement.includes("effective_budget_authorizations_at"));
     expect(hourCalls).toHaveLength(3);
     for (const [statement] of hourCalls) {
@@ -373,7 +373,8 @@ describe("portal-safe home read model", () => {
       expect(statement).not.toContain("program_budget_balances");
       expect(statement).not.toMatch(/undated_usage|authorized_dollars|consumed_dollars|remaining_dollars/);
       expect(statement).not.toMatch(/DAY_HAB|SUPP_GROUP_DAY_HAB/);
-      expect(statement).not.toMatch(/dollar/i);
+      expect(statement).toContain("program.required_auth_type <> 'dollars'");
+      expect(statement).not.toMatch(/authorized_dollars|consumed_dollars|remaining_dollars/i);
     }
     const directHourCall = hourCalls.find(([statement]) =>
       statement.includes("effective_hours.individual_id AS scope_id"),
@@ -553,7 +554,8 @@ describe("portal-safe home read model", () => {
     });
     const hourCall = query.mock.calls.find(([sql]) => sql.includes("effective_budget_authorizations_at"));
     const dollarCall = query.mock.calls.find(([sql]) => sql.includes("authorized_dollars"));
-    expect(hourCall?.[0]).not.toMatch(/dollar/i);
+    expect(hourCall?.[0]).toContain("program.required_auth_type <> 'dollars'");
+    expect(hourCall?.[0]).not.toMatch(/authorized_dollars|consumed_dollars|remaining_dollars/i);
     expect(dollarCall?.[0]).toContain("FROM program_budget_balances");
     expect(dollarCall?.[0]).not.toMatch(/authorized_hours|consumed_hours|remaining_hours|effective_billed_hours/);
   });

@@ -24,7 +24,7 @@ describe("owner actual-money overview", () => {
     expect(dashboard).toContain("The review summary is incomplete.");
     expect(dashboard).toContain("Actual income, expenses, and result are temporarily unavailable.");
     expect(dashboard).toContain('title="Home"');
-    expect(dashboard).toContain("Review summary");
+    expect(dashboard).toContain("Needs attention");
     expect(dashboard).toContain("getOperationalReviewSummary(pool, today)");
     expect(dashboard).toContain('eyebrow="Actual money"');
     expect(dashboard).toContain('title="Money"');

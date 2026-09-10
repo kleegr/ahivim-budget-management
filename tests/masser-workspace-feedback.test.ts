@@ -27,9 +27,11 @@ describe("Masser request feedback", () => {
 
   it("makes the complete money workflow discoverable from Masser", () => {
     const source = readFileSync(resolve("src/app/(app)/masser/page.tsx"), "utf8");
-    expect(source).toContain('title="Money to collect, pay, and put away"');
+    expect(source).toContain('title="Money"');
     expect(source).toContain('href="/settlements"');
-    expect(source).toContain("agency payments, credits, corrections, reversals, and completed history");
+    expect(source).toContain("<MoneyTaskNav");
+    const tasks = readFileSync(resolve("src/components/collections/money-task-nav.tsx"), "utf8");
+    for (const label of ["Collect", "Pay", "Put away", "Checks", "History"]) expect(tasks).toContain(`label: "${label}"`);
   });
 
   it("shows employee deal links only when that account can view deals", () => {

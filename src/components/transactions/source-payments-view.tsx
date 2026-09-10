@@ -1,5 +1,7 @@
 "use client";
 
+import { investigationDrillHref, InvestigationCheckDates, type InvestigationScope } from "./investigation-scope";
+
 import { useDeferredValue, useMemo, useState } from "react";
 import Link from "next/link";
 import { Download, RotateCcw, Search, TableProperties } from "lucide-react";
@@ -72,12 +74,16 @@ export default function SourcePaymentsView({
   rows,
   visibility,
   onShowRows,
+  scope,
 }: {
   rows: GridTransaction[];
   visibility: TransactionFieldVisibility;
   onShowRows: () => void;
+  scope?: InvestigationScope;
 }) {
-  const [query, setQuery] = useState("");
+  const [localQuery, setLocalQuery] = useState("");
+  const query = scope?.search ?? localQuery;
+  const setQuery = (value: string) => scope ? scope.onChange({ filters: scope.filters, search: value }) : setLocalQuery(value);
   const deferredQuery = useDeferredValue(query);
   const [period, setPeriod] = useState<PeriodRange>(null);
   const [periodControlKey, setPeriodControlKey] = useState(0);
@@ -122,6 +128,7 @@ export default function SourcePaymentsView({
   );
 
   const clearViewFilters = () => {
+    if (scope) { const filters = { ...scope.filters }; delete filters.checkDate; scope.onChange({ filters, search: "" }); return; }
     setQuery("");
     setPeriod(null);
     if (typeof window !== "undefined") {
@@ -198,7 +205,7 @@ export default function SourcePaymentsView({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <PeriodControl key={periodControlKey} onChange={setPeriod} paramKey="period" />
+        {scope ? <InvestigationCheckDates scope={scope} /> : <PeriodControl key={periodControlKey} onChange={setPeriod} paramKey="period" />}
         <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
           <label className="relative block min-w-56 flex-1 sm:w-72">
             <span className="sr-only">Search source payments</span>
@@ -301,7 +308,7 @@ export default function SourcePaymentsView({
                   {payment.needsReview ? <div className="mt-1 max-w-48 text-xs text-[var(--color-ink-faint)]">{payment.reviewReasons.join(" · ")}</div> : null}
                 </Td>
                 <Td>
-                  <Link href={sourcePaymentRowsHref(payment)} className="btn btn-sm btn-ghost whitespace-nowrap">
+                  <Link href={investigationDrillHref(sourcePaymentRowsHref(payment), scope, { sourcePaymentIdentity: { selected: [payment.key] } })} className="btn btn-sm btn-ghost whitespace-nowrap">
                     {payment.needsReview ? "Review" : "Open"} {payment.rows.toLocaleString()} {payment.rows === 1 ? "service" : "services"}
                   </Link>
                 </Td>

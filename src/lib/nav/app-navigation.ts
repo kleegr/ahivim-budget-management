@@ -34,7 +34,7 @@ export interface NavigationDestination {
 }
 
 export interface NavigationWorkspace {
-  id: "overview" | "portal" | "people" | "activity" | "money";
+  id: string;
   label: string;
   hint: string;
   activePrefixes: readonly string[];
@@ -93,13 +93,13 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
   },
   {
     id: "people",
-    label: "People & budgets",
+    label: "People",
     hint: "People, authorizations, staffing, and organizations",
     activePrefixes: ["/individuals", "/people", "/employees", "/agencies"],
     destinations: [
       {
         id: "budget-portfolio",
-        label: "People & budgets",
+        label: "People",
         href: "/individuals",
         hint: "Authorized hours, usage, and renewals",
         keywords: "individuals people clients authorizations utilization renewals",
@@ -176,7 +176,7 @@ const WORKSPACES: readonly NavigationWorkspace[] = [
   },
   {
     id: "money",
-    label: "Money & reports",
+    label: "Money",
     hint: "Amounts to action, financial setup, classes, and reporting",
     activePrefixes: ["/collections", "/settlements", "/calculations", "/projections", "/masser", "/reports", "/classes", "/documents"],
     destinations: [
@@ -410,16 +410,32 @@ function allowed(gate: NavigationGate | undefined, access: NavigationAccess): bo
 }
 
 export function getVisibleWorkspaces(access: NavigationAccess): VisibleNavigationWorkspace[] {
-  return WORKSPACES.flatMap((workspace) => {
+  const visible = WORKSPACES.flatMap((workspace) => {
     if (workspace.id === "overview" && usesExternalLanding(access)) return [];
-    const destinations = workspace.destinations.filter((destination) => allowed(destination.gate, access));
+    const destinations = workspace.destinations.filter((destination) => !["agency-directory", "activity-review"].includes(destination.id) && allowed(destination.gate, access));
     if (destinations.length === 0) return [];
-    return [{ ...workspace, href: destinations[0].href, destinations }];
+    // Daily destinations have the same names in the sidebar, search, and page.
+    // Money retains its distinct operating, setup, and Owner reporting children.
+    const moneyIds = new Set(["money-overview", "financial-setup", "agency-financials"]);
+    const money = workspace.id === "money" ? destinations.filter((item) => moneyIds.has(item.id)) : [];
+    const separate = workspace.id === "money" ? destinations.filter((item) => !moneyIds.has(item.id)) : destinations;
+    return [
+      ...(money.length ? [{ ...workspace, label: "Money", href: money[0].href,
+        activePrefixes: ["/masser", "/collections", "/settlements", "/calculations", "/projections", "/reports/agency-financials"], destinations: money }] : []),
+      ...separate.map((destination) => ({
+        id: ({ "overview-home": "overview", "portal-home": "portal", "budget-portfolio": "people", transactions: "activity" } as Record<string, string>)[destination.id] ?? destination.id,
+        label: destination.label, hint: destination.hint, href: destination.href,
+        activePrefixes: destination.activePrefixes ?? (destination.id === "overview-home" ? ["/home", "/dashboard"] : [destination.href]),
+        destinations: [destination],
+      })),
+    ];
   });
+  const order = ["overview", "portal", "approved-documents", "people", "employees", "schedule", "activity", "money", "class-billing", "documents", "report-library"];
+  return visible.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
 }
 
 export function getVisibleAdminDestinations(access: NavigationAccess): NavigationDestination[] {
-  return ADMIN_DESTINATIONS
+  return [...WORKSPACES.flatMap((workspace) => workspace.destinations.filter((item) => ["agency-directory", "activity-review"].includes(item.id))), ...ADMIN_DESTINATIONS]
     .filter((destination) => allowed(destination.gate, access))
     .map((destination) => {
       if (destination.id !== "settings" || access.role === "admin") return destination;
@@ -438,6 +454,7 @@ export function shouldTrackNavigation(pathname: string, href: string): boolean {
 }
 
 export function workspaceIsActive(pathname: string, workspace: NavigationWorkspace): boolean {
+  if (workspace.id === "report-library" && pathname.startsWith("/reports/agency-financials")) return false;
   return workspace.activePrefixes.some((prefix) => pathMatches(pathname, prefix));
 }
 

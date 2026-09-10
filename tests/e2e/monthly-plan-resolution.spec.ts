@@ -27,7 +27,7 @@ test("Owner saves a missing renewal and records one monthly put-away while histo
     await page.getByLabel("Password").fill(ADMIN_PASSWORD);
     await page.getByRole("button", { name: /^sign in$/i }).click();
     await page.waitForURL(url => url.pathname === "/dashboard");
-    await page.goto(`/masser?month=${month}`);
+    await page.goto(`/masser?month=${month}&task=put-away`);
     let person = page.getByRole("row").filter({ hasText: name });
     await expect(person).toContainText("$100.00");
     await person.getByRole("link", { name: "Add renewal date" }).click();
@@ -36,7 +36,7 @@ test("Owner saves a missing renewal and records one monthly put-away while histo
     const saved = page.waitForResponse(r => r.url().endsWith(`/api/calculation-strategies/${strategyId}`) && r.request().method() === "PATCH");
     await page.getByRole("button", { name: "Save financial plan", exact: true }).click();
     expect((await saved).status()).toBe(200);
-    await page.goto(`/masser?month=${month}`);
+    await page.goto(`/masser?month=${month}&task=put-away`);
     person = page.getByRole("row").filter({ hasText: name });
     await expect(person).toContainText("Ready");
     await expect(person).toContainText("Historical");

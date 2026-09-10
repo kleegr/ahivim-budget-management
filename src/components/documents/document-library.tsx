@@ -1,6 +1,6 @@
 "use client";
 
-import { upload } from "@vercel/blob/client";
+import { uploadReservedPdf } from "@/lib/documents/upload-reserved-pdf";
 import {
   Archive,
   Clock3,
@@ -41,6 +41,7 @@ interface UploadReservation {
     intentId: string;
     pathname: string;
     handleUploadUrl: string;
+  transport?: "blob" | "local-test";
     maximumSizeInBytes: number;
     expiresAt: string;
   };
@@ -164,13 +165,7 @@ export default function DocumentLibrary({ canEdit, isOwner = false }: { canEdit:
         }),
       });
       uploadReserved = true;
-      await upload(reservation.upload.pathname, file, {
-        access: "private",
-        handleUploadUrl: reservation.upload.handleUploadUrl,
-        clientPayload: JSON.stringify({ intentId: reservation.upload.intentId }),
-        multipart: true,
-        onUploadProgress: ({ percentage }) => setUploadProgress(Math.round(percentage)),
-      });
+      await uploadReservedPdf(reservation.upload, file, setUploadProgress);
       const finalizeBody = JSON.stringify({
           intentId: reservation.upload.intentId,
           idempotencyKey: crypto.randomUUID(),

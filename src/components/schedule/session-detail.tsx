@@ -30,7 +30,7 @@ export default function SessionDetail({
   canManage: boolean;
   initialMode?: SessionRepairMode | null;
   onClose: () => void;
-  onChanged: () => void;
+  onChanged: (saved: { id: string; date: string }) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -89,7 +89,8 @@ export default function SessionDetail({
     const res = await send("PATCH", `/api/schedule/sessions/${session.id}`, { ...body, reason: reason.trim() || undefined });
     setBusy(false);
     if (!res.ok) { setError(res.error ?? "Action failed."); return; }
-    onChanged();
+    const saved = res.data as { id?: string } | undefined;
+    onChanged({ id: saved?.id ?? session.id, date: String(body.sessionDate ?? body.toDate ?? session.sessionDate) });
   }
 
   return (

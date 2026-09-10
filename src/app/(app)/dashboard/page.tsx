@@ -124,7 +124,7 @@ export default async function DashboardPage({
   const today = agencyDate();
 
   if (user.role === "admin") {
-    const financialMonth = normalizeActualAgencyFinancialMonth(today.slice(0, 7));
+    const financialMonth = normalizeActualAgencyFinancialMonth(one(params.month) ?? today.slice(0, 7));
     const activitySelection = normalizeOwnerActivitySelection({
       checkDateFrom: one(params.from) ?? null,
       checkDateTo: one(params.to) ?? null,

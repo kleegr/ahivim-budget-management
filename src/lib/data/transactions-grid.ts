@@ -31,6 +31,9 @@ export interface GridTransaction {
   checkDate: string | null; // YYYY-MM-DD
   checkNumber: string | null;
   hours: string | null;
+  creditedBudgetHours?: string | null;
+  budgetCreditRate?: string | null;
+  budgetCreditBasis?: string | null;
   rate: string | null; // imported funder rate
   employeeRate?: string | null; // effective internal/employee rate applied
   gross: string | null; // imported_amount, untouched
@@ -116,6 +119,9 @@ export async function listTransactionsForGrid(
     check_date: string | null;
     check_number: string | null;
     hours: string | null;
+    credited_budget_hours: string | null;
+    budget_credit_rate: string | null;
+    budget_credit_basis: string | null;
     rate: string | null;
     employee_rate: string | null;
     gross: string | null;
@@ -151,6 +157,15 @@ export async function listTransactionsForGrid(
     paid_at: string | null;
     paid_note: string | null;
   }>(`
+    WITH credit_dates AS MATERIALIZED (
+      SELECT DISTINCT canonical_service_date(t.period_begin, t.check_date, t.period_end) AS service_date
+        FROM payroll_transactions t WHERE TRUE${scopeClause}${employeeClause}${transactionClause}
+    ), credit_rates AS MATERIALIZED (
+      SELECT dates.service_date, credit_auth.individual_id, credit_auth.program_id,
+             count(*) AS candidates, min(credit_auth.internal_rate) AS rate
+        FROM credit_dates dates CROSS JOIN LATERAL effective_budget_authorizations_at(dates.service_date) credit_auth
+       GROUP BY dates.service_date, credit_auth.individual_id, credit_auth.program_id
+    )
     SELECT
       t.id,
       to_char(canonical_service_date(t.period_begin, t.check_date, t.period_end), 'YYYY-MM-DD') AS service_date,
@@ -158,6 +173,15 @@ export async function listTransactionsForGrid(
       to_char(t.check_date,  'YYYY-MM-DD')                    AS check_date,
       t.check_number,
       t.imported_hours::text                                  AS hours,
+      (CASE WHEN p.required_auth_type <> 'dollars' AND credit_rate.candidates = 1
+        THEN canonical_budget_transaction_hours(t, credit_rate.rate) END)::text AS credited_budget_hours,
+      credit_rate.rate::text AS budget_credit_rate,
+      CASE WHEN EXISTS (SELECT 1 FROM service_allocations allocation JOIN service_sessions credit_session ON credit_session.id = allocation.service_session_id
+        WHERE allocation.payroll_transaction_id = t.id AND allocation.individual_id = t.individual_id
+          AND credit_session.group_size > 1 AND credit_session.group_detection_status = 'confirmed')
+        THEN 'Confirmed participant credit'
+        WHEN p.rate_scope = 'per_group' AND credit_rate.rate > 0 THEN 'Employee base divided by authorization rate'
+        ELSE 'Imported source hours' END AS budget_credit_basis,
       t.imported_rate::text                                   AS rate,
       t.internal_rate_applied::text                           AS employee_rate,
       t.imported_amount::text                                 AS gross,
@@ -209,6 +233,8 @@ export async function listTransactionsForGrid(
     LEFT JOIN individuals i ON i.id = t.individual_id
     LEFT JOIN employees   e ON e.id = t.employee_id
     LEFT JOIN programs    p ON p.id = t.program_id
+    LEFT JOIN credit_rates credit_rate ON credit_rate.individual_id = t.individual_id AND credit_rate.program_id = t.program_id
+      AND credit_rate.service_date = canonical_service_date(t.period_begin, t.check_date, t.period_end)
     LEFT JOIN employee_payroll_checks pc
       ON pc.id = t.payroll_check_id
      AND pc.employee_id = t.employee_id
@@ -235,6 +261,11 @@ export async function listTransactionsForGrid(
     checkDate: r.check_date,
     checkNumber: r.check_number,
     hours: r.hours,
+    ...(!scope || (scope.canSeeBudgets && scope.canSeeHours) ? {
+      creditedBudgetHours: r.credited_budget_hours,
+      budgetCreditBasis: r.budget_credit_basis,
+      ...(!scope || (scope.canSeeMoney && scope.canSeeEmployeeAmounts) ? { budgetCreditRate: r.budget_credit_rate } : {}),
+    } : {}),
     rate: r.rate,
     employeeRate: r.employee_rate,
     gross: r.gross,

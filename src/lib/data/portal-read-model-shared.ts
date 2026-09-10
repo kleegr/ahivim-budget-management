@@ -373,6 +373,7 @@ physical_authorization_base AS (
     JOIN budget_periods period ON period.id = physical_auth.budget_period_id
     JOIN programs program ON program.id = physical_auth.program_id
    WHERE physical_auth.status = 'active'
+     AND program.required_auth_type <> 'dollars'
      AND physical_auth.archived_at IS NULL
      AND period.status = 'active'
      AND period.archived_at IS NULL
@@ -435,6 +436,7 @@ synthetic_authorizations AS (
     JOIN portal_scope scope ON scope.individual_id = budget_auth.individual_id
     JOIN programs program ON program.id = budget_auth.program_id
    WHERE budget_auth.source = 'calculation_strategy'
+     AND program.required_auth_type <> 'dollars'
      AND NOT EXISTS (
        SELECT 1
          FROM physical_authorizations physical

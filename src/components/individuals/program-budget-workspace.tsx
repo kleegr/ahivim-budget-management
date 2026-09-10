@@ -1,3 +1,7 @@
+import { TabPanels } from "@/components/ui-client";
+import PriorWorkers from "./prior-workers";
+import type { PriorWorker } from "@/lib/data/prior-workers";
+import type { AssignmentRecord } from "@/lib/manage/assignments";
 import { randomUUID } from "node:crypto";
 import { AlertTriangle, CalendarDays, History, RefreshCcw } from "lucide-react";
 import OperationalFlags from "@/components/manage/operational-flags";
@@ -465,6 +469,7 @@ export default function ProgramBudgetWorkspace({
   showInternalRate,
   showAgencyRate,
   canOpenTransactions = false,
+  initialAuthorizationId, initialProgramId, workers = [], assignments = [], canPlan = false,
 }: {
   operationalReview?: OperationalReview;
   individualId: string;
@@ -475,6 +480,8 @@ export default function ProgramBudgetWorkspace({
   showInternalRate: boolean;
   showAgencyRate: boolean;
   canOpenTransactions?: boolean;
+  initialAuthorizationId?: string; initialProgramId?: string;
+  workers?: PriorWorker[]; assignments?: AssignmentRecord[]; canPlan?: boolean;
 }) {
   return (
     <section id="service-authorizations">
@@ -508,14 +515,15 @@ export default function ProgramBudgetWorkspace({
           <p className="mt-1 text-sm text-[var(--color-ink-faint)]">This individual does not have a visible service allowance yet.</p>
         </div>
       ) : (
-        <div className="grid gap-4 xl:grid-cols-2">
-          {budgets.map((budget) => {
+        <TabPanels paramKey="authorizationId" initialId={initialAuthorizationId ?? budgets.find((budget) => budget.programId === initialProgramId)?.authorizationId ?? budgets.find((budget) => budget.requiredAuthType === "hours" && budget.startDate <= agencyDate() && budget.endDate >= agencyDate())?.authorizationId ?? budgets[0]?.authorizationId} panels={budgets.map((budget) => {
             const manualUsageAllowed = budget.consumptionSource === "manual" || budget.consumptionSource === "mixed";
             const canManageAuthorization = canManage
               && budget.isExplicit
               && (!hoursOnlyManagement || budget.requiredAuthType === "hours");
             const conversionPrograms = programs.filter((program) => program.id === budget.programId);
-            return (
+            const currentAssignments = assignments.filter((assignment) => !assignment.programId || assignment.programId === budget.programId);
+            return { id: budget.authorizationId, label: `${budget.programName}${budget.requiredAuthType === "dollars" ? " ($)" : ""}${budgets.filter((row) => row.programId === budget.programId).length > 1 ? ` · ${budget.startDate}` : ""}`, content: (
+              <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
               <article id={`authorization-${budget.authorizationId}`} key={`${budget.budgetPeriodId}:${budget.programId}`} className="overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-surface)]">
                 <div className="px-4 py-4 sm:px-5">
                   {operationalReview ? <OperationalFlags flags={operationalReview.flags.filter((flag) => flag.key.endsWith(budget.authorizationId))} /> : null}
@@ -544,6 +552,12 @@ export default function ProgramBudgetWorkspace({
                     </div>
                   </div>
 
+                  <div className="mt-4 space-y-4">
+                    <HoursMetrics budget={budget} />
+                    <DollarMetrics budget={budget} />
+                  </div>
+
+                  <details className="mt-3 text-sm"><summary className="cursor-pointer font-medium">Source and setup</summary>
                   {!budget.isExplicit ? (
                     <div className="mt-4 border-l-2 border-[var(--color-info)] bg-[var(--color-info-soft)] px-3 py-3 text-sm text-[var(--color-ink-soft)]">
                       <p className="font-semibold text-[var(--color-ink)]">Read-only budget from Financial setup</p>
@@ -587,11 +601,7 @@ export default function ProgramBudgetWorkspace({
                     </div>
                   ) : null}
 
-                  <div className="mt-4 space-y-4">
-                    <HoursMetrics budget={budget} />
-                    <DollarMetrics budget={budget} />
-                  </div>
-
+                  </details>
                   {budget.hasUndatedUsage ? (
                     <div
                       className="mt-4 flex items-start gap-2 border-l-2 border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-3 py-2 text-sm text-[var(--color-ink-soft)]"
@@ -699,15 +709,21 @@ export default function ProgramBudgetWorkspace({
                     </div>
                   ) : null}
                 </div>
-                {!isSelfHireProgram(budget.programCode) && (showInternalRate || showAgencyRate) ? <div className="border-t border-[var(--color-rule)] p-4 text-sm"><p className="font-semibold">Shared program service rate</p>{budget.centralProgramRate ? <p className="mt-1">{showInternalRate && budget.centralProgramRate.internalRate !== null ? `Employee-base rate ${formatMoney(budget.centralProgramRate.internalRate)}/hour. ` : ""}{showAgencyRate && budget.centralProgramRate.agencyRate !== null ? `Funder rate ${formatMoney(budget.centralProgramRate.agencyRate)}/hour. ` : ""}Source: central program configuration, effective {budget.centralProgramRate.effectiveFrom}{budget.centralProgramRate.effectiveTo ? ` through ${budget.centralProgramRate.effectiveTo}` : " onward"}.</p> : <p className="mt-1">No current shared rate is configured.</p>}<p className="mt-1 text-xs text-[var(--color-ink-soft)]">The authorization’s saved rates remain historical snapshots. Existing individual values are preserved for review.</p>{canManage && !hoursOnlyManagement ? <ButtonLink href="/settings?view=programs">Review shared program rates</ButtonLink> : null}</div> : null}
+                {!isSelfHireProgram(budget.programCode) && (showInternalRate || showAgencyRate) ? <details className="border-t border-[var(--color-rule)] p-4 text-sm"><summary className="cursor-pointer font-semibold">Shared program service rate</summary>{budget.centralProgramRate ? <p className="mt-1">{showInternalRate && budget.centralProgramRate.internalRate !== null ? `Employee-base rate ${formatMoney(budget.centralProgramRate.internalRate)}/hour. ` : ""}{showAgencyRate && budget.centralProgramRate.agencyRate !== null ? `Funder rate ${formatMoney(budget.centralProgramRate.agencyRate)}/hour. ` : ""}Source: central program configuration, effective {budget.centralProgramRate.effectiveFrom}{budget.centralProgramRate.effectiveTo ? ` through ${budget.centralProgramRate.effectiveTo}` : " onward"}.</p> : <p className="mt-1">No current shared rate is configured.</p>}<p className="mt-1 text-xs text-[var(--color-ink-soft)]">The authorization’s saved rates remain historical snapshots. Existing individual values are preserved for review.</p>{canManage && !hoursOnlyManagement ? <ButtonLink href="/settings?view=programs">Review shared program rates</ButtonLink> : null}</details> : null}
                 {budget.authorizedHours !== null ? <MonthlyProgramPlan individualId={individualId} programId={budget.programId} canOpenTransactions={canOpenTransactions} input={{ startDate: budget.startDate, endDate: budget.endDate, renewalDate: budget.renewalDate, asOf: agencyDate(), authorizedHours: budget.authorizedHours, actualHours: budget.consumedHours, history: budget.monthlyHistory, unavailableUsage: budget.hasUndatedUsage, periodStatus: budget.periodStatus }} /> : null}
+                <details className="border-t border-[var(--color-rule)] p-4"><summary className="cursor-pointer font-medium">Authorization details and history</summary>
                 <MonthlyHistory months={budget.monthlyHistory} isGroupService={budget.isGroupService} />
                 <AuthorizationHistory budget={budget} />
                 {budget.showEventHistory ? <EventHistory budget={budget} canManage={!hoursOnlyManagement && canManageAuthorization && budget.programCode !== "CLASSES"} /> : null}
+                </details>
               </article>
-            );
-          })}
-        </div>
+              {canPlan ? <aside className="space-y-3"><section className="card p-4"><h3 className="font-semibold">Current assignment</h3>
+                {currentAssignments.length ? currentAssignments.map((assignment) => <div key={assignment.id} className="border-b border-[var(--color-rule)] py-3 text-sm"><p className="font-medium">{assignment.employeeName}</p><p className="text-xs text-[var(--color-ink-soft)]">{assignment.startDate ?? "Open start"} – {assignment.endDate ?? "Open end"}{assignment.allowedHours ? ` · ${formatHours(assignment.allowedHours)} h limit` : ""}</p><div className="mt-2 flex flex-wrap gap-2"><ButtonLink href={`/schedule?view=future&individualId=${individualId}&programId=${budget.programId}&assignmentId=${assignment.id}`}>Open assignment</ButtonLink><ButtonLink variant="primary" href={`/schedule?view=calendar&individualId=${individualId}&employeeId=${assignment.employeeId}&programId=${budget.programId}&date=${agencyDate()}`}>Plan visit</ButtonLink></div></div>) : <p className="my-3 text-sm">No current assignment for this program.</p>}
+                <ButtonLink href={`/schedule?view=future&individualId=${individualId}&programId=${budget.programId}&newAssignment=1`}>Find an employee</ButtonLink>
+              </section><details className="card p-4"><summary className="cursor-pointer text-sm font-semibold">Previous workers and actual work</summary><PriorWorkers individualId={individualId} workers={workers.filter((worker) => worker.programId === budget.programId)} assignments={currentAssignments} /></details></aside> : null}
+              </div>
+            ) };
+          })} />
       )}
     </section>
   );

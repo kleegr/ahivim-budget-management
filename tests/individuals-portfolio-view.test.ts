@@ -15,8 +15,9 @@ describe("individual portfolio views", () => {
       "used",
       "transactions",
       "billedAmount",
+      "status",
     ]));
-    for (const workingColumn of ["status", "programs", "authorized", "billedHours", "nextAction"]) {
+    for (const workingColumn of ["programs", "authorized", "billedHours", "nextAction"]) {
       expect(DEFAULT_HIDDEN_PORTFOLIO_COLUMNS).not.toContain(workingColumn);
     }
   });

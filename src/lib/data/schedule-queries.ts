@@ -337,6 +337,7 @@ async function activeAuthorizations(
        FROM effective_budget_authorizations_at($2::date) ea
        JOIN programs p ON p.id = ea.program_id
       WHERE ea.individual_id = $1
+        AND p.required_auth_type <> 'dollars'
         AND ($3::uuid IS NULL OR ea.program_id = $3)
         AND ($4::boolean IS NOT TRUE OR (
           p.is_active = true AND p.required_auth_type <> 'dollars'
@@ -535,6 +536,7 @@ export interface ScheduleUtilizationProgram {
 }
 
 export interface ScheduleUtilizationSummary {
+  dollarPrograms?: Array<{ authorizationId: string; programId: string; programName: string; periodLabel: string; startDate: string; endDate: string; authorized: string | null; used: string; remaining: string | null }>;
   individualId: string;
   individualName: string;
   hasAuthorization: boolean;
@@ -573,6 +575,19 @@ export async function individualScheduleSummary(
   if (!person.rows[0]) return null;
 
   const authorizationRows = await activeAuthorizations(pool, individualId, asOfDate, undefined, hoursOnlyPrograms);
+  const dollarPrograms = hoursOnlyPrograms ? [] : (await pool.query<{
+    authorization_id: string; program_id: string; program_name: string; period_label: string;
+    start_date: string; end_date: string; authorized_dollars: string | null; consumed_dollars: string; remaining_dollars: string | null;
+  }>(`SELECT authorization_id::text, program_id::text, program_name, period_label,
+             start_date::text, end_date::text, authorized_dollars::text, consumed_dollars::text, remaining_dollars::text
+        FROM program_budget_balances WHERE individual_id = $1 AND required_auth_type = 'dollars'
+         AND period_status = 'active' AND $2::date BETWEEN start_date AND end_date
+       ORDER BY program_name, start_date`, [individualId, asOfDate])).rows.map((row) => ({
+    authorizationId: row.authorization_id, programId: row.program_id, programName: row.program_name,
+    periodLabel: row.period_label, startDate: row.start_date, endDate: row.end_date,
+    authorized: row.authorized_dollars === null ? null : toMoney(row.authorized_dollars), used: toMoney(row.consumed_dollars),
+    remaining: row.remaining_dollars === null ? null : toMoney(row.remaining_dollars),
+  }));
   const programCounts = new Map<string, number>();
   for (const row of authorizationRows) {
     programCounts.set(row.program_id, (programCounts.get(row.program_id) ?? 0) + 1);
@@ -665,6 +680,7 @@ export async function individualScheduleSummary(
   return {
     individualId,
     individualName: person.rows[0].display_name,
+    ...(!hoursOnlyPrograms ? { dollarPrograms } : {}),
     hasAuthorization: authorizationRows.length > 0,
     period: sharedPeriod
       ? {

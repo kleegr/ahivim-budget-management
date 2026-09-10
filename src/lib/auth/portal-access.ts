@@ -120,7 +120,6 @@ const ROLE_CAPABILITIES: Record<PortalRole, readonly PortalCapability[]> = {
   staffing_manager: [
     "agencies.read",
     "people.agency.read",
-    "hours_budgets.agency.read",
     "assignments.agency.manage",
     "schedules.agency.read",
     "schedules.agency.manage",
@@ -249,7 +248,7 @@ function allowedForAgencyRole(role: AgencyPortalRole): ReadonlySet<PortalCapabil
   // writes are checked again against the agency roster at every endpoint. A
   // per-account override may permit approved, scoped documents, but can never
   // add money access. Publication reads also require every content category.
-  return new Set<PortalCapability>([...ROLE_CAPABILITIES[role], "documents.self.read"]);
+  return new Set<PortalCapability>([...ROLE_CAPABILITIES[role], "hours_budgets.agency.read", "documents.self.read"]);
 }
 
 export function agencyIdsWithPortalCapability(
@@ -263,10 +262,10 @@ export function agencyIdsWithPortalCapability(
   )];
 }
 
-/** Planning always exposes authorization hours, so both read grants are required. */
+/** Calendar access is independent of authorization visibility. Planning DTOs
+ * remove budget details when the separate hours-budget capability is absent. */
 export function agencyIdsWithPlanningAccess(context: PortalAccessContext): string[] {
-  return agencyIdsWithPortalCapability(context, "schedules.agency.read").filter((agencyId) =>
-    hasPortalCapability(context, "hours_budgets.agency.read", agencyId));
+  return agencyIdsWithPortalCapability(context, "schedules.agency.read");
 }
 
 export function portalCapabilityAllowedForRole(

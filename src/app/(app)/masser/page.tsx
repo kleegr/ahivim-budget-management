@@ -1,3 +1,4 @@
+import { MoneyTaskNav } from "@/components/collections/money-task-nav";
 import { redirect } from "next/navigation";
 import { isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
 import { requireUser } from "@/lib/auth/session";
@@ -15,7 +16,7 @@ import { resolveSettlementSourceTransactions } from "@/lib/data/settlement-sourc
 import { MAX_PAYROLL_CHECK_SOURCE_TRANSACTIONS } from "@/lib/business/payroll-check-source";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Masser - Ahivim" };
+export const metadata = { title: "Money - Ahivim" };
 
 export default async function MasserPage({
   searchParams,
@@ -27,6 +28,10 @@ export default async function MasserPage({
   const monthValue = Array.isArray(raw.month) ? raw.month[0] : raw.month;
   const month = monthValue ?? agencyMonth();
   const focusedCheckId = collectionsFocusedPayrollCheckId(raw);
+  const retainedCheckId = collectionsFocusedPayrollCheckId({ focusCheckId: raw.savedCheckId });
+  const checkSearch = Array.isArray(raw.checkSearch) ? raw.checkSearch[0] : raw.checkSearch;
+  const checkStatus = Array.isArray(raw.checkStatus) ? raw.checkStatus[0] : raw.checkStatus;
+  const checkPage = Number(Array.isArray(raw.checkPage) ? raw.checkPage[0] : raw.checkPage);
   const requestedSettlementSource = collectionsSettlementSourceParam(raw);
   const hasSettlementSource = raw.settlementSource !== undefined;
   const result = await withDb(async (pool) => {
@@ -49,7 +54,8 @@ export default async function MasserPage({
       requestedSettlementSource
         ? resolveSettlementSourceTransactions(pool, scope, requestedSettlementSource)
         : Promise.resolve(null),
-      getCollectionsWorkspace(pool, scope, month, { payrollCheckId: focusedCheckId }),
+      getCollectionsWorkspace(pool, scope, month, { payrollCheckId: focusedCheckId, retainedCheckId,
+        search: checkSearch, status: checkStatus, page: checkPage }),
     ]);
     return {
       denied: false as const,
@@ -119,10 +125,11 @@ export default async function MasserPage({
     <>
       <PageHeader
         eyebrow="Masser"
-        title="Money to collect, pay, and put away"
-        description="Review collections, payroll checks, and monthly set-asides here. Open all money operations for agency payments, credits, corrections, reversals, and completed history."
-        action={<ButtonLink href="/settlements" variant="secondary">All money operations</ButtonLink>}
+        title="Money"
+        description="Choose a task, review what is due, and record what actually happened."
+        action={<ButtonLink href="/settlements" variant="secondary">All balances & credits</ButtonLink>}
       />
+      <MoneyTaskNav active={initialState?.view === "checks" ? "checks" : raw.task === "put-away" ? "put-away" : "collect"} month={month} />
       {!result.ok ? <ErrorPanel title="Could not load Masser">{result.error}</ErrorPanel>
         : result.data.denied || !result.data.data ? <ErrorPanel title="Masser is not included in this account" action={<ButtonLink href="/home">Back to home</ButtonLink>}>Ask an administrator to assign the Money collector role.</ErrorPanel>
         : <>
@@ -144,6 +151,8 @@ export default async function MasserPage({
             ) : null}
             <CollectionsWorkspace
               key={workspaceKey}
+              unified
+              task={raw.task === "put-away" ? "put-away" : "collect"}
               data={result.data.data}
               canManage={result.data.canManage}
               canSeeEmployeeDeals={result.data.canSeeEmployeeDeals}
@@ -153,9 +162,8 @@ export default async function MasserPage({
               canRepairImports={result.data.canRepairImports}
               initialView={initialState?.view}
               initialCheckDraft={initialState?.checkDraft}
-              focusedCheckId={result.data.data.payrollChecks.some((check) => check.id === focusedCheckId)
-                ? focusedCheckId
-                : null}
+              focusedCheckId={focusedCheckId}
+              savedCheckId={retainedCheckId}
             />
           </>}
     </>

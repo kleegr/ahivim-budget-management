@@ -494,6 +494,10 @@ suite("document resource authorization (real PostgreSQL and route handlers)", ()
     const approval = { userId, agencyId: A1, scopeDate: "2026-01-01", requiredCapabilities: ["schedules.agency.read", "hours_budgets.agency.read"] };
     expect((await share(document.id, document.current.id, approval)).status).toBe(400);
     await pool.query(`UPDATE user_agency_access SET capability_grants=ARRAY['documents.self.read'] WHERE user_id=$1`, [userId]);
+    if (role === "staffing_manager") {
+      expect((await share(document.id, document.current.id, approval)).status).toBe(400);
+      await pool.query(`UPDATE user_agency_access SET capability_grants=ARRAY['documents.self.read','hours_budgets.agency.read'] WHERE user_id=$1`, [userId]);
+    }
     for (const restriction of [
       { individualId: I2 }, { agencyId: A2 }, { scopeDate: "2019-01-01" },
       { requiredCapabilities: ["schedules.agency.read", "financials.agency.billed_totals.read"] },

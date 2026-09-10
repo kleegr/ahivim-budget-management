@@ -19,7 +19,7 @@ import {
 import { filterPlanningWorkspaceForAgency, getPlanningWorkspace, type PlanningWorkspaceData } from "@/lib/data/planning-queries";
 import { getCommandDestinations } from "@/lib/nav/app-navigation";
 import { viewerHomePath } from "@/lib/nav/home-route";
-import { agencyIdsWithPlanningAccess, type PortalAccessContext } from "@/lib/auth/portal-access";
+import { agencyIdsWithPlanningAccess, hasPortalCapability, type PortalAccessContext } from "@/lib/auth/portal-access";
 
 const AGENCY_A = "00000000-0000-4000-8000-000000000001";
 const AGENCY_B = "00000000-0000-4000-8000-000000000002";
@@ -295,6 +295,9 @@ describe("agency planning privacy", () => {
       individualLinks: [],
       employeeLinks: [],
     };
+    expect(agencyIdsWithPlanningAccess(deniedPortal)).toEqual([AGENCY_A]);
+    expect(hasPortalCapability(deniedPortal, "hours_budgets.agency.read", AGENCY_A)).toBe(false);
+    deniedPortal.agencyAccess[0]!.denials.push("schedules.agency.read");
     expect(agencyIdsWithPlanningAccess(deniedPortal)).toEqual([]);
 
     const query = async () => ({ rows: [] });

@@ -4,6 +4,7 @@ import SearchableSelect from "@/components/manage/searchable-select";
 
 import { reservePresentation } from "@/lib/business/reserve-presentation";
 import { verifiedBalancePresentation } from "@/lib/business/verified-balance-presentation";
+import { payrollCheckVerificationNotice } from "@/lib/business/payroll-check-review";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -21,13 +22,13 @@ import type { CollectionsView, PayrollCheckDraft } from "@/lib/nav/collections-l
 
 type View = CollectionsView;
 type NoticeTone = "success" | "warning" | "error";
-type WorkspaceNotice = { tone: NoticeTone; message: string };
+type WorkspaceNotice = { tone: NoticeTone; message: string; reviewHref?: string; reviewLabel?: string };
 
 interface RequestPayload {
   error?: string;
   message?: string;
   settlementWarning?: string | null;
-  data?: { checks?: number; linkedTransactions?: number };
+  data?: { id?: string; checks?: number; linkedTransactions?: number };
 }
 
 async function requestJson(url: string, init: RequestInit): Promise<RequestPayload> {
@@ -168,10 +169,9 @@ function PayrollCheckForm({
   data: CollectionsWorkspaceData;
   initial: PayrollCheckRow | null;
   draft: PayrollCheckDraft | null;
-  onDone: (notice: WorkspaceNotice) => void;
+  onDone: (notice: WorkspaceNotice, savedCheckId?: string) => void;
   onCancel: () => void;
 }) {
-  const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [grossValue, setGrossValue] = useState(initial?.actualGross ?? "");
@@ -205,8 +205,10 @@ function PayrollCheckForm({
           sourceTransactionIds: draft?.sourceTransactionIds ?? [],
         }),
       });
-      onDone(savedNotice(payload, initial ? "Payroll check updated." : "Payroll check added."));
-      router.refresh();
+      const verified = form.get("verificationStatus") === "verified";
+      onDone(verified ? payrollCheckVerificationNotice({ linkedTransactions: payload.data?.linkedTransactions,
+        settlementWarning: payload.settlementWarning })
+        : savedNotice(payload, initial ? "Payroll check updated." : "Payroll check added."), payload.data?.id);
     } catch (value) {
       setError(value instanceof Error ? value.message : "The payroll check could not be saved.");
     } finally {
@@ -272,6 +274,9 @@ export default function CollectionsWorkspace({
   initialView = "summary",
   initialCheckDraft = null,
   focusedCheckId = null,
+  savedCheckId = null,
+  task = "collect",
+  unified = false,
 }: {
   data: CollectionsWorkspaceData;
   canManage: boolean;
@@ -283,6 +288,9 @@ export default function CollectionsWorkspace({
   initialView?: View;
   initialCheckDraft?: PayrollCheckDraft | null;
   focusedCheckId?: string | null;
+  savedCheckId?: string | null;
+  task?: "collect" | "put-away";
+  unified?: boolean;
 }) {
   const router = useRouter();
   const [view, setView] = useState<View>(initialView);
@@ -293,14 +301,18 @@ export default function CollectionsWorkspace({
   const [verifyingCheckId, setVerifyingCheckId] = useState<string | null>(null);
   const [repairingImports, setRepairingImports] = useState(false);
   const [checkDraft, setCheckDraft] = useState<PayrollCheckDraft | null>(initialCheckDraft);
+  const checkPage = data.payrollCheckPage;
+  const displayedChecks = checkPage.retainedCheck
+    ? [checkPage.retainedCheck, ...data.payrollChecks] : data.payrollChecks;
+  const currentCheckId = savedCheckId ?? focusedCheckId;
 
   useEffect(() => {
-    if (view !== "checks" || !focusedCheckId) return;
-    document.getElementById(`payroll-check-${focusedCheckId}`)?.scrollIntoView({
+    if (view !== "checks" || !currentCheckId) return;
+    document.getElementById(`payroll-check-${currentCheckId}`)?.scrollIntoView({
       block: "center",
       behavior: "smooth",
     });
-  }, [focusedCheckId, view]);
+  }, [currentCheckId, view]);
   const [notice, setNotice] = useState<WorkspaceNotice | null>(null);
   const canManageTargets = canManage && data.visibility.canSeeTargetMoney;
   const canManageChecks = canManage
@@ -365,8 +377,13 @@ export default function CollectionsWorkspace({
           notes: check.notes,
         }),
       });
-      setNotice(savedNotice(payload, "Check verified and collection amount calculated."));
-      router.refresh();
+      const resultNotice = payrollCheckVerificationNotice({ linkedTransactions: payload.data?.linkedTransactions,
+        settlementWarning: payload.settlementWarning });
+      setNotice({ ...resultNotice, reviewHref: resultNotice.needsSourceReview && canSeeTransactions
+        ? `/transactions?view=rows&employeeId=${check.employeeId}`
+        : `/settlements?employeeId=${check.employeeId}`,
+        reviewLabel: resultNotice.needsSourceReview && canSeeTransactions ? "Review employee services" : "Review money operations" });
+      retainSavedCheck(payload.data?.id ?? check.id);
     } catch (value) {
       setNotice({
         tone: "error",
@@ -375,6 +392,32 @@ export default function CollectionsWorkspace({
     } finally {
       setVerifyingCheckId(null);
     }
+  }
+  function retainSavedCheck(id?: string) {
+    if (!id) { router.refresh(); return; }
+    const params = new URLSearchParams(window.location.search);
+    params.set("view", "checks");
+    params.set("savedCheckId", id);
+    for (const key of ["newCheck", "employeeId", "checkNumber", "checkDate", "periodBegin", "periodEnd", "sourceTransactionId", "settlementSource"]) params.delete(key);
+    router.replace(`/masser?${params.toString()}`, { scroll: false });
+    router.refresh();
+  }
+  function checkListHref(page: number) {
+    const params = new URLSearchParams({ view: "checks", month: data.month });
+    if (checkPage.search) params.set("checkSearch", checkPage.search);
+    if (checkPage.status !== "all") params.set("checkStatus", checkPage.status);
+    if (page > 1) params.set("checkPage", String(page));
+    return `/masser?${params.toString()}`;
+  }
+  function searchChecks(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const params = new URLSearchParams({ view: "checks", month: data.month });
+    const search = String(form.get("checkSearch") ?? "").trim();
+    const status = String(form.get("checkStatus") ?? "all");
+    if (search) params.set("checkSearch", search);
+    if (status !== "all") params.set("checkStatus", status);
+    router.push(`/masser?${params.toString()}`, { scroll: false });
   }
   async function repairImportedChecks() {
     if (repairingImports) return;
@@ -401,6 +444,7 @@ export default function CollectionsWorkspace({
     }
   }
   function selectView(nextView: View) {
+    if (unified) { router.push(`/masser?view=${nextView}&month=${data.month}`); return; }
     setView(nextView);
     setCreatingTarget(false);
     setCreatingCheck(false);
@@ -458,7 +502,7 @@ export default function CollectionsWorkspace({
         </Notice>
       ) : null}
       <div className="overflow-x-auto border-y border-[var(--color-rule-strong)] bg-[var(--color-surface)]">
-        <div className="grid min-w-[760px] grid-cols-5">
+        <div className="grid grid-cols-2 lg:grid-cols-5">
           <SummaryMetric label="Give-backs from checks" value={data.ledgerDirty ? null : employeeDue.amount(data.summary.dueFromChecks)} status={data.ledgerDirty ? "Refresh needed" : employeeDue.status} />
           <SummaryMetric label="Collected this month" value={data.summary.collectedThisMonth} tone="good" />
           <SummaryMetric label="Employee balance" value={data.ledgerDirty ? null : employeeBalance.amount(data.summary.remainingReceivable)} status={data.ledgerDirty ? "Refresh needed" : employeeBalance.status} tone="warn" />
@@ -470,7 +514,7 @@ export default function CollectionsWorkspace({
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-rule-strong)]">
-        <div className="flex max-w-full gap-1 overflow-x-auto" role="tablist" aria-label="Collections views">
+        <div className={unified ? "hidden" : "flex max-w-full gap-1 overflow-x-auto"} role="tablist" aria-label="Collections views">
           {tabs.map((tab) => {
             const Icon = tab.icon;
             return <button key={tab.id} id={`collections-tab-${tab.id}`} aria-controls={`collections-panel-${tab.id}`} type="button" role="tab" aria-selected={view === tab.id} tabIndex={view === tab.id ? 0 : -1} onKeyDown={handleTabKey} onClick={() => selectView(tab.id)} className={`touch-target flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-semibold ${view === tab.id ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-transparent text-[var(--color-ink-soft)]"}`}><Icon size={15} aria-hidden />{tab.label}</button>;
@@ -478,6 +522,7 @@ export default function CollectionsWorkspace({
         </div>
         {view === "summary" ? (
           <form className="flex items-center gap-2 pb-2" action="/masser" method="get">
+            {task === "put-away" ? <input type="hidden" name="task" value="put-away" /> : null}
             <label className="text-xs font-semibold text-[var(--color-ink-soft)]" htmlFor="collections-month">Month</label>
             <input id="collections-month" name="month" type="month" defaultValue={data.month} className={inputClass} />
             <button className="btn btn-secondary" type="submit">Apply</button>
@@ -485,16 +530,17 @@ export default function CollectionsWorkspace({
         ) : null}
       </div>
 
-      {notice ? <Notice tone={notice.tone} action={<button type="button" onClick={() => setNotice(null)} className="touch-target inline-flex items-center px-2 text-xs font-semibold">Dismiss</button>}>{notice.message}</Notice> : null}
+      {unified && view !== "targets" && canManageTargets ? <details className="text-sm"><summary className="cursor-pointer text-[var(--color-ink-soft)]">More money setup</summary><Link className="btn btn-sm btn-ghost mt-2" href={`/masser?view=targets&month=${data.month}`}>Direct-pay targets</Link></details> : null}
+      {notice ? <Notice tone={notice.tone} action={<div className="flex flex-wrap gap-2">{notice.reviewHref ? <Link className="btn btn-sm btn-secondary" href={notice.reviewHref}>{notice.reviewLabel}</Link> : null}<button type="button" onClick={() => setNotice(null)} className="touch-target inline-flex items-center px-2 text-xs font-semibold">Dismiss</button></div>}>{notice.message}</Notice> : null}
 
       {view === "summary" ? (
-        <div id="collections-panel-summary" role="tabpanel" aria-labelledby="collections-tab-summary" className="grid gap-4 xl:grid-cols-2">
-          <Card title="Employee receivables" description={`Check obligations and collection position for ${data.month}.`}>
+        <div id="collections-panel-summary" role="tabpanel" aria-labelledby="collections-tab-summary" className="grid gap-4">
+          {(!unified || task === "collect") ? <Card title="Employee receivables" description={`Check obligations and collection position for ${data.month}.`}>
             {data.employeeCollections.length === 0 ? <EmptyState compact title="No employee collection activity" /> : (
               <div className="overflow-x-auto"><table className="touch-table w-full min-w-[720px] text-sm"><thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]"><tr><th className="px-4 py-2.5 text-left">Employee</th><th className="px-3 py-2.5 text-right">Due</th><th className="px-3 py-2.5 text-right">Collected</th><th className="px-3 py-2.5 text-right">Remaining</th><th className="px-3 py-2.5 text-right">Credit</th>{canManage ? <th className="px-3 py-2.5 text-right">Action</th> : null}</tr></thead><tbody className="divide-y divide-[var(--color-rule)]">{data.employeeCollections.map((row) => <tr key={row.employeeId}><td className="px-4 py-3"><p className="font-medium">{row.employeeName}</p>{canSeeEmployeeDeals ? <><Link className="text-xs font-medium text-[var(--color-primary)] hover:underline" href={`/employees/${row.employeeId}?view=deal`}>{canManageEmployeeDeals ? "View or change deal" : "View deal"}</Link>{!canManageEmployeeDeals ? <span className="ml-1 text-xs text-[var(--color-ink-faint)]">(manager changes)</span> : null}</> : null}</td><td className="tnum px-3 py-3 text-right"><CollectionBalance value={row.dueFromChecks} held={row.heldMonthCount} verified={row.verifiedMonthCount} dirty={data.ledgerDirty} /></td><td className="tnum px-3 py-3 text-right text-[var(--color-success)]">{formatMoney(row.collectedThisMonth)}</td><td className="tnum px-3 py-3 text-right font-semibold"><CollectionBalance value={row.remainingReceivable} held={row.heldCount} verified={row.verifiedCount} dirty={data.ledgerDirty} /></td><td className="tnum px-3 py-3 text-right"><CollectionBalance value={row.availableCredit} held={row.heldCount} verified={row.verifiedCount} dirty={data.ledgerDirty} /></td>{canManage ? <td className="px-3 py-3 text-right"><Link className="btn btn-sm btn-ghost whitespace-nowrap" href={`/settlements?employeeId=${row.employeeId}&queue=receivable`}>{data.ledgerDirty || Number(row.remainingReceivable) <= 0 ? "Review money operations" : "Record collection"}</Link></td> : null}</tr>)}</tbody></table></div>
             )}
-          </Card>
-          <Card title="Individual set-asides" description={data.setupHistoryAvailable
+          </Card> : null}
+          {(!unified || task === "put-away") ? <Card title="Individual set-asides" description={data.setupHistoryAvailable
             ? `Approved monthly amounts use the Financial Setup revision effective at the end of ${data.month}. Recorded and remaining amounts show the selected plan-period ledger position.`
             : `Recorded ledger activity is shown for ${data.month}; approved setup history is unavailable before August 2026.`}>
             {data.individualSetAsides.length === 0 ? <EmptyState compact title="No individual set-aside activity" /> : (
@@ -564,7 +610,7 @@ export default function CollectionsWorkspace({
                 </table>
               </div>
             )}
-          </Card>
+          </Card> : null}
         </div>
       ) : view === "targets" ? (
         <div id="collections-panel-targets" role="tabpanel" aria-labelledby="collections-tab-targets">
@@ -576,14 +622,33 @@ export default function CollectionsWorkspace({
       ) : (
         <div id="collections-panel-checks" role="tabpanel" aria-labelledby="collections-tab-checks">
         <Card title="Actual payroll checks" action={canManageChecks ? <div className="flex flex-wrap gap-2">{canRepairImports ? <button type="button" disabled={repairingImports} className="btn btn-secondary" onClick={() => void repairImportedChecks()}>{repairingImports ? "Checking..." : "Find imported checks"}</button> : null}<button type="button" className="btn btn-secondary" onClick={() => { setEditingCheck(null); setCheckDraft(null); setCreatingCheck(true); }}><Plus size={15} aria-hidden /> Add check</button></div> : null}>
-          {canManageChecks && (creatingCheck || editingCheck) ? <PayrollCheckForm key={editingCheck?.id ?? `new-check:${checkDraft?.employeeId ?? "blank"}:${checkDraft?.sourceTransactionIds.join(",") ?? "manual"}`} data={data} initial={editingCheck} draft={editingCheck ? null : checkDraft} onCancel={() => { setCreatingCheck(false); setEditingCheck(null); setCheckDraft(null); }} onDone={(nextNotice) => { setNotice(nextNotice); setCreatingCheck(false); setEditingCheck(null); setCheckDraft(null); }} /> : null}
-          {focusedCheckId ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] pb-3 text-sm"><span>Showing the payroll check opened from the financial report.</span><Link className="font-semibold text-[var(--color-primary)] hover:underline" href={`/masser?view=checks&month=${data.month}`}>Show all checks</Link></div> : null}
-          {!focusedCheckId && data.payrollCheckCounts.total > data.payrollChecks.length ? <p className="mb-3 text-sm text-[var(--color-ink-soft)]">Showing {data.payrollChecks.length.toLocaleString()} of {data.payrollCheckCounts.total.toLocaleString()} payroll checks. Checks needing review appear first.</p> : null}
-          {data.payrollChecks.length === 0 ? (
-            <EmptyState compact title={focusedCheckId ? "This payroll check is not available" : "No payroll checks recorded"} />
+          {canManageChecks && (creatingCheck || editingCheck) ? <PayrollCheckForm key={editingCheck?.id ?? `new-check:${checkDraft?.employeeId ?? "blank"}:${checkDraft?.sourceTransactionIds.join(",") ?? "manual"}`} data={data} initial={editingCheck} draft={editingCheck ? null : checkDraft} onCancel={() => { setCreatingCheck(false); setEditingCheck(null); setCheckDraft(null); }} onDone={(nextNotice, id) => { setNotice(nextNotice); setCreatingCheck(false); setEditingCheck(null); setCheckDraft(null); retainSavedCheck(id); }} /> : null}
+          <form key={`${checkPage.search}:${checkPage.status}`} role="search" aria-label="Find payroll checks" onSubmit={searchChecks} className="flex flex-wrap items-end gap-3 border-b border-[var(--color-rule)] p-4">
+            <label className={`${labelClass} min-w-48 flex-1`}>Search checks
+              <input name="checkSearch" defaultValue={checkPage.search} maxLength={250} placeholder="Employee, check number, or source reference" className={inputClass} />
+            </label>
+            <label className={`${labelClass} w-full sm:w-44`}>Check status
+              <select name="checkStatus" aria-label="Check status" defaultValue={checkPage.status} className={inputClass}>
+                <option value="all">All statuses</option><option value="unverified">Needs review</option><option value="verified">Verified</option><option value="void">Void</option>
+              </select>
+            </label>
+            <button type="submit" className="btn btn-secondary">Search checks</button>
+            {checkPage.search || checkPage.status !== "all" || focusedCheckId ? <Link className="btn btn-secondary" href={`/masser?view=checks&month=${data.month}`}>Clear filters</Link> : null}
+          </form>
+          {focusedCheckId ? <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-rule)] p-4 text-sm"><span>Showing the selected payroll check.</span><Link className="font-semibold text-[var(--color-primary)] hover:underline" href={checkListHref(1)}>Show all checks</Link></div> : <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-sm">
+            <p role="status" className="text-[var(--color-ink-soft)]">Showing {data.payrollChecks.length ? ((checkPage.page - 1) * checkPage.pageSize + 1).toLocaleString() : "0"}–{((checkPage.page - 1) * checkPage.pageSize + data.payrollChecks.length).toLocaleString()} of {checkPage.total.toLocaleString()} matching checks. Checks needing review appear first.</p>
+            <nav aria-label="Payroll check pages" className="flex items-center gap-2">
+              {checkPage.page > 1 ? <Link className="btn btn-sm btn-secondary" href={checkListHref(checkPage.page - 1)} scroll={false}>Previous checks</Link> : null}
+              <span>Page {checkPage.page} of {Math.max(1, Math.ceil(checkPage.total / checkPage.pageSize)).toLocaleString()}</span>
+              {checkPage.page * checkPage.pageSize < checkPage.total ? <Link className="btn btn-sm btn-secondary" href={checkListHref(checkPage.page + 1)} scroll={false}>Next checks</Link> : null}
+            </nav>
+          </div>}
+          {checkPage.retainedCheck ? <p className="px-4 pb-3 text-sm text-[var(--color-primary)]">Your saved check is kept at the top because it is outside this page or filter. <Link href={checkListHref(checkPage.page)} className="font-semibold hover:underline">Dismiss saved check</Link></p> : null}
+          {displayedChecks.length === 0 ? (
+            <EmptyState compact title={focusedCheckId ? "This payroll check is not available" : checkPage.search || checkPage.status !== "all" ? "No checks match these filters" : "No payroll checks recorded"} />
           ) : (
             <div className="overflow-x-auto">
-              <table className="touch-table w-full min-w-[760px] text-sm">
+              <table className="touch-table w-full min-w-[760px] text-sm" aria-label="Payroll checks">
                 <thead className="border-b border-[var(--color-rule)] bg-[var(--color-surface-muted)] text-xs text-[var(--color-ink-soft)]">
                   <tr>
                     <th className="px-4 py-2.5 text-left">Employee / check</th>
@@ -597,12 +662,12 @@ export default function CollectionsWorkspace({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--color-rule)]">
-                  {data.payrollChecks.map((row) => (
+                  {displayedChecks.map((row) => (
                     <tr
                       id={`payroll-check-${row.id}`}
                       key={row.id}
-                      aria-current={row.id === focusedCheckId ? "true" : undefined}
-                      className={row.id === focusedCheckId ? "bg-[var(--color-primary-soft)]" : row.verificationStatus === "unverified" ? "bg-[var(--color-warn-soft)]" : undefined}
+                      aria-current={row.id === currentCheckId ? "true" : undefined}
+                      className={row.id === currentCheckId ? "bg-[var(--color-primary-soft)]" : row.verificationStatus === "unverified" ? "bg-[var(--color-warn-soft)]" : undefined}
                     >
                       <td className="px-4 py-3">
                         <p className="font-medium">{row.employeeName}</p>
@@ -619,7 +684,7 @@ export default function CollectionsWorkspace({
                           </Link>
                         ) : (
                           <span>{row.linkedTransactions} {row.linkedTransactions === 1 ? "row" : "rows"}</span>
-                        ) : "-"}
+                        ) : <span className="text-xs text-[var(--color-ink-soft)]">No linked services{row.verificationStatus !== "void" && canSeeTransactions ? <Link href={`/transactions?view=rows&employeeId=${row.employeeId}`} className="mt-1 block font-semibold text-[var(--color-primary)] hover:underline">Review employee services</Link> : null}</span>}
                       </td>
                       <td className="px-3 py-3">
                         <span className={`inline-flex items-center gap-1 text-xs font-semibold ${row.verificationStatus === "verified" ? "text-[var(--color-success)]" : "text-[var(--color-warn)]"}`}>
@@ -632,7 +697,7 @@ export default function CollectionsWorkspace({
                           <div className="flex justify-end gap-1">
                             {row.verificationStatus === "unverified" ? (
                               <button type="button" disabled={verifyingCheckId !== null || !row.actualGross || !row.actualNet} title={!row.actualGross ? "Add actual gross so withholding can be calculated." : undefined} onClick={() => void verifyCheck(row)} className="btn btn-sm btn-primary whitespace-nowrap">
-                                {verifyingCheckId === row.id ? "Verifying..." : "Verify & calculate"}
+                                {verifyingCheckId === row.id ? "Verifying..." : "Verify check"}
                               </button>
                             ) : null}
                             <button type="button" title="Edit payroll check" onClick={() => { setCheckDraft(null); setCreatingCheck(false); setEditingCheck(row); }} className="icon-button">
