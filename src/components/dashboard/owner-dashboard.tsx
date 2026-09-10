@@ -413,7 +413,7 @@ function OwnerQuickActions() {
     },
     {
       href: "/masser",
-      label: "Open Masser",
+      label: "Open Money",
       detail: "Collect, pay, or put away money.",
       icon: HandCoins,
     },
