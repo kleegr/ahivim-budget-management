@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { readFile } from "node:fs/promises";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, LINKED_INDIVIDUAL_ID, PRIMARY_CALCULATION_ACCOUNT } from "./fixtures";
 
 async function signIn(page: Page) {
@@ -33,6 +34,13 @@ test("one transaction investigation retains dates and selected services across a
   await page.getByRole("tab", { name: "Recorded services", exact: true }).click();
   await page.getByRole("tab", { name: "Recorded services", exact: true }).press("ArrowRight");
   await expect(page.getByRole("tab", { name: "Payroll checks", exact: true })).toHaveAttribute("aria-selected", "true");
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "CSV", exact: true }).click();
+  const downloaded = await download;
+  const csv = await readFile((await downloaded.path())!, "utf8");
+  expect(csv).toContain("Linked Individual");
+  expect(csv).not.toContain("Unlinked Individual");
+  expect(csv).toContain("Recorded services");
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
   await testInfo.attach("transactions-shared-scope-mobile", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
@@ -104,7 +112,6 @@ test("calendar context survives create, reopen and a move to another day", async
   await expect(dialog.getByLabel("Date", { exact: true })).toHaveValue("2026-09-14");
   await dialog.getByLabel("Start", { exact: true }).fill("06:00");
   await dialog.getByLabel("End", { exact: true }).fill("08:00");
-  await dialog.getByLabel("Notes", { exact: true }).fill("Synthetic report persistence journey");
   const saved = page.waitForResponse(r => new URL(r.url()).pathname === "/api/schedule/sessions" && r.request().method() === "POST");
   await dialog.getByRole("button", { name: "Add session", exact: true }).click();
   const created = await saved;
@@ -113,16 +120,18 @@ test("calendar context survives create, reopen and a move to another day", async
   await expect(dialog).toHaveCount(0);
   await page.getByRole("link", { name: "View saved visit", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "Session", exact: true });
-  await expect(dialog).toContainText("Synthetic report persistence journey");
+  await expect(dialog).toContainText("06:00–08:00");
   await dialog.getByRole("button", { name: "Reschedule", exact: true }).click();
   await dialog.getByLabel("Date", { exact: true }).fill("2026-09-15");
+  await dialog.getByPlaceholder("Add a reason for an exception").fill("Synthetic report verification move");
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await page.getByRole("link", { name: "View saved visit", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Session", exact: true })).toContainText("06:00–08:00");
   await page.reload();
   expect(new URL(page.url()).searchParams.get("date")).toBe("2026-09-15");
   const sessions = (await (await page.request.get(`/api/schedule/sessions?from=2026-09-15&to=2026-09-15&individualId=${LINKED_INDIVIDUAL_ID}`)).json()).data.sessions;
   expect(sessions.find((session: { id: string }) => session.id === id)).toMatchObject({ sessionDate: "2026-09-15", durationHours: "2.0000" });
-  await expect(page.getByRole("dialog", { name: "Session", exact: true })).toContainText("Synthetic report persistence journey");
+  await expect(page.getByRole("dialog", { name: "Session", exact: true })).toContainText("06:00–08:00");
   await testInfo.attach("schedule-persisted-session", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
 });

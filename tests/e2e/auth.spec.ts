@@ -16,6 +16,9 @@ const WORKSPACES: { path: string; title: RegExp; heading: RegExp }[] = [
   { path: "/reports", title: /Reports - Ahivim Budget Management/, heading: /^Reports$/ },
   { path: "/schedule", title: /Schedule - Ahivim/, heading: /^Scheduling$/ },
   { path: "/employees", title: /Employees — Ahivim Budget Management/, heading: /^Employees$/ },
+  { path: "/classes", title: /Classes - Ahivim/, heading: /^Classes$/ },
+  { path: "/documents", title: /Documents - Ahivim/, heading: /^Document library$/ },
+  { path: "/masser?month=2026-09", title: /Money - Ahivim/, heading: /^Money$/ },
 ];
 
 async function signIn(page: Page): Promise<void> {

@@ -78,7 +78,7 @@ test('People working flow retains bulk selection, shows separate program overrun
     await page.waitForURL(url => !url.searchParams.has('programScope'), { waitUntil: 'load' });
     await expect(page.getByRole('tab', { name: outside.name, exact: true })).toHaveCount(0);
     await page.getByRole('tab', { name: secondary.name, exact: true }).click();
-    await page.getByText('Previous workers and actual work', { exact: true }).click();
+    await page.getByRole('tabpanel', { name: secondary.name, exact: true }).getByText('Previous workers and actual work', { exact: true }).click();
     await page.locator(`a[href*="programId=${secondary.id}"][href*="newAssignment=1"][href*="employeeId=${employeeId}"]`).click();
     const assignment = page.getByRole('dialog', { name: 'New assignment', exact: true });
     await expect(assignment.getByRole('combobox', { name: 'Employee', exact: true })).toHaveValue(employeeId);
@@ -97,7 +97,7 @@ test('People working flow retains bulk selection, shows separate program overrun
     expect(duplicate.status()).toBe(409);
     await page.goto(`/individuals/${ids[0]}`);
     await page.getByRole('tab', { name: secondary.name, exact: true }).click();
-    await page.getByText('Previous workers and actual work', { exact: true }).click();
+    await page.getByRole('tabpanel', { name: secondary.name, exact: true }).getByText('Previous workers and actual work', { exact: true }).click();
     await expect(page.locator(`a[href*="programId=${secondary.id}"]`).filter({ hasText: 'Open existing assignment' })).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByRole('region', { name: 'Monthly actuals and remaining plan' }).first()).toBeVisible();

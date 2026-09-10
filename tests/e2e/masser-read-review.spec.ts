@@ -157,10 +157,27 @@ test.describe.serial("Masser retained source-review balances across actual route
     expect(response?.status()).toBe(200);
     const main = page.locator("#main");
     await expect(main.getByText("688 payroll checks need confirmation.", { exact: false })).toBeVisible();
-    await expect(main.getByText("Showing 100 of 688 payroll checks.", { exact: false })).toBeVisible();
+    await expect(main.getByText("Showing 1–50 of 688 matching checks.", { exact: false })).toBeVisible();
     const rows = main.locator("#collections-panel-checks tbody > tr");
-    await expect(rows).toHaveCount(100);
+    await expect(rows).toHaveCount(50);
     await expect(rows.first()).toContainText(MASSER_REVIEW_EMPLOYEE_NAME);
+    const seenChecks = new Set<string>();
+    for (let pageNumber = 1; pageNumber <= 14; pageNumber++) {
+      await expect(rows).toHaveCount(pageNumber === 14 ? 38 : 50);
+      const checks = await rows.evaluateAll(elements => elements.map(element => ({ id: element.id, text: element.textContent ?? "" })));
+      for (const check of checks) {
+        expect(check.text).toContain(MASSER_REVIEW_EMPLOYEE_NAME);
+        expect(seenChecks.has(check.id)).toBe(false);
+        seenChecks.add(check.id);
+      }
+      if (pageNumber < 14) {
+        await main.getByRole("link", { name: "Next checks", exact: true }).click();
+        await expect(page).toHaveURL(url => url.searchParams.get("checkPage") === String(pageNumber + 1));
+        await expect(main.getByText(`Showing ${pageNumber * 50 + 1}–`, { exact: false })).toBeVisible();
+      }
+    }
+    expect(seenChecks.size).toBe(688);
+    await expect(main.getByRole("link", { name: "Next checks", exact: true })).toHaveCount(0);
     const html = await response!.text();
     expect(html).not.toContain("E2E-REVIEW-hidden-");
     expect(html).not.toContain("Unlinked Employee");

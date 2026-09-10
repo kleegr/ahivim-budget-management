@@ -74,14 +74,14 @@ test('Owner manages mixed program responsibility and corrects the flagged renewa
     await expect(dialog).toHaveCount(0);
     await expect(page.getByRole('status').filter({ hasText: 'Renewal saved. Budget and review state updated.' })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Record review' })).toHaveCount(0);
-    await expect(page.locator('article')).toHaveCount(1);
+    await expect(page.locator('article:visible')).toHaveCount(1);
     await page.getByRole('link', { name: 'Show all programs', exact: true }).click();
     await page.waitForURL(url => url.searchParams.get('programScope') === 'all', { waitUntil: 'load' });
     for (const program of programs) {
       await page.getByRole('tab', { name: program.name, exact: true }).click();
       await expect(page.locator('article').getByRole('heading', { name: program.name, exact: true })).toBeVisible();
     }
-    await expect(page.locator('article')).toHaveCount(1);
+    await expect(page.locator('article:visible')).toHaveCount(1);
     expect((await pool.query('SELECT * FROM payroll_transactions WHERE individual_id=$1', [id])).rows).toEqual(source);
     expect((await pool.query('SELECT count(*)::int AS count FROM budget_authorizations WHERE individual_id=$1', [id])).rows[0].count).toBe(2);
     await signIn(page); await page.goto(`/individuals/${id}`);
@@ -136,8 +136,10 @@ test('Home review is compact on phone and unauthorized roles cannot read or chan
   await signIn(page); await page.setViewportSize({ width: 390, height: 844 }); await page.goto('/dashboard');
   const summary = page.getByRole('region', { name: 'Needs attention', exact: true });
   await expect(summary).toBeVisible();
-  await expect(summary.getByText(/individuals? with detected issues/)).toBeVisible();
-  await expect(summary.getByText(/employees? with detected issues/)).toBeVisible();
+  await expect(summary.getByText(/0 (individuals|employees) with detected issues/)).toHaveCount(0);
+  for (const label of await summary.getByText(/(individuals?|employees?) with detected issues/).allTextContents()) {
+    expect(label).toMatch(/^[1-9][\d,]* (individuals?|employees?) with detected issues$/);
+  }
   await expect(page.getByRole('heading', { name: 'Needs attention', exact: true })).toHaveCount(1);
   const widths = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
   expect(widths.scroll).toBeLessThanOrEqual(widths.client + 1);

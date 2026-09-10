@@ -342,7 +342,7 @@ for (const account of [planner, staffing]) {
         await expect(history.getByRole("row").filter({ hasText: "Superseded" })).toContainText("12");
         await expect(history.getByRole("row").filter({ hasText: "Active" })).toContainText("16");
         await page.getByText("Monthly authorization trend", { exact: false }).click();
-        await expect(page.locator("details[open]").filter({ has: page.locator("summary", { hasText: "Monthly authorization trend" }) }).getByRole("table")).toBeVisible();
+        await expect(page.locator("details[open]").filter({ has: page.locator(":scope > summary", { hasText: "Monthly authorization trend" }) }).getByRole("table")).toBeVisible();
         await page.getByRole("button", { name: "Cancel authorization", exact: true }).click();
         dialog = page.getByRole("dialog", { name: "Cancel authorization - reason" });
         await dialog.getByLabel("Reason for this change").fill("End the acceptance authorization after history review");

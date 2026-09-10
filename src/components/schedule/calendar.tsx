@@ -98,7 +98,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
   const loadRequestId = useRef(0);
   const initialSessionIdRef = useRef(initialSessionId ?? null);
   const linkedSessionId = searchParams.get("sessionId");
-  useEffect(() => { initialSessionIdRef.current = linkedSessionId; }, [linkedSessionId]);
+  useEffect(() => { initialSessionIdRef.current = linkedSessionId; }, [linkedSessionId, anchor]);
 
   const range = useMemo(() => {
     if (view === "day") return { from: anchor, to: anchor };
@@ -244,7 +244,12 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
 
   return (
     <div className="space-y-4">
-      {savedHref ? <p role="status" className="notice notice-success">Schedule saved. <Link className="link" href={savedHref}>View saved visit</Link></p> : null}
+      {savedHref ? <p role="status" className="notice notice-success">Schedule saved. <Link className="link" href={savedHref} onClick={() => {
+        const target = new URL(savedHref, window.location.origin);
+        initialSessionIdRef.current = target.searchParams.get("sessionId");
+        const savedSession = sessions.find((session) => session.id === initialSessionIdRef.current && session.sessionDate === target.searchParams.get("date"));
+        if (savedSession) openSession(savedSession);
+      }}>View saved visit</Link></p> : null}
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="segmented-control" role="group" aria-label="Calendar view">
