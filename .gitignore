@@ -18,6 +18,7 @@ public/tesseract/
 test-results/
 playwright-report/
 .playwright/
+.e2e-document-storage/
 
 # Never commit source workbooks or any real payroll data
 *.xlsx

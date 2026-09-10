@@ -12,6 +12,7 @@ function data(): CollectionsWorkspaceData {
       approvedMonthlyPlan: "200.0000", setAsideThisMonth: "20.0000", remainingSetAside: "0.0000",
       activePlans: 1, trackedPlans: 1, actionablePlans: 0, reviewRequiredPlans: 1, missingRenewalPlans: 0 }],
     targets: [], payrollChecks: [], payrollCheckCounts: { total: 0, unverified: 0 },
+    payrollCheckPage: { page: 1, pageSize: 50, total: 0, search: "", status: "all", retainedCheck: null },
     visibility: { canSeeTargetMoney: true, canSeeTargetHours: true, canSeeCheckGross: true, canSeeCheckNet: true, canSeeTaxes: true },
     summary: { dueFromChecks: "0.0000", collectedThisMonth: "0.0000", remainingReceivable: "0.0000",
       approvedMonthlySetAside: "200.0000", setAsideThisMonth: "20.0000" } };
@@ -76,14 +77,30 @@ describe("Masser source review and check-count display", () => {
   });
   it("shows the full scoped count and identifies the displayed slice rather than claiming only 100 need review", () => {
     const value = data(); value.payrollCheckCounts = { total: 688, unverified: 688 };
-    value.payrollChecks = Array.from({ length: 100 }, (_, i): PayrollCheckRow => ({
+    value.payrollCheckPage.total = 688;
+    value.payrollChecks = Array.from({ length: 50 }, (_, i): PayrollCheckRow => ({
       id: `synthetic-check-${i}`, employeeId: "synthetic-employee", employeeName: "Synthetic employee",
       checkNumber: `${i}`, checkDate: null, periodBegin: null, periodEnd: null, actualGross: "100.0000",
       actualNet: "80.0000", taxWithheld: null, source: "import", sourceRef: null, verificationStatus: "unverified",
       notes: null, linkedTransactions: 0, transactionIds: [], updatedAt: "2026-09-08T00:00:00Z",
     }));
     const html = render(value, { checks: true });
-    expect(html).toContain("688 payroll checks need"); expect(html).toContain("Showing 100 of 688 payroll checks");
+    expect(html).toContain("688 payroll checks need"); expect(html).toContain("Showing 1–50 of 688 matching checks");
+    expect(html).toContain("Next checks"); expect(html).toContain("checkPage=2");
+    expect(html).toContain("Search checks"); expect(html).toContain("Check status");
     expect(html).not.toContain("100 imported checks need");
+  });
+  it("shows a saved verified check outside the selected review page without counting it twice", () => {
+    const value = data();
+    value.payrollCheckPage = { page: 2, pageSize: 50, total: 88, search: "Smith", status: "unverified",
+      retainedCheck: { id: "saved-check", employeeId: "employee-scope", employeeName: "Saved Smith",
+        checkNumber: "past-page-check", checkDate: "2026-09-01", periodBegin: null, periodEnd: null,
+        actualGross: "100", actualNet: "80", taxWithheld: "20", source: "manual", sourceRef: null,
+        verificationStatus: "verified", notes: null, linkedTransactions: 0, transactionIds: [], updatedAt: "2026-09-01" } };
+    const html = render(value, { checks: true });
+    expect(html).toContain("Your saved check is kept at the top"); expect(html).toContain("past-page-check");
+    expect(html).toContain("No linked services"); expect(html).toContain("Review employee services");
+    expect(html).toContain("employeeId=employee-scope");
+    expect(html).toContain("checkSearch=Smith&amp;checkStatus=unverified");
   });
 });

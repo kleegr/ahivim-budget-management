@@ -50,6 +50,7 @@ const appServer = {
     TEST_DATABASE_URL: TEST_DB_URL,
     ...(useWsProxy ? { NEON_WS_PROXY: `127.0.0.1:${WS_PROXY_PORT}` } : {}),
     AUTH_SECRET: "test-e2e-secret-0123456789",
+    ...(useWsProxy ? { AHIVIM_TEST_DOCUMENT_STORAGE_DIR: path.join(__dirname, ".e2e-document-storage") } : {}),
     AHIVIM_E2E_SOURCE_PRELOAD: "ALLOW_SYNTHETIC_SHEET_READ",
     PORT: "3000",
   },

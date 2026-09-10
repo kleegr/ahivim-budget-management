@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { MoveHorizontal, PanelRightOpen, X } from "lucide-react";
-import { formatMoney, formatHours } from "@/lib/money";
+import { dec, formatMoney, formatHours } from "@/lib/money";
 import type { GridTransaction } from "@/lib/data/transactions-grid";
 import { importCorrectionsHref, individualBudgetHref } from "@/lib/nav/review-actions";
 import { ACTIVITY_NEXT_STEP_LABELS, activityNextStep } from "@/lib/transactions/activity-state";
@@ -16,6 +16,7 @@ import SortMenu from "@/components/data-grid/sort-menu";
 import { formatCell } from "@/components/data-grid/engine";
 import { isNumericKind, type ColumnDef, type FilterState } from "@/components/data-grid/types";
 import PeriodControl, { type PeriodRange } from "@/components/period-control";
+import { InvestigationCheckDates } from "@/components/transactions/investigation-scope";
 import type { TransactionFieldVisibility } from "@/lib/auth/money-redaction";
 import { hasInitialTransactionDateContext } from "@/lib/transactions/initial-filters";
 
@@ -46,7 +47,7 @@ const VERIFICATION_LABEL: Record<string, string> = {
    calculation and audit fields remain in this list with hidden:true, so they
    stay available through the column chooser, saved views and exports. */
 
-const COLUMNS: ColumnDef<GridTransaction>[] = [
+export const TRANSACTION_COLUMNS: ColumnDef<GridTransaction>[] = [
   { key: "serviceDate", label: "Service date", kind: "date", width: 110, accessor: (r) => r.serviceDate ?? null },
   { key: "payTo", label: "Pay to", kind: "text", width: 150, frozen: true, hidden: true, accessor: (r) => r.payTo },
   { key: "checkDate", label: "Check date", kind: "date", width: 110, hidden: true, accessor: (r) => r.checkDate },
@@ -86,7 +87,8 @@ const COLUMNS: ColumnDef<GridTransaction>[] = [
         text
       ),
   },
-  { key: "hours", label: "Hours", kind: "hours", width: 80, accessor: (r) => r.hours },
+  { key: "hours", label: "Imported hours", kind: "hours", width: 110, accessor: (r) => r.hours },
+  { key: "creditedBudgetHours", label: "Credited budget hours", kind: "hours", width: 145, hidden: true, accessor: (r) => r.creditedBudgetHours ?? null },
   { key: "rate", label: "Funder rate", kind: "money", width: 105, hidden: true, accessor: (r) => r.rate },
   { key: "gross", label: "Funder billed", kind: "money", width: 120, accessor: (r) => r.gross },
   { key: "employeeRate", label: "Employee rate", kind: "money", width: 115, hidden: true, accessor: (r) => r.employeeRate ?? null },
@@ -115,9 +117,9 @@ const COLUMNS: ColumnDef<GridTransaction>[] = [
 // width and hidden state from these (it reads initialHidden, not column.hidden),
 // so the default-visible set and the resize baseline are preserved exactly.
 const INITIAL_WIDTHS: Record<string, number> = Object.fromEntries(
-  COLUMNS.map((c) => [c.key, c.width ?? 120] as const),
+  TRANSACTION_COLUMNS.map((c) => [c.key, c.width ?? 120] as const),
 );
-const INITIAL_HIDDEN: string[] = COLUMNS.filter((c) => c.hidden).map((c) => c.key);
+const INITIAL_HIDDEN: string[] = TRANSACTION_COLUMNS.filter((c) => c.hidden).map((c) => c.key);
 
 const colWidth = (widths: Record<string, number>, c: ColumnDef<GridTransaction>): number =>
   widths[c.key] ?? c.width ?? 120;
@@ -142,6 +144,7 @@ export default function TransactionsGrid({
   canSeeBudgets = true,
   initialFilters,
   contextLabel,
+  scope,
 }: {
   rows: GridTransaction[];
   canManage: boolean;
@@ -150,6 +153,7 @@ export default function TransactionsGrid({
   canSeeBudgets?: boolean;
   initialFilters?: FilterState;
   contextLabel?: string | null;
+  scope?: { filters: FilterState; search: string; onChange: (next: { filters: FilterState; search: string }) => void };
 }) {
   const fields = useMemo<TransactionFieldVisibility>(() => visibility ?? ({
     canSeeMoney,
@@ -165,8 +169,9 @@ export default function TransactionsGrid({
   // Disallowed fields are absent from the column chooser and export payload as
   // well as redacted from the server-provided rows.
   const columns = useMemo(
-    () => COLUMNS.filter((column) => {
+    () => TRANSACTION_COLUMNS.filter((column) => {
       if (column.key === "hours") return fields.canSeeHours;
+      if (column.key === "creditedBudgetHours") return canSeeBudgets && fields.canSeeHours;
       if (column.key === "rate" || column.key === "gross") return fields.canSeeBilledAmounts;
       if (column.key === "employeeRate" || column.key === "internalAmount") return fields.canSeeEmployeeAmounts;
       if (column.key === "agencyAdditional") return fields.canSeeAgencySpread;
@@ -177,7 +182,7 @@ export default function TransactionsGrid({
       if (column.key === "withholding") return fields.canSeeTaxes;
       return true;
     }),
-    [fields],
+    [fields, canSeeBudgets],
   );
 
   // Reveal any column that arrives pre-filtered (e.g. a budget drill-through seeds
@@ -187,6 +192,7 @@ export default function TransactionsGrid({
   const hasFixedDateContext = hasInitialTransactionDateContext(initialFilters);
 
   const grid = useGrid<GridTransaction, GridTotals>({
+    scope,
     rows,
     columns,
     gridKey: "transactions",
@@ -354,6 +360,10 @@ export default function TransactionsGrid({
 
   return (
     <div className="space-y-3">
+      {canSeeBudgets && fields.canSeeHours && grid.filtered.some((row) => row.creditedBudgetHours != null) ? <details className="rounded-lg border border-[var(--color-rule)] px-3 py-2 text-sm">
+        <summary className="cursor-pointer">{formatHours(grid.filtered.reduce((sum, row) => sum.plus(row.creditedBudgetHours ?? 0), dec(0)))} credited budget hours · {formatHours(grid.totals?.hours ?? "0")} imported hours{grid.filtered.some((row) => row.creditedBudgetHours == null) ? " · credit subtotal, some authorizations unavailable" : ""}</summary>
+        <p className="mt-2 text-xs text-[var(--color-ink-soft)]">Budget credit follows each authorization&apos;s rules. Confirmed group services give each individual full credit; other group programs can use employee base divided by the authorization rate. Open a service for its calculation. Imported hours come from the source and do not necessarily equal the employee&apos;s physical working time.</p>
+      </details> : null}
       {contextLabel ? (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--color-primary)] bg-[var(--color-primary-tint)] px-3 py-2 text-sm">
           <span className="text-[var(--color-ink)]">
@@ -366,7 +376,7 @@ export default function TransactionsGrid({
       ) : null}
       {/* A contextual date link already defines the reporting basis. Showing a
           separate check-date picker would misleadingly say "All time" or mix dates. */}
-      {hasFixedDateContext ? null : <PeriodControl onChange={applyPeriod} paramKey="period" />}
+      {scope ? <InvestigationCheckDates scope={scope} /> : hasFixedDateContext ? null : <PeriodControl onChange={applyPeriod} paramKey="period" />}
       <div role="group" aria-label="Transaction task views" className="flex flex-wrap gap-2">
         {([
           ["Service review", ["serviceDate", "individual", "program", "employee", "hours", "gross", "internalAmount", "agencyAdditional"], "serviceDate"],
@@ -740,7 +750,9 @@ function DetailDrawer({
         {line("Check #", row.checkNumber ?? "—")}
         {line("Program", row.program ?? "—")}
         {line("Pay to", row.payTo ?? "—")}
-        {visibility.canSeeHours ? line("Hours", hasAmount(row.hours) ? formatHours(row.hours) : "—") : null}
+        {visibility.canSeeHours ? line("Imported hours", hasAmount(row.hours) ? formatHours(row.hours) : "—") : null}
+        {canSeeBudgets && row.creditedBudgetHours != null ? line("Credited budget hours", formatHours(row.creditedBudgetHours)) : null}
+        {canSeeBudgets && row.creditedBudgetHours != null ? <p className="mt-2 text-xs text-[var(--color-ink-soft)]">{row.budgetCreditBasis}{row.budgetCreditBasis === "Employee base divided by authorization rate" && row.internalAmount != null && row.budgetCreditRate != null ? `: ${formatMoney(row.internalAmount)} / ${formatMoney(row.budgetCreditRate)} = ${formatHours(row.creditedBudgetHours)} h` : ""}. Physical working hours are tracked separately.</p> : null}
         {visibility.canSeeBilledAmounts ? line("Funder rate", hasAmount(row.rate) ? formatMoney(row.rate) : "—") : null}
         {visibility.canSeeBilledAmounts ? line("Funder billed", hasAmount(row.gross) ? formatMoney(row.gross) : "—") : null}
         {visibility.canSeeEmployeeAmounts ? line("Employee rate", hasAmount(row.employeeRate) ? formatMoney(row.employeeRate) : "—") : null}

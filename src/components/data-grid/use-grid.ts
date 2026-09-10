@@ -24,6 +24,8 @@ import {
 } from "./engine";
 
 export interface UseGridOptions<Row, Totals> {
+  /** A workspace can keep one investigation scope across several perspectives. */
+  scope?: { filters: FilterState; search: string; onChange: (next: { filters: FilterState; search: string }) => void };
   rows: Row[];
   columns: ColumnDef<Row>[];
   gridKey: string;
@@ -108,9 +110,23 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
     [o.searchKeys, o.columns],
   );
 
-  const [filters, setFilters] = useState<FilterState>(() => ({ ...(o.initialFilters ?? {}) }));
+  const [localFilters, setLocalFilters] = useState<FilterState>(() => ({ ...(o.initialFilters ?? {}) }));
   const [sort, setSort] = useState<SortState>(initialSort);
-  const [search, setSearch] = useState(o.initialSearch ?? "");
+  const [localSearch, setLocalSearch] = useState(o.initialSearch ?? "");
+  const scopeRef = useRef(o.scope);
+  scopeRef.current = o.scope;
+  const filters = o.scope?.filters ?? localFilters;
+  const search = o.scope?.search ?? localSearch;
+  const setFilters = useCallback((next: FilterState | ((current: FilterState) => FilterState)) => {
+    const scope = scopeRef.current;
+    if (scope) scope.onChange({ search: scope.search, filters: typeof next === "function" ? next(scope.filters) : next });
+    else setLocalFilters(next);
+  }, []);
+  const setSearch = useCallback((next: string) => {
+    const scope = scopeRef.current;
+    if (scope) scope.onChange({ filters: scope.filters, search: next });
+    else setLocalSearch(next);
+  }, []);
   const [hidden, setHidden] = useState<Set<string>>(() => new Set(o.initialHidden ?? []));
   const [order, setOrder] = useState<string[]>(() => o.columns.map((c) => c.key));
   const [widths, setWidths] = useState<Record<string, number>>(() => ({ ...(o.initialWidths ?? {}) }));
@@ -149,12 +165,13 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
       }
       return { ...prev, [key]: { ...prev[key], ...patch } };
     });
-  }, []);
+  }, [setFilters]);
 
   const clearFilters = useCallback(() => {
+    if (scopeRef.current) { scopeRef.current.onChange({ filters: {}, search: "" }); return; }
     setFilters({});
     setSearch("");
-  }, []);
+  }, [setFilters, setSearch]);
 
   const toggleSort = useCallback((key: string, additive: boolean) => {
     setSort((prev) => toggleSortState(prev, key, additive));
@@ -242,9 +259,9 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
 
   const applyView = useCallback(
     (cfg: GridViewConfig) => {
-      setFilters(cfg.filters ?? {});
+      if (scopeRef.current) scopeRef.current.onChange({ filters: cfg.filters ?? {}, search: cfg.search ?? "" });
+      else { setFilters(cfg.filters ?? {}); setSearch(cfg.search ?? ""); }
       setSort(cfg.sort ?? []);
-      setSearch(cfg.search ?? "");
       onApplyExternalConfig?.(cfg.external ?? {});
       if (o.serializeHidden) {
         setHidden(new Set(cfg.hidden ?? []));
@@ -252,7 +269,7 @@ export function useGrid<Row, Totals = unknown>(o: UseGridOptions<Row, Totals>): 
       }
       if (o.serializeWidths && cfg.widths) setWidths({ ...(o.initialWidths ?? {}), ...cfg.widths });
     },
-    [onApplyExternalConfig, o.serializeHidden, o.serializeWidths, o.initialWidths, o.columns],
+    [onApplyExternalConfig, o.serializeHidden, o.serializeWidths, o.initialWidths, o.columns, setFilters, setSearch],
   );
 
   const saveView = useCallback(

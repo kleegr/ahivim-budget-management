@@ -36,7 +36,7 @@ export default function BulkResponsibilityDialog({ ids, selectionLabel }: { ids:
   };
   return <><button type="button" className="btn btn-sm btn-primary" disabled={ids.length === 0} onClick={() => { const chosen = [...ids]; setFrozenIds(chosen); setOpen(true); void preview(chosen); }}>Bulk update responsibilities</button>
     {open ? <ModalShell title="Bulk update responsibilities" onClose={() => { if (!busy) setOpen(false); }}>
-      <p className="text-sm">{selectionLabel}: <strong>{frozenIds.length} frozen people</strong>. Only the fields chosen below change. {frozenIds.length > 100 ? `${Math.ceil(frozenIds.length / 100)} atomic batches of up to 100 people will be saved in order. A failed batch leaves that whole batch unchanged; completed batches are reported separately.` : "This selection is saved atomically."}</p>
+      <p className="text-sm">{selectionLabel}: <strong>{frozenIds.length} selected people</strong>. Only the fields chosen below change. {frozenIds.length > 100 ? `${Math.ceil(frozenIds.length / 100)} groups of up to 100 people will be saved in order. A failed batch leaves that whole batch unchanged; completed batches are reported separately.` : "These people are saved together. If saving fails, none of these changes are applied."}</p>
       <fieldset disabled={busy || submitted} className="my-4 space-y-3" onChange={() => setConfirmed(false)}>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={general} onChange={(event) => setGeneral(event.target.checked)} />Change general budget responsibility</label>
         <div><p className="mb-1 text-sm font-medium">Also change these specific program overrides</p><SearchableSelect label="programs" multiple values={selectedPrograms} onValuesChange={(next) => { setSelectedPrograms(next); setConfirmed(false); }} options={programs.map((program) => ({ value: program.id, label: program.name }))} /></div>
@@ -57,7 +57,7 @@ export default function BulkResponsibilityDialog({ ids, selectionLabel }: { ids:
             saved += result.data.count;
           }
           setMessage(`Saved ${saved} people. Selection and filters are retained.`); setConfirmed(false); router.refresh();
-        } catch (error) { setMessage(`${saved} people saved in completed batches; other batches are unchanged. ${error instanceof Error ? error.message : "Could not save."} Retry uses the same frozen selection and will not duplicate completed batches.`); } finally { setBusy(false); }
-      }}>{busy ? "Working…" : "Save this batch once"}</button><button type="button" disabled={busy} className="btn btn-secondary" onClick={() => void preview(frozenIds)}>Refresh stale preview</button></div>
+        } catch (error) { setMessage(`${saved} people saved in completed batches; other batches are unchanged. ${error instanceof Error ? error.message : "Could not save."} Retry uses the same selected people and will not duplicate completed batches.`); } finally { setBusy(false); }
+      }}>{busy ? "Working…" : "Save changes"}</button><button type="button" disabled={busy} className="btn btn-secondary" onClick={() => void preview(frozenIds)}>Refresh preview</button></div>
     </ModalShell> : null}</>;
 }

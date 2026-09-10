@@ -445,7 +445,7 @@ export default async function EmployeeDetailPage({
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <p className="eyebrow">Employee 360</p>
-                      <h2 className="mt-1 text-xl font-semibold">Actual work, future staffing, and money in one profile</h2>
+                      <h2 className="mt-1 text-xl font-semibold">{hasMoneyAccess ? "Work, assignments, and money" : "Work, assignments, and availability"}</h2>
                     </div>
                     <span className="badge capitalize">{employee.status}</span>
                   </div>
@@ -458,8 +458,8 @@ export default async function EmployeeDetailPage({
                     />
                     <MoneyTile
                       label="People actually served"
-                      value={(report?.individualsServed ?? 0).toLocaleString()}
-                      sub={planningOnly ? "Hidden on the finance-free planning profile" : "Transaction-backed individuals"}
+                      value={planningOnly ? "Unavailable" : (report?.individualsServed ?? 0).toLocaleString()}
+                      sub={planningOnly ? undefined : "From recorded services"}
                       plain
                     />
                     <MoneyTile
@@ -626,7 +626,7 @@ export default async function EmployeeDetailPage({
               </div>
             ),
           },
-          {
+          ...(hasMoneyAccess ? [{
             id: "money",
             label: "Money",
             content: hasMoneyAccess ? (
@@ -703,7 +703,7 @@ export default async function EmployeeDetailPage({
                 ) : null}
               </div>
             ) : <section className="card px-5 py-5"><h2 className="font-semibold">Employee money is restricted</h2><p className="mt-1 text-sm text-[var(--color-ink-soft)]">Your access includes staffing facts but not checks, pay, taxes, deals, or balances.</p></section>,
-          },
+          }] : []),
           {
             id: "more",
             label: "More",

@@ -130,6 +130,7 @@ function hoursOnlyScope(
   user: AuthenticatedUser,
   individualIds: string[],
   employeeIds: string[],
+  canSeeBudgets: boolean,
 ): AccessScope {
   return {
     userId: user.id,
@@ -144,7 +145,7 @@ function hoursOnlyScope(
     canSeeCheckGross: false,
     canSeeCheckNet: false,
     canSeeTaxes: false,
-    canSeeBudgets: true,
+    canSeeBudgets,
     canSeeEmployeeDeals: false,
     canSeeSettlements: false,
     canManageSettlements: false,
@@ -226,7 +227,8 @@ async function resolvePlanningAccess(user: AuthenticatedUser): Promise<PlanningA
   const employeeIds = [...new Set(employeeRows.rows.map((row) => row.subject_id))];
   return {
     user,
-    access: hoursOnlyScope(user, individualIds, employeeIds),
+    access: hoursOnlyScope(user, individualIds, employeeIds,
+      agencyIds.every((agencyId) => hasPortalCapability(portal, "hours_budgets.agency.read", agencyId))),
     agencyIds,
     agencyRosters,
     scheduleManageAgencyIds,

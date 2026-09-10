@@ -138,8 +138,8 @@ test("Owner verifies check evidence and agreement, then Money Collector complete
     await form.getByRole("button", { name: "Update check", exact: true }).click();
     await expect(form).toBeHidden();
     await page.reload();
-    await checkRow.getByRole("button", { name: "Verify & calculate", exact: true }).click();
-    await expect(page.getByText("Check verified and collection amount calculated.", { exact: true })).toBeVisible();
+    await checkRow.getByRole("button", { name: "Verify check", exact: true }).click();
+    await expect(page.getByText("Check facts verified with 1 linked service. Review money operations for collection eligibility and amounts.", { exact: true })).toBeVisible();
     await page.goto(path);
     await page.getByRole("button", { name: "Refresh items", exact: true }).click();
     await expect(page.getByRole("button", { name: "Refresh items", exact: true })).toBeEnabled();

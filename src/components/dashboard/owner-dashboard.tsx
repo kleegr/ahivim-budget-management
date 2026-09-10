@@ -168,8 +168,8 @@ function OwnerReviewSection({
         </span>
         <div className="min-w-0">
           <p className="eyebrow text-[var(--color-ink-faint)]">Review</p>
-          <h2 id="owner-attention-heading" className="display mt-1 text-xl font-semibold text-[var(--color-ink)]">Review summary</h2>
-          <p className="mt-1 text-sm text-[var(--color-ink-soft)]">Open a workspace to review detected issues. People are counted once within each directory.</p>
+          <h2 id="owner-attention-heading" className="display mt-1 text-xl font-semibold text-[var(--color-ink)]">Needs attention</h2>
+          <p className="mt-1 text-sm text-[var(--color-ink-soft)]">Resolve the matters affecting planning or money. Optional setup is listed separately.</p>
         </div>
       </div>
 
@@ -189,11 +189,6 @@ function OwnerReviewSection({
               </span>
               <ArrowRight aria-hidden className="mt-1 h-3.5 w-3.5 shrink-0 text-[var(--color-primary)]" />
             </Link>
-            {group.undecided && group.undecided.count > 0 ? (
-              <Link href={group.undecided.href} className="mt-1 inline-block px-1 text-xs leading-5 text-[var(--color-ink-faint)] underline underline-offset-2">
-                Not decided yet: {group.undecided.count.toLocaleString()} {group.undecided.unit}
-              </Link>
-            ) : null}
           </div>
         ))}
       </div>
@@ -218,7 +213,7 @@ function OwnerAttentionLoading() {
         </span>
         <div className="min-w-0">
           <p className="eyebrow text-[var(--color-ink-faint)]">Review</p>
-          <h2 id="owner-attention-heading" className="display mt-1 text-xl font-semibold text-[var(--color-ink)]">Review summary</h2>
+          <h2 id="owner-attention-heading" className="display mt-1 text-xl font-semibold text-[var(--color-ink)]">Needs attention</h2>
         </div>
       </div>
       <div role="status" aria-live="polite" className="mt-4 min-h-16 border-y border-[var(--color-rule-strong)] px-1 py-4 text-sm text-[var(--color-ink-soft)]">
@@ -241,6 +236,7 @@ function OwnerMoneyShell({ month, children }: { month: string; children: ReactNo
         icon={HandCoins}
       />
       {children}
+      <p className="mt-2 text-xs text-[var(--color-ink-soft)]">Approved set-asides are included in expense detail. Issued invoices are separate from cash received.</p>
     </section>
   );
 }
@@ -276,7 +272,7 @@ export async function OwnerReviewData({ today }: { today: string }) {
   const groups: OwnerReviewGroup[] = [
     {
       key: "individuals",
-      title: "People & budgets",
+      title: "Review program authorizations",
       detail: review
         ? `${review.individuals.toLocaleString()} ${review.individuals === 1 ? "individual" : "individuals"} with detected issues`
         : "Review status unavailable",
@@ -289,7 +285,7 @@ export async function OwnerReviewData({ today }: { today: string }) {
     },
     {
       key: "employees",
-      title: "Employees & setup",
+      title: "Review employee arrangements",
       detail: review
         ? `${review.employees.toLocaleString()} ${review.employees === 1 ? "employee" : "employees"} with detected issues`
         : "Review status unavailable",
@@ -312,7 +308,7 @@ export async function OwnerReviewData({ today }: { today: string }) {
             : schedule.unassignedCount > 0
               ? "Upcoming visits need staffing."
               : "Open upcoming visits and staffing coverage.",
-      href: "/schedule?view=coverage",
+      href: schedule?.nextConflict?.href ?? schedule?.nextUnassigned?.href ?? "/schedule?view=calendar",
     },
     {
       key: "money",
@@ -332,7 +328,7 @@ export async function OwnerReviewData({ today }: { today: string }) {
 
   return (
     <OwnerReviewSection
-      groups={groups}
+      groups={groups.filter((group) => group.key === "individuals" ? !review || review.individuals > 0 : group.key === "employees" ? !review || review.employees > 0 : group.key === "schedule" ? !schedule || schedule.conflictCount > 0 || schedule.unassignedCount > 0 : !money || money.freshness.dirty || money.checkIssues.length > 0 || money.rows.some((row) => row.reviewRequired))}
       unavailableSources={unavailableSources}
     />
   );
@@ -377,7 +373,7 @@ async function OwnerActualMoneySection({ month }: { month: string }) {
           hint="Transactions and recorded receipts"
         />
         <SummaryMetric
-          label="Actual expenses"
+          label="Counted expenses"
           value={formatMoney(actualMoney.totals.expenses.total)}
           href={`/reports/agency-financials?month=${actualMoney.month}`}
           hint="Set-asides, taxes, and shares"
@@ -574,6 +570,18 @@ function RecentChecks({
   );
 }
 
+async function OwnerSourceContext({ month, today }: { month: string; today: string }) {
+  const result = await withDb(async (pool) => (await pool.query<{ last_import: string | null; latest_service: string | null; latest_check: string | null }>(`SELECT
+    (SELECT max(finished_at)::text FROM sheet_sync_runs WHERE status IN ('success', 'no_changes')) AS last_import,
+    (SELECT max(canonical_service_date(period_begin, check_date, period_end))::text FROM payroll_transactions) AS latest_service,
+    (SELECT max(check_date)::text FROM payroll_transactions) AS latest_check`)).rows[0]);
+  const source = result.ok ? result.data : null;
+  return <section aria-label="Home period and source dates" className="mb-6 flex flex-wrap items-end justify-between gap-3 rounded-lg bg-[var(--color-surface-muted)] p-4">
+    <form className="flex items-end gap-2" action="/dashboard"><label className="text-sm">Financial period<input className="input mt-1 block" type="month" name="month" defaultValue={month} required /></label><button className="btn btn-secondary" type="submit">Apply</button></form>
+    <div className="text-xs text-[var(--color-ink-soft)]"><p>{formatDate(today, LONG_DATE)}</p><p className="mt-1">Import: {source ? source.last_import ? new Date(source.last_import).toLocaleString("en-US", { timeZone: "America/New_York" }) + " Eastern" : "No successful import yet" : "Unavailable"} · Latest check: {source?.latest_check ?? "Unavailable"} · Latest service: {source?.latest_service ?? "Unavailable"}</p><Link className="underline" href="/sync">Import details</Link></div>
+  </section>;
+}
+
 export default function OwnerDashboard({
   summary,
   unavailableSections = [],
@@ -623,15 +631,18 @@ export default function OwnerDashboard({
         )}
       />
 
-      <div className="space-y-12">
+      <OwnerSourceContext month={financialMonth} today={today} />
+      <div className="space-y-8">
+        <Suspense fallback={<OwnerMoneyLoading month={financialMonth} />}>
+          <OwnerActualMoneySection month={financialMonth} />
+        </Suspense>
         <Suspense fallback={<OwnerAttentionLoading />}>
           <OwnerReviewData today={today} />
         </Suspense>
         <OwnerQuickActions />
-        <Suspense fallback={<OwnerMoneyLoading month={financialMonth} />}>
-          <OwnerActualMoneySection month={financialMonth} />
-        </Suspense>
-
+        <details className="rounded-lg border border-[var(--color-rule)] p-4" open={selected || undefined}>
+          <summary className="cursor-pointer font-semibold">Activity, budgets, and setup detail</summary>
+          <div className="mt-6 space-y-8">
         {unavailableSections.includes("Transactions") ? (
           <section aria-label="Transactions unavailable" className="border-y border-[var(--color-rule)] py-5">
             <h2 className="display text-lg font-semibold">Transactions</h2>
@@ -723,6 +734,8 @@ export default function OwnerDashboard({
         </section>
         )}
 
+          </div>
+        </details>
       </div>
     </>
   );

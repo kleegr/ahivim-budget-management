@@ -101,11 +101,6 @@ type FinancialSortKey =
   | "approved"
   | "difference";
 
-function percentLabel(fraction: string | null): string {
-  if (fraction === null || fraction === "") return "Not set";
-  return `${dec(fraction).times(100).toDecimalPlaces(2).toString()}%`;
-}
-
 function overrideDifference(row: StrategyGridRow) {
   return row.approvedDifference === null ? null : dec(row.approvedDifference);
 }
@@ -295,10 +290,6 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
               <FinancialSortHead sortKey="name" {...sortProps}>Individual</FinancialSortHead>
               <FinancialSortHead sortKey="account" {...sortProps}>Account / type</FinancialSortHead>
               <FinancialSortHead sortKey="renews" {...sortProps}>Renewal date</FinancialSortHead>
-              <FinancialSortHead sortKey="yearly" align="right" {...sortProps}>Yearly gross</FinancialSortHead>
-              <FinancialSortHead sortKey="monthly" align="right" {...sortProps}>Monthly basis</FinancialSortHead>
-              <FinancialSortHead sortKey="cut1" align="right" {...sortProps}>First cut</FinancialSortHead>
-              <FinancialSortHead sortKey="cut2" align="right" {...sortProps}>Second cut</FinancialSortHead>
               <FinancialSortHead sortKey="calculated" align="right" {...sortProps}>Calculated net</FinancialSortHead>
               <FinancialSortHead sortKey="approved" align="right" {...sortProps}>Approved final</FinancialSortHead>
               <FinancialSortHead sortKey="difference" align="right" {...sortProps}>Override difference</FinancialSortHead>
@@ -332,16 +323,6 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
                     {row.notes ? <div className="max-w-64 truncate text-xs text-[var(--color-text-soft)]" title={row.notes}>{row.notes}</div> : null}
                   </td>
                   <td className="tnum px-3 py-2 text-[var(--color-ink-soft)]">{row.renewalDate ?? "Not set"}</td>
-                  <td className="tnum px-3 py-2 text-right">{formatMoney(row.yearlyGross)}</td>
-                  <td className="tnum px-3 py-2 text-right">
-                    <div className="font-medium">{formatMoney(row.monthlyGross)}</div>
-                    <div className="text-xs text-[var(--color-text-soft)]">÷ {dec(row.monthDivisor).toString()} months</div>
-                  </td>
-                  <td className="tnum px-3 py-2 text-right">{percentLabel(row.cut1Percent)}</td>
-                  <td className="tnum px-3 py-2 text-right">
-                    <div>{percentLabel(row.cut2Percent)}</div>
-                    <div className="text-xs text-[var(--color-text-soft)]">after first cut</div>
-                  </td>
                   <td className="tnum px-3 py-2 text-right font-medium">{formatMoney(row.net)}</td>
                   <td className="tnum px-3 py-2 text-right font-medium">{row.afterAll === null ? <span className="font-normal text-[var(--color-text-soft)]">Not set</span> : formatMoney(row.afterAll)}</td>
                   <td className="tnum px-3 py-2 text-right text-[var(--color-ink-soft)]" title="Approved final minus calculated net">
@@ -357,7 +338,7 @@ function FinancialOverview({ rows, onOpen }: { rows: StrategyGridRow[]; onOpen: 
             })}
             {visible.length === 0 ? (
               <tr>
-                <td colSpan={12} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
+                <td colSpan={8} className="px-3 py-10 text-center text-[var(--color-text-soft)]">
                   {rows.length === 0 ? "No financial setups yet." : "No financial setup matches your search."}
                 </td>
               </tr>
@@ -1015,6 +996,8 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [data, setData] = useState<{ explain: ExplainResult; revisions: Revision[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rateDraft, setRateDraft] = useState<{ programId: string; value: string } | null>(null);
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const [savingRate, setSavingRate] = useState<string | null>(null);
   const [failedRate, setFailedRate] = useState<{ programId: string; value: string } | null>(null);
 
@@ -1068,6 +1051,8 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
       });
       if (res.ok) {
         await load(); // refresh the drawer's own numbers
+        setRateDraft(null);
+        setSavedNotice("Rate saved for this financial setup. The projection is updated; the approved final amount is unchanged.");
         router.refresh(); // refresh the grid's computed columns
       } else {
         const body = await res.json().catch(() => ({})) as { error?: string };
@@ -1132,19 +1117,8 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
                     <td className="py-1 text-right">
                       {canManage && l.programId ? (
                         <span className="inline-flex items-center justify-end gap-1">
-                          <input
-                            type="number"
-                            step="any"
-                            defaultValue={dec(l.rate).toString()}
-                            disabled={savingRate === l.programId}
-                            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                            onBlur={(e) => {
-                              const v = e.target.value.trim();
-                              if (v !== dec(l.rate).toString()) saveRate(l.programId!, v);
-                            }}
-                            className="w-16 rounded border border-[var(--color-rule-strong)] px-1 py-0.5 text-right tabular-nums"
-                            title={l.isOverride ? `Override. Default is ${formatMoney(l.defaultRate)}. Clear to use default.` : "Default rate. Type to override for this strategy."}
-                          />
+                          <span className="tabular-nums">{formatMoney(l.rate)}</span>
+                          <button type="button" className="btn btn-sm btn-ghost" aria-label={`Edit rate for ${l.programLabel}`} onClick={() => { setRateDraft({ programId: l.programId!, value: l.isOverride ? dec(l.rate).toString() : "" }); setSavedNotice(null); setError(null); }}>Edit rate</button>
                           <span className={`rounded px-1 text-[10px] ${l.isOverride ? "bg-[var(--color-warn-soft)] text-[var(--color-warn)]" : "bg-[var(--color-surface-strong)] text-[var(--color-text-soft)]"}`}>
                             {l.isOverride ? "override" : "default"}
                           </span>
@@ -1158,11 +1132,21 @@ function ExplainDrawer({ strategyId, row, canManage, onClose }: { strategyId: st
                 ))}
               </tbody>
             </table>
-            {canManage && (
-              <p className="mb-3 text-[11px] text-[var(--color-text-soft)]">
-                Type a rate to override it for this setup; clear the box to return to the program default. Changing a rate recalculates everything instantly.
-              </p>
-            )}
+            {savedNotice ? <p role="status" className="mb-3 text-sm text-[var(--color-success)]">{savedNotice}</p> : null}
+            {rateDraft && data.explain.lineGross.find((line) => line.programId === rateDraft.programId) ? (() => {
+              const line = data.explain.lineGross.find((line) => line.programId === rateDraft.programId)!;
+              let preview: string | null = null;
+              try { const rate = dec(rateDraft.value || line.defaultRate); if (rate.isFinite() && rate.gte(0)) preview = dec(data.explain.yearlyGross).minus(line.gross).plus(dec(line.hours).times(rate)).toString(); } catch { /* Partial input is not a preview. */ }
+              return <form className="my-4 rounded-lg border border-[var(--color-primary)] p-3 space-y-3" onSubmit={(event) => { event.preventDefault(); if (preview !== null) void saveRate(rateDraft.programId, rateDraft.value); }}>
+                <h3 className="font-semibold">Edit {line.programLabel} rate</h3>
+                <p className="text-xs">Applies to this financial setup and its authorization period. Shared program rates and approved final remain unchanged.</p>
+                <label className="block">Rate per hour<input aria-label="Rate per hour" className="input mt-1 w-full" type="number" min="0" step="any" value={rateDraft.value} placeholder={`Shared default ${line.defaultRate}`} onChange={(event) => setRateDraft({ ...rateDraft, value: event.target.value })} /></label>
+                <p className="text-xs">Leave blank to use the shared default of {formatMoney(line.defaultRate)}.</p>
+                <p>Yearly gross: {formatMoney(data.explain.yearlyGross)} → {preview === null ? "Enter a valid rate" : formatMoney(preview)}</p>
+                <p>Approved monthly final: {data.explain.afterAll === null ? "Not set" : formatMoney(data.explain.afterAll)}</p>
+                <div className="flex gap-2"><button type="submit" className="btn btn-primary" disabled={savingRate !== null || preview === null}>{savingRate ? "Saving…" : "Save rate"}</button><button type="button" className="btn btn-secondary" disabled={savingRate !== null} onClick={() => { setRateDraft(null); setError(null); setFailedRate(null); }}>Cancel</button></div>
+              </form>;
+            })() : null}
             <div className="space-y-1.5">
               {data.explain.steps.map((s) => (
                 <div key={s.key} className="flex items-baseline justify-between gap-3 border-b border-[var(--color-rule)] py-1">

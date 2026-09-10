@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PortalAccessContext } from "@/lib/auth/portal-access";
 import { getPortalHomeReadModel } from "@/lib/data/portal-read-model";
+import { individualScheduleSummary } from "@/lib/data/schedule-queries";
 import type { PgLikePool } from "@/lib/import/commit";
 import { closeTestPool, hasTestDatabase, resetSchema, testPool } from "../support/database";
 
@@ -102,6 +103,37 @@ suite("portal effective hours (real PostgreSQL)", () => {
   }, 60_000);
 
   afterAll(closeTestPool);
+
+  it("excludes physical and synthetic dollar programs from portal and calendar hours, with a separate Owner dollar allowance", async () => {
+    const scope = await createPortalScope("PORTAL_D3_UNITS", "D3 Units Person");
+    const hourly = await programId(scope.pool, "COM_HAB");
+    await addStrategyBudget(scope.pool, { individualId: scope.individualId, programId: hourly,
+      label: "D3 Hours", renewalDate: "2020-10-01", authorizedHours: 40 });
+    const dollarPrograms = (await scope.pool.query<{ id: string }>(`INSERT INTO programs
+      (code,name,required_auth_type,consumption_source,rate_scope)
+      VALUES ('D3_CLASS_PHYSICAL','D3 Dollar physical','dollars','invoice','flat'),
+             ('D3_CLASS_SYNTHETIC','D3 Dollar synthetic','dollars','invoice','flat') RETURNING id`)).rows;
+    const period = (await scope.pool.query<{ id: string }>(`INSERT INTO budget_periods(individual_id,label,start_date,end_date)
+      VALUES($1,'D3 Dollar period',($2::date - interval '1 month')::date,($2::date + interval '1 month')::date) RETURNING id`,
+      [scope.individualId, scope.today])).rows[0]!.id;
+    await scope.pool.query(`INSERT INTO budget_authorizations(budget_period_id,individual_id,program_id,authorized_hours,authorized_dollars,internal_rate)
+      VALUES($1,$2,$3,999,600,0)`, [period, scope.individualId, dollarPrograms[0]!.id]);
+    await scope.pool.query(`INSERT INTO program_budget_events(budget_period_id,individual_id,program_id,event_type,service_date,hours,amount,source_type,source_id)
+      VALUES($1,$2,$3,'adjust',$4::date,3,125,'test','d3-units')`, [period, scope.individualId, dollarPrograms[0]!.id, scope.today]);
+    await addStrategyBudget(scope.pool, { individualId: scope.individualId, programId: dollarPrograms[1]!.id,
+      label: "D3 Dollar synthetic", renewalDate: "2020-10-01", authorizedHours: 888 });
+    const model = await getPortalHomeReadModel(scope.pool, scope.context, scope.month);
+    expectHourSurfaces(model, scope.agencyId, { authorized: "40.0000", used: "0.0000", remaining: "40.0000" });
+    expect(JSON.stringify(model)).not.toContain("D3 Dollar");
+    const asOf = new Date(`${scope.today}T12:00:00Z`);
+    const hoursOnly = await individualScheduleSummary(scope.pool, scope.individualId, asOf, true);
+    expect(hoursOnly?.programs.map(program => program.programCode)).toEqual(["COM_HAB"]);
+    expect(hoursOnly).not.toHaveProperty("dollarPrograms");
+    const owner = await individualScheduleSummary(scope.pool, scope.individualId, asOf, false);
+    expect(owner?.programs.map(program => program.programCode)).toEqual(["COM_HAB"]);
+    expect(owner?.dollarPrograms).toEqual([expect.objectContaining({ programName: "D3 Dollar physical",
+      authorized: "600.0000", used: "125.0000", remaining: "475.0000" })]);
+  }, 60_000);
 
   it("includes a calculation-strategy budget and its billed usage on all portal hour surfaces", async () => {
     const scope = await createPortalScope("PORTAL_HOURS", "Portal Hours Person");

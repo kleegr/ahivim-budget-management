@@ -10,6 +10,7 @@ import { jsonError, redactError, sameOriginOrFail } from "@/lib/http";
 import type { PgLikePool } from "@/lib/import/commit";
 import { getDocument } from "@/lib/data/documents";
 import { canAccessDocumentSource } from "@/lib/auth/document-policy";
+import { localDocumentTestRoot, writeLocalDocument } from "@/lib/documents/local-test-storage";
 import {
   authorizeDocumentUploadToken,
   completeDocumentUpload,
@@ -19,6 +20,42 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
+
+/** Exercises the same reservation, authorization and finalization in isolated tests. */
+export async function PUT(request: NextRequest) {
+  const cross = sameOriginOrFail(request);
+  if (cross) return cross;
+  if (!localDocumentTestRoot()) return jsonError("That upload transport is unavailable.", 404);
+  const access = await apiDocumentEditorUser();
+  if (!access || access.external) return jsonError("Document access required.", 403);
+  try {
+    const pathname = request.headers.get("x-document-pathname") ?? "";
+    const intentId = request.headers.get("x-document-intent");
+    const authorization = await authorizeDocumentUploadToken(access.pool, { pathname, clientPayload: JSON.stringify({ intentId }), actorId: access.user.id });
+    if (!authorization.ok) return jsonError(authorization.message, 400);
+    const intent = authorization.data.intent;
+    const document = await getDocument(access.pool, intent.documentId);
+    if (!document || !canAccessDocumentSource(access.scope, document)) return jsonError("That document was not found.", 404);
+    const reader = request.body?.getReader();
+    if (!reader) return jsonError("Upload a PDF file.", 400);
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        size += next.value.byteLength;
+        if (size > intent.expectedByteSize) { await reader.cancel(); return jsonError("The PDF exceeds its reserved size.", 400); }
+        chunks.push(next.value);
+      }
+    } finally { reader.releaseLock(); }
+    if (size !== intent.expectedByteSize) return jsonError("The PDF upload is incomplete. Try again.", 400);
+    await writeLocalDocument(pathname, Buffer.concat(chunks));
+    const completed = await completeDocumentUpload(access.pool, intent.id, await inspectPrivateDocumentBlob(pathname));
+    if (!completed.ok) return jsonError(completed.message, 400);
+    return NextResponse.json({ ok: true });
+  } catch (error) { return jsonError(redactError(error, "Could not save that PDF upload."), 400); }
+}
 
 export async function POST(request: NextRequest) {
   let body: HandleUploadBody;

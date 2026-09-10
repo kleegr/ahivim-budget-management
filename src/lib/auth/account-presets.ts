@@ -136,7 +136,7 @@ export const ACCOUNT_PRESETS: readonly AccountPresetDefinition[] = [
   {
     id: "agency_staffing_manager",
     label: "Agency staffing manager",
-    description: "Agency-scoped employee assignments and schedules without money.",
+    description: "Agency-scoped employee assignments and schedules without budgets or money.",
     role: "viewer",
     access: PORTAL_ONLY_ACCESS,
     binding: { kind: "agency", role: "staffing_manager" },

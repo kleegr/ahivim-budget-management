@@ -1,6 +1,8 @@
 "use client";
 
 import SearchableSelect from "@/components/manage/searchable-select";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
@@ -19,7 +21,7 @@ import ScheduleAttentionPanel from "./schedule-attention-panel";
 import type { ScheduleRepairKind } from "@/lib/business/schedule-attention";
 import { PaceBar } from "@/components/ui";
 import { BigStat, ProgressBar, UtilizationBadge } from "@/components/ui-viz";
-import { dec, formatHours, formatPercent } from "@/lib/money";
+import { dec, formatHours, formatPercent, formatMoney } from "@/lib/money";
 import { friendlyActionError } from "@/lib/nav/review-actions";
 
 type FlagMap = Map<string, SessionFlags>;
@@ -50,23 +52,38 @@ export interface ScheduleCalendarProps {
 export default function ScheduleCalendar(props: ScheduleCalendarProps) {
   const {
     canManage, today, employees, individuals, programs,
-    initialDate, initialView, initialSessionId, initialFilters,
+    initialDate, initialView, initialSessionId,
     showBudgetTracking = true,
   } = props;
   const startingDate = initialDate && /^\d{4}-\d{2}-\d{2}$/.test(initialDate) ? initialDate : today;
 
-  const [view, setView] = useState<View>(initialView ?? "month");
-  const [anchor, setAnchor] = useState(startingDate);
-  const [perspective, setPerspective] = useState<Perspective>(
-    initialFilters?.individualId ? "individual" : initialFilters?.employeeId ? "employee" : "all",
-  );
-  const [filters, setFilters] = useState({
-    employeeId: initialFilters?.employeeId ?? "",
-    individualId: initialFilters?.individualId ?? "",
-    programId: initialFilters?.programId ?? "",
-    unassigned: initialFilters?.unassigned ?? false,
-    status: initialFilters?.status ?? "",
-  });
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const query = searchParams.toString();
+  const view = (["month", "week", "day"].includes(searchParams.get("calendarView") ?? "")
+    ? searchParams.get("calendarView") : searchParams.has("date") ? "day" : initialView ?? "week") as View;
+  const anchor = /^\d{4}-\d{2}-\d{2}$/.test(searchParams.get("date") ?? "") ? searchParams.get("date")! : startingDate;
+  const filters = useMemo(() => {
+    const params = new URLSearchParams(query);
+    return { employeeId: params.get("employeeId") ?? "", individualId: params.get("individualId") ?? "",
+      programId: params.get("programId") ?? "", status: params.get("status") ?? "", unassigned: params.get("unassigned") === "true" };
+  }, [query]);
+  const perspective = (searchParams.get("perspective") ?? (filters.individualId ? "individual" : filters.employeeId ? "employee" : "all")) as Perspective;
+  function updateContext(values: Record<string, string | boolean>) {
+    const params = new URLSearchParams(window.location.search);
+    params.set("date", anchor);
+    params.set("calendarView", view);
+    for (const [key, value] of Object.entries(values)) {
+      if (value === false || value === "") params.delete(key); else params.set(key, String(value));
+    }
+    window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+  }
+  const setView = (next: View) => updateContext({ calendarView: next });
+  const setAnchor = (next: string) => updateContext({ date: next });
+  const setPerspective = (next: Perspective) => updateContext({ perspective: next });
+  const setFilters = (next: typeof filters | ((current: typeof filters) => typeof filters)) =>
+    updateContext(typeof next === "function" ? next(filters) : next);
+  const [savedHref, setSavedHref] = useState<string | null>(null);
   const [sessions, setSessions] = useState<CalendarSession[]>([]);
   const [flags, setFlags] = useState<FlagMap>(new Map());
   const [loading, setLoading] = useState(false);
@@ -80,6 +97,8 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
   const [summaryRetryKey, setSummaryRetryKey] = useState(0);
   const loadRequestId = useRef(0);
   const initialSessionIdRef = useRef(initialSessionId ?? null);
+  const linkedSessionId = searchParams.get("sessionId");
+  useEffect(() => { initialSessionIdRef.current = linkedSessionId; }, [linkedSessionId]);
 
   const range = useMemo(() => {
     if (view === "day") return { from: anchor, to: anchor };
@@ -215,10 +234,17 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
     setSelected(session);
   }
 
+  function refreshAfterSave() {
+    setSummaryRetryKey((value) => value + 1);
+    void load();
+    router.refresh();
+  }
+
   const label = view === "month" ? monthLabel(anchor) : view === "week" ? `Week of ${humanDate(startOfWeek(anchor))}` : humanDate(anchor);
 
   return (
     <div className="space-y-4">
+      {savedHref ? <p role="status" className="notice notice-success">Schedule saved. <Link className="link" href={savedHref}>View saved visit</Link></p> : null}
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="segmented-control" role="group" aria-label="Calendar view">
@@ -339,7 +365,17 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
               <RefreshCw aria-hidden className="h-4 w-4" /> Try again
             </button>
           </div>
-        ) : <UtilizationStrip summary={summary} loading={summaryLoading} />
+        ) : <>
+          <UtilizationStrip summary={summary} loading={summaryLoading} />
+          {(summary?.dollarPrograms?.length ?? 0) > 0 ? <section aria-label="Dollar allowances" className="rounded-lg border border-[var(--color-rule)] p-4">
+            <h2 className="font-semibold">Dollar allowances</h2>
+            <p className="text-xs text-[var(--color-ink-soft)]">Separate from hour budgets. Issued expenses consume an allowance; they do not establish cash received.</p>
+            {summary!.dollarPrograms!.map((program) => <div key={program.authorizationId} className="flex flex-wrap justify-between gap-3 border-t border-[var(--color-rule)] py-3 mt-2 text-sm">
+              <Link className="link" href={`/individuals/${summary!.individualId}?programId=${program.programId}`}>{program.programName} · {program.startDate} – {program.endDate}</Link>
+              <span>Authorized {program.authorized === null ? "Unavailable" : formatMoney(program.authorized)} · Used {formatMoney(program.used)} · Remaining {program.remaining === null ? "Unavailable" : formatMoney(program.remaining)}</span>
+            </div>)}
+          </section> : null}
+        </>
       ) : null}
 
       <CalendarLegend />
@@ -360,7 +396,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
           byDate={byDate}
           flags={flags}
           onSelect={(session) => openSession(session)}
-          onOpenDay={(date) => { setAnchor(date); setView("day"); }}
+          onOpenDay={(date) => updateContext({ date, calendarView: "day" })}
           onAdd={canManage ? (d) => setCreating({ date: d, mode: "one_time" }) : undefined}
         />
       ) : view === "week" ? (
@@ -377,7 +413,7 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
           canManage={canManage}
           initialMode={selectedRepair}
           onClose={() => { setSelected(null); setSelectedRepair(null); }}
-          onChanged={() => { setSelected(null); setSelectedRepair(null); void load(); }}
+          onChanged={() => { setSelected(null); setSelectedRepair(null); refreshAfterSave(); }}
         />
       ) : null}
 
@@ -393,7 +429,14 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
           initialProgramId={filters.programId}
           showBudgetTracking={showBudgetTracking}
           onClose={() => setCreating(null)}
-          onCreated={() => { setCreating(null); void load(); }}
+          onCreated={(saved) => {
+            setCreating(null);
+            const params = new URLSearchParams({ view: "calendar", date: saved.date, calendarView: "day", programId: saved.programId });
+            if (saved.individualId) params.set("individualId", saved.individualId);
+            if (saved.id) params.set("sessionId", saved.id);
+            setSavedHref(`/schedule?${params}`);
+            refreshAfterSave();
+          }}
         />
       ) : null}
     </div>

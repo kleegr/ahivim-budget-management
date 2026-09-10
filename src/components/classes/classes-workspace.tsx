@@ -167,7 +167,7 @@ function BudgetForm({
   onSaved: (budget: ClassBudgetRecord) => void;
 }) {
   const currentYear = new Date().getUTCFullYear();
-  const [individualId, setIndividualId] = useState(budget?.individualId ?? initialIndividualId ?? individuals[0]?.id ?? "");
+  const [individualId, setIndividualId] = useState(budget?.individualId ?? initialIndividualId ?? "");
   const [label, setLabel] = useState(budget?.label ?? `${currentYear} class allowance`);
   const [startDate, setStartDate] = useState(budget?.startDate ?? `${currentYear}-01-01`);
   const [endDate, setEndDate] = useState(budget?.endDate ?? `${currentYear}-12-31`);

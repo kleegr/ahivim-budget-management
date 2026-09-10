@@ -50,7 +50,7 @@ export default function CreateSessionModal({
   initialProgramId?: string;
   showBudgetTracking?: boolean;
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (saved: { date: string; programId: string; individualId?: string; id?: string }) => void;
 }) {
   const [recurring, setRecurring] = useState(initialMode === "recurring");
   const [programId, setProgramId] = useState(initialProgramId);
@@ -226,7 +226,10 @@ export default function CreateSessionModal({
       setError(res.error ?? "Could not save.");
       return;
     }
-    onCreated();
+    const saved = res.data as { id?: string; sessionIds?: string[] } | undefined;
+    onCreated({ date: recurring ? seriesProjection.dates[0] ?? date : date, programId,
+      individualId: individualIds.length === 1 ? individualIds[0] : undefined,
+      id: recurring ? saved?.sessionIds?.[0] : saved?.id });
   }
 
   const selectedProgram = programs.find((p) => p.id === programId);

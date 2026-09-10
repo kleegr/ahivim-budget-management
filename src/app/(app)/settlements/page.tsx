@@ -1,3 +1,4 @@
+import { MoneyTaskNav } from "@/components/collections/money-task-nav";
 import SettlementDashboard from "@/components/settlements/settlement-dashboard";
 import { ButtonLink, ErrorPanel, PageHeader } from "@/components/ui";
 import { isPlanningOnlyAccess, resolveAccessScope } from "@/lib/auth/access";
@@ -72,11 +73,12 @@ export default async function SettlementsPage({
   return (
     <>
       <PageHeader
-        eyebrow="Finance"
-        title="Money operations"
-        description="Employee payments, collections, approved reserves, credits, and remaining balances."
+        eyebrow="Masser"
+        title="Money to collect, pay, and put away"
+        description="Choose a task, review what is due, and record what actually happened."
       />
 
+      <MoneyTaskNav active={first(params.view) === "history" ? "history" : requestedQueue === "payable" ? "pay" : requestedQueue === "reserve" ? "put-away" : "collect"} month={first(params.month)} />
       {!result.ok ? (
         <ErrorPanel title="Could not load money operations">{result.error}</ErrorPanel>
       ) : result.data.denied ? (
@@ -87,7 +89,7 @@ export default async function SettlementsPage({
         <SettlementDashboard
           key={[
             requestedPersonId && requestedPersonType ? `${requestedPersonType}:${requestedPersonId}` : "all",
-            requestedQueue ?? "default-queue",
+            requestedQueue ?? "default-queue", first(params.view) ?? "items",
             requestedFocus ?? "no-focus",
           ].join(":")}
           data={result.data.data}
@@ -99,6 +101,7 @@ export default async function SettlementsPage({
           initialPersonName={initialPersonName}
           initialPersonId={requestedPersonId}
           initialPersonType={requestedPersonType}
+          initialView={first(params.view) === "history" ? "history" : "items"}
           initialQueueParam={requestedQueue}
           initialFocusParam={requestedFocus}
         />

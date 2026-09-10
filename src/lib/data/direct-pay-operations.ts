@@ -1,6 +1,7 @@
 import type { AccessScope } from "@/lib/auth/access";
 import { settlementCurrentAmountSql, settlementGiveBackCoverageSql, settlementSourceReviewSql } from "@/lib/data/settlement-eligibility";
 import { agencyMonth } from "@/lib/business/agency-time";
+import { payrollCheckReviewFilters, type PayrollCheckReviewFilters, type PayrollCheckReviewStatus } from "@/lib/business/payroll-check-review";
 import { getSettlementLedgerFreshness } from "@/lib/manage/settlement-freshness";
 import {
   directPayTargetProgress,
@@ -174,6 +175,14 @@ export interface CollectionsWorkspaceData {
   targets: DirectPayTargetFinancialRow[];
   payrollChecks: PayrollCheckRow[];
   payrollCheckCounts: { total: number; unverified: number };
+  payrollCheckPage: {
+    page: number;
+    pageSize: number;
+    total: number;
+    search: string;
+    status: PayrollCheckReviewStatus;
+    retainedCheck: PayrollCheckRow | null;
+  };
   ledgerDirty: boolean;
   visibility: {
     canSeeTargetMoney: boolean;
@@ -385,11 +394,29 @@ export async function listPlannerDirectPayTargets(
   });
 }
 
+function payrollCheckFilterClause(filters: PayrollCheckReviewFilters, params: unknown[]): string {
+  const { search, status } = payrollCheckReviewFilters(filters);
+  let clause = "";
+  if (status !== "all") {
+    params.push(status);
+    clause += ` AND c.verification_status = $${params.length}::text`;
+  }
+  if (search) {
+    // Literal substring search: staff check numbers containing % or _ are not wildcards.
+    params.push(search);
+    clause += ` AND (strpos(lower(e.display_name), lower($${params.length}::text)) > 0
+      OR strpos(lower(COALESCE(c.check_number, '')), lower($${params.length}::text)) > 0
+      OR strpos(lower(COALESCE(c.source_ref, '')), lower($${params.length}::text)) > 0)`;
+  }
+  return clause;
+}
+
 export async function listPayrollChecks(
   pool: PgLikePool,
   scope: AccessScope,
   limit = 100,
   payrollCheckId?: string | null,
+  options: PayrollCheckReviewFilters & { offset?: number } = {},
 ): Promise<PayrollCheckRow[]> {
   if (!scope.canSeeCheckGross && !scope.canSeeCheckNet && !scope.canSeeTaxes) return [];
   const params: unknown[] = [];
@@ -399,7 +426,11 @@ export async function listPayrollChecks(
     params.push(payrollCheckId);
     checkClause = ` AND c.id = $${params.length}::uuid`;
   }
+  checkClause += payrollCheckFilterClause(options, params);
   params.push(Math.max(1, Math.min(limit, 500)));
+  const limitParameter = params.length;
+  const offset = Number.isSafeInteger(options.offset) && options.offset! > 0 ? options.offset! : 0;
+  if (offset) params.push(offset);
   const { rows } = await pool.query<{
     id: string; employee_id: string; employee_name: string; check_number: string | null;
     check_date: string | null; period_begin: string | null; period_end: string | null;
@@ -423,8 +454,8 @@ export async function listPayrollChecks(
       GROUP BY c.id, e.display_name
       ORDER BY CASE c.verification_status WHEN 'unverified' THEN 0 WHEN 'verified' THEN 1 ELSE 2 END,
                COALESCE(c.check_date, c.period_end, c.period_begin) DESC NULLS LAST,
-               c.updated_at DESC
-      LIMIT $${params.length}`,
+               c.updated_at DESC, c.id DESC
+      LIMIT $${limitParameter}${offset ? ` OFFSET $${params.length}` : ""}`,
     params,
   );
   return rows.map((row) => ({
@@ -454,10 +485,11 @@ export async function listPayrollChecks(
 export async function getPayrollCheckCounts(
   pool: PgLikePool,
   scope: AccessScope,
+  filters: PayrollCheckReviewFilters = {},
 ): Promise<{ total: number; unverified: number }> {
   if (!scope.canSeeCheckGross && !scope.canSeeCheckNet && !scope.canSeeTaxes) return { total: 0, unverified: 0 };
   const params: unknown[] = [];
-  const clause = employeeFinancialClause(scope, "c.employee_id", params);
+  const clause = employeeFinancialClause(scope, "c.employee_id", params) + payrollCheckFilterClause(filters, params);
   const result = await pool.query<{ total: string; unverified: string }>(
     `SELECT count(*)::text AS total,
             count(*) FILTER (WHERE c.verification_status = 'unverified')::text AS unverified
@@ -469,11 +501,38 @@ export async function getPayrollCheckCounts(
   return { total: Number(result.rows[0]?.total ?? 0), unverified: Number(result.rows[0]?.unverified ?? 0) };
 }
 
+export async function getPayrollCheckPage(
+  pool: PgLikePool,
+  scope: AccessScope,
+  options: PayrollCheckReviewFilters & { payrollCheckId?: string | null; retainedCheckId?: string | null } = {},
+) {
+  const filters = payrollCheckReviewFilters(options);
+  const pageSize = 50;
+  const counts = await getPayrollCheckCounts(pool, scope, filters);
+  const page = Math.min(filters.page, Math.max(1, Math.ceil(counts.total / pageSize)));
+  const [rows, retained] = await Promise.all([
+    listPayrollChecks(pool, scope, pageSize, options.payrollCheckId,
+      options.payrollCheckId ? {} : { ...filters, offset: (page - 1) * pageSize }),
+    options.retainedCheckId && UUID.test(options.retainedCheckId) && !options.payrollCheckId
+      ? listPayrollChecks(pool, scope, 1, options.retainedCheckId)
+      : Promise.resolve([]),
+  ]);
+  return {
+    rows,
+    page: options.payrollCheckId ? 1 : page,
+    pageSize,
+    total: options.payrollCheckId ? rows.length : counts.total,
+    search: filters.search,
+    status: filters.status,
+    retainedCheck: retained.find((check) => !rows.some((row) => row.id === check.id)) ?? null,
+  };
+}
+
 export async function getCollectionsWorkspace(
   pool: PgLikePool,
   scope: AccessScope,
   requestedMonth: string,
-  options: { payrollCheckId?: string | null } = {},
+  options: PayrollCheckReviewFilters & { payrollCheckId?: string | null; retainedCheckId?: string | null } = {},
 ): Promise<CollectionsWorkspaceData> {
   const month = MONTH.test(requestedMonth) ? requestedMonth : agencyMonth();
   const employeeParams: unknown[] = [month];
@@ -482,7 +541,7 @@ export async function getCollectionsWorkspace(
   const individualScope = individualFinancialClause(scope, "i.id", individualParams);
   const reviewedIndividualScope = individualScope.replaceAll("i.id", "review_source.individual_id");
 
-  const [employeeResult, individualResult, targets, payrollChecks, employeeOptions, payrollCheckCounts, freshness] = await Promise.all([
+  const [employeeResult, individualResult, targets, checkPage, employeeOptions, payrollCheckCounts, freshness] = await Promise.all([
     pool.query<{
       employee_id: string; employee_name: string; obligations_created: string;
       held_count?: string; verified_count?: string; held_month_count?: string; verified_month_count?: string;
@@ -677,7 +736,7 @@ export async function getCollectionsWorkspace(
       individualParams,
     ),
     listDirectPayTargetFinancials(pool, scope, true),
-    listPayrollChecks(pool, scope, 100, options.payrollCheckId),
+    getPayrollCheckPage(pool, scope, options),
     (async () => {
       const params: unknown[] = [];
       const clause = employeeFinancialClause(scope, "e.id", params);
@@ -725,7 +784,9 @@ export async function getCollectionsWorkspace(
     employeeCollections,
     individualSetAsides,
     targets,
-    payrollChecks,
+    payrollChecks: checkPage.rows,
+    payrollCheckPage: { page: checkPage.page, pageSize: checkPage.pageSize, total: checkPage.total,
+      search: checkPage.search, status: checkPage.status, retainedCheck: checkPage.retainedCheck },
     payrollCheckCounts,
     ledgerDirty: freshness.dirty,
     visibility: {

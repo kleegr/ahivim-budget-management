@@ -147,12 +147,12 @@ export default async function IndividualDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams?: Promise<{ view?: string | string[]; programScope?: string | string[] }>;
+  searchParams?: Promise<{ view?: string | string[]; programScope?: string | string[]; authorizationId?: string; programId?: string }>;
 }) {
   const [user, { id }, query] = await Promise.all([
     requireUser("viewer"),
     params,
-    searchParams ?? Promise.resolve<{ view?: string | string[]; programScope?: string | string[] }>({}),
+    searchParams ?? Promise.resolve<{ view?: string | string[]; programScope?: string | string[]; authorizationId?: string; programId?: string }>({}),
   ]);
   const canEdit = user.role !== "viewer";
   const showAllPrograms = query.programScope === "all";
@@ -733,6 +733,8 @@ export default async function IndividualDetailPage({
             content: (
               <div><div className="mb-4 flex flex-wrap items-center justify-between gap-3 text-sm"><p>{showAllPrograms ? "All programs. Totals cover the displayed scope." : "Self-Hired ComHab, Self-Hired Respite, and other programs managed by us."}</p><div className="flex flex-wrap gap-2">{canSeeFinancialSetup ? <ButtonLink href={`/individuals/${id}?view=more#financial-plan-${strategy?.id ?? "new"}`}>Projection inputs</ButtonLink> : null}<ButtonLink href={`/individuals/${id}?view=budget${showAllPrograms ? "" : "&programScope=all"}`}>{showAllPrograms ? "Show working programs" : "Show all programs"}</ButtonLink></div></div><ProgramBudgetWorkspace
                 operationalReview={operationalReview}
+                initialAuthorizationId={query.authorizationId} initialProgramId={query.programId}
+                workers={priorWorkers} assignments={planningAssignments} canPlan={canPlan}
                 individualId={id}
                 budgets={programBudgets}
                 programs={programCatalog}
@@ -741,7 +743,7 @@ export default async function IndividualDetailPage({
                 showInternalRate={canSeeEmployeeAmounts}
                 showAgencyRate={canSeeBilledAmounts}
                 canOpenTransactions={canSeeTransactions}
-              />{canSeeBudgets && (canManageHours || canEdit) ? <QuantityAuthorizations individualId={id} programs={programCatalog} /> : null}{canPlan ? <div className="mt-5"><PriorWorkers individualId={id} workers={priorWorkers} assignments={planningAssignments} /></div> : null}</div>
+              />{canSeeBudgets && (canManageHours || canEdit) ? <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold">Other authorization types</summary><QuantityAuthorizations individualId={id} programs={programCatalog} /></details> : null}</div>
             ),
           }] : []),
           ...(canSeeTransactions || canSeeBudgets || canPlan || assignments.length > 0 || profileContext.upcomingSessions.length > 0 ? [{

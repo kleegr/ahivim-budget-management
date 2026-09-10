@@ -769,6 +769,7 @@ export default function SettlementDashboard({
   initialPersonType,
   initialQueueParam,
   initialFocusParam,
+  initialView = "items",
 }: {
   data: SettlementDashboardData;
   canManage: boolean;
@@ -781,6 +782,7 @@ export default function SettlementDashboard({
   initialPersonType?: SettlementRow["personType"] | null;
   initialQueueParam?: string | null;
   initialFocusParam?: string | null;
+  initialView?: View;
 }) {
   const router = useRouter();
   const requestedQueue = settlementQueueFromParam(initialQueueParam);
@@ -810,7 +812,7 @@ export default function SettlementDashboard({
     searchKeys: SETTLEMENT_SEARCH_KEYS,
     serializeHidden: true,
   });
-  const [view, setView] = useState<View>("items");
+  const [view, setView] = useState<View>(initialView);
   const [queue, setQueue] = useState<QueueFilter>(defaultQueue);
   const [historySearch, setHistorySearch] = useState("");
   const [historyPage, setHistoryPage] = useState(0);

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fullAccess } from "@/lib/auth/access";
-import { getCollectionsWorkspace, getIndividualMasserStatement, getPayrollCheckCounts, listPayrollChecks } from "@/lib/data/direct-pay-operations";
+import { getCollectionsWorkspace, getIndividualMasserStatement, getPayrollCheckCounts, getPayrollCheckPage, listPayrollChecks } from "@/lib/data/direct-pay-operations";
 import { individualPutAwayReport, REPORTS } from "@/lib/data/report-queries";
 import { reservePresentation } from "@/lib/business/reserve-presentation";
 import type { PgLikePool } from "@/lib/import/commit";
@@ -180,6 +180,25 @@ suite("Masser source-review read integrity (PostgreSQL)", () => {
     const focused = await getCollectionsWorkspace(pool, scoped, "2026-09", { payrollCheckId: list[0]!.id });
     expect(focused.payrollChecks).toHaveLength(1);
     expect(focused.payrollCheckCounts).toEqual({ total: 108, unverified: 105 });
+    const first = await getPayrollCheckPage(pool, scoped, { status: "unverified" });
+    const second = await getPayrollCheckPage(pool, scoped, { status: "unverified", page: 2 });
+    const third = await getPayrollCheckPage(pool, scoped, { status: "unverified", page: 3 });
+    expect(first.total).toBe(105); expect(first.rows).toHaveLength(50);
+    expect(second.rows).toHaveLength(50); expect(third.rows).toHaveLength(5);
+    expect(new Set([...first.rows, ...second.rows, ...third.rows].map(row => row.id)).size).toBe(105);
+    const searched = await getPayrollCheckPage(pool, scoped, { search: "VISIBLE-107", status: "verified" });
+    expect(searched.total).toBe(1); expect(searched.rows[0]?.checkNumber).toBe("visible-107");
+    expect((await getPayrollCheckPage(pool, scoped, { search: "hidden" })).total).toBe(0);
+    const savedId = first.rows[0]!.id;
+    await pool.query("UPDATE employee_payroll_checks SET verification_status='verified' WHERE id=$1", [savedId]);
+    const refreshed = await getPayrollCheckPage(pool, scoped, { status: "unverified", retainedCheckId: savedId });
+    expect(refreshed.total).toBe(104);
+    expect(refreshed.rows.some(row => row.id === savedId)).toBe(false);
+    expect(refreshed.retainedCheck).toMatchObject({ id: savedId, verificationStatus: "verified", linkedTransactions: 0 });
+    const hiddenCheck = (await pool.query<{ id: string }>("SELECT id FROM employee_payroll_checks WHERE employee_id=$1 LIMIT 1", [hidden])).rows[0]!.id;
+    expect((await getPayrollCheckPage(pool, scoped, { retainedCheckId: hiddenCheck })).retainedCheck).toBeNull();
+    const finalPage = await getPayrollCheckPage(pool, scoped, { status: "verified", page: 999 });
+    expect(finalPage.page).toBe(1); expect(finalPage.rows).toHaveLength(3);
     expect(await getPayrollCheckCounts(pool, { ...scoped, canSeeCheckGross: false, canSeeCheckNet: false, canSeeTaxes: false }))
       .toEqual({ total: 0, unverified: 0 });
   });

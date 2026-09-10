@@ -1,5 +1,7 @@
 import { del, get, head, put } from "@vercel/blob";
 
+import { localDocumentTestRoot, inspectLocalDocument, readLocalDocument, deleteLocalDocument, writeLocalDocument } from "./local-test-storage";
+
 const DEFAULT_MAX_PDF_BYTES = 100 * 1024 * 1024;
 const ABSOLUTE_MAX_PDF_BYTES = 500 * 1024 * 1024;
 
@@ -21,7 +23,7 @@ export function documentUploadPathname(documentId: string, intentId: string): st
 }
 
 export function hasDocumentStorage(): boolean {
-  return Boolean(process.env.BLOB_READ_WRITE_TOKEN?.trim());
+  return Boolean(localDocumentTestRoot() || process.env.BLOB_READ_WRITE_TOKEN?.trim());
 }
 
 /** Keep server reads/writes in the same store as signed browser uploads. */
@@ -32,6 +34,7 @@ export function privateDocumentStorageToken(): string {
 }
 
 export async function inspectPrivateDocumentBlob(pathname: string): Promise<DocumentBlobMetadata> {
+  if (localDocumentTestRoot()) return inspectLocalDocument(pathname);
   const blob = await head(pathname, { token: privateDocumentStorageToken() });
   return {
     pathname: blob.pathname,
@@ -42,6 +45,7 @@ export async function inspectPrivateDocumentBlob(pathname: string): Promise<Docu
 }
 
 export async function readPrivateDocumentBlob(pathname: string, ifNoneMatch?: string | null) {
+  if (localDocumentTestRoot()) return readLocalDocument(pathname, ifNoneMatch);
   return get(pathname, {
     token: privateDocumentStorageToken(),
     access: "private",
@@ -50,12 +54,14 @@ export async function readPrivateDocumentBlob(pathname: string, ifNoneMatch?: st
 }
 
 export async function deletePrivateDocumentBlob(pathname: string): Promise<void> {
+  if (localDocumentTestRoot()) return deleteLocalDocument(pathname);
   await del(pathname, { token: privateDocumentStorageToken() });
 }
 
 /** Server-created immutable publication artifact, never a client upload path. */
 export async function writePrivateDocumentPublication(pathname: string, bytes: Uint8Array): Promise<void> {
   if (!/^documents\/[0-9a-f-]{36}\/publications\/[0-9a-f-]{36}\.pdf$/i.test(pathname)) throw new Error("Invalid publication path.");
+  if (localDocumentTestRoot()) return writeLocalDocument(pathname, bytes);
   await put(pathname, Buffer.from(bytes), {
     token: privateDocumentStorageToken(),
     access: "private", contentType: "application/pdf", addRandomSuffix: false, allowOverwrite: false,

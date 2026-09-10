@@ -30,7 +30,8 @@ export async function GET(request: NextRequest) {
 
   try {
     const pool = getPool();
-    const summary = await individualScheduleSummary(pool, individualId, new Date(), planning.agencyIds.length > 0);
+    const summary = await individualScheduleSummary(pool, individualId, new Date(),
+      planning.agencyIds.length > 0 || (!planning.access.canSeeMoney && !planning.access.canSeeClassFinancials));
     return NextResponse.json({ ok: true, data: summary });
   } catch (error) {
     return jsonError(redactError(error), 500);

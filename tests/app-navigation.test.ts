@@ -17,11 +17,11 @@ describe("role-specific workspaces", () => {
       canViewApprovedDocuments: true,
     };
     const workspaces = getVisibleWorkspaces(access);
-    expect(workspaces.map((workspace) => workspace.id)).toEqual(["portal"]);
-    expect(workspaces[0].destinations).toContainEqual(expect.objectContaining({
+    expect(workspaces.map((workspace) => workspace.id)).toEqual(["portal", "approved-documents"]);
+    expect(workspaces[1].destinations).toContainEqual(expect.objectContaining({
       label: "Approved documents", href: "/documents",
     }));
-    expect(workspaceIsActive("/documents", workspaces[0])).toBe(true);
+    expect(workspaceIsActive("/documents", workspaces[1])).toBe(true);
     expect(getVisibleAdminDestinations(access).some((item) => item.href === "/documents")).toBe(false);
     expect(getCommandDestinations({ ...access, canViewApprovedDocuments: false })
       .some((item) => item.href === "/documents")).toBe(false);
@@ -46,8 +46,8 @@ describe("role-specific workspaces", () => {
     };
     const workspaces = getVisibleWorkspaces(access);
 
-    expect(workspaces.map((workspace) => workspace.label)).toContain("Money & reports");
-    expect(workspaces.map((workspace) => workspace.label)).not.toContain("People & budgets");
+    expect(workspaces.map((workspace) => workspace.label)).toContain("Money");
+    expect(workspaces.map((workspace) => workspace.label)).not.toContain("People");
     expect(workspaces.map((workspace) => workspace.label)).not.toContain("Activity");
     expect(workspaces.find((workspace) => workspace.id === "money")?.href).toBe("/masser");
     expect(getCommandDestinations(access).some((item) => item.href === "/individuals")).toBe(false);
@@ -135,9 +135,9 @@ describe("role-specific workspaces", () => {
       canEditDocuments: false,
       canUsePortal: true,
     });
-    expect(workspaces.map((workspace) => workspace.id)).toEqual(["portal", "people", "activity"]);
-    expect(workspaces.find((workspace) => workspace.id === "people")?.href).toBe("/employees");
-    expect(workspaces.find((workspace) => workspace.id === "activity")?.href).toBe("/schedule");
+    expect(workspaces.map((workspace) => workspace.id)).toEqual(["portal", "employees", "schedule"]);
+    expect(workspaces.find((workspace) => workspace.id === "employees")?.href).toBe("/employees");
+    expect(workspaces.find((workspace) => workspace.id === "schedule")?.href).toBe("/schedule");
   });
 
   it("gives a budget planner Schedule and People & budgets without transaction navigation", () => {
@@ -154,8 +154,8 @@ describe("role-specific workspaces", () => {
     const workspaces = getVisibleWorkspaces(access);
 
     expect(workspaces.find((workspace) => workspace.id === "people")?.href).toBe("/individuals");
-    expect(workspaces.find((workspace) => workspace.id === "activity")?.href).toBe("/schedule");
-    expect(workspaces.find((workspace) => workspace.id === "people")?.destinations.map((item) => item.href)).toContain("/employees");
+    expect(workspaces.find((workspace) => workspace.id === "schedule")?.href).toBe("/schedule");
+    expect(workspaces.map((workspace) => workspace.href)).toContain("/employees");
     expect(getCommandDestinations(access).some((item) => item.href === "/schedule")).toBe(true);
     expect(getCommandDestinations(access).some((item) => item.href === "/transactions")).toBe(false);
     expect(workspaces.some((workspace) => workspace.id === "money")).toBe(false);
@@ -173,7 +173,7 @@ describe("role-specific workspaces", () => {
       canEditDocuments: false,
     });
 
-    expect(workspaces.find((workspace) => workspace.id === "people")?.href).toBe("/employees");
+    expect(workspaces.find((workspace) => workspace.id === "employees")?.href).toBe("/employees");
   });
 
   it("gives an office manager Transactions as the Activity landing page", () => {
@@ -188,7 +188,7 @@ describe("role-specific workspaces", () => {
     };
 
     expect(getVisibleWorkspaces(access).find((workspace) => workspace.id === "activity")?.href).toBe("/transactions");
-    expect(getVisibleWorkspaces({ ...access, canSeeTransactions: false }).find((workspace) => workspace.id === "activity")?.href).toBe("/schedule");
+    expect(getVisibleWorkspaces({ ...access, canSeeTransactions: false }).find((workspace) => workspace.id === "schedule")?.href).toBe("/schedule");
     expect(getCommandDestinations(access).find((item) => item.href === "/transactions")?.label).toBe("Transactions");
   });
 
@@ -244,7 +244,7 @@ describe("role-specific workspaces", () => {
     };
 
     const workspaces = getVisibleWorkspaces(resolved);
-    expect(workspaces.map((workspace) => workspace.id)).toEqual(["overview", "people", "activity", "money"]);
+    expect(workspaces.map((workspace) => workspace.id)).toEqual(["overview", "people", "employees", "schedule", "activity", "money", "class-billing", "documents", "report-library"]);
     const hrefs = getCommandDestinations(resolved).map((item) => item.href);
     expect(hrefs).toContain("/transactions");
     expect(workspaces.find((workspace) => workspace.id === "activity")?.href).toBe("/transactions");
@@ -288,7 +288,7 @@ describe("role-specific workspaces", () => {
     expect(getVisibleAdminDestinations(base).map((item) => item.href)).not.toContain("/settings/agencies");
     expect(getVisibleWorkspaces(base).flatMap((item) => item.destinations.map((destination) => destination.href))).not.toContain("/agencies");
     expect(getVisibleAdminDestinations({ ...base, canManageAgencies: true }).map((item) => item.href)).toContain("/settings/agencies");
-    expect(getVisibleWorkspaces({ ...base, canManageAgencies: true }).flatMap((item) => item.destinations.map((destination) => destination.href))).toContain("/agencies");
+    expect(getVisibleAdminDestinations({ ...base, canManageAgencies: true }).map((item) => item.href)).toContain("/agencies");
   });
 
   it("keeps the role preview center owner-only", () => {
@@ -306,7 +306,7 @@ describe("role-specific workspaces", () => {
     expect(getVisibleAdminDestinations({ ...base, role: "admin" }).map((item) => item.href)).toContain("/settings/role-preview");
   });
 
-  it("keeps sync and review routes under one active Activity child", () => {
+  it("keeps sync and review routes together in Administration", () => {
     const access = {
       role: "admin",
       accessResolved: true,
@@ -316,9 +316,7 @@ describe("role-specific workspaces", () => {
       canPlan: true,
       canEditDocuments: true,
     };
-    const review = getVisibleWorkspaces(access)
-      .find((workspace) => workspace.id === "activity")
-      ?.destinations.find((destination) => destination.id === "activity-review");
+    const review = getVisibleAdminDestinations(access).find((destination) => destination.id === "activity-review");
 
     expect(review).toBeDefined();
     expect(destinationIsActive("/sync", review!)).toBe(true);

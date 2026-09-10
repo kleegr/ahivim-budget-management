@@ -42,7 +42,7 @@ export interface RoleHomeDefinition {
 const ACTIONS: Record<RoleHomeActionId, RoleHomeAction> = {
   people: {
     id: "people",
-    label: "People & budgets",
+    label: "People",
     description: "Review authorizations, usage, renewals, and the next action for each person.",
     href: "/individuals",
   },
@@ -66,7 +66,7 @@ const ACTIONS: Record<RoleHomeActionId, RoleHomeAction> = {
   },
   masser: {
     id: "masser",
-    label: "Masser",
+    label: "Money",
     description: "Work the checks, collections, payments, put-away, credit, and correction queues.",
     href: "/masser",
   },
@@ -175,7 +175,8 @@ export function buildRoleHomeDefinition(
   ];
   const ordered = [...new Set([...preferred, ...fallback])]
     .filter((id) => allowed.has(id))
-    .map((id) => ACTIONS[id]);
+    .map((id) => id === "schedule" && !capabilities.canSeeBudgets
+      ? { ...ACTIONS[id], description: "Plan visits and resolve assignment, availability, and time-off conflicts." } : ACTIONS[id]);
   const copy = COPY[preset] ?? COPY.custom_access!;
   return { ...copy, actions: ordered };
 }

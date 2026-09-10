@@ -169,7 +169,7 @@ export default async function IndividualsPage({
     <>
       <PageHeader
         eyebrow="Budgets"
-        title="People & budgets"
+        title="People"
         description="See each person's renewal date, remaining hours, and monthly plan."
         action={
           canEdit ? (

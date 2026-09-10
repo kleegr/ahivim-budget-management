@@ -9,6 +9,7 @@ export type DetailedPortfolioView = Exclude<IndividualAttentionView, "all">;
 export type PortfolioView = IndividualAttentionView | Exclude<SimplePortfolioView, "all">;
 
 export const DEFAULT_HIDDEN_PORTFOLIO_COLUMNS = [
+  "status", "authorizationPeriod", "left", "billingWithoutBudget", "nextScheduledService",
   "monthly",
   "lastBilled",
   "used",

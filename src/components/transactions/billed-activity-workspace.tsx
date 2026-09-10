@@ -1,7 +1,11 @@
 "use client";
 
-import { useDeferredValue, useMemo, useState, type KeyboardEvent } from "react";
-import dynamic from "next/dynamic";
+import { investigationDrillHref, InvestigationCheckDates, type InvestigationScope } from "./investigation-scope";
+
+import { useCallback, useDeferredValue, useMemo, useState, type KeyboardEvent } from "react";
+import { useSearchParams } from "next/navigation";
+import TransactionsGrid, { TRANSACTION_COLUMNS } from "./transactions-grid";
+import { applyFilters, filterChips } from "@/components/data-grid/engine";
 import Link from "next/link";
 import { CheckCircle2, Download, ListChecks, ReceiptText, RefreshCw, RotateCcw, Search, ShieldAlert, TableProperties } from "lucide-react";
 import { dec, formatHours, formatMoney } from "@/lib/money";
@@ -21,10 +25,6 @@ import {
 import SourcePaymentsView from "@/components/transactions/source-payments-view";
 import { buildCheckExport } from "./check-export";
 import { downloadTransactionSummary } from "@/components/transactions/summary-export";
-
-const TransactionsGrid = dynamic(() => import("@/components/transactions/transactions-grid"), {
-  loading: () => <p role="status" className="py-8 text-sm text-[var(--color-ink-soft)]">Loading recorded services…</p>,
-});
 
 type WorkspaceView = "checks" | "source-payments" | "rows";
 const WORKSPACE_VIEWS: WorkspaceView[] = ["rows", "checks", "source-payments"];
@@ -93,12 +93,16 @@ function ChecksView({
   rows,
   visibility,
   onShowRows,
+  scope,
 }: {
   rows: GridTransaction[];
   visibility: TransactionFieldVisibility;
   onShowRows: () => void;
+  scope?: InvestigationScope;
 }) {
-  const [query, setQuery] = useState("");
+  const [localQuery, setLocalQuery] = useState("");
+  const query = scope?.search ?? localQuery;
+  const setQuery = (value: string) => scope ? scope.onChange({ filters: scope.filters, search: value }) : setLocalQuery(value);
   const deferredQuery = useDeferredValue(query);
   const [period, setPeriod] = useState<PeriodRange>(null);
   const [periodControlKey, setPeriodControlKey] = useState(0);
@@ -139,6 +143,7 @@ function ChecksView({
   }), [filtered]);
 
   const clearViewFilters = () => {
+    if (scope) { const filters = { ...scope.filters }; delete filters.checkDate; scope.onChange({ filters, search: "" }); return; }
     setQuery("");
     setPeriod(null);
     if (typeof window !== "undefined") {
@@ -171,7 +176,7 @@ function ChecksView({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <PeriodControl key={periodControlKey} onChange={setPeriod} paramKey="period" />
+        {scope ? <InvestigationCheckDates scope={scope} /> : <PeriodControl key={periodControlKey} onChange={setPeriod} paramKey="period" />}
         <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
           <label className="relative block min-w-56 flex-1 sm:w-72">
             <span className="sr-only">Search checks</span>
@@ -282,7 +287,7 @@ function ChecksView({
                   {check.needsReview ? <div className="mt-1 max-w-44 text-xs text-[var(--color-ink-faint)]">{check.reviewReasons.join(" · ")}</div> : null}
                 </Td>
                 <Td>
-                  <Link href={checkRowsHref(check)} className="btn btn-sm btn-ghost whitespace-nowrap">
+                  <Link href={investigationDrillHref(checkRowsHref(check), scope, { checkIdentity: { selected: [check.key] } })} className="btn btn-sm btn-ghost whitespace-nowrap">
                     {check.needsReview ? "Review" : "Open"} {check.rows.toLocaleString()} {check.rows === 1 ? "service" : "services"}
                   </Link>
                 </Td>
@@ -410,13 +415,39 @@ export default function BilledActivityWorkspace({
   initialView?: WorkspaceView;
   reviewSummary?: ActivityReviewSummary | null;
 }) {
-  const [view, setView] = useState<WorkspaceView>(contextLabel ? "rows" : initialView);
-
+  const params = useSearchParams();
+  const savedScope = params.get("scope");
+  const scopeValues = useMemo(() => {
+    try {
+      const parsed = savedScope ? JSON.parse(savedScope) as { filters?: FilterState; search?: string } : null;
+      if (parsed && parsed.filters && typeof parsed.filters === "object" && !Array.isArray(parsed.filters)) {
+        const filters: FilterState = {};
+        for (const [key, value] of Object.entries(parsed.filters)) {
+          if (!TRANSACTION_COLUMNS.some((column) => column.key === key) || !value || typeof value !== "object") continue;
+          filters[key] = {
+            ...(Array.isArray(value.selected) ? { selected: value.selected.filter((entry) => typeof entry === "string") } : {}),
+            ...Object.fromEntries(Object.entries(value).filter(([field, entry]) => ["contains", "min", "max", "from", "to", "dateGroup"].includes(field) && typeof entry === "string")),
+          };
+        }
+        return { filters, search: typeof parsed.search === "string" ? parsed.search : "" };
+      }
+    } catch { /* Ignore invalid saved context and use the explicit route scope. */ }
+    return { filters: initialFilters ?? {}, search: "" };
+  }, [savedScope, initialFilters]);
+  const onScopeChange = useCallback((next: { filters: FilterState; search: string }) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("scope", JSON.stringify(next));
+    window.history.replaceState(null, "", url.toString());
+  }, []);
+  const scope = useMemo(() => ({ ...scopeValues, onChange: onScopeChange }), [scopeValues, onScopeChange]);
+  const scopedRows = useMemo(() => applyFilters(rows, TRANSACTION_COLUMNS, scope.filters, scope.search, ["individual", "employee", "program", "payTo", "checkNumber"]), [rows, scope.filters, scope.search]);
+  const scopeChips = useMemo(() => filterChips(TRANSACTION_COLUMNS, scope.filters), [scope.filters]);
+  const requestedView = params.get("view") as WorkspaceView | null;
+  const view = requestedView && WORKSPACE_VIEWS.includes(requestedView) ? requestedView : contextLabel ? "rows" : initialView;
   const selectView = (nextView: WorkspaceView) => {
-    setView(nextView);
     const url = new URL(window.location.href);
     url.searchParams.set("view", nextView);
-    window.history.replaceState(null, "", url.toString());
+    window.history.pushState(null, "", url.toString());
   };
 
   const moveTabFocus = (event: KeyboardEvent<HTMLButtonElement>) => {
@@ -491,15 +522,21 @@ export default function BilledActivityWorkspace({
         </div>
       ) : null}
 
+      {(scopeChips.length > 0 || scope.search) ? <section aria-label="Investigation scope" className="rounded-lg border border-[var(--color-primary)] bg-[var(--color-primary-tint)] px-4 py-3 text-sm">
+        <p className="font-semibold">{scopedRows.length.toLocaleString()} selected services across every view</p>
+        <p className="mt-1">{scopeChips.map((chip) => chip.label).join(" · ")}{scope.search ? ` · Search: ${scope.search}` : ""}</p>
+        <p className="mt-1 text-xs">Service amounts below reflect this selection. Check gross, net, and source-payment amounts describe the whole check, which may also cover other people or programs.</p>
+        <div className="mt-2 flex gap-2"><button type="button" className="btn btn-sm btn-secondary" onClick={() => selectView("rows")}>Edit scope in services</button><button type="button" className="btn btn-sm btn-ghost" onClick={() => onScopeChange({ filters: {}, search: "" })}>Clear investigation scope</button></div>
+      </section> : null}
       <div
         id="transactions-workspace-panel"
         role="tabpanel"
         aria-labelledby={contextLabel ? undefined : `transactions-${view}-tab`}
       >
         {view === "checks" ? (
-          <ChecksView rows={rows} visibility={visibility} onShowRows={() => selectView("rows")} />
+          <ChecksView scope={scope} rows={scopedRows} visibility={visibility} onShowRows={() => selectView("rows")} />
         ) : view === "source-payments" ? (
-          <SourcePaymentsView rows={rows} visibility={visibility} onShowRows={() => selectView("rows")} />
+          <SourcePaymentsView scope={scope} rows={scopedRows} visibility={visibility} onShowRows={() => selectView("rows")} />
         ) : (
           <TransactionsGrid
             rows={rows}
@@ -507,6 +544,7 @@ export default function BilledActivityWorkspace({
             visibility={visibility}
             canSeeBudgets={canSeeBudgets}
             initialFilters={initialFilters}
+            scope={scope}
             contextLabel={contextLabel}
           />
         )}

@@ -69,6 +69,7 @@ export async function POST(request: NextRequest) {
       "sourceName", "sourceSheet", "sourceRowNumber", "routing", "individuals", "programs", "services",
       "employees", "employeeChecks", "review",
       ...(visibility.canSeeHours ? ["hours"] : []),
+      ...(visibility.canSeeHours && scope.canSeeBudgets ? ["creditedBudgetHours"] : []),
       ...(visibility.canSeeBilledAmounts ? ["rate", "gross", "funderBilled", "funderBilledCompleteness"] : []),
       ...(visibility.canSeeEmployeeAmounts ? ["employeeRate", "internalAmount", "employeeBase", "employeeBaseCompleteness"] : []),
       ...(visibility.canSeeAgencySpread ? ["agencyAdditional", "agencySpread", "agencySpreadCompleteness"] : []),

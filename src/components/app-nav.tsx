@@ -79,7 +79,7 @@ function WorkspaceNavigation({
           const active = workspaceIsActive(pathname, workspace);
           const open = expanded[workspace.id] ?? active;
           const landingActive = destinationIsActive(pathname, workspace.destinations[0]);
-          const Icon = WORKSPACE_ICONS[workspace.id];
+          const Icon = WORKSPACE_ICONS[workspace.id] ?? (workspace.href === "/schedule" ? CalendarDays : workspace.href === "/employees" ? Users : LayoutDashboard);
           const secondary = workspace.destinations.filter((destination) => destination.href !== workspace.href);
           const activeSecondaryId = secondary
             .filter((destination) => destinationIsActive(pathname, destination))
@@ -178,7 +178,7 @@ function AdministrationNavigation({
         }`}
       >
         <Settings2 className={`h-[1.1rem] w-[1.1rem] shrink-0 ${active ? "text-[var(--color-primary)]" : "text-[var(--color-ink-faint)]"}`} aria-hidden />
-        <span className="min-w-0 flex-1 truncate">{isManager ? "Settings" : "Account"}</span>
+        <span className="min-w-0 flex-1 truncate">{isManager ? "Administration" : "Account"}</span>
         <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden />
       </button>
 
