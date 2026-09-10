@@ -1,5 +1,7 @@
 "use client";
 
+import { withTransactionScopeLabels } from "./scope-column-labels";
+
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -169,7 +171,7 @@ export default function TransactionsGrid({
   // Disallowed fields are absent from the column chooser and export payload as
   // well as redacted from the server-provided rows.
   const columns = useMemo(
-    () => TRANSACTION_COLUMNS.filter((column) => {
+    () => withTransactionScopeLabels(TRANSACTION_COLUMNS, rows).filter((column) => {
       if (column.key === "hours") return fields.canSeeHours;
       if (column.key === "creditedBudgetHours") return canSeeBudgets && fields.canSeeHours;
       if (column.key === "rate" || column.key === "gross") return fields.canSeeBilledAmounts;
@@ -182,7 +184,7 @@ export default function TransactionsGrid({
       if (column.key === "withholding") return fields.canSeeTaxes;
       return true;
     }),
-    [fields, canSeeBudgets],
+    [fields, canSeeBudgets, rows],
   );
 
   // Reveal any column that arrives pre-filtered (e.g. a budget drill-through seeds

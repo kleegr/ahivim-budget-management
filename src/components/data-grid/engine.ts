@@ -232,7 +232,7 @@ export function filterChips<Row>(cols: ColumnDef<Row>[], filters: FilterState): 
     // The value selection reads the same for every kind.
     if (f.selected !== undefined) {
       if (f.selected.length === 0) parts.push("none");
-      else if (f.selected.length <= 3) parts.push(f.selected.map((v) => v || "(blank)").join(", "));
+      else if (f.selected.length <= 3) parts.push(f.selected.map((v) => col.filterValueLabel?.(v) ?? col.badgeLabels?.[v] ?? (v || "(blank)")).join(", "));
       else parts.push(`${f.selected.length} selected`);
     }
     if (isNumericKind(col.kind)) {
@@ -248,7 +248,7 @@ export function filterChips<Row>(cols: ColumnDef<Row>[], filters: FilterState): 
     } else if (f.contains) {
       parts.push(`“${f.contains}”`);
     }
-    chips.push({ key: col.key, label: `${col.label}: ${parts.join(" · ") || "all"}` });
+    chips.push({ key: col.key, label: `${col.filterLabel ?? col.label}: ${parts.join(" · ") || "all"}` });
   }
   return chips;
 }

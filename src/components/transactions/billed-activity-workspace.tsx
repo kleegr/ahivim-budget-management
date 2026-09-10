@@ -5,6 +5,7 @@ import { investigationDrillHref, InvestigationCheckDates, type InvestigationScop
 import { useCallback, useDeferredValue, useMemo, useState, type KeyboardEvent } from "react";
 import { useSearchParams } from "next/navigation";
 import TransactionsGrid, { TRANSACTION_COLUMNS } from "./transactions-grid";
+import { withTransactionScopeLabels } from "./scope-column-labels";
 import { applyFilters, filterChips } from "@/components/data-grid/engine";
 import Link from "next/link";
 import { CheckCircle2, Download, ListChecks, ReceiptText, RefreshCw, RotateCcw, Search, ShieldAlert, TableProperties } from "lucide-react";
@@ -441,7 +442,7 @@ export default function BilledActivityWorkspace({
   }, []);
   const scope = useMemo(() => ({ ...scopeValues, onChange: onScopeChange }), [scopeValues, onScopeChange]);
   const scopedRows = useMemo(() => applyFilters(rows, TRANSACTION_COLUMNS, scope.filters, scope.search, ["individual", "employee", "program", "payTo", "checkNumber"]), [rows, scope.filters, scope.search]);
-  const scopeChips = useMemo(() => filterChips(TRANSACTION_COLUMNS, scope.filters), [scope.filters]);
+  const scopeChips = useMemo(() => filterChips(withTransactionScopeLabels(TRANSACTION_COLUMNS, rows), scope.filters), [scope.filters, rows]);
   const requestedView = params.get("view") as WorkspaceView | null;
   const view = requestedView && WORKSPACE_VIEWS.includes(requestedView) ? requestedView : contextLabel ? "rows" : initialView;
   const selectView = (nextView: WorkspaceView) => {
