@@ -628,7 +628,7 @@ export default function CollectionsWorkspace({
               <input name="checkSearch" defaultValue={checkPage.search} maxLength={250} placeholder="Employee, check number, or source reference" className={inputClass} />
             </label>
             <label className={`${labelClass} w-full sm:w-44`}>Check status
-              <select name="checkStatus" defaultValue={checkPage.status} className={inputClass}>
+              <select name="checkStatus" aria-label="Check status" defaultValue={checkPage.status} className={inputClass}>
                 <option value="all">All statuses</option><option value="unverified">Needs review</option><option value="verified">Verified</option><option value="void">Void</option>
               </select>
             </label>

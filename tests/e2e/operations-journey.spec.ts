@@ -336,6 +336,7 @@ for (const account of [planner, staffing]) {
         await dialog.getByRole("button", { name: "Save", exact: true }).click();
         await expect(dialog).toHaveCount(0);
         await metric(page.locator("#main"), "Hours authorized", "16");
+        await page.getByText("Authorization details and history", { exact: true }).click();
         await page.getByText("Authorization revisions", { exact: false }).click();
         const history = page.locator("details").filter({ has: page.locator("summary", { hasText: "Authorization revisions" }) });
         await expect(history.getByRole("row").filter({ hasText: "Superseded" })).toContainText("12");

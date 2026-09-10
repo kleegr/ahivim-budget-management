@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { PDFDocument } from "pdf-lib";
 import { readFile } from "node:fs/promises";
-import { REPRESENTATIVE_ACCOUNTS, passwordFor } from "./fixtures";
+import { BASE_URL, REPRESENTATIVE_ACCOUNTS, passwordFor } from "./fixtures";
 
 async function signIn(page: Page, preset: "owner" | "individual_parent") {
   const account = REPRESENTATIVE_ACCOUNTS.find(entry => entry.preset === preset)!;
@@ -48,6 +48,7 @@ test("private PDF upload, failed save recovery, persisted edits, historical down
   await expect(page.getByText("v2", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Documents", exact: true }).last().click();
   await page.getByRole("button", { name: new RegExp(filename.replace(/\.pdf$/, "").replaceAll("-", " ")) }).first().click();
+  await page.waitForURL(url => url.pathname === "/documents/pdf-editor" && url.searchParams.get("document") === documentId);
   await expect(page.getByText("v2", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Open page 2", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "History", exact: true }).click();
@@ -74,7 +75,7 @@ test("private PDF upload, failed save recovery, persisted edits, historical down
     expect(response.headers()["cache-control"]).toContain("private");
     expect((await PDFDocument.load(await response.body())).getPageCount()).toBe(version.versionNumber === 2 ? 2 : 1);
   }
-  const parentContext = await browser.newContext();
+  const parentContext = await browser.newContext({ baseURL: BASE_URL });
   try {
     const parent = await parentContext.newPage();
     await signIn(parent, "individual_parent");

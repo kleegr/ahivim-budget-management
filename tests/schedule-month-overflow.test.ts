@@ -5,7 +5,7 @@ describe("schedule month overflow", () => {
   it("opens the complete day instead of rendering inert hidden-session text", () => {
     const source = readFileSync("src/components/schedule/calendar.tsx", "utf8");
 
-    expect(source).toContain("onOpenDay={(date) => { setAnchor(date); setView(\"day\"); }}");
+    expect(source).toContain('onOpenDay={(date) => updateContext({ date, calendarView: "day" })}');
     expect(source).toContain("onClick={() => onOpenDay(d)}");
     expect(source).toContain("aria-label={`Open all ${list.length} sessions on ${d}`}");
     expect(source).not.toContain('<span className="block px-1 text-[10px] text-[var(--color-ink-faint)]">+{list.length - 4} more</span>');

@@ -80,7 +80,7 @@ test("owner sees exact row totals and whole-check totals without counting repeat
 
 test("Budget Status and Up To Date preserve current math and historical authorization truth", async ({ page }) => {
   await signIn(page);
-  const main = await openReady(page, "/individuals?sheet=up_to_date", /^People & budgets$/);
+  const main = await openReady(page, "/individuals?sheet=up_to_date", /^People$/);
   // The golden COM_HAB record is intentionally undecided. Inspect all programs
   // through the normal scope control without changing its responsibility.
   await main.getByRole("link", { name: "Show all programs / all individuals", exact: true }).click();
@@ -159,6 +159,7 @@ test("Owner Home, Masser, and Agency Financials reconcile to the same seeded fac
   expect(refresh.status()).toBe(200);
   expect((await refresh.json()).ok).toBe(true);
   let main = await openReady(page, "/dashboard", /^Home$/);
+  await main.getByText("Activity, budgets, and setup detail", { exact: true }).click();
   const transactionSection = main.locator('section[aria-labelledby="owner-transactions-heading"]');
   await expectMetric(transactionSection, "Funder billed", "$350.00");
   await expectMetric(transactionSection, "Employee base", "$294.00");
@@ -172,12 +173,13 @@ test("Owner Home, Masser, and Agency Financials reconcile to the same seeded fac
   await expectMetric(financialSection, "Current plans", "2");
   await expectMetric(financialSection, "Approved final", "$260.00");
 
-  main = await openReady(page, "/masser?month=2026-09", "Money to collect, pay, and put away");
+  main = await openReady(page, "/masser?month=2026-09", "Money");
   await expectMetric(main, "Give-backs from checks", "$24.00");
   await expectMetric(main, "Employee balance", "$24.00");
   await expectMetric(main, "Approved monthly set-aside", "$260.00");
   const employeeRow = main.getByRole("row").filter({ hasText: "Linked Employee" });
   await expect(employeeRow).toContainText("$24.00");
+  await main.getByRole("link", { name: "Put away", exact: true }).click();
   const individualRow = main.getByRole("row").filter({ hasText: "Linked Individual" });
   await expect(individualRow).toContainText("2 approved setups");
   await expect(individualRow).toContainText("$260.00");

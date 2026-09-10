@@ -413,7 +413,12 @@ export default function ScheduleCalendar(props: ScheduleCalendarProps) {
           canManage={canManage}
           initialMode={selectedRepair}
           onClose={() => { setSelected(null); setSelectedRepair(null); }}
-          onChanged={() => { setSelected(null); setSelectedRepair(null); refreshAfterSave(); }}
+          onChanged={(saved) => {
+            const params = new URLSearchParams({ view: "calendar", date: saved.date, calendarView: "day", programId: selected.programId, sessionId: saved.id });
+            if (selected.individualIds.length === 1) params.set("individualId", selected.individualIds[0]);
+            setSavedHref(`/schedule?${params}`);
+            setSelected(null); setSelectedRepair(null); refreshAfterSave();
+          }}
         />
       ) : null}
 

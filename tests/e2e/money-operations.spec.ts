@@ -156,7 +156,7 @@ test.describe.serial("append-only Money operations", () => {
     const response = await page.goto(settlementPath);
     expect(response?.status()).toBe(200);
     const main = page.locator("#main");
-    await expect(main.getByRole("heading", { level: 1, name: "Money operations" })).toBeVisible();
+    await expect(main.getByRole("heading", { level: 1, name: "Money" })).toBeVisible();
 
     const items = main.getByRole("table", { name: "Payment obligations and current balances" });
     let itemRow = items.getByRole("row").filter({ hasText: MONEY_WORKFLOW_EMPLOYEE_NAME });
@@ -341,7 +341,7 @@ test.describe.serial("append-only Money operations", () => {
     const response = await page.goto(settlementPath);
     expect(response?.status()).toBe(200);
     const main = page.locator("#main");
-    await expect(main.getByRole("heading", { level: 1, name: "Money operations" })).toBeVisible();
+    await expect(main.getByRole("heading", { level: 1, name: "Money" })).toBeVisible();
 
     let itemRow = main
       .getByRole("table", { name: "Payment obligations and current balances" })

@@ -8,7 +8,7 @@ import { withDb } from "@/lib/data/pool";
 import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Money operations - Ahivim Budget Management" };
+export const metadata = { title: "Money - Ahivim Budget Management" };
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
@@ -74,7 +74,7 @@ export default async function SettlementsPage({
     <>
       <PageHeader
         eyebrow="Masser"
-        title="Money to collect, pay, and put away"
+        title="Money"
         description="Choose a task, review what is due, and record what actually happened."
       />
 

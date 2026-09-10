@@ -68,7 +68,8 @@ async function verifyIncompleteHome(page: Page, pool: Pool): Promise<void> {
     await expect(homeMoney.getByRole("link", { name: "Review source details", exact: true })).toHaveAttribute(
       "href", `/reports/agency-financials?month=${today.slice(0, 7)}`,
     );
-    const moneyReview = page.getByRole("region", { name: "Review summary", exact: true })
+    await page.getByText("Activity, budgets, and setup detail", { exact: true }).click();
+    const moneyReview = page.getByRole("region", { name: "Needs attention", exact: true })
       .getByRole("link", { name: /Money & checks/ });
     await expect(moneyReview).toContainText("Current balances are unavailable until refreshed.");
     await expect(moneyReview).toHaveAttribute("href", "/masser");

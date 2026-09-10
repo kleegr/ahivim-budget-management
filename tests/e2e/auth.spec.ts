@@ -12,7 +12,7 @@ const WORKSPACES: { path: string; title: RegExp; heading: RegExp }[] = [
   { path: "/dashboard", title: /Home - Ahivim/, heading: /^(Owner overview|Home)$/ },
   { path: "/transactions", title: /Transactions - Ahivim/, heading: /^Transactions$/ },
   { path: "/calculations", title: /Financial setup - Ahivim/, heading: /^Financial setup$/ },
-  { path: "/individuals", title: /People & budgets - Ahivim Budget Management/, heading: /^People & budgets$/ },
+  { path: "/individuals", title: /People - Ahivim Budget Management/, heading: /^People$/ },
   { path: "/reports", title: /Reports - Ahivim Budget Management/, heading: /^Reports$/ },
   { path: "/schedule", title: /Schedule - Ahivim/, heading: /^Scheduling$/ },
   { path: "/employees", title: /Employees — Ahivim Budget Management/, heading: /^Employees$/ },
@@ -26,7 +26,8 @@ async function signIn(page: Page): Promise<void> {
   await page.waitForURL(/\/dashboard(\?|$)/, { timeout: 20_000 });
 }
 
-test("authenticated smoke: sign in and load every workspace", async ({ page }) => {
+test("authenticated smoke: sign in and load every workspace", async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => {
     pageErrors.push(`${page.url()} :: ${error.message}`);
@@ -54,6 +55,12 @@ test("authenticated smoke: sign in and load every workspace", async ({ page }) =
       main.getByRole("heading", { level: 1 }),
       `page header on ${ws.path}`,
     ).toHaveText(ws.heading);
+    for (const viewport of [{ width: 1365, height: 900 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), `${ws.path} overflow at ${viewport.width}`).toBe(true);
+      await testInfo.attach(`${ws.path.slice(1)}-${viewport.width}`, { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
+    }
+    await page.setViewportSize({ width: 1365, height: 900 });
   }
 
   expect(

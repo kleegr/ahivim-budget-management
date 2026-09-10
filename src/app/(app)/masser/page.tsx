@@ -16,7 +16,7 @@ import { resolveSettlementSourceTransactions } from "@/lib/data/settlement-sourc
 import { MAX_PAYROLL_CHECK_SOURCE_TRANSACTIONS } from "@/lib/business/payroll-check-source";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Masser - Ahivim" };
+export const metadata = { title: "Money - Ahivim" };
 
 export default async function MasserPage({
   searchParams,
@@ -125,7 +125,7 @@ export default async function MasserPage({
     <>
       <PageHeader
         eyebrow="Masser"
-        title="Money to collect, pay, and put away"
+        title="Money"
         description="Choose a task, review what is due, and record what actually happened."
         action={<ButtonLink href="/settlements" variant="secondary">All balances & credits</ButtonLink>}
       />

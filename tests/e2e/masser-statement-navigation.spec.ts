@@ -62,7 +62,7 @@ test.describe("Masser statement document navigation", () => {
       };
       await page.route("**/masser/individuals/**", holdStatementStream);
       try {
-        expect((await page.goto("/masser?month=2026-09"))?.status()).toBe(200);
+        expect((await page.goto("/masser?month=2026-09&task=put-away"))?.status()).toBe(200);
         const row = page.locator("#main").getByRole("row").filter({ hasText: "Linked Individual" });
         await expect(row).toContainText("Historical balances remain on hold; excluded from this month.");
         await expect(row.getByText("Ready", { exact: true })).toBeVisible();

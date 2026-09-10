@@ -69,7 +69,7 @@ test.describe.serial("Masser retained source-review balances across actual route
       expect(refreshed.status()).toBe(200);
       expect(await refreshed.json()).toMatchObject({ ok: true, data: { created: 0, updated: 0, adjusted: 0, voided: 0 } });
 
-      expect((await page.goto(`/masser?month=${MONTH}`))?.status()).toBe(200);
+      expect((await page.goto(`/masser?month=${MONTH}&task=put-away`))?.status()).toBe(200);
       const main = page.locator("#main");
       const row = main.getByRole("row").filter({ hasText: "Linked Individual" });
       await expect(row).toContainText("$260.00");

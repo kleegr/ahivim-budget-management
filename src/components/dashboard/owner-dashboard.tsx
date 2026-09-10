@@ -155,9 +155,11 @@ interface OwnerReviewGroup {
 
 function OwnerReviewSection({
   groups,
+  optionalSetup = [],
   unavailableSources = [],
 }: {
   groups: OwnerReviewGroup[];
+  optionalSetup?: Array<NonNullable<OwnerReviewGroup["undecided"]>>;
   unavailableSources?: string[];
 }) {
   return (
@@ -192,6 +194,11 @@ function OwnerReviewSection({
           </div>
         ))}
       </div>
+      {optionalSetup.length > 0 ? <details className="mt-4 rounded-lg border border-[var(--color-rule)] p-3 text-sm">
+        <summary className="cursor-pointer font-medium">Optional setup</summary>
+        <p className="mt-2 text-xs text-[var(--color-ink-soft)]">These choices are not detected operational issues.</p>
+        <div className="mt-2 flex flex-wrap gap-4">{optionalSetup.map((item) => <Link key={item.href} className="link" href={item.href}>Not decided yet: {item.count} {item.unit}</Link>)}</div>
+      </details> : null}
       {unavailableSources.length > 0 ? (
         <div role="alert" className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm">
           <p className="text-[var(--color-ink-soft)]">
@@ -330,6 +337,7 @@ export async function OwnerReviewData({ today }: { today: string }) {
     <OwnerReviewSection
       groups={groups.filter((group) => group.key === "individuals" ? !review || review.individuals > 0 : group.key === "employees" ? !review || review.employees > 0 : group.key === "schedule" ? !schedule || schedule.conflictCount > 0 || schedule.unassignedCount > 0 : !money || money.freshness.dirty || money.checkIssues.length > 0 || money.rows.some((row) => row.reviewRequired))}
       unavailableSources={unavailableSources}
+      optionalSetup={groups.flatMap((group) => group.undecided && group.undecided.count > 0 ? [group.undecided] : [])}
     />
   );
 }
