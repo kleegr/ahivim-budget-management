@@ -524,9 +524,9 @@ export default function BilledActivityWorkspace({
 
       {(scopeChips.length > 0 || scope.search) ? <section aria-label="Investigation scope" className="rounded-lg border border-[var(--color-primary)] bg-[var(--color-primary-tint)] px-4 py-3 text-sm">
         <p className="font-semibold">{scopedRows.length.toLocaleString()} selected services across every view</p>
-        <p className="mt-1">{scopeChips.map((chip) => chip.label).join(" · ")}{scope.search ? ` · Search: ${scope.search}` : ""}</p>
+        <p className="mt-1 break-words">{scopeChips.map((chip) => chip.label).join(" · ")}{scope.search ? ` · Search: ${scope.search}` : ""}</p>
         <p className="mt-1 text-xs">Service amounts below reflect this selection. Check gross, net, and source-payment amounts describe the whole check, which may also cover other people or programs.</p>
-        <div className="mt-2 flex gap-2"><button type="button" className="btn btn-sm btn-secondary" onClick={() => selectView("rows")}>Edit scope in services</button><button type="button" className="btn btn-sm btn-ghost" onClick={() => onScopeChange({ filters: {}, search: "" })}>Clear investigation scope</button></div>
+        <div className="mt-2 flex flex-wrap gap-2"><button type="button" className="btn btn-sm btn-secondary" onClick={() => selectView("rows")}>Edit scope in services</button><button type="button" className="btn btn-sm btn-ghost" onClick={() => onScopeChange({ filters: {}, search: "" })}>Clear investigation scope</button></div>
       </section> : null}
       <div
         id="transactions-workspace-panel"
